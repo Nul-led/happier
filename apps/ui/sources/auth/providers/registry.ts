@@ -26,7 +26,8 @@ export function getAuthProvider(
     presentation?: Readonly<{
         displayName: string;
         badgeIconName?: string;
-        connectButtonColor?: string;
+        /** The Home projects `null` when a provider declares no colour. */
+        connectButtonColor?: string | null;
         supportsProfileBadge?: boolean;
     }>,
 ): AuthProvider | null {

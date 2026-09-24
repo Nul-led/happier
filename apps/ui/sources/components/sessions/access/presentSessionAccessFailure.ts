@@ -35,8 +35,12 @@ function sessionAccessFailureMessage(code: string, status?: number): string {
         // "nothing to prepare", so the copy must not assert the opposite.
         case 'data_key_not_required':
             return t('session.access.notRequired');
-        // The Home, not the content, is the missing capability here: this Session
-        // is otherwise usable and the person needs an update/availability reason.
+        // This Home's Session sharing is off: state that cause. An update would
+        // not change it, so the update copy below must not be reused here.
+        case 'session_access_sharing_unavailable':
+            return t('session.collaboration.accessUnavailableReason');
+        // The Home, not the content, lacks a required capability here: this Session
+        // is otherwise usable and updating the Home is the fix.
         case 'unsupported_action':
             return t('session.access.homeUnsupported');
         // The canonical transport now names an ambiguous mutation outcome, so
@@ -53,6 +57,19 @@ function sessionAccessFailureMessage(code: string, status?: number): string {
 /** The same typed copy owner is used for server failures and disabled row controls. */
 export function presentSessionAccessReason(code: SessionAccessErrorCodeV1): SessionAccessUiReason {
     return { code, message: sessionAccessFailureMessage(code) };
+}
+
+/**
+ * How a settled approval of a Session-access family Action reads to its mounted
+ * origin. A declined or canceled approval is the person's own answer — nothing
+ * changed and nothing needs reporting — while an execution whose acknowledgement
+ * was lost is the family's ordinary unknown outcome and must be reconciled.
+ */
+export function presentSessionAccessApprovalSettlement(code: string): SessionAccessUiError | null {
+    if (code === 'approval_rejected' || code === 'approval_canceled') return null;
+    return presentSessionAccessFailure(new SessionAccessApiError(
+        code === 'approval_execution_outcome_unknown' ? 'outcome_unknown' : code,
+    ));
 }
 
 /** One presentation mapping for grant, context, and public-link access failures. */
@@ -76,6 +93,7 @@ export function presentSessionAccessFailure(
             || error.code === 'session_access_authentication_unavailable'
             || error.code === 'session_access_external_sharing_requires_team_admin'
             || error.code === 'session_access_external_sharing_disabled'
+            || error.code === 'session_access_sharing_unavailable'
             || error.code === 'session_access_invalid_recipient_envelope'
             || error.code === 'invalid_request'
             || error.code === 'data_key_not_required'

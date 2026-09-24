@@ -41,3 +41,14 @@ export function resolveLegacyActivitySequenceEventIdentityV1(sequence: number): 
 export function resolveActivityTurnEventIdentityV1(turnId: string): string {
   return `turn:${turnId}`;
 }
+
+/**
+ * Stable identity for a committed Agent request (permission or user action).
+ *
+ * The request id is allocated by the Agent runtime before commit, so both legs
+ * that can observe the same request — this device's own local notification and
+ * the Home's remote alert — name it identically and one of them suppresses.
+ */
+export function resolveActivityRequestEventIdentityV1(requestId: string): string {
+  return `request:${requestId}`;
+}

@@ -20,16 +20,18 @@ import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSession
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
-import { resolveScopedSessionCryptoContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveScopedSessionDataKey';
+import {
+    resolveScopedSessionCryptoContext,
+    type ScopedSessionCryptoContext,
+} from '@/sync/runtime/orchestration/serverScopedRpc/resolveScopedSessionDataKey';
 import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 
 export type SessionFollowSourceKeyPreparationResult = SessionFollowSourceKeyPreparationResultV1;
 
-type SourceCryptoContext =
-    | Readonly<{ encryptionMode: 'plain'; sessionDataKey: null }>
-    | Readonly<{ encryptionMode: 'e2ee'; sessionDataKey: Uint8Array }>
-    | Readonly<{ encryptionMode: 'unknown'; sessionDataKey: null }>;
+// Only a standalone `e2ee` DEK is transferable; the owner-only historical reader
+// (`legacy_fallback`) and `unknown` both leave the source key unavailable.
+type SourceCryptoContext = ScopedSessionCryptoContext;
 
 type PreparationContext = Readonly<{
     scope: 'scoped';
@@ -78,6 +80,7 @@ const defaultDeps: PrepareSessionFollowSourceKeyDeps = {
                 serverId: context.targetServerId,
                 serverUrl: context.targetServerUrl,
                 ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
+                ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
                 token: context.token,
                 sessionId,
                 timeoutMs: context.timeoutMs,

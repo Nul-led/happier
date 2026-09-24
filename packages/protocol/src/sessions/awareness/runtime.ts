@@ -2,6 +2,8 @@ import type { PrimaryTurnStatusV1 } from '../control/runtimeIssueV1.js';
 import {
   normalizeAwarenessCountV1,
   normalizeAwarenessTimestampV1,
+  type SessionAwarenessComponentEvidenceV1,
+  type SessionAwarenessCurrentnessInputV1,
   type SessionLifecycleAwarenessInputV1,
   type SessionPendingAwarenessInputV1,
   type SessionRuntimeAwarenessInputV1,
@@ -76,6 +78,40 @@ export function normalizeAwarenessSequenceV1(value: number | null | undefined): 
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.trunc(value)
     : null;
+}
+
+/**
+ * Whether the lifecycle and runtime components a boundary just normalized actually carry evidence.
+ *
+ * Each boundary keeps its own normalizer, but this is a classification of the already-normalized
+ * component inputs, so it is decided once here: two adapters that build the same lifecycle facts
+ * must not disagree about whether they observed them (a published ready sequence is lifecycle
+ * evidence, and a row with no reachability, activity or thinking fact asserts no runtime
+ * evidence). `pending` and `work` stay caller-supplied because only the acquiring boundary knows
+ * whether its snapshot carried a pending projection or readable metadata at all.
+ */
+export function resolveAwarenessCurrentnessV1(params: Readonly<{
+  lifecycle: SessionLifecycleAwarenessInputV1;
+  runtime: SessionRuntimeAwarenessInputV1;
+  pending: SessionAwarenessComponentEvidenceV1;
+  work?: SessionAwarenessComponentEvidenceV1;
+  observedAtMs?: number | null;
+}>): SessionAwarenessCurrentnessInputV1 {
+  const hasLifecycleEvidence = normalizeAwarenessTimestampV1(params.lifecycle.archivedAtMs) !== null
+    || params.lifecycle.latestTurnStatus !== undefined
+    || normalizeAwarenessSequenceV1(params.lifecycle.latestReadyEventSeq) !== null;
+  const hasRuntimeEvidence = params.runtime.presence !== 'unknown'
+    || typeof params.runtime.active === 'boolean'
+    || typeof params.runtime.thinking === 'boolean'
+    || (params.runtime.activityState ?? null) !== null
+    || typeof params.runtime.activityActiveCount === 'number';
+  return {
+    lifecycle: hasLifecycleEvidence ? 'observed' : 'unavailable',
+    runtime: hasRuntimeEvidence ? 'observed' : 'unavailable',
+    pending: params.pending,
+    ...(params.work === undefined ? {} : { work: params.work }),
+    ...(params.observedAtMs === undefined ? {} : { observedAtMs: params.observedAtMs }),
+  };
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   resolveSessionEncryptionContextFromCredentials,
   resolveSessionStoredContentEncryptionMode,
   type SessionEncryptionContext,
+  type SessionStoredContentCryptoContext,
   type SessionStoredContentEncryptionMode,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 
@@ -73,7 +74,12 @@ export async function hydrateVoiceReplayDialogFromTranscript(params: Readonly<{
   const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, session as any);
   const encryptionMode = resolveSessionStoredContentEncryptionMode(session as any);
   if (encryptionMode === 'e2ee' && !ctx) return null;
-  const decryptedRows = decryptTranscriptRows({ ctx, rows });
+  // The established mode travels with the key, so the canonical opener can refuse a
+  // row stored in the wrong envelope kind instead of replaying it as Voice context.
+  const crypto: SessionStoredContentCryptoContext = encryptionMode === 'e2ee' && ctx
+    ? { mode: 'e2ee', ctx }
+    : { mode: 'plain', ctx: null };
+  const decryptedRows = decryptTranscriptRows({ crypto, rows });
   if (decryptedRows.length === 0) {
     return {
       dialog: [],

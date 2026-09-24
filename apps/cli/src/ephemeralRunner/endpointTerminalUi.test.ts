@@ -271,7 +271,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
       },
       pluginInstallation: null,
       signal: new AbortController().signal,
-    })).resolves.toBe(false);
+    })).resolves.toEqual({ allow: false });
     await expect(ui.confirmActiveClose({ phase: 'running', signal: new AbortController().signal }))
       .resolves.toBe('keep_open');
   });
@@ -362,6 +362,84 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
       .toEqual([]);
   });
 
+  it('asks each optional plugin access separately after Allow, off unless answered yes', async () => {
+    const answers = ['a', 'a', ''];
+    const prompts: string[] = [];
+    const ui = createEphemeralRunnerTerminalUi({
+      activation: {
+        homeServerIdentityId: 'srv_acme_home',
+        creatorAccountId: 'alice-account',
+        artifact: manifest.binding.artifact,
+      },
+      interactive: true,
+      write: vi.fn(),
+      readInput: vi.fn(async (prompt: string) => { prompts.push(prompt); return answers.shift() ?? ''; }),
+    });
+    const optionalHostAccess = [
+      { id: 'clipboard.write', capability: 'clipboard', reason: 'Copies results', authorizationClass: 'hostResourceSelection', normalizedScope: {} },
+      { id: 'network.fetch', capability: 'network', reason: 'Fetches docs', authorizationClass: 'hostResourceSelection', normalizedScope: {} },
+    ];
+
+    await expect(ui.reviewAndRequestConsent({
+      review: { manifest, launchManifestCommitment: 'c', authoringCommitment: 'a', directory: '/Users/bob/Projects/widget' },
+      pluginInstallation: {
+        pluginId: 'acme.reviewed-external',
+        displayName: 'Reviewed External',
+        version: '1.2.3',
+        packageIdentity: { name: '@acme/reviewed-external', version: '1.2.3' },
+        publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
+        source: { kind: 'npm', locator: '@acme/reviewed-external@1.2.3', integrity: `sha512-${'A'.repeat(86)}==`, integrityBasis: 'expected' },
+        updateChannel: { kind: 'npm', packageName: '@acme/reviewed-external', registryOrigin: 'https://registry.npmjs.org' },
+        signature: { status: 'notProvided' },
+        provenance: { status: 'notProvided' },
+        curation: { status: 'unreviewed', sourceId: 'marketplace:community-npm' },
+        executableRealms: ['daemon'],
+        contributions: [{ family: 'agents', count: 1 }],
+        requestInterceptors: [],
+        uiArtifacts: { status: 'none', contributionIds: [] },
+        requiredHostAccess: [],
+        optionalHostAccess,
+        rawCredentialAccess: [],
+        compatibility: { runtimeApiVersion: 1 },
+        updatePolicy: 'pinned',
+      } as never,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ allow: true, optionalSelections: [
+      { accessId: 'clipboard.write', selected: true },
+      { accessId: 'network.fetch', selected: false },
+    ] });
+    expect(prompts.filter((prompt) => prompt.includes('optional'))).toHaveLength(2);
+  });
+
+  it('asks for a private registry sign-in with a hidden token, and declines by default', async () => {
+    const answers = ['s', 'd'];
+    const written: string[] = [];
+    const readSecret = vi.fn(async () => '  endpoint-token  ');
+    const ui = createEphemeralRunnerTerminalUi({
+      activation: {
+        homeServerIdentityId: 'srv_acme_home',
+        creatorAccountId: 'alice-account',
+        artifact: manifest.binding.artifact,
+      },
+      interactive: true,
+      write: (value) => { written.push(value); },
+      readInput: vi.fn(async () => answers.shift() ?? ''),
+      readSecret,
+    });
+    const requirement = { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/agent', registryProfileId: null };
+    const signal = new AbortController().signal;
+
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toEqual({ credential: 'endpoint-token' });
+    expect(readSecret).toHaveBeenCalledOnce();
+    expect(written.join('')).toContain('https://npm.acme.example.test');
+    expect(written.join('')).toContain('@acme/agent');
+    // The typed token never reaches the terminal output.
+    expect(written.join('')).not.toContain('endpoint-token');
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toBeNull();
+    // An empty answer takes the safe default: decline.
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toBeNull();
+  });
+
   it('keeps the terminal running surface quiet and free of consent-only detail', async () => {
     const writes: string[] = [];
     const ui = createEphemeralRunnerTerminalUi({
@@ -384,7 +462,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
       },
       pluginInstallation: null,
       signal: new AbortController().signal,
-    })).resolves.toBe(true);
+    })).resolves.toEqual({ allow: true, optionalSelections: [] });
     writes.length = 0;
     ui.present({ phase: 'running', connection: 'connected' });
 
@@ -604,7 +682,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
       },
       pluginInstallation: null,
       signal: new AbortController().signal,
-    })).resolves.toBe(false);
+    })).resolves.toEqual({ allow: false });
     ui.present({ phase: 'running', connection: 'connected' });
 
     expect(prompts).toEqual(expect.arrayContaining([

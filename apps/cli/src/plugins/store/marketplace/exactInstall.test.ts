@@ -4,7 +4,9 @@ import type { MarketplaceIndexQueryResultV1 } from '@happier-dev/protocol';
 
 import { createMarketplaceIndex } from './index';
 import { requestExactMarketplaceInstall } from './exactInstall';
-import type { MarketplaceIndexSourceConfig } from './service';
+import { createMarketplaceIndexService, type MarketplaceIndexSourceConfig } from './service';
+import { createMarketplaceSourceRegistryStore } from './sources/store';
+import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/profiles/service';
 import { SAMPLE_PLUGIN_ID } from '@/plugins/testkit/samplePackage';
 import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -37,7 +39,7 @@ function createSnapshot(params: Readonly<{
   source: MarketplaceIndexSourceConfig;
   freshnessState?: 'fresh' | 'stale';
   registryProfileId?: string;
-  updatePolicy?: 'pinned' | 'reviewEveryUpdate' | 'reviewSensitiveChanges';
+  updatePolicy?: 'pinned' | 'allowed';
   reviewStatus?: 'approved' | 'withdrawn' | 'blocked';
 }>) {
   const fetchedAtMs = Date.now();
@@ -69,7 +71,7 @@ function createSnapshot(params: Readonly<{
         : { status: 'unreviewed' as const, reviewedAt: null },
       categories: ['actions'],
       media: [],
-      updatePolicy: params.updatePolicy ?? (curated ? 'reviewSensitiveChanges' as const : 'reviewEveryUpdate' as const),
+      updatePolicy: params.updatePolicy ?? 'allowed' as const,
       links: {},
     }],
     diagnostics: [],
@@ -144,7 +146,7 @@ describe('requestExactMarketplaceInstall', () => {
             integrity: INTEGRITY,
             manifestDigest: MANIFEST_DIGEST,
             review: { status: 'unreviewed', reviewedAt: null },
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
           },
         },
         approval: 'none',
@@ -195,14 +197,18 @@ describe('requestExactMarketplaceInstall', () => {
     }
   });
 
-  it.each(['pinned', 'reviewEveryUpdate', 'reviewSensitiveChanges'] as const)(
+  it.each(['pinned', 'allowed'] as const)(
     'submits the curated %s policy exactly as published, with no coercion',
     async (updatePolicy) => {
       const home = await createTempDir('happier-exact-marketplace-install-');
       const service = exactListingService(CURATED_SOURCE, createSnapshot({ source: CURATED_SOURCE, updatePolicy }));
       const requestChange = vi.fn(async () => ({
         kind: 'reviewRequired' as const,
+        reviewKind: 'installation' as const,
         pendingChangeId: 'pending-curated',
+        reason: 'firstInstall' as const,
+        currentVersion: null,
+        authorityExpansion: [],
         review: createPluginInstallationReviewFixture({
           pluginId: SAMPLE_PLUGIN_ID,
           displayName: 'Sample plugin',
@@ -249,7 +255,7 @@ describe('requestExactMarketplaceInstall', () => {
 
   it.each(
     ([COMMUNITY_SOURCE, USER_SOURCE] as const).flatMap((source) =>
-      (['pinned', 'reviewEveryUpdate', 'reviewSensitiveChanges'] as const).map((updatePolicy) =>
+      (['pinned', 'allowed'] as const).map((updatePolicy) =>
         [source.origin, source, updatePolicy] as const),
     ),
   )(
@@ -383,6 +389,56 @@ describe('requestExactMarketplaceInstall', () => {
         },
         requestChange,
       })).resolves.toMatchObject({ ok: false, code: 'install_unavailable' });
+      expect(requestChange).not.toHaveBeenCalled();
+    } finally {
+      await removeTempDir(home);
+    }
+  });
+
+  it('names the private registry a listing still needs, from the real source binding and profile state, without asking the daemon owner', async () => {
+    const home = await createTempDir('happier-registry-required-marketplace-install-');
+    const requestChange = vi.fn();
+    try {
+      const source = await createMarketplaceSourceRegistryStore({ happyHomeDir: home })
+        .upsertSource({ sourceUrl: USER_SOURCE.sourceUrl, title: USER_SOURCE.title, origin: 'user' });
+      const snapshot = createSnapshot({ source: { ...USER_SOURCE, id: source.id } });
+      const privateSnapshot = {
+        ...snapshot,
+        entries: snapshot.entries.map((entry) => ({
+          ...entry,
+          distribution: { ...entry.distribution, registryOrigin: 'https://npm.acme.example.test' },
+        })),
+      };
+      // Only the catalog fetch — the network boundary — is replaced; the source
+      // binding and the registry profile state are the real persisted owners.
+      const marketplaceIndexService = createMarketplaceIndexService({
+        happyHomeDir: home,
+        loadSource: async () => privateSnapshot,
+      });
+      const install = () => requestExactMarketplaceInstall({
+        happyHomeDir: home,
+        sourceId: source.id,
+        pluginId: SAMPLE_PLUGIN_ID,
+      }, { marketplaceIndexService, requestChange });
+
+      await expect(install()).resolves.toMatchObject({
+        ok: false,
+        code: 'registry_profile_required',
+        requirement: { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/sample', registryProfileId: null },
+      });
+
+      // Bound to this Home's profile that still needs signing in: that profile is named.
+      await createNpmRegistryProfileService({ happyHomeDir: home }).mutate({
+        action: 'add', machineId: 'machine-1', expectedRevision: 0, mutationId: 'mutation-add-acme',
+        profileId: 'registry_acme',
+        profile: { displayName: 'Acme', origin: 'https://npm.acme.example.test', scopes: ['@acme'], useAsDefault: false, allowPrivateNetwork: false },
+      });
+      await createMarketplaceSourceRegistryStore({ happyHomeDir: home }).setSourceRegistryProfile(source.id, 'registry_acme');
+      await expect(install()).resolves.toMatchObject({
+        ok: false,
+        code: 'registry_profile_required',
+        requirement: { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/sample', registryProfileId: 'registry_acme' },
+      });
       expect(requestChange).not.toHaveBeenCalled();
     } finally {
       await removeTempDir(home);

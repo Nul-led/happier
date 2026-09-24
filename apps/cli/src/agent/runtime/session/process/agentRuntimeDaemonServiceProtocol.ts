@@ -8,6 +8,7 @@ import {
   SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
   ProviderBrokerConsumerV1Schema,
 } from '@happier-dev/protocol';
+import { TeamCredentialRouteV1Schema } from '@happier-dev/protocol/teams';
 
 import {
   AgentRuntimeDaemonModelTransitionAuthorizationResultV1Schema,
@@ -148,6 +149,21 @@ export const AgentRuntimeDaemonServiceRequestV1Schema = z.object({
       agentTargetKey: OpaqueIdSchema,
       modelId: OpaqueIdSchema,
       consumer: ProviderBrokerConsumerV1Schema.optional(),
+      /**
+       * An Execution Run's own accepted selection (`PLAN.md` §2.3): its Team
+       * and route travel with it, because a Run selected from the Home-wide
+       * catalog need not share its parent Session's binding. Only an
+       * `execution_run` consumer may carry them, and only together; a Session,
+       * or a Run that selected nothing, is bound by its tracked Session.
+       */
+      teamId: OpaqueIdSchema.optional(),
+      deliveryMode: TeamCredentialRouteV1Schema.optional(),
+      /**
+       * The Agent an `execution_run` consumer runs, which need not be its
+       * parent Session's; required for every Run and refused for a Session,
+       * which always materializes for the daemon-retained Agent.
+       */
+      agentId: OpaqueIdSchema.optional(),
     }).strict(),
     z.object({
       kind: z.literal('provider_broker.binding.close'),

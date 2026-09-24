@@ -642,9 +642,9 @@ function createClient(
       // the creator-signed published binding — so an unresolvable Runner target
       // fails closed rather than downgrading to Account-only sealing.
       // A Runner is named either by its Machine id or by the exact Session it
-      // was activated for, and the bootstrap projection carries both facts, so
-      // both spellings reach the same resolution and the same per-credential
-      // memo. The two id spaces stay distinguishable in that memo key.
+      // was activated for; the Session spelling is accepted only through the
+      // Runner's activation-signed claim, verified by the same resolution. The
+      // two id spaces stay distinguishable in the per-credential memo key.
       const runnerTargetKey = target.data.kind === 'machine'
         ? `machine:${target.data.machineId}`
         : `session:${target.data.sessionId}`;

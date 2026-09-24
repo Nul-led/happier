@@ -630,7 +630,7 @@ describe('sendSessionMessageWithServerScope', () => {
     }
   });
 
-  it('loads scoped E2EE material through the verified Iroh runtime origin', async () => {
+  it('loads scoped E2EE material and sends through the selected semantic Home carrier', async () => {
     const session = buildSession({
       sessionId: 's1',
       overrides: { serverId: 'server-1', encryptionMode: 'e2ee' },
@@ -643,8 +643,8 @@ describe('sendSessionMessageWithServerScope', () => {
         capabilities: { session: { pendingInput: { protocolVersion: 1 } } },
       }),
     });
-    runtimeFetchMock.mockImplementation(async (request: Readonly<{ url?: string; init?: RequestInit }>) => {
-      if (request.url === 'http://127.0.0.1:43111/v2/sessions/s1') {
+    const carrierRequest = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === 'http://127.0.0.1:3010/v2/sessions/s1') {
         return Response.json({
           session: {
             id: 's1',
@@ -665,7 +665,7 @@ describe('sendSessionMessageWithServerScope', () => {
           },
         });
       }
-      const body = JSON.parse(String(request.init?.body ?? 'null')) as { localId?: string; requestedAction?: unknown };
+      const body = JSON.parse(String(init.body ?? 'null')) as { localId?: string; requestedAction?: unknown };
       return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
     });
     const release = vi.fn(async () => {});
@@ -688,8 +688,13 @@ describe('sendSessionMessageWithServerScope', () => {
         targetServerId: 'server-1',
         targetServerUrl: 'http://127.0.0.1:3010',
         targetAccountId: 'account-1',
-        runtimeOrigin: 'http://127.0.0.1:43111',
         carrier: 'iroh' as const,
+        homeCarrier: {
+          endpointId: 'home-endpoint',
+          readObservedPath: () => 'relay' as const,
+          request: carrierRequest,
+          createWebSocket: vi.fn(),
+        },
         token: 'token-1',
         credentials: { token: 'token-1' },
         encryption: scopedAccountEncryptionStub(encryption),
@@ -705,17 +710,92 @@ describe('sendSessionMessageWithServerScope', () => {
       providerDeliveryIntent: 'first_turn',
     })).resolves.toMatchObject({ ok: true });
 
-    expect(runtimeFetchMock.mock.calls.some(([request]) =>
-      (request as { url?: string }).url === 'http://127.0.0.1:43111/v2/sessions/s1',
+    expect(carrierRequest.mock.calls.some(([url]) => url === 'http://127.0.0.1:3010/v2/sessions/s1')).toBe(true);
+    expect(carrierRequest.mock.calls.some(([url, init]) =>
+      url.startsWith('http://127.0.0.1:3010/') && init.method === 'POST',
     )).toBe(true);
-    expect(runtimeFetchMock.mock.calls.some(([request]) =>
-      (request as { url?: string }).url === 'http://127.0.0.1:3010/v2/sessions/s1',
-    )).toBe(false);
+    expect(runtimeFetchMock).not.toHaveBeenCalled();
     expect(encryption.initializeSessions).toHaveBeenCalledWith(
       new Map([['s1', new Uint8Array(32).fill(4)]]),
       { serverId: 'server-1', shouldContinue: expect.any(Function) },
     );
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('never seals scoped input for a recipient Session without its own envelope using the Account-secret reader', async () => {
+    const session = buildSession({
+      sessionId: 's1',
+      overrides: { serverId: 'server-1', encryptionMode: 'e2ee' },
+    });
+    storage.getState().applySessions([session]);
+    serverFeaturesSnapshotMock.mockResolvedValue({
+      status: 'ready',
+      features: FeaturesResponseSchema.parse({
+        features: {},
+        capabilities: { session: { pendingInput: { protocolVersion: 1 } } },
+      }),
+    });
+    const accountSecret = new Uint8Array(32).fill(21);
+    const { Encryption: RealEncryption } = await vi.importActual<typeof import('@/sync/encryption/encryption')>(
+      '@/sync/encryption/encryption',
+    );
+    const encryption = await RealEncryption.create(accountSecret);
+    const request = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === 'http://127.0.0.1:3010/v2/sessions/s1') {
+        return Response.json({
+          session: {
+            id: 's1', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1, archivedAt: null,
+            metadata: 'metadata', metadataVersion: 1, agentState: null, agentStateVersion: 0,
+            pendingCount: 0, pendingVersion: 0, encryptionMode: 'e2ee',
+            // Shared with this Account, whose recipient envelope has not been written yet.
+            share: { accessLevel: 'edit', canApprovePermissions: false },
+            dataEncryptionKey: null,
+          },
+        });
+      }
+      if (url === 'http://127.0.0.1:3010/v1/account/encryption/currentness') {
+        return Response.json({
+          mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content',
+          updatedAt: 1, recipientEnvelopeReadiness: { status: 'available' },
+        });
+      }
+      const body = JSON.parse(String(init.body ?? 'null')) as { localId?: string; requestedAction?: unknown };
+      return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
+    });
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      schedulePendingOutboxRetry: vi.fn(),
+      markSessionLiveTailIntent: vi.fn(),
+      resolveContext: vi.fn(async () => ({
+        scope: 'scoped' as const,
+        timeoutMs: 1_000,
+        targetServerId: 'server-1',
+        targetServerUrl: 'http://127.0.0.1:3010',
+        targetAccountId: 'account-1',
+        carrier: 'iroh' as const,
+        homeCarrier: {
+          endpointId: 'home-endpoint',
+          readObservedPath: () => 'relay' as const,
+          request,
+          createWebSocket: vi.fn(),
+        },
+        token: 'token-1',
+        credentials: { token: 'token-1', secret: Buffer.from(accountSecret).toString('base64url') },
+        encryption,
+        release: vi.fn(async () => {}),
+      })),
+    });
+
+    const outcome = await sendSessionMessageWithServerScope({
+      sessionId: 's1',
+      serverId: 'server-1',
+      message: 'for the recipient Session',
+      messageLocalId: 'recipient-message-1',
+      providerDeliveryIntent: 'first_turn',
+    }).then((value) => value, (error: unknown) => ({ ok: false as const, thrown: error }));
+
+    expect(outcome).toMatchObject({ ok: false });
+    expect(request.mock.calls.some(([, init]) => init.method === 'POST')).toBe(false);
+    expect(encryption.getSessionEncryption('s1')).toBeNull();
   });
 
   it('preserves the active viewport and pending bag when sending to a different Home', async () => {

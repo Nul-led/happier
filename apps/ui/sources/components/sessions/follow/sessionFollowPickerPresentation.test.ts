@@ -7,18 +7,22 @@ describe('resolveSessionFollowPickerPresentation', () => {
         expect(resolveSessionFollowPickerPresentation({ kind: 'initial_loading' }, 0)).toEqual({
             statusKey: 'sessionsList.queryInitialLoadingTitle',
             canSelect: false,
+            canRetryQuery: false,
         });
         expect(resolveSessionFollowPickerPresentation({ kind: 'refreshing', retainedRows: true }, 2)).toEqual({
             statusKey: 'sessionsList.queryUpdatingTitle',
             canSelect: true,
+            canRetryQuery: false,
         });
         expect(resolveSessionFollowPickerPresentation({ kind: 'ready', complete: false }, 2)).toEqual({
             statusKey: 'sessionsList.queryMoreAvailableTitle',
             canSelect: true,
+            canRetryQuery: false,
         });
         expect(resolveSessionFollowPickerPresentation({ kind: 'ready', complete: true }, 2)).toEqual({
             statusKey: null,
             canSelect: true,
+            canRetryQuery: false,
         });
     });
 
@@ -29,10 +33,13 @@ describe('resolveSessionFollowPickerPresentation', () => {
         }, 0)).toEqual({
             statusKey: 'sessionsList.querySomeHomesUnavailableTitle',
             canSelect: false,
+            // Neither state advances the query on its own, so both owe an explicit retry.
+            canRetryQuery: true,
         });
         expect(resolveSessionFollowPickerPresentation({ kind: 'error', retainedRows: false }, 0)).toEqual({
             statusKey: 'sessionsList.queryRefreshFailedTitle',
             canSelect: false,
+            canRetryQuery: true,
         });
     });
 

@@ -13,9 +13,15 @@ import type {
   PluginPendingChangeEntry,
   PreparedDaemonPluginChange,
   PreparedDaemonPluginChangeCandidate,
-  PreparedDaemonPluginSourceRootApproval,
+  PreparedPluginDevelopmentCandidate,
+  PreparedDaemonPluginProjectTrustApproval,
 } from './changeContract';
+import { PluginRegistryProfileRequiredError } from './changeContract';
 import { projectPluginFailureText } from '@/plugins/runtime/lifecycle/utils';
+import type {
+  DaemonPluginDevelopmentControlRequest,
+  DaemonPluginDevelopmentControlResult,
+} from './developmentRoots';
 
 type PendingPluginChange = {
   readonly id: string;
@@ -31,20 +37,26 @@ type TerminalPluginChange = Readonly<{
   expiresAtMs: number;
 }>;
 
-function isSourceRootApproval(
+function isProjectTrustApproval(
   prepared: PreparedDaemonPluginChange,
-): prepared is PreparedDaemonPluginSourceRootApproval {
-  return 'kind' in prepared && prepared.kind === 'sourceRootApprovalRequired';
+): prepared is PreparedDaemonPluginProjectTrustApproval {
+  return 'kind' in prepared && prepared.kind === 'projectTrustApprovalRequired';
+}
+
+function isDevelopmentCandidate(
+  prepared: PreparedDaemonPluginChange,
+): prepared is PreparedPluginDevelopmentCandidate {
+  return 'kind' in prepared && prepared.kind === 'preparedDevelopmentCandidate';
 }
 
 function preparedChangeKey(prepared: PreparedDaemonPluginChange): string {
-  return isSourceRootApproval(prepared)
+  return isProjectTrustApproval(prepared)
     ? `source:${prepared.pendingKey}`
     : `plugin:${prepared.pluginId}`;
 }
 
 function preparedChangeLabel(prepared: PreparedDaemonPluginChange): string {
-  return isSourceRootApproval(prepared) ? prepared.review.source.locator : prepared.pluginId;
+  return isProjectTrustApproval(prepared) ? prepared.review.source.locator : prepared.pluginId;
 }
 
 type PluginChangeApplyOrBusyResult =
@@ -57,6 +69,10 @@ export type DaemonPluginChangeService = Readonly<{
   statusPluginChange: (request: PluginChangeStatusRequest) => Promise<PluginChangeStatusResult>;
   /** Every change still awaiting or executing a present-user decision. */
   listPendingPluginChanges: () => Promise<PluginChangeListResult>;
+  /** Thin daemon-owned development-root registration/reload/status seam. */
+  controlPluginDevelopment?: (
+    request: DaemonPluginDevelopmentControlRequest,
+  ) => Promise<DaemonPluginDevelopmentControlResult>;
   shutdown: () => Promise<void>;
 }>;
 
@@ -98,6 +114,10 @@ export function createDaemonPluginChangeService(params: Readonly<{
   nowMs?: () => number;
   cleanupTimeoutMs?: number;
   onCleanupFailure?: (pluginId: string, error: unknown) => void;
+  applyDevelopment?: (
+    prepared: PreparedPluginDevelopmentCandidate,
+    decision?: Parameters<PreparedDaemonPluginChangeCandidate['apply']>[0],
+  ) => Promise<PluginChangeApplyResult>;
 }>): DaemonPluginChangeOwner {
   const pendingById = new Map<string, PendingPluginChange>();
   const pendingIdByPluginId = new Map<string, string>();
@@ -205,6 +225,18 @@ export function createDaemonPluginChangeService(params: Readonly<{
     });
   }
 
+  async function cleanupAfterApply(
+    prepared: PreparedDaemonPluginChange,
+    result: PluginChangeApplyOrBusyResult,
+  ): Promise<PluginChangeApplyOrBusyResult> {
+    if (isDevelopmentCandidate(prepared) && result.kind === 'committed') {
+      // Successful publication transfers the evaluated graph into the active
+      // runtime registry. Candidate cleanup is rejection-only for this arm.
+      return result;
+    }
+    return appendCleanupPendingSurface(result, await cleanupPrepared(prepared));
+  }
+
   function releasePendingChangeKey(pending: PendingPluginChange): void {
     if (pendingIdByPluginId.get(pending.key) === pending.id) {
       pendingIdByPluginId.delete(pending.key);
@@ -256,9 +288,10 @@ export function createDaemonPluginChangeService(params: Readonly<{
     if (pending.state === 'applying') {
       return { kind: 'applying', pendingChangeId: pending.id };
     }
-    if (isSourceRootApproval(pending.prepared)) {
+    if (isProjectTrustApproval(pending.prepared)) {
       return {
-        kind: 'sourceRootReviewRequired',
+        kind: 'reviewRequired',
+        reviewKind: 'projectTrust',
         pendingChangeId: pending.id,
         review: pending.prepared.review,
       };
@@ -266,7 +299,11 @@ export function createDaemonPluginChangeService(params: Readonly<{
     if (pending.prepared.review) {
       return {
         kind: 'reviewRequired',
+        reviewKind: 'installation',
         pendingChangeId: pending.id,
+        reason: pending.prepared.reviewReason ?? 'firstInstall',
+        currentVersion: pending.prepared.currentVersion ?? null,
+        authorityExpansion: [...(pending.prepared.authorityExpansion ?? [])],
         review: pending.prepared.review,
       };
     }
@@ -289,7 +326,7 @@ export function createDaemonPluginChangeService(params: Readonly<{
   }
 
   async function tryApply(
-    prepared: PreparedDaemonPluginChangeCandidate,
+    prepared: PreparedDaemonPluginChangeCandidate | PreparedPluginDevelopmentCandidate,
     decision?: Extract<PluginChangeDecision, { decision: 'installAndTrust' }>,
   ): Promise<PluginChangeApplyOrBusyResult> {
     const lease = tryAcquireApplyExclusion(prepared.pluginId);
@@ -297,6 +334,14 @@ export function createDaemonPluginChangeService(params: Readonly<{
       return { kind: 'busy', pluginId: prepared.pluginId };
     }
     try {
+      if (isDevelopmentCandidate(prepared)) {
+        if (!params.applyDevelopment) {
+          return { kind: 'failed', code: 'plugin_development_runtime_unavailable' };
+        }
+        return await params.applyDevelopment(prepared, decision ? {
+          optionalSelections: decision.optionalSelections ?? [],
+        } : undefined);
+      }
       return await prepared.apply(decision ? {
         optionalSelections: decision.optionalSelections ?? [],
       } : undefined, { onApplied: lease.release });
@@ -330,6 +375,9 @@ export function createDaemonPluginChangeService(params: Readonly<{
         try {
           prepared = await params.prepare(request);
         } catch (error) {
+          if (error instanceof PluginRegistryProfileRequiredError) {
+            return { kind: 'registryProfileRequired', ...error.requirement };
+          }
           return failedPluginChange(
             error instanceof DaemonPluginChangePreparationError
               ? error.code
@@ -345,14 +393,14 @@ export function createDaemonPluginChangeService(params: Readonly<{
         const key = preparedChangeKey(prepared);
         if (
           pendingIdByPluginId.has(key)
-          || (!isSourceRootApproval(prepared) && applyingByPluginId.has(prepared.pluginId))
+          || (!isProjectTrustApproval(prepared) && applyingByPluginId.has(prepared.pluginId))
         ) {
           await cleanupPrepared(prepared);
-          return isSourceRootApproval(prepared)
+          return isProjectTrustApproval(prepared)
             ? { kind: 'unavailable', code: 'plugin_source_root_busy' }
             : { kind: 'busy', pluginId: prepared.pluginId };
         }
-        if (isSourceRootApproval(prepared)) {
+        if (isProjectTrustApproval(prepared)) {
           const id = createPendingChangeId();
           const pending: PendingPluginChange = {
             id,
@@ -364,14 +412,15 @@ export function createDaemonPluginChangeService(params: Readonly<{
           };
           retainPending(pending);
           return {
-            kind: 'sourceRootReviewRequired',
+            kind: 'reviewRequired',
+            reviewKind: 'projectTrust',
             pendingChangeId: id,
             review: prepared.review,
           };
         }
         if (prepared.requiresReview === false) {
           const result = await tryApply(prepared);
-          return appendCleanupPendingSurface(result, await cleanupPrepared(prepared));
+          return await cleanupAfterApply(prepared, result);
         }
 
         if (!prepared.review) {
@@ -391,7 +440,11 @@ export function createDaemonPluginChangeService(params: Readonly<{
         retainPending(pending);
         return {
           kind: 'reviewRequired',
+          reviewKind: 'installation',
           pendingChangeId: id,
+          reason: prepared.reviewReason ?? 'firstInstall',
+          currentVersion: prepared.currentVersion ?? null,
+          authorityExpansion: [...(prepared.authorityExpansion ?? [])],
           review: prepared.review,
         };
       } finally {
@@ -414,16 +467,13 @@ export function createDaemonPluginChangeService(params: Readonly<{
         return result;
       }
 
-      if (decision.decision === 'trustSourceRoot') {
-        if (!isSourceRootApproval(pending.prepared)) {
-          return { kind: 'failed', code: 'plugin_source_review_not_pending' };
-        }
+      if (isProjectTrustApproval(pending.prepared)) {
         const sourceApproval = pending.prepared;
         pending.state = 'applying';
         pending.applyPromise = (async () => {
-          let prepared: PreparedDaemonPluginChangeCandidate;
+          let prepared: PreparedDaemonPluginChangeCandidate | PreparedPluginDevelopmentCandidate;
           try {
-            prepared = await sourceApproval.continueAfterSourceRootApproval();
+            prepared = await sourceApproval.continueAfterProjectTrustApproval();
           } catch (error) {
             const result = failedPluginChange(
               error instanceof DaemonPluginChangePreparationError
@@ -462,7 +512,7 @@ export function createDaemonPluginChangeService(params: Readonly<{
             releasePendingChangeKey(pending);
             pending.applyPromise = (async () => {
               const result = await tryApply(prepared);
-              const settled = appendCleanupPendingSurface(result, await cleanupPrepared(prepared));
+              const settled = await cleanupAfterApply(prepared, result);
               removePending(pending);
               recordTerminal(pending, settled);
               return settled;
@@ -482,23 +532,24 @@ export function createDaemonPluginChangeService(params: Readonly<{
           pending.applyPromise = null;
           return {
             kind: 'reviewRequired' as const,
+            reviewKind: 'installation' as const,
             pendingChangeId: pending.id,
+            reason: prepared.reviewReason ?? 'firstInstall',
+            currentVersion: prepared.currentVersion ?? null,
+            authorityExpansion: [...(prepared.authorityExpansion ?? [])],
             review: prepared.review,
           };
         })();
         return await pending.applyPromise;
       }
 
-      if (isSourceRootApproval(pending.prepared)) {
-        return { kind: 'failed', code: 'plugin_source_trust_required' };
-      }
       const prepared = pending.prepared;
 
       pending.state = 'applying';
       pending.applyPromise = (async () => {
         const result = await tryApply(prepared, decision);
         releasePendingChangeKey(pending);
-        const settled = appendCleanupPendingSurface(result, await cleanupPrepared(prepared));
+        const settled = await cleanupAfterApply(prepared, result);
         removePending(pending);
         recordTerminal(pending, settled);
         return settled;

@@ -67,12 +67,18 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
         : exposure === 'some'
             ? t('teams.credentials.limits.directNote')
             : null;
+    // Plan 10.07 §12.5: when some allowed route cannot observe tokens, the
+    // projection offers request limits instead and says which routes.
+    const routeNote = usageCapabilities?.inferenceRequests === 'available'
+        && usageCapabilities.totalTokens !== 'available'
+        ? t('teams.credentials.limits.requestLimitsOnlyForPersonalUse')
+        : null;
 
     return (
         <>
             <ItemGroup
                 title={t('teams.credentials.limits.title')}
-                footer={[t('teams.credentials.limits.overshoot'), deliveryNote]
+                footer={[t('teams.credentials.limits.overshoot'), deliveryNote, routeNote]
                     .filter((part): part is string => part !== null)
                     .join('\n')}
             >

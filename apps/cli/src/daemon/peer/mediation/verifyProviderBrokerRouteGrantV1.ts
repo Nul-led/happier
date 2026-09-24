@@ -7,7 +7,25 @@ import {
 import { findRouteGrantTrustRoot, verifyRouteGrantSignature, type DirectRouteGrantTrustRoot } from './verifyRouteGrantSignature';
 
 export type ProviderBrokerRouteGrantExpectedBindingV1 = Pick<ProviderBrokerRouteGrantPayloadV1,
-    'teamId' | 'resourceId' | 'expectedResourceRevision' | 'modelId' | 'sourceRevision' | 'initiator' | 'target' | 'consumer' | 'application'>;
+    'teamId' | 'resourceId' | 'sourceRevision' | 'initiator' | 'target' | 'consumer' | 'application'>;
+
+/** The signed identity of one broker operation, as every carrier and handler
+ * binds it. The model is deliberately not part of it: it is a current request
+ * fact (`04-private-iroh-broker-transport.md:270`). */
+export function providerBrokerRouteGrantExpectedBindingV1(
+    authority: SignedProviderBrokerRouteGrantV1,
+): ProviderBrokerRouteGrantExpectedBindingV1 {
+    const { payload } = authority;
+    return {
+        teamId: payload.teamId,
+        resourceId: payload.resourceId,
+        sourceRevision: payload.sourceRevision,
+        initiator: payload.initiator,
+        target: payload.target,
+        consumer: payload.consumer,
+        application: payload.application,
+    };
+}
 export type ProviderBrokerRouteGrantVerificationResultV1 =
     | Readonly<{ valid: true; authority: SignedProviderBrokerRouteGrantV1 }>
     | Readonly<{ valid: false; reasonCode: 'grant_invalid' | 'grant_unknown_key' | 'grant_bad_signature' | 'grant_expired' | 'grant_not_yet_valid' | 'grant_binding_mismatch' | 'transport_identity_mismatch' }>;
@@ -49,8 +67,6 @@ export function verifyProviderBrokerRouteGrantV1(input: Readonly<{
     if (
         payload.teamId !== expected.teamId
         || payload.resourceId !== expected.resourceId
-        || payload.expectedResourceRevision !== expected.expectedResourceRevision
-        || payload.modelId !== expected.modelId
         || payload.sourceRevision !== expected.sourceRevision
         || payload.initiator.accountId !== expected.initiator.accountId
         || payload.initiator.machineId !== expected.initiator.machineId

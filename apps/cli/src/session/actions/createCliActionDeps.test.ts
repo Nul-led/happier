@@ -6,16 +6,28 @@ import {
   type ActionExecutorContext,
   type ApprovalRequest,
   ProviderConnectionIdSchema,
+  FeaturesResponseSchema,
   PluginContributionLocalIdSchema,
   PluginIdSchema,
   SessionCreationKeyV1Schema,
   deriveSessionCreationTagV1,
+  computeWorkspaceSyncPolicyDigest,
+  type ActionExecutorDeps,
 } from '@happier-dev/protocol';
+import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
 import { configuration } from '@/configuration';
 import { createAuthenticationHttpStatusError } from '@/api/client/httpStatusError';
-import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { buildProviderSpawnErrorResult } from '@/daemon/spawn/buildProviderSpawnErrorResult';
+import { WorkspaceSyncController } from '@/workspaces/sync/workspaceSyncController';
+import { createWorkspaceRootOwnershipManager } from '@/workspaces/sync/workspaceSyncRootOwnership';
+import { registerMachineWorkspaceSyncRpcHandlers, type MachineWorkspaceSyncRpcService } from '@/api/machine/rpcHandlers.workspaceSync';
+import type { RpcHandler, RpcHandlerContext, RpcHandlerRegistrar } from '@/api/rpc/types';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const {
   createSpawnedSession,
@@ -108,6 +120,436 @@ vi.mock('@/session/transport/http/sessionsHttp', async () => {
     fetchSessionByIdCompat,
     lookupSessionsByTags,
   };
+});
+
+describe('workspace sync read Action transport', () => {
+  it('routes a clean spoke to its current hub for all three reads', async () => {
+    const credentials = { token: 'token', encryption: null };
+    const contentPolicy = {
+      v: 1 as const, selection: 'all_files' as const,
+      extraIgnorePatterns: [], extraIncludePatterns: [],
+      policyDigest: computeWorkspaceSyncPolicyDigest({
+        v: 1, selection: 'all_files', extraIgnorePatterns: [], extraIncludePatterns: [],
+      }),
+    };
+    const relation = (relationshipId: string, betaWorkspaceRefId: string) => ({
+      v: 1 as const, relationshipId, controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-a', betaWorkspaceRefId,
+      mode: 'keep_both_in_sync' as const, contentPolicy,
+      enabled: true, createdAtMs: 1, updatedAtMs: 1,
+    });
+    bootstrapAccountSettingsContext.mockResolvedValue({ settings: {
+      workspaceRefsV1: [
+        { id: 'workspace-a', serverId: 'server-a', machineId: 'machine-a', rootPath: '/a', createdAtMs: 1 },
+        { id: 'workspace-b', serverId: 'server-a', machineId: 'machine-b', rootPath: '/b', createdAtMs: 1 },
+        { id: 'workspace-c', serverId: 'server-a', machineId: 'machine-c', rootPath: '/c', createdAtMs: 1 },
+      ],
+      workspaceSyncRelationshipsV1: [relation('rel-ab', 'workspace-b'), relation('rel-ac', 'workspace-c')],
+    } });
+    const relationshipsResult = {
+      controllerMachineId: 'machine-a',
+      sets: [{ hubWorkspaceRefId: 'workspace-a', controllerMachineId: 'machine-a', relationshipIds: ['rel-ab', 'rel-ac'] }],
+      relationships: [relation('rel-ab', 'workspace-b'), relation('rel-ac', 'workspace-c')].map((definition) => ({ definition, status: null })),
+      remoteRelationships: [], membership: { workspaceRefId: 'workspace-c', found: true }, discoveryAvailable: true,
+    };
+    const conflictPage = { status: 'page' as const, relationshipId: 'rel-ab', conflicts: [], totalCount: 0, nextCursor: null };
+    const inspectResult = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+      endpoints: ['workspace-a', 'workspace-b', 'workspace-c'].map((workspaceRefId) => ({
+        workspaceRefId, outcome: 'observed' as const, observation: { kind: 'missing' as const }, selections: [],
+      })),
+      versions: [{ endpointWorkspaceRefIds: ['workspace-a', 'workspace-b', 'workspace-c'], entry: { kind: 'missing' as const } }],
+      coverage: { complete: true },
+    };
+    callMachineRpc.mockResolvedValueOnce(relationshipsResult).mockResolvedValueOnce(conflictPage).mockResolvedValueOnce(inspectResult);
+    const deps = createCliActionDeps({
+      token: 'token', credentials, serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+      sessionId: 'session-c', mode: 'plain', ctx: null,
+    });
+    const signal = new AbortController().signal;
+    await expect(deps.workspaceSyncRelationshipsList?.({ input: { workspaceRefId: 'workspace-c' }, signal })).resolves.toEqual(relationshipsResult);
+    await expect(deps.workspaceSyncConflictsList?.({ input: { controllerMachineId: 'machine-a', relationshipId: 'rel-ab', limit: 50 }, signal })).resolves.toEqual(conflictPage);
+    await expect(deps.workspaceSyncConflictInspect?.({ input: { workspaceRefId: 'workspace-c', path: 'src/index.ts' }, signal })).resolves.toEqual(inspectResult);
+    expect(callMachineRpc.mock.calls.map(([request]) => [request.machineId, request.method, request.signal])).toEqual([
+      ['machine-a', RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST, signal],
+      ['machine-a', RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST, signal],
+      ['machine-a', RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT, signal],
+    ]);
+    expect(callMachineRpc.mock.calls.map(([request]) => request.request)).toEqual([
+      { workspaceRefId: 'workspace-c' }, { relationshipId: 'rel-ab', limit: 50 }, { workspaceRefId: 'workspace-c', path: 'src/index.ts' },
+    ]);
+
+    // A projected Agent tool follows the same public Action executor and
+    // authenticated Machine route; the direct dependency is not a dead stub.
+    callMachineRpc.mockResolvedValueOnce(inspectResult);
+    const executor = createActionExecutor({
+      ...deps,
+      isActionApprovalRequired: () => false,
+      isApprovalExecutionOriginCurrent: async () => true,
+    } as ActionExecutorDeps);
+    const bridge = createActionToolExecutorBridge({ surface: 'agent', executor });
+    await expect(bridge.executeActionByToolName(
+      'action_execute',
+      { actionId: 'workspace.sync.conflict.inspect', input: { workspaceRefId: 'workspace-c', path: 'src/index.ts' } },
+      'session-c',
+    )).resolves.toEqual({ ok: true, result: inspectResult });
+    expect(callMachineRpc).toHaveBeenLastCalledWith(expect.objectContaining({
+      machineId: 'machine-a', method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT,
+    }));
+    callMachineRpc.mockResolvedValueOnce(conflictPage).mockResolvedValueOnce(relationshipsResult);
+    await expect(createActionToolExecutorBridge({ surface: 'mcp', executor }).executeActionByToolName(
+      'workspace_sync_conflicts_list',
+      { controllerMachineId: 'machine-a', relationshipId: 'rel-ab', limit: 50 },
+      'session-c',
+    )).resolves.toEqual({ ok: true, result: conflictPage });
+    await expect(createActionToolExecutorBridge({ surface: 'cli', executor }).executeActionByToolName(
+      'workspace_sync_relationships_list',
+      { workspaceRefId: 'workspace-c' },
+      'session-c',
+    )).resolves.toEqual({ ok: true, result: relationshipsResult });
+    expect(callMachineRpc.mock.calls.slice(-2).map(([request]) => [request.machineId, request.method])).toEqual([
+      ['machine-a', RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST],
+      ['machine-a', RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST],
+    ]);
+  });
+});
+
+describe('workspace sync resolution Action transport', () => {
+  beforeEach(() => {
+    callMachineRpc.mockReset();
+  });
+
+  it('carries spoke Agent reads and an approved partial resolution through controller RPC', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-agent-action-'));
+    const hubRoot = join(fixture, 'hub');
+    await mkdir(hubRoot);
+    await mkdir(join(hubRoot, 'src'));
+    const policy = {
+      v: 1 as const, selection: 'all_files' as const,
+      extraIgnorePatterns: [], extraIncludePatterns: [],
+    };
+    const contentPolicy = { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) };
+    const relation = (relationshipId: string, betaWorkspaceRefId: string) => ({
+      v: 1 as const, relationshipId, controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-a', betaWorkspaceRefId,
+      mode: 'keep_both_in_sync' as const, contentPolicy,
+      enabled: true, createdAtMs: 1, updatedAtMs: 1,
+    });
+    const definitions = [relation('rel-ab', 'workspace-b'), relation('rel-ac', 'workspace-c')];
+    const refs = [
+      { id: 'workspace-a', serverId: 'server-a', machineId: 'machine-a', rootPath: hubRoot, createdAtMs: 1 },
+      { id: 'workspace-b', serverId: 'server-a', machineId: 'machine-b', rootPath: '/remote/b', createdAtMs: 1 },
+      { id: 'workspace-c', serverId: 'server-a', machineId: 'machine-c', rootPath: '/remote/c', createdAtMs: 1 },
+    ];
+    const status = (relationshipId: string) => ({
+      relationshipId, controllerMachineId: 'machine-a', state: 'watching' as const,
+      alphaPath: hubRoot, betaPath: `/remote/${relationshipId}`,
+      mode: 'keep_both_in_sync' as const,
+      endpointStates: {
+        alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+        beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+      },
+      conflictCount: 1, lastCycleObservedAtMs: 1,
+    });
+    const approvals = new Map<string, Record<string, unknown>>();
+    const applied: string[] = [];
+    const adapter = {
+      discoverCopyOnceRecoveries: vi.fn(async () => []),
+      rehydrate: vi.fn(async () => []),
+      ensure: vi.fn(async (definition: { relationshipId: string }) => status(definition.relationshipId)),
+      copyOnce: vi.fn(async () => status('rel-ab')),
+      get: vi.fn(async (id: string) => status(id)),
+      list: vi.fn(async () => definitions.map((definition) => status(definition.relationshipId))),
+      flush: vi.fn(async (id: string) => status(id)),
+      pause: vi.fn(async (id: string) => ({ ...status(id), state: 'paused' as const })),
+      resume: vi.fn(async (id: string) => status(id)),
+      terminate: vi.fn(async () => undefined),
+      listConflicts: vi.fn(async () => ({
+        status: 'page' as const, relationshipId: 'rel-ab', totalCount: 1, nextCursor: null,
+        conflicts: [{ relationshipId: 'rel-ab', path: 'src/index.ts', alpha: { kind: 'missing' as const }, beta: { kind: 'missing' as const } }],
+      })),
+      diagnoseSelection: vi.fn(async () => ({ status: 'included' as const })),
+    };
+    const controller = new WorkspaceSyncController({
+      adapter,
+      lifecycle: { start: async () => undefined, stop: async () => undefined },
+      localMachineId: 'machine-a', localServerId: 'server-a',
+      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
+      resolveWorkspaceRef: (id) => refs.find((ref) => ref.id === id) ?? null,
+      resolveAllRelationshipDefinitions: async () => definitions,
+      prepareRelationshipTarget: async () => undefined,
+      observeEntryAtTarget: async () => ({ kind: 'missing' as const }),
+      stageConflictResolutionAtTarget: async ({ targetWorkspaceRefId }) => {
+        if (targetWorkspaceRefId === 'workspace-b') {
+          throw Object.assign(new Error('Target changed'), { code: 'conflict_changed' });
+        }
+      },
+      applyStagedConflictResolutionAtTarget: async ({ targetWorkspaceRefId }) => {
+        applied.push(targetWorkspaceRefId);
+        return { status: 'installed' as const };
+      },
+      assertConflictResolutionAuthorized: async (receipt, input) => {
+        const approval = approvals.get(receipt);
+        if (approval?.status !== 'executing' || JSON.stringify(approval.actionArgs) !== JSON.stringify(input)) {
+          throw Object.assign(new Error('Approval is stale'), { code: 'approval_stale' });
+        }
+      },
+    });
+    const handlers = new Map<string, (raw: unknown, context?: RpcHandlerContext) => Promise<unknown>>();
+    const registrar = {
+      registerHandler: <TRequest, TResponse>(method: string, handler: RpcHandler<TRequest, TResponse>) => {
+        handlers.set(method, async (raw, context) => await handler(raw as TRequest, context));
+      },
+    } satisfies RpcHandlerRegistrar;
+    const unsupported = async (): Promise<never> => { throw new Error('Unexpected controller operation'); };
+    const service: MachineWorkspaceSyncRpcService = {
+      controller, prepareBetween: unsupported,
+      relationshipOwner: { setEnabled: unsupported, stop: unsupported, create: unsupported },
+      readFileAtTarget: unsupported, observeEntryAtTarget: unsupported,
+      preflightHandoffTargetReplacement: unsupported,
+      prepareBootstrapAtTarget: unsupported, releaseBootstrapAtTarget: unsupported,
+      inspectRetiredState: async () => ({ status: 'absent' }),
+      assertConflictResolutionAuthorized: async (receipt, input) => {
+        const approval = approvals.get(receipt);
+        if (approval?.status !== 'executing' || JSON.stringify(approval.actionArgs) !== JSON.stringify(input)) {
+          throw Object.assign(new Error('Approval is stale'), { code: 'approval_stale' });
+        }
+      },
+    };
+    registerMachineWorkspaceSyncRpcHandlers({ rpcHandlerManager: registrar, service });
+    callMachineRpc.mockImplementation(async ({ machineId, method, request, signal }: {
+      machineId: string; method: string; request: unknown; signal?: AbortSignal;
+    }) => {
+      expect(machineId).toBe('machine-a');
+      const handler = handlers.get(method);
+      if (!handler) throw new Error(`Controller RPC not registered: ${method}`);
+      return await handler(request, { signal: signal ?? new AbortController().signal });
+    });
+    bootstrapAccountSettingsContext.mockResolvedValue({ settings: {
+      workspaceRefsV1: refs, workspaceSyncRelationshipsV1: definitions,
+    } });
+    try {
+      for (const definition of definitions) await controller.ensure(definition);
+      const { executor } = createCliActionExecutorHarness({
+        token: 'token', credentials: { token: 'token', encryption: null },
+        serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+        sessionId: 'session-c', mode: 'plain', ctx: null,
+      }, {
+        isActionApprovalRequired: () => false,
+        approvalsCreate: async ({ request }) => {
+          approvals.set('approval-controller', request as unknown as Record<string, unknown>);
+          return { artifactId: 'approval-controller' };
+        },
+        approvalsGet: async ({ artifactId }) => approvals.get(artifactId) as never,
+        approvalsUpdate: async ({ artifactId, request }) => {
+          approvals.set(artifactId, request as unknown as Record<string, unknown>);
+          return { ok: true as const };
+        },
+        isApprovalExecutionOriginCurrent: async () => true,
+      });
+      const agent = createActionToolExecutorBridge({ surface: 'agent', executor });
+      await expect(agent.executeActionByToolName('action_execute', {
+        actionId: 'workspace.sync.relationships.list', input: { workspaceRefId: 'workspace-c' },
+      }, 'session-c')).resolves.toMatchObject({ ok: true, result: { controllerMachineId: 'machine-a', membership: { found: true } } });
+      await expect(agent.executeActionByToolName('action_execute', {
+        actionId: 'workspace.sync.conflicts.list', input: { relationshipId: 'rel-ab', controllerMachineId: 'machine-a', limit: 50 },
+      }, 'session-c')).resolves.toMatchObject({ ok: true, result: { status: 'page', relationshipId: 'rel-ab' } });
+      const inspection = await agent.executeActionByToolName('action_execute', {
+        actionId: 'workspace.sync.conflict.inspect', input: { workspaceRefId: 'workspace-c', path: 'src/index.ts' },
+      }, 'session-c');
+      expect(inspection).toMatchObject({ ok: true, result: { controllerMachineId: 'machine-a', coverage: { complete: true } } });
+      const input = {
+        controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+        source: { workspaceRefId: 'workspace-c', expected: { kind: 'missing' as const } },
+        targets: [
+          { workspaceRefId: 'workspace-a', expected: { kind: 'missing' as const } },
+          { workspaceRefId: 'workspace-b', expected: { kind: 'missing' as const } },
+        ],
+        relationshipIds: ['rel-ab', 'rel-ac'], strategy: 'use_source' as const,
+      };
+      await expect(agent.executeActionByToolName('action_execute', {
+        actionId: 'workspace.sync.conflict.resolve', input,
+      }, 'session-c', { actionRequestId: 'agent-controller-request' })).resolves.toMatchObject({
+        ok: true, result: { kind: 'approval_request_created', artifactId: 'approval-controller' },
+      });
+      expect(approvals.get('approval-controller')).toMatchObject({
+        status: 'open',
+        actionArgs: input,
+        executionOriginV1: {
+          surface: 'agent', authority: 'account_automation', serverId: 'server-a',
+          sessionId: 'session-c', requestId: 'agent-controller-request',
+        },
+      });
+      expect(applied).toEqual([]);
+      await expect(agent.executeActionByToolName('action_execute', {
+        actionId: 'approval.request.decide', input: { artifactId: 'approval-controller', decision: 'approve' },
+      }, 'session-c')).resolves.toMatchObject({ ok: false });
+      expect(applied).toEqual([]);
+      await expect(executor.execute('approval.request.decide', {
+        artifactId: 'approval-controller', decision: 'approve',
+      }, { surface: 'ui', authority: 'present_user', serverId: 'server-a' })).resolves.toMatchObject({
+        ok: true, result: { status: 'executed', execution: { ok: true, result: { endpoints: [
+          { workspaceRefId: 'workspace-a', status: 'applied' },
+          { workspaceRefId: 'workspace-b', status: 'changed' },
+        ] } } },
+      });
+      expect(applied).toEqual(['workspace-a']);
+      await executor.execute('approval.request.decide', {
+        artifactId: 'approval-controller', decision: 'approve',
+      }, { surface: 'ui', authority: 'present_user', serverId: 'server-a' });
+      expect(applied).toEqual(['workspace-a']);
+      expect(callMachineRpc.mock.calls.map(([request]) => request.method)).toEqual([
+        RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST,
+        RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST,
+        RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT,
+        RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
+      ]);
+    } finally {
+      await controller.shutdown();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('routes an approved spoke request to its exact controller with the artifact receipt', async () => {
+    const result = { endpoints: [{ workspaceRefId: 'workspace-b', status: 'applied' as const }] };
+    callMachineRpc.mockResolvedValueOnce(result);
+    const deps = createCliActionDeps({
+      token: 'token', credentials: { token: 'token', encryption: null },
+      serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+      sessionId: 'session-c', mode: 'plain', ctx: null,
+    });
+    const input = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+      source: { workspaceRefId: 'workspace-c', expected: { kind: 'missing' as const } },
+      targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'missing' as const } }],
+      relationshipIds: ['rel-ab', 'rel-ac'], strategy: 'use_source' as const,
+    };
+    const signal = new AbortController().signal;
+    await expect(deps.workspaceSyncConflictResolve?.({ actionReceiptId: 'approval-1', input, signal }))
+      .resolves.toEqual(result);
+    expect(callMachineRpc).toHaveBeenLastCalledWith(expect.objectContaining({
+      machineId: 'machine-a', method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
+      request: { actionReceiptId: 'approval-1', actionInput: input }, signal,
+    }));
+  });
+
+  it('returns an operation-scoped update requirement when the controller lacks resolve', async () => {
+    const missingMethod = createRpcCallError({
+      error: 'Controller method unavailable', errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
+    });
+    callMachineRpc.mockRejectedValueOnce(missingMethod);
+    const deps = createCliActionDeps({
+      token: 'token', credentials: { token: 'token', encryption: null },
+      serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+      sessionId: 'session-c', mode: 'plain', ctx: null,
+    });
+    await expect(deps.workspaceSyncConflictResolve?.({
+      actionReceiptId: 'approval-1',
+      input: {
+        controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+        source: { workspaceRefId: 'workspace-c', expected: { kind: 'missing' } },
+        targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'missing' } }],
+        relationshipIds: ['rel-ab', 'rel-ac'], strategy: 'use_source',
+      },
+    })).rejects.toMatchObject({ code: 'workspace_sync_update_required' });
+
+    const approvals = new Map<string, Record<string, unknown>>();
+    const { executor } = createCliActionExecutorHarness({
+      token: 'token', credentials: { token: 'token', encryption: null },
+      serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+      sessionId: 'session-c', mode: 'plain', ctx: null,
+    }, {
+      isActionApprovalRequired: () => false,
+      approvalsCreate: async ({ request }) => {
+        approvals.set('approval-old-controller', request as unknown as Record<string, unknown>);
+        return { artifactId: 'approval-old-controller' };
+      },
+      approvalsGet: async ({ artifactId }) => approvals.get(artifactId) as never,
+      approvalsUpdate: async ({ artifactId, request }) => {
+        approvals.set(artifactId, request as unknown as Record<string, unknown>);
+        return { ok: true as const };
+      },
+      isApprovalExecutionOriginCurrent: async () => true,
+    });
+    const input = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+      source: { workspaceRefId: 'workspace-c', expected: { kind: 'missing' as const } },
+      targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'missing' as const } }],
+      relationshipIds: ['rel-ab', 'rel-ac'], strategy: 'use_source' as const,
+    };
+    await expect(executor.execute('workspace.sync.conflict.resolve', input, {
+      surface: 'agent', authority: 'account_automation', serverId: 'server-a',
+      defaultSessionId: 'session-c', actionRequestId: 'agent-old-controller',
+    })).resolves.toMatchObject({ ok: true, result: { artifactId: 'approval-old-controller' } });
+    callMachineRpc.mockRejectedValueOnce(missingMethod);
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'approval-old-controller', decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server-a' })).resolves.toMatchObject({
+      ok: true,
+      result: { status: 'failed', execution: { ok: false, errorCode: 'workspace_sync_update_required' } },
+    });
+  });
+
+  it('keeps a spoke Agent request deferred until a human approves and returns the controller partial result once', async () => {
+    const input = {
+      controllerMachineId: 'machine-a', hubWorkspaceRefId: 'workspace-a', path: 'src/index.ts',
+      source: { workspaceRefId: 'workspace-c', expected: { kind: 'missing' as const } },
+      targets: [
+        { workspaceRefId: 'workspace-a', expected: { kind: 'missing' as const } },
+        { workspaceRefId: 'workspace-b', expected: { kind: 'missing' as const } },
+      ],
+      relationshipIds: ['rel-ab', 'rel-ac'], strategy: 'use_source' as const,
+    };
+    const partial = { endpoints: [
+      { workspaceRefId: 'workspace-a', status: 'applied' as const },
+      { workspaceRefId: 'workspace-b', status: 'changed' as const },
+    ] };
+    const approvals = new Map<string, Record<string, unknown>>();
+    callMachineRpc.mockResolvedValueOnce(partial);
+    const { executor } = createCliActionExecutorHarness({
+      token: 'token', credentials: { token: 'token', encryption: null },
+      serverId: 'server-a', serverHttpBaseUrl: 'https://server-a.example.test',
+      sessionId: 'session-c', mode: 'plain', ctx: null,
+    }, {
+      isActionApprovalRequired: () => false,
+      approvalsCreate: async ({ request }) => {
+        approvals.set('approval-spoke', request as unknown as Record<string, unknown>);
+        return { artifactId: 'approval-spoke' };
+      },
+      approvalsGet: async ({ artifactId }) => approvals.get(artifactId) as never,
+      approvalsUpdate: async ({ artifactId, request }) => {
+        approvals.set(artifactId, request as unknown as Record<string, unknown>);
+        return { ok: true as const };
+      },
+      isApprovalExecutionOriginCurrent: async () => true,
+    });
+    const agent = createActionToolExecutorBridge({ surface: 'agent', executor });
+    const pending = await agent.executeActionByToolName('action_execute', {
+      actionId: 'workspace.sync.conflict.resolve', input,
+    }, 'session-c', { actionRequestId: 'agent-request-1' });
+    expect(pending).toMatchObject({
+      ok: true, result: { kind: 'approval_request_created', artifactId: 'approval-spoke' },
+    });
+    expect(callMachineRpc).not.toHaveBeenCalled();
+    await expect(agent.executeActionByToolName('action_execute', {
+      actionId: 'approval.request.decide', input: { artifactId: 'approval-spoke', decision: 'approve' },
+    }, 'session-c')).resolves.toMatchObject({ ok: false });
+    expect(callMachineRpc).not.toHaveBeenCalled();
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'approval-spoke', decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server-a' })).resolves.toMatchObject({
+      ok: true, result: { status: 'executed', execution: { ok: true, result: partial } },
+    });
+    expect(callMachineRpc).toHaveBeenCalledTimes(1);
+    expect(callMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      machineId: 'machine-a', method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
+      request: { actionReceiptId: 'approval-spoke', actionInput: input },
+    }));
+    await executor.execute('approval.request.decide', {
+      artifactId: 'approval-spoke', decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server-a' });
+    expect(callMachineRpc).toHaveBeenCalledTimes(1);
+  });
 });
 
 // HTTP authentication is outside the real Session creation/settlement path.
@@ -229,6 +671,7 @@ import {
   createCliActionDeps,
   projectSessionInitialAccessEnvelopeHostErrorResult,
 } from './createCliActionDeps';
+import { createCliActionExecutorHarness } from './createCliActionExecutorHarness';
 import { SessionInitialAccessEnvelopeHostError } from '@/api/session/sessionCreationInitialAccess';
 import {
   registerCurrentSessionUiBinding,
@@ -2008,10 +2451,9 @@ describe('createCliActionDeps hook dispatch', () => {
       artifactId: 'approval-remote-dev-1',
       decision: 'approve',
     }, { surface: 'cli', authority: 'present_user' });
-    expect(approvalDecision).toEqual({
-      ok: false,
-      errorCode: 'approval_stale',
-      error: 'approval_stale',
+    expect(approvalDecision).toMatchObject({
+      ok: true,
+      result: { status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } },
     });
 
     expect(approvalsGet).toHaveBeenCalledWith({
@@ -2020,8 +2462,7 @@ describe('createCliActionDeps hook dispatch', () => {
     });
     expect(callMachineRpc).not.toHaveBeenCalled();
     expect(createSpawnedSession).not.toHaveBeenCalled();
-    expect(approvalsUpdate).not.toHaveBeenCalled();
-    expect(persistedApproval).toMatchObject({ status: 'open' });
+    expect(persistedApproval).toMatchObject({ status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } });
   });
 
   it('materializes a checkout on the exact target before correspondence and spawn', async () => {
@@ -2804,6 +3245,106 @@ describe('createCliActionDeps hook dispatch', () => {
         text: 'Hello world',
         source: 'user',
       },
+    }));
+  });
+
+  it('sends with the exact Home feature snapshot the Session resolution is already bound to', async () => {
+    sendSessionMessage.mockResolvedValue({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'local-1',
+      waited: false,
+    });
+    const serverFeaturesSnapshot = {
+      status: 'ready' as const,
+      provenance: 'authenticated' as const,
+      features: FeaturesResponseSchema.parse({
+        features: {
+          sessions: { enabled: true },
+        },
+        capabilities: {},
+      }),
+    };
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: {
+        token: 'token',
+        encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3, 4]) },
+      },
+      sessionId: 'sess-1',
+      mode: 'plain',
+      ctx: null,
+      resolveServerFeaturesSnapshot: async () => serverFeaturesSnapshot,
+    });
+
+    await expect(deps.sessionSendMessage({
+      context: actionContext,
+      sessionId: 'sess-1',
+      message: 'Hello collective',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+    })).resolves.toEqual({ status: 'accepted', localId: 'local-1' });
+
+    expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
+      idOrPrefix: 'sess-1',
+      serverFeaturesSnapshot,
+    }));
+  });
+
+  it('keeps a native --model default a reset instead of a structured per-message selection', async () => {
+    sendSessionMessage.mockResolvedValue({
+      ok: true,
+      sessionId: 'sess-1',
+      localId: 'local-1',
+      waited: false,
+    });
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: {
+        token: 'token',
+        encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3, 4]) },
+      },
+      sessionId: 'sess-1',
+      mode: 'plain',
+      ctx: null,
+    });
+
+    // `--model default` binds to the canonical `modelOverride: null` reset.
+    await expect(deps.sessionSendMessage({
+      context: actionContext,
+      sessionId: 'sess-1',
+      message: 'Reset the model',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      modelOverride: null,
+    })).resolves.toEqual({ status: 'accepted', localId: 'local-1' });
+    expect(sendSessionMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      modelOverride: null,
+    }));
+    expect(sendSessionMessage.mock.lastCall?.[0]).not.toHaveProperty('modelSelectionInput');
+
+    // A concrete native model stays a structured per-message selection.
+    await expect(deps.sessionSendMessage({
+      context: actionContext,
+      sessionId: 'sess-1',
+      message: 'Use sonnet',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      modelOverride: 'claude-sonnet-4',
+    })).resolves.toEqual({ status: 'accepted', localId: 'local-1' });
+    expect(sendSessionMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      modelSelectionInput: { modelId: 'claude-sonnet-4' },
+    }));
+    expect(sendSessionMessage.mock.lastCall?.[0]).not.toHaveProperty('modelOverride');
+
+    // A provider may publish a literal model named `default`; it is a real model.
+    await expect(deps.sessionSendMessage({
+      context: actionContext,
+      sessionId: 'sess-1',
+      message: 'Use the provider default model',
+      requestedAction: { v: 1, kind: 'steer_if_active' },
+      modelOverride: 'default',
+      providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
+    })).resolves.toEqual({ status: 'accepted', localId: 'local-1' });
+    expect(sendSessionMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      modelSelectionInput: { providerConnectionId: 'pc_work', modelId: 'default' },
     }));
   });
 

@@ -44,36 +44,59 @@ function encodeCommunityCursor(identity: string, from: number, offset: number): 
   return `community:${identity}:from:${from}:offset:${offset}`;
 }
 
+type MarketplaceArtifactAccessProfile = Readonly<{
+  profileId: string;
+  displayName?: string;
+  origin: string;
+  scopes?: readonly string[];
+  useAsDefault?: boolean;
+  availability: 'unknown' | 'available' | 'sign_in_required' | 'offline';
+  updatedAtMs?: number;
+}>;
+
+type MarketplaceArtifactAccess = MarketplaceIndexQueryResultV1['items'][number]['artifactAccess'];
+
 export function projectMarketplaceArtifactAccess(
   item: MarketplaceIndexQueryResultV1['items'][number],
-  profiles: readonly {
-    profileId: string;
-    displayName?: string;
-    origin: string;
-    scopes?: readonly string[];
-    useAsDefault?: boolean;
-    availability: 'unknown' | 'available' | 'sign_in_required' | 'offline';
-    updatedAtMs?: number;
-  }[],
+  profiles: readonly MarketplaceArtifactAccessProfile[],
   source?: Readonly<{ registryProfileId?: string | null }>,
 ): MarketplaceIndexQueryResultV1['items'][number] {
-  const catalogProfileId = item.distribution.registryProfileId;
+  const artifactAccess = resolveMarketplaceArtifactAccess(item.distribution, profiles, source);
+  return artifactAccess ? { ...item, artifactAccess } : item;
+}
+
+/**
+ * Whether this Home can reach one listed npm artifact through the persisted
+ * source binding, decided from the distribution facts alone. `null` means the
+ * listing's own public access stands. The exact-install preparer consumes the
+ * same decision before any registry access, so a listing that needs a registry
+ * profile is asked for one at preparation rather than refused after review.
+ */
+export function resolveMarketplaceArtifactAccess(
+  distribution: Pick<
+    MarketplaceIndexQueryResultV1['items'][number]['distribution'],
+    'packageName' | 'registryOrigin' | 'registryProfileId'
+  >,
+  profiles: readonly MarketplaceArtifactAccessProfile[],
+  source?: Readonly<{ registryProfileId?: string | null }>,
+): MarketplaceArtifactAccess | null {
+  const catalogProfileId = distribution.registryProfileId;
   const profileId = source?.registryProfileId ?? null;
   if (!profileId) {
-    if (!catalogProfileId && item.distribution.registryOrigin === PUBLIC_NPM_REGISTRY_ORIGIN) return item;
+    if (!catalogProfileId && distribution.registryOrigin === PUBLIC_NPM_REGISTRY_ORIGIN) return null;
     if (!catalogProfileId) {
-      return { ...item, artifactAccess: { state: 'unverified-profile', registryProfileId: null } };
+      return { state: 'unverified-profile', registryProfileId: null };
     }
-    return { ...item, artifactAccess: { state: 'unverified-profile', registryProfileId: catalogProfileId } };
+    return { state: 'unverified-profile', registryProfileId: catalogProfileId };
   }
   // Catalog documents are remote input. Only the persisted host binding can
   // select a profile; the catalog-supplied id remains non-authoritative.
   const profile = profiles.find((entry) => entry.profileId === profileId) ?? null;
-  if (!profile) return { ...item, artifactAccess: { state: 'source-removed', registryProfileId: profileId } };
+  if (!profile) return { state: 'source-removed', registryProfileId: profileId };
   try {
     normalizeNpmArtifactRequest({
-      packageName: item.distribution.packageName,
-      curatedExactOrigin: item.distribution.registryOrigin,
+      packageName: distribution.packageName,
+      curatedExactOrigin: distribution.registryOrigin,
       explicitProfileId: profileId,
       profiles: profiles.map((entry) => ({
         version: 1,
@@ -87,10 +110,10 @@ export function projectMarketplaceArtifactAccess(
       })),
     });
   } catch {
-    return { ...item, artifactAccess: { state: 'unverified-profile', registryProfileId: profileId } };
+    return { state: 'unverified-profile', registryProfileId: profileId };
   }
   if (profile.availability === 'offline') {
-    return { ...item, artifactAccess: { state: 'offline', registryProfileId: profileId } };
+    return { state: 'offline', registryProfileId: profileId };
   }
   // Availability is the profile owner's own answer, and it already folds
   // credential state in: a profile referencing a credential it can no longer
@@ -98,9 +121,9 @@ export function projectMarketplaceArtifactAccess(
   // references no credential — an anonymous internal registry — stays
   // installable, exactly as the artifact-request path treats it.
   if (profile.availability !== 'available') {
-    return { ...item, artifactAccess: { state: 'auth-unavailable', registryProfileId: profileId } };
+    return { state: 'auth-unavailable', registryProfileId: profileId };
   }
-  return { ...item, artifactAccess: { state: 'available', registryProfileId: profileId } };
+  return { state: 'available', registryProfileId: profileId };
 }
 
 export type MarketplaceIndexSourceConfig = Readonly<{

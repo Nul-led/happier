@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import * as oidcClient from "openid-client";
 
 import { createOutboundIdentityFetch, type OutboundIdentityFetch } from "@/app/net/outboundIdentityFetch";
@@ -8,12 +10,15 @@ import {
     type OutboundIdentityNetworkPolicy,
 } from "@/app/net/outboundIdentityNetworkPolicy";
 import type { OidcAuthProviderInstanceConfig } from "@/app/auth/providers/oidc/oidcProviderConfig";
-import { isLoopbackHostname } from "@/utils/network/urlSafety";
+import { isLoopbackHostname } from "@happier-dev/protocol";
 
 type CachedDiscovery = Readonly<{
+    instanceId: string;
     runtimeFingerprint: string;
     issuer: string;
     clientId: string;
+    /** Digest of the exact credentials this configuration authenticates with; never the secret. */
+    credentialDigest: string;
     config: oidcClient.Configuration;
     outbound: OutboundIdentityFetch;
     expiresAtMs: number;
@@ -24,7 +29,22 @@ const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_HEADER_BYTES = 32 * 1024;
 
+/**
+ * Keyed by provider instance **and** runtime fingerprint, because one provider instance is
+ * reachable as a Home method and through each Team connection at the same time. Keying by
+ * instance alone made each resolution evict the other and destroy its in-flight transport.
+ */
 const discoveryCache = new Map<string, CachedDiscovery>();
+
+function discoveryCacheKey(instanceId: string, runtimeFingerprint: string): string {
+    return `${instanceId}\u0000${runtimeFingerprint}`;
+}
+
+function credentialDigest(instance: OidcAuthProviderInstanceConfig): string {
+    return createHash("sha256")
+        .update(`${instance.issuer}\u0000${instance.clientId}\u0000${instance.clientSecret}`)
+        .digest("hex");
+}
 
 /**
  * Outbound policy for a deployment-configured (env/file) OIDC provider.
@@ -47,11 +67,27 @@ export function deploymentConfiguredOidcNetworkPolicy(
     });
 }
 
-function evictDiscovery(providerId: string): void {
-    const cached = discoveryCache.get(providerId);
+function evictDiscovery(key: string): void {
+    const cached = discoveryCache.get(key);
     if (!cached) return;
-    discoveryCache.delete(providerId);
+    discoveryCache.delete(key);
     void cached.outbound.close();
+}
+
+/**
+ * Reclaims the runtimes of one instance that no lookup will ever return again, because the
+ * compound key means a superseded runtime is never touched: rotating the client secret, issuer
+ * or client id makes every other credential identity unable to authenticate, and a connection
+ * revision, security revision or network-policy change mints a new fingerprint and abandons the
+ * old one. Both leave an open undici dispatcher, so they are closed here rather than retained
+ * for the process lifetime. Expiry is the same TTL the hit path already treats as unusable.
+ */
+function reclaimUnreachableDiscovery(instanceId: string, currentCredentialDigest: string, now: number): void {
+    for (const [key, cached] of [...discoveryCache]) {
+        if (cached.instanceId !== instanceId) continue;
+        if (cached.credentialDigest === currentCredentialDigest && cached.expiresAtMs > now) continue;
+        evictDiscovery(key);
+    }
 }
 
 export async function discoverOidcConfiguration(
@@ -59,16 +95,19 @@ export async function discoverOidcConfiguration(
     runtimeFingerprint: string,
     networkPolicy: OutboundIdentityNetworkPolicy = deploymentConfiguredOidcNetworkPolicy(instance),
 ): Promise<oidcClient.Configuration> {
-    const cached = discoveryCache.get(instance.id);
+    const key = discoveryCacheKey(instance.id, runtimeFingerprint);
+    const currentCredentialDigest = credentialDigest(instance);
+    const cached = discoveryCache.get(key);
     const now = Date.now();
-    if (cached?.runtimeFingerprint === runtimeFingerprint) {
+    if (cached) {
         if (cached.issuer !== instance.issuer || cached.clientId !== instance.clientId) {
-            evictDiscovery(instance.id);
+            evictDiscovery(key);
             throw new Error("oidc_runtime_fingerprint_mismatch");
         }
-        if (cached.expiresAtMs > now) return cached.config;
+        if (cached.credentialDigest === currentCredentialDigest && cached.expiresAtMs > now) return cached.config;
+        evictDiscovery(key);
     }
-    evictDiscovery(instance.id);
+    reclaimUnreachableDiscovery(instance.id, currentCredentialDigest, now);
 
     let issuer: URL;
     try {
@@ -114,8 +153,10 @@ export async function discoverOidcConfiguration(
         throw error;
     }
 
-    discoveryCache.set(instance.id, {
-        runtimeFingerprint, issuer: instance.issuer, clientId: instance.clientId,
+    discoveryCache.set(key, {
+        instanceId: instance.id, runtimeFingerprint,
+        issuer: instance.issuer, clientId: instance.clientId,
+        credentialDigest: currentCredentialDigest,
         config, outbound, expiresAtMs: now + DISCOVERY_TTL_MS,
     });
     return config;

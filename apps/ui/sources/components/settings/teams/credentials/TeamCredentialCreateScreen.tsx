@@ -27,7 +27,7 @@ import { teamCredentialDetailPath } from '../teamsRoutes';
 import { credentialApprovalFailureMessage, credentialFailureMessage, deliveryModeLabel, limitMetricLabel, limitPeriodLabel, limitSubjectKindLabel, requestProtocolKindLabel, sessionUsePolicyLabel, sourceKindLabel } from './teamCredentialPresentation';
 import { TeamCredentialAudiencePicker } from './TeamCredentialAudiencePicker';
 import { TeamCredentialSourcePicker } from './TeamCredentialSourcePicker';
-import { confirmTeamCredentialDirectDisclosure, confirmTeamCredentialDisclosureWidening, EMPTY_TEAM_CREDENTIAL_LIMIT_DRAFT, EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT, offeredDeliveryModes, reconcileTeamCredentialPolicyDraftForModelCatalog, TEAM_CREDENTIAL_LIMIT_PERIODS, TEAM_CREDENTIAL_LIMIT_SUBJECT_KINDS, TeamCredentialBrokerPlacementSection, teamCredentialBrokerPlacementDraftLabel, TeamCredentialDeliveryModeChooser, teamCredentialLimitMaximumValid, teamCredentialLimitSubjectSelected, teamCredentialPolicyFromDraft, teamCredentialResourceDraftFingerprint, useTeamCredentialResourceDraft, withAudienceEntry, type TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
+import { confirmTeamCredentialDirectDisclosure, confirmTeamCredentialDisclosureWidening, EMPTY_TEAM_CREDENTIAL_LIMIT_DRAFT, EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT, narrowTeamCredentialResourceDraftToBrokeredOnly, offeredDeliveryModes, reconcileTeamCredentialPolicyDraftForModelCatalog, TEAM_CREDENTIAL_LIMIT_PERIODS, TEAM_CREDENTIAL_LIMIT_SUBJECT_KINDS, TeamCredentialBrokerPlacementSection, teamCredentialBrokerPlacementDraftLabel, TeamCredentialDeliveryModeChooser, teamCredentialLimitMaximumValid, teamCredentialLimitSubjectSelected, teamCredentialPolicyFromDraft, teamCredentialResourceDraftFingerprint, useTeamCredentialResourceDraft, withAudienceEntry, type TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
 import { useTeamCredentialDraftNavigationGuard } from './useTeamCredentialDraftNavigationGuard';
 import {
     projectTeamCredentialRequestPolicyEditorSupport,
@@ -95,15 +95,6 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
     const patchResourceDraft = React.useCallback((patch: Partial<typeof resourceDraft.draft>, _legacyResetsConsent = false) => {
         const update = (current: typeof resourceDraft.draft) => ({ ...current, ...patch });
         resourceDraft.setDraft(update);
-    }, [resourceDraft]);
-    const setAllMembers = React.useCallback((next: React.SetStateAction<TeamCredentialDeliveryModeV1 | null>) => {
-        resourceDraft.setDraft((current) => ({
-            ...current,
-            audience: {
-                ...current.audience,
-                allMembers: typeof next === 'function' ? next(current.audience.allMembers) : next,
-            },
-        }));
     }, [resourceDraft]);
     const setGroupGrants = React.useCallback((next: React.SetStateAction<ReadonlyMap<string, TeamCredentialDeliveryModeV1>>) => {
         resourceDraft.setDraft((current) => ({
@@ -265,6 +256,10 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
     });
     const busy = submitting || context.approvalPending;
     if (!featureEnabled) return <ItemGroup footer={t('teams.credentials.unavailable')}><Item testID="team-credential-create-unavailable" title={t('teams.credentials.create.title')} showChevron={false} /></ItemGroup>;
+    // A first credential read that failed is not "still loading": the viewer is
+    // null for both, and the source and provider retries further down are
+    // unreachable behind this return, so the screen used to spin forever.
+    if (projection.viewer === null && projection.error !== null) return <ItemGroup footer={credentialFailureMessage(projection.error)}><Item testID="team-credential-create-retry" title={t('teams.unavailable.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={() => void projection.retry()} showChevron={false} /></ItemGroup>;
     if (projection.viewer === null) return <ItemGroup><Item testID="team-credential-create-loading" title={t('teams.credentials.create.title')} loading showChevron={false} /></ItemGroup>;
     if (!mayOffer || (!context.canMutate && !context.approvalPending)) return <ItemGroup footer={t('teams.credentials.create.notAllowed')}><Item testID="team-credential-create-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>;
     const directExportSupported = selected?.candidate.directExportSupport !== 'unsupported';
@@ -322,7 +317,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
         {providerConnections.error && sources.supportedKinds.includes('provider_connection') ? <ItemGroup footer={t('teams.credentials.requestPolicy.catalogUnavailable')}><Item testID="team-credential-create-provider-source-retry" title={t('teams.unavailable.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={() => void providerConnections.refresh()} showChevron={false} /></ItemGroup> : null}
         <ItemGroup title={t('teams.credentials.edit.nameLabel')}><TextInput testID="team-credential-create-name" value={name} onChangeText={value => { setNameEdited(true); patchResourceDraft({ name: value }); }} placeholder={t('teams.credentials.edit.namePlaceholder')} accessibilityLabel={t('teams.credentials.edit.nameLabel')} maxLength={NAME_MAX_LENGTH} editable={!busy} /></ItemGroup>
         <ItemGroup title={t('teams.credentials.edit.ceilingLabel')} footer={t('teams.credentials.edit.ceilingNote')} accessibilityRole="radiogroup" accessibilityLabel={t('teams.credentials.edit.ceilingLabel')}>
-            {(['brokered_only', 'direct_allowed'] as const).map(value => <Item key={value} testID={`team-credential-create-ceiling:${value}`} title={value === 'brokered_only' ? t('teams.credentials.edit.ceilingBrokeredOnly') : t('teams.credentials.edit.ceilingDirectAllowed')} selected={ceiling === value} disabled={busy} onPress={async () => { if (value === 'direct_allowed' && ceiling !== value && !await confirmTeamCredentialDisclosureWidening()) return; patchResourceDraft({ disclosureCeiling: value }, true); if (value === 'brokered_only') { setAllMembers(current => current === null ? null : 'brokered'); setGroupGrants(new Map([...groupGrants].map(([id]) => [id, 'brokered'] as const))); setMemberGrants(new Map([...memberGrants].map(([id]) => [id, 'brokered'] as const))); } }} showChevron={false} />)}
+            {(['brokered_only', 'direct_allowed'] as const).map(value => <Item key={value} testID={`team-credential-create-ceiling:${value}`} title={value === 'brokered_only' ? t('teams.credentials.edit.ceilingBrokeredOnly') : t('teams.credentials.edit.ceilingDirectAllowed')} selected={ceiling === value} disabled={busy} onPress={async () => { if (value === 'direct_allowed' && ceiling !== value && !await confirmTeamCredentialDisclosureWidening()) return; if (value === 'brokered_only') resourceDraft.setDraft(narrowTeamCredentialResourceDraftToBrokeredOnly); else patchResourceDraft({ disclosureCeiling: value }, true); }} showChevron={false} />)}
         </ItemGroup>
         {managesResources ? <TeamCredentialBrokerPlacementSection
             scope={context.scope}

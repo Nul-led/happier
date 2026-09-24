@@ -12,6 +12,7 @@ import {
     type BackendTargetRefV2Input,
     type ConnectedServiceBindingsV2,
     type ExecutionRunConnectedServicesLaunchV1,
+    type PluginContributionIdentityV1,
     type ProviderBoundModelRef,
     type TeamCredentialProviderModelSelectionV1,
     type SessionInputCausalPermissionAuthorityV1,
@@ -63,6 +64,18 @@ import {
     type ExecutionRunTeamCredentialProviderBindingPreparer,
     type PreparedExecutionRunProviderLaunch,
 } from './providerLaunch';
+
+/**
+ * The Run's resolved connected-services selection, reported to its Run owner
+ * BEFORE materialization. The daemon opens direct Team material inside that
+ * materialization, and the Home asks the Run owner to attest this exact
+ * selection then, before any registration exists. `agentContribution` is the
+ * Run's own Agent from its engine resolution; null when that names none.
+ */
+export type ExecutionRunConnectedServicesSelectionReport = Readonly<{
+    connectedServicesBindings: ConnectedServiceBindingsV2;
+    agentContribution: PluginContributionIdentityV1 | null;
+}>;
 
 function normalizeAccountSettings(value: unknown): AccountSettings | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -169,6 +182,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
     sessionOwnedRunScope?: ExecutionRunHostRunScopeBinding;
     prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
+    onConnectedServicesSelection?: (selection: ExecutionRunConnectedServicesSelectionReport) => void | Promise<void>;
     machineId?: string;
     resolveProvidersFeatureEnabled?: () => boolean | Promise<boolean>;
     resolveAccountSettingsSnapshot?: (input?: Readonly<{
@@ -297,6 +311,15 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 ReturnType<typeof resolveExecutionRunConnectedServicesEnv>
             > = null;
             try {
+                // The Run owner learns its exact selection before the daemon
+                // materializes it: direct Team material is opened inside that
+                // materialization, and the Home asks the Run owner to attest it.
+                if (materializedConnectedServicesSelection && opts.onConnectedServicesSelection) {
+                    await opts.onConnectedServicesSelection({
+                        connectedServicesBindings: materializedConnectedServicesSelection.bindings,
+                        agentContribution: engineResolution.agent.identity ?? null,
+                    });
+                }
                 connectedServicesEnv = await resolveExecutionRunConnectedServicesEnv({
                     runId: connectedServicesRunKey,
                     backendId: opts.backendId,
@@ -531,6 +554,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
     sessionOwnedRunScope?: ExecutionRunHostRunScopeBinding;
     prepareRunTeamCredentialProviderBinding?: ExecutionRunTeamCredentialProviderBindingPreparer;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
+    onConnectedServicesSelection?: (selection: ExecutionRunConnectedServicesSelectionReport) => void | Promise<void>;
     machineId?: string;
     resolveProvidersFeatureEnabled?: () => boolean | Promise<boolean>;
     resolveAccountSettingsSnapshot?: (input?: Readonly<{
@@ -613,6 +637,9 @@ export function createExecutionRunRuntime(opts: Readonly<{
                 : {}),
             ...(opts.onConnectedServicesRegistration
                 ? { onConnectedServicesRegistration: opts.onConnectedServicesRegistration }
+                : {}),
+            ...(opts.onConnectedServicesSelection
+                ? { onConnectedServicesSelection: opts.onConnectedServicesSelection }
                 : {}),
             ...(opts.machineId ? { machineId: opts.machineId } : {}),
             ...(opts.resolveProvidersFeatureEnabled

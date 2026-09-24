@@ -8,12 +8,14 @@ import {
 } from "@/app/auth/providers/oidc/normalizeOidcIdentityClaims";
 import { discoverOidcConfiguration } from "./oidcDiscovery";
 import type { OutboundIdentityNetworkPolicy } from "@/app/net/outboundIdentityNetworkPolicy";
-import { evaluateOidcEligibility } from "@/app/auth/providers/oidc/oidcEligibility";
+import { evaluateOidcIdentityEligibility } from "@/app/auth/providers/oidc/oidcEligibility";
+import type { OidcTeamIdentityConnection } from "@/app/auth/providers/oidc/oidcIdentityProvider";
 
 export function createOidcOAuthProvider(
     instance: OidcAuthProviderInstanceConfig,
     runtimeFingerprint: string,
     networkPolicy?: OutboundIdentityNetworkPolicy,
+    teamConnection?: OidcTeamIdentityConnection,
 ): OAuthFlowProvider {
     const isConfigured = () => Boolean(instance.clientId && instance.clientSecret && instance.redirectUrl && instance.issuer);
     const configured = isConfigured();
@@ -122,7 +124,13 @@ export function createOidcOAuthProvider(
                     : claims.groups === null
                         ? { state: "absent" }
                         : { state: "complete", values: claims.groups },
-                eligibility: evaluateOidcEligibility(instance.allow, claims),
+                // The same combined rules the Team's sign-in applies, so a Test can never
+                // report `eligible` for a subject this connection would refuse.
+                eligibility: evaluateOidcIdentityEligibility({
+                    allow: instance.allow,
+                    ...(teamConnection ? { additionalAllow: teamConnection.allow } : {}),
+                    claims,
+                }),
             };
         },
     });

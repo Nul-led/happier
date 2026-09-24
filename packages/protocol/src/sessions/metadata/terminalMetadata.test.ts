@@ -94,6 +94,18 @@ describe('sessionMetadata terminal metadata', () => {
     }).success).toBe(false);
   });
 
+  it('reads the control-serviceability state only from a well-formed current-version envelope', () => {
+    const read = (protocol as any).readSessionTerminalControlServiceabilityStateV1;
+    expect(read({ v: 1, state: 'recoverable_unservable', observedAt: 1 })).toBe('recoverable_unservable');
+    expect(read({ v: 1, state: 'servable', observedAt: 1, attachmentId: 'a' })).toBe('servable');
+    // A host reader that accepted any object carrying `state` would admit these; the schema
+    // does not, so both adapters agree that there is no evidence here.
+    expect(read({ state: 'servable', observedAt: 1 })).toBeNull();
+    expect(read({ v: 2, state: 'servable', observedAt: 1 })).toBeNull();
+    expect(read({ v: 1, state: 'unheard_of', observedAt: 1 })).toBeNull();
+    expect(read(undefined)).toBeNull();
+  });
+
   it('permits destructive deletion only with explicit terminal retirement evidence', () => {
     const canDelete = (protocol as any).isSessionTerminalPermanentlyAbsent;
     expect(canDelete(undefined)).toBe(false);

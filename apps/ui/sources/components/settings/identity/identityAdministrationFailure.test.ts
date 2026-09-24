@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { TeamIdentityConnectionRemovalBlockerV1Schema } from '@happier-dev/protocol/teams';
 
+import { t } from '@/text';
+
 import {
     identityAdministrationFailure,
     identityAdministrationFailureMessage,
     identityAdministrationFailureRecoveryLabel,
     isIdentityAdministrationFailureRetryable,
+    resolveIdentityAdministrationFailureRetryable,
     type IdentityAdministrationFailureKind,
 } from './identityAdministrationFailure';
 
@@ -70,6 +73,30 @@ describe('identityAdministrationFailure', () => {
         expect(isIdentityAdministrationFailureRetryable('some_future_server_code')).toBe(false);
     });
 
+    it('lets a named refusal keep its own retryability instead of widening it by code name', () => {
+        // The Home named the code and declared the answer final. The name-shaped
+        // fallback can only ever add retryability, so OR-ing it in would offer a
+        // Retry that the Home already said cannot succeed.
+        expect(resolveIdentityAdministrationFailureRetryable(
+            { code: 'directory_sync_rate_limited', retryable: false },
+            'directory_sync_rate_limited',
+        )).toBe(false);
+        expect(resolveIdentityAdministrationFailureRetryable(
+            { code: 'home_unreachable', retryable: true },
+            'home_unreachable',
+        )).toBe(true);
+        // An unclassified transport outcome carries no Home answer, so the
+        // fallback is the only thing that can decide.
+        expect(resolveIdentityAdministrationFailureRetryable(
+            { code: null, retryable: false },
+            'home_unreachable',
+        )).toBe(true);
+        expect(resolveIdentityAdministrationFailureRetryable(
+            { code: null, retryable: false },
+            'forbidden',
+        )).toBe(false);
+    });
+
     it('does not invite a retry for a Team outcome that a retry cannot change', () => {
         // The Team policy being unevaluable, a missing Team sign-in, and a Home
         // that prohibits the provider kind each need a different screen, not
@@ -108,6 +135,28 @@ describe('identityAdministrationFailure', () => {
             if (recovery === 'none') expect(label, code).toBeNull();
             else expect(label, code).toBeTruthy();
         }
+    });
+
+    it('answers each directory Sync refusal with the remedy that actually clears it', () => {
+        // child 05 :498: Sync refuses a PAUSED source with
+        // `directory_sync_needs_attention`, and its recovery is Resume.
+        const paused = identityAdministrationFailureMessage('directory_sync_needs_attention');
+        expect(paused).toBe(t('identityAdministration.errorSyncPaused'));
+        expect(paused).toContain(t('teams.authentication.directory.actions.resume'));
+        expect(identityAdministrationFailure('directory_sync_needs_attention'))
+            .toMatchObject({ kind: 'needs_attention', retryable: false, recovery: 'directory' });
+        // A failed source is retried with Sync itself (§14.1), so its recorded
+        // failure keeps the generic sentence rather than a Pause → Resume detour.
+        expect(identityAdministrationFailureMessage('directory_source_permission_lost'))
+            .toBe(t('identityAdministration.errorNeedsAttention'));
+        // A Home that no longer allows the provider kind is a Home policy
+        // decision only a Home administrator can change.
+        expect(identityAdministrationFailure('team_identity_not_allowed'))
+            .toMatchObject({ kind: 'not_allowed', retryable: false, recovery: 'contact_home_admin' });
+        // A binding document that no longer names its directory is invalid
+        // configuration, not something Resume or Retry repairs.
+        expect(identityAdministrationFailure('directory_source_identity_mismatch'))
+            .toMatchObject({ kind: 'invalid', retryable: false });
     });
 
     it('marks the conflict outcome as the one a refresh resolves', () => {

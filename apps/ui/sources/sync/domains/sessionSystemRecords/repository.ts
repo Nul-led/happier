@@ -1,5 +1,6 @@
 import type { SessionSystemRecordStored, SessionSystemRecordStoredPageResponse } from '@happier-dev/protocol';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import {
     createSessionSystemRecordTransport,
     type HostSessionSystemRecordAddress,
@@ -58,10 +59,13 @@ export function createSessionSystemRecordRepository(options: SessionSystemRecord
     const transport = createSessionSystemRecordTransport(options);
     const sessions = new Map<string, Map<string, Entry>>();
     let retired = false;
+    // A surface may address an identity-bearing Home by its device-local profile id
+    // while this scope names it by its published identity; both are the same Home.
+    const isScopeHome = (session: SessionAddress) => areServerProfileIdentifiersEquivalent(session.serverId, options.scope.serverId);
     const empty: SessionSystemRecordRepositoryEntry<never> = { data: null, freshness: 'stale', reachability: 'unknown', loading: 'idle', lastError: null };
     const forbidden: SessionSystemRecordRepositoryEntry<never> = { ...empty, lastError: { status: 'forbidden' } };
     function lookup(session: SessionAddress, query: SessionSystemRecordQuery, create: boolean): Entry | null {
-        if (retired || session.serverId !== options.scope.serverId) return null;
+        if (retired || !isScopeHome(session)) return null;
         let queries = sessions.get(session.sessionId);
         if (!queries) {
             if (!create) return null;
@@ -128,7 +132,7 @@ export function createSessionSystemRecordRepository(options: SessionSystemRecord
         },
         getSnapshot<Q extends SessionSystemRecordQuery>(session: SessionAddress, query: Q): SessionSystemRecordRepositoryEntry<SessionSystemRecordQueryValue<Q>> {
             // Query identity fixes the value type at creation and every refresh.
-            if (retired || session.serverId !== options.scope.serverId) {
+            if (retired || !isScopeHome(session)) {
                 return forbidden as SessionSystemRecordRepositoryEntry<SessionSystemRecordQueryValue<Q>>;
             }
             return (lookup(session, query, false)?.snapshot ?? empty) as SessionSystemRecordRepositoryEntry<SessionSystemRecordQueryValue<Q>>;
@@ -145,7 +149,7 @@ export function createSessionSystemRecordRepository(options: SessionSystemRecord
             };
         },
         invalidate(session: SessionAddress) {
-            if (retired || session.serverId !== options.scope.serverId) return;
+            if (retired || !isScopeHome(session)) return;
             for (const entry of sessions.get(session.sessionId)?.values() ?? []) {
                 entry.invalidatedWhileLoading = Boolean(entry.pending);
                 publish(entry, { ...entry.snapshot, freshness: 'stale' });
@@ -163,7 +167,7 @@ export function createSessionSystemRecordRepository(options: SessionSystemRecord
             }
         },
         notifyContentContextChanged(session: SessionAddress) {
-            if (retired || session.serverId !== options.scope.serverId) return;
+            if (retired || !isScopeHome(session)) return;
             for (const entry of sessions.get(session.sessionId)?.values() ?? []) publish(entry, { ...entry.snapshot });
         },
         retire() {

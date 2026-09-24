@@ -3,6 +3,7 @@ import {
     ExternalActionMachineBootstrapV1Schema,
     MachineOperationProtocolCapabilitiesV1Schema,
     MachineKindFromLegacyProjectionSchema,
+    RunnerClaimV1Schema,
     RunnerMachineContentKeyBindingV1Schema,
     type MachineKind,
 } from "@happier-dev/protocol";
@@ -119,7 +120,18 @@ export function serializeMachineRow(
  * the Home cannot open and the binding is the strict non-secret proof that
  * authenticates it, so a bearer-only token learns nothing usable. Persistent
  * Machine content and install state keep the released closed projection.
+ *
+ * `runnerClaim` is the activation's persisted, activation-signed claim, which
+ * binds the Runner to the exact Session it was activated for. A
+ * Session-targeted protected request selects the Runner only through it, so the
+ * Home relays that correspondence but cannot author it. The claim carries public
+ * keys and signatures only, never a credential.
  */
+function runnerClaim(value: unknown) {
+    const parsed = RunnerClaimV1Schema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+}
+
 export function serializeExternalActionMachineBootstrapRow(
     row: Pick<
         MachineSerializationRow,
@@ -127,7 +139,7 @@ export function serializeExternalActionMachineBootstrapRow(
     > & Partial<Pick<
         MachineSerializationRow,
         "kind" | "installationId" | "dataEncryptionKey" | "runnerContentKeyBinding"
-    >>,
+    >> & Readonly<{ activationClaim?: unknown }>,
 ) {
     const kind = MachineKindFromLegacyProjectionSchema.parse(row.kind);
     const runnerContentKeyBinding = kind === "ephemeral_session_runner"
@@ -139,6 +151,9 @@ export function serializeExternalActionMachineBootstrapRow(
         revokedAt: row.revokedAt ? row.revokedAt.getTime() : null,
         replacedByMachineId: row.replacedByMachineId ?? null,
         kind,
+        runnerClaim: kind === "ephemeral_session_runner"
+            ? runnerClaim(row.activationClaim)
+            : null,
         installationId: kind === "ephemeral_session_runner"
             ? row.installationId ?? null
             : null,

@@ -2,6 +2,7 @@ import {
     approvalArtifactBodyMatchesHeaderV1,
     getActionSpec,
     readApprovalExecutionFailure,
+    resolveApprovalPresentationInput,
     type ActionExecuteFailure,
     type ActionId,
     type ApprovalRequestV2,
@@ -48,6 +49,37 @@ type ApprovalRequestInspection =
         request: ApprovalRequestV2;
     }>;
 
+function canonicalApprovalInputIdentity(value: unknown): string | null {
+    try {
+        return createCanonicalJsonSigningInput(value);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The observed identity of one approval's input: exactly what the host wrote
+ * into the durable record, which is the Action's own observation projection.
+ *
+ * This is an operand check inside one already-selected Artifact, not the
+ * identity binding: `inspectActionApprovalRequest` first requires the exact
+ * captured Artifact id, then the Action, origin, Account/Home and request id,
+ * so two distinct approvals can never satisfy each other even when their
+ * inputs differ only in a redacted secret. The Artifact owner keeps the input
+ * immutable until settlement. The raw input cannot be compared: an Action
+ * declaring `approvalInputCustody: 'live_only'`, and any settled request,
+ * durably carries only the projection.
+ */
+function canonicalObservedApprovalInput(actionId: ActionId, input: unknown): string | null {
+    const parsed = getActionSpec(actionId).inputSchema.safeParse(input);
+    if (!parsed.success) return null;
+    // No `preview`: the same owner then answers with what the host would have
+    // recorded for this input, which is what the durable record carries.
+    return canonicalApprovalInputIdentity(
+        resolveApprovalPresentationInput({ actionId, actionArgs: parsed.data }),
+    );
+}
+
 function inspectActionApprovalRequest<TActionId extends ActionId>(input: Readonly<{
     artifact: DecryptedArtifact;
     artifactId: string;
@@ -82,11 +114,15 @@ function inspectActionApprovalRequest<TActionId extends ActionId>(input: Readonl
         )
     ) return { kind: 'binding_mismatch' };
     if (input.expectedInputCanonical !== undefined) {
-        const recordedInput = getActionSpec(input.actionId).inputSchema.safeParse(request.actionArgs);
+        const recordedInput = canonicalApprovalInputIdentity(resolveApprovalPresentationInput({
+            actionId: input.actionId,
+            actionArgs: request.actionArgs,
+            ...(request.preview !== undefined ? { preview: request.preview } : {}),
+        }));
         if (
             input.expectedInputCanonical === null
-            || !recordedInput.success
-            || createCanonicalJsonSigningInput(recordedInput.data) !== input.expectedInputCanonical
+            || recordedInput === null
+            || recordedInput !== input.expectedInputCanonical
         ) return { kind: 'binding_mismatch' };
     }
     return { kind: 'matched', request };
@@ -99,10 +135,12 @@ type CreateActionApprovalContinuationInput<TValue, TActionId extends ActionId> =
     /** Bind settlement to the originating invocation when its caller received that identity. */
     expectedRequestId?: string;
     /**
-     * The originating Action input. When present, settlement validates both
-     * values with the Action's declared schema and compares their canonical
-     * JSON without logging either value. This prevents a same-Action approval
-     * for another resource or mutation from satisfying this continuation.
+     * The originating Action input. When present, settlement compares the
+     * canonical JSON of its observation projection against the projection the
+     * durable record carries, without logging either value. This prevents a
+     * same-Action approval for another resource or mutation from satisfying
+     * this continuation. See `canonicalObservedApprovalInput` for the one
+     * operand that projection deliberately drops.
      */
     expectedInput?: unknown;
     onSucceeded: (value: TValue) => void | Promise<void>;
@@ -123,10 +161,7 @@ export function createActionApprovalContinuation(
     input: CreateActionApprovalContinuationInput<unknown, ActionId>,
 ): ActionApprovalContinuation {
     const expectedInputCanonical = Object.prototype.hasOwnProperty.call(input, 'expectedInput')
-        ? (() => {
-            const parsed = getActionSpec(input.actionId).inputSchema.safeParse(input.expectedInput);
-            return parsed.success ? createCanonicalJsonSigningInput(parsed.data) : null;
-        })()
+        ? canonicalObservedApprovalInput(input.actionId, input.expectedInput)
         : undefined;
     return Object.freeze({
         artifactId: input.artifactId,

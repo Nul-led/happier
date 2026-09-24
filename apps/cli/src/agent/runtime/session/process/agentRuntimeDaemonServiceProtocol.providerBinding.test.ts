@@ -54,9 +54,13 @@ describe('Agent runtime daemon provider binding service protocol', () => {
         resourceId: 'resource-1', expectedResourceRevision: 3,
         agentTargetKey: 'backend:codex', modelId: 'model-1',
         consumer: { kind: 'execution_run', executionRunId: 'run-1' },
+        teamId: 'team-b',
+        deliveryMode: 'direct',
       },
     }).operation).toMatchObject({
       consumer: { kind: 'execution_run', executionRunId: 'run-1' },
+      teamId: 'team-b',
+      deliveryMode: 'direct',
     });
     const response = AgentRuntimeDaemonServiceResponseV1Schema.parse({
       ...createOpenedTeamProviderBindingResponse('resource-1'),

@@ -1080,9 +1080,13 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                             && replayRequest
                                 .expectedContentKeyFingerprint
                                 === null;
+                        // A password-bearing retained-key conversion carried
+                        // its current-password proof; its lost-response replay
+                        // carries the same request.
                         if (
                             replayRequest.externalAuthProof
                             && !sourceWasKeyless
+                            && !replayRequest.passwordCredential
                         ) {
                             return {
                                 type:
@@ -1387,10 +1391,14 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                                 .enum.restore_required,
                     };
                 }
+                // Outside first-key enrollment, an external proof is admitted
+                // only as the current-password proof of a password-bearing
+                // plain -> e2ee conversion, decided once the credential is read.
                 if (
                     currentRequest.success
                     && currentRequest.data.externalAuthProof
                     && !isFirstKeyEnrollment
+                    && !(currentMode === "plain" && toMode === "e2ee")
                 ) {
                     return { type: "invalid-params" as const };
                 }
@@ -1624,13 +1632,37 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     }
                 }
 
-                if (isFirstKeyEnrollment) {
+                // L02-R22 / 02.04 :179: an existing Plain password credential
+                // entering E2EE proves the current password through the
+                // transition-bound `email_password` first-key proof, whether the
+                // Account is keyless or retains its signing key. The retained key
+                // alone is not that proof.
+                const requiresCurrentPasswordProof =
+                    currentMode === "plain"
+                    && toMode === "e2ee"
+                    && currentPasswordCredential !== null;
+                if (
+                    currentRequest.success
+                    && currentRequest.data.externalAuthProof
+                    && !isFirstKeyEnrollment
+                    && !requiresCurrentPasswordProof
+                ) {
+                    return { type: "invalid-params" as const };
+                }
+                if (isFirstKeyEnrollment || requiresCurrentPasswordProof) {
                     if (
                         !currentRequest.success
                         || !protocolRequestDigest
                         || !currentRequest.data.externalAuthProof
                     ) {
-                        return { type: "internal-error" as const };
+                        return isFirstKeyEnrollment
+                            ? { type: "internal-error" as const }
+                            : {
+                                type: "invalid-params" as const,
+                                reason:
+                                    AccountEncryptionMigrateInvalidParamsReasonSchema
+                                        .enum.key_proof_required,
+                            };
                     }
                     const externalAuth =
                         await consumeAccountEncryptionFirstKeyExternalAuthProofInTx(
@@ -1681,33 +1713,16 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         directive: sessions,
                     });
                 if (sessionMigration.status !== "applied") {
-                    if (isFirstKeyEnrollment) {
-                        throw new
-                            AccountEncryptionMigrationSessionRejectedError(
-                                sessionMigration.status,
-                            );
-                    }
-                    if (
-                        isPredecessorRequest
-                        || sessionMigration.status === "not_empty"
-                    ) {
-                        return {
-                            type:
-                                "metadata-privacy-upgrade-required" as const,
-                        };
-                    }
-                    if (
-                        sessionMigration.status
-                        === "migration_incomplete"
-                    ) {
-                        return {
-                            type:
-                                "migration-inventory-changed" as const,
-                        };
-                    }
-                    return {
-                        type: "invalid-params" as const,
-                    };
+                    // The one-time password-mutation proof was consumed and the
+                    // new-Session drafts were already rewritten into the target
+                    // mode above. A normal return would commit both while the
+                    // Account stays in the source mode; throwing is the
+                    // transaction-abort contract, exactly as the Settings
+                    // rejection below states it.
+                    throw new
+                        AccountEncryptionMigrationSessionRejectedError(
+                            sessionMigration.status,
+                        );
                 }
                 const sessionPublications =
                     sessionMigration.sessions.map((migrated) => {
@@ -2101,6 +2116,11 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 error
                 instanceof AccountEncryptionMigrationSessionRejectedError
             ) {
+                if (isPredecessorRequest) {
+                    return reply.code(426).send(
+                        buildAccountStoredContentUpgradeRequired(),
+                    );
+                }
                 if (error.status === "not_empty") {
                     return reply.code(400).send({
                         error:

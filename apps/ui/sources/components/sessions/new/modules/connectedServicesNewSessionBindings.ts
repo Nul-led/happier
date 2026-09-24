@@ -14,9 +14,15 @@ import {
   ConnectedAccountServiceKeySchema,
   ConnectedServiceBindingSelectionV2Schema,
   ConnectedServiceBindingsV2Schema,
+  buildQualifiedPluginContributionKey,
   type ConnectedServiceBindingSelectionV2,
   type ConnectedServiceBindingsV2,
+  type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
+import type {
+  SessionTeamCredentialBindingIntentV1,
+  TeamCredentialResourceCatalogEntryV1,
+} from '@happier-dev/protocol/teams';
 
 import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
 import { resolveQualifiedConnectedAccountServiceKey } from '@/sync/domains/connectedServices/connectedServiceRegistry';
@@ -109,4 +115,47 @@ export function buildConnectedServicesBindingsPayload(params: Readonly<{
   return connectedCount > 0 || params.emitWhenAllNative === true
     ? ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId })
     : null;
+}
+
+/**
+ * The Session Team slot bindings a New Session is created with: one
+ * `connected_service_purpose` intent per declared purpose whose launch
+ * selection is a Team resource the target Home currently offers, at that
+ * resource's current revision. The selection may come from this draft or from
+ * the Agent's durable purpose default; the Home admits either the same way.
+ */
+export function composeConnectedServiceTeamCredentialBindingIntents(params: Readonly<{
+  consumer: PluginContributionIdentityV1;
+  declarations: ReadonlyArray<Readonly<{ purpose: string; service: PluginContributionIdentityV1 }>>;
+  bindings: ConnectedServiceBindingsV2;
+  resources: readonly TeamCredentialResourceCatalogEntryV1[];
+}>): SessionTeamCredentialBindingIntentV1[] {
+  const intents: SessionTeamCredentialBindingIntentV1[] = [];
+  for (const declaration of params.declarations) {
+    const serviceId = buildQualifiedPluginContributionKey(declaration.service);
+    const selection = params.bindings.bindingsByServiceId[serviceId];
+    if (selection?.source !== 'team_resource') continue;
+    const resource = params.resources.find((candidate) => (
+      candidate.id === selection.resourceId
+      && candidate.readiness.kind === 'available'
+      && candidate.connectedServiceSelections.some((candidateSelection) => (
+        candidateSelection.resourceId === selection.resourceId
+        && candidateSelection.deliveryMode === selection.deliveryMode
+        && JSON.stringify(candidateSelection.disclosedMember ?? null)
+          === JSON.stringify(selection.disclosedMember ?? null)
+      ))
+    ));
+    if (!resource) continue;
+    intents.push({
+      v: 1,
+      slot: {
+        kind: 'connected_service_purpose',
+        purpose: { consumer: params.consumer, purpose: declaration.purpose },
+      },
+      resourceId: resource.id,
+      expectedResourceRevision: resource.resourceRevision,
+      deliveryMode: selection.deliveryMode,
+    });
+  }
+  return intents;
 }

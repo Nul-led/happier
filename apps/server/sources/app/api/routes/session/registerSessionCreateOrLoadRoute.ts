@@ -40,6 +40,7 @@ import {
 } from "@/app/session/create/prepareLayout1SessionCreate";
 import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isSessionCollaborationEnabled } from "@/app/session/access/sessionAccess";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
 import { type Fastify } from "../../types";
@@ -79,21 +80,16 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
         const isLayoutOneRequest = layoutOneRequest !== null;
 
         // `initialAccess` and authored Team context are one atomic collaboration
-        // operation. An older or deliberately disabled server must refuse before
+        // operation. A Home whose Session sharing is disabled must refuse before
         // creating the Session; creating a private row and patching access later
         // would expose a visible intermediate and cannot satisfy Team policy.
+        // The refusal names this Home's sharing decision; it is not an update requirement.
         if (
             isLayoutOneRequest
             && (layoutOneRequest.initialAccess !== undefined || layoutOneRequest.primaryTeamId !== undefined)
-            && !isServerFeatureEnabledForRequest("sessions.collaboration", process.env)
+            && !isSessionCollaborationEnabled()
         ) {
-            return reply.code(409).send({
-                error: "update_required",
-                kind: "update_required",
-                operation: "session.spawn_new",
-                component: "server",
-                reason: "session_initial_access_update_required",
-            });
+            return reply.code(409).send({ error: "session_access_sharing_unavailable" });
         }
         if (
             layoutOneRequest?.teamCredentialBindings !== undefined
@@ -153,7 +149,6 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                             || rejection.code === "session_access_subject_not_found"
                             ? 404
                             : rejection.code === "session_access_team_policy_required"
-                                || rejection.code === "session_access_transcript_not_shareable"
                                 ? 409
                                 : 400;
                     return reply.code(status).send({ error: rejection.code });

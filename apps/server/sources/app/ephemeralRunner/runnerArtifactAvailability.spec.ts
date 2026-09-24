@@ -238,9 +238,15 @@ describe('verified Runner artifact availability', () => {
         expect(network.requests).toHaveLength(requestsBeforeExactAdmission);
     });
     it('rejects altered checksums and unsigned manifest digest or platform-signing assertions', async () => {
-        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ tamperedChecksums: true }))).toMatchObject({ ok: false });
-        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ manifestDigest: 'b'.repeat(64) }))).toMatchObject({ ok: false });
-        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ manifestSizeBytes: 322 }))).toMatchObject({ ok: false });
+        // Verification still fails closed; what must also be true is that a
+        // declared-but-unverifiable record is reported as an invalid publication
+        // rather than as a target nobody published.
+        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ tamperedChecksums: true })))
+            .toEqual({ ok: false, reason: 'publication_invalid' });
+        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ manifestDigest: 'b'.repeat(64) })))
+            .toEqual({ ok: false, reason: 'publication_invalid' });
+        expect(await resolveRunnerArtifactAvailability(identity, networkFixture({ manifestSizeBytes: 322 })))
+            .toEqual({ ok: false, reason: 'publication_invalid' });
         expect(await readPublishedRunnerArtifacts({ version: '0.3.0', ...networkFixture() })).toHaveLength(1);
     });
     it('distinguishes an absent immutable publication from a temporary metadata failure', async () => {

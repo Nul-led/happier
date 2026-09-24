@@ -50,6 +50,7 @@ import {
 import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import { projectManager } from '@/sync/runtime/orchestration/projectManager';
 import { notifyExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
+import { notifyTeamCredentialUsageChanged } from '@/sync/engine/teams/teamCredentialUsageChanges';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { resolveSessionLiveConsumption } from '@/sync/runtime/sessionLiveConsumption';
 import { scmStatusSync } from '@/scm/scmStatusSync';
@@ -2454,6 +2455,9 @@ export function handleEphemeralSocketUpdate(params: {
             ? updateData.run.runId.trim()
             : null;
         if (address) notifyExecutionRunActivity(address, { runId: updatedRunId });
+    } else if (updateData.type === 'team-credential-usage-changed') {
+        if (!shouldContinue() || !sourceServerId) return Promise.resolve();
+        notifyTeamCredentialUsageChanged({ serverId: sourceServerId, resourceId: updateData.resourceId });
     } else if (updateData.type === 'external-session-transcript-invalidated') {
         if (!shouldContinue()) return Promise.resolve();
         return Promise.resolve(updateExternalSessionTranscript?.(updateData as ExternalSessionTranscriptUpdatedEphemeralUpdate));

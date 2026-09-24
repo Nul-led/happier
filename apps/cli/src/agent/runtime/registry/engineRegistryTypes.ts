@@ -132,6 +132,8 @@ export type NativeAgentSessionInteractionHostBinding = Readonly<{
     /** Opens an explicit Team selection, or the parent Session's current selection when omitted. */
     prepareRunTeamCredentialProviderBinding?: (request: Readonly<{
         runId: string;
+        /** The Run's own Agent, which need not be its parent Session's. */
+        agentId: string;
         selection?: TeamCredentialProviderModelSelectionV1;
     }>) => Promise<Readonly<{
         providerBinding: AgentSessionProviderBinding;
@@ -273,8 +275,10 @@ export type EngineAdapterResolution = Readonly<{
 
 export type ResolvedCliEngineRegistry = Readonly<{
     contributions: ResolvedContributionRegistry;
-    /** Reads the exact immutable generation that the serving runtime has applied for one plugin. */
-    resolveCurrentPluginGeneration(pluginId: string): Promise<string | null>;
+    /** Builds the admitted execution-run profile catalog from the current serving runtime snapshot. */
+    resolveExecutionRunProfileCatalog(
+        options?: import('@/agent/executionRuns/profiles/intentRegistry').ExecutionRunProfileCatalogOptions,
+    ): Promise<import('@/agent/executionRuns/profiles/intentRegistry').ExecutionRunProfileContributionCatalog>;
     resolveForBackendId(backendId: string): Promise<EngineAdapterResolution | null>;
     resolveExecutionSurfaces(backendId?: string | null): Promise<BackendExecutionSurfaces>;
 }>;

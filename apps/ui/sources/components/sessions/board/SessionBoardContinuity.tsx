@@ -105,6 +105,12 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
 }>>): React.ReactElement {
     const focusedItemId = React.useState<string | null>(null);
     const requestedViewId = React.useState<string | null>(null);
+    // The imperative read of the one selection state. A command's Undo captured the
+    // provider value from the render that published it, so reading the state tuple
+    // through that closure answered the pre-command selection forever. Requests and
+    // clears move this ref synchronously; the render keeps it equal to the state.
+    const requestedViewIdRef = React.useRef(requestedViewId[0]);
+    requestedViewIdRef.current = requestedViewId[0];
     const viewRemovalFocusRequest = React.useState<Readonly<{ removedViewId: string; requestId: number }> | null>(null);
     const noteDraft = React.useState<SessionBoardNoteDraft | null>(null);
     const headingFocusRequest = React.useState<Readonly<{ itemId: string; requestId: number }> | null>(null);
@@ -166,10 +172,16 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
     }, []);
 
     const value = React.useMemo<SessionBoardContinuity>(() => {
-        const request = (viewId: string) => requestedViewId[1](viewId);
-        const clear = (viewId?: string) => requestedViewId[1]((current) => (
-            viewId === undefined || current === viewId ? null : current
-        ));
+        const request = (viewId: string) => {
+            requestedViewIdRef.current = viewId;
+            requestedViewId[1](viewId);
+        };
+        const clear = (viewId?: string) => {
+            if (viewId === undefined || requestedViewIdRef.current === viewId) requestedViewIdRef.current = null;
+            requestedViewId[1]((current) => (
+                viewId === undefined || current === viewId ? null : current
+            ));
+        };
         return {
             address: props.address,
             focusedItemId,
@@ -186,7 +198,7 @@ function QualifiedSessionBoardContinuityProvider(props: React.PropsWithChildren<
                 busy,
             },
             viewSelection: {
-                read: () => requestedViewId[0],
+                read: () => requestedViewIdRef.current,
                 request,
                 clear,
             },

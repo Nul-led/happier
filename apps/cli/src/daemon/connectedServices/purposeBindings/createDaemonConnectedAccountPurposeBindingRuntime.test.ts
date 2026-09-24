@@ -46,6 +46,7 @@ import {
   type QualifiedConnectedAccountEstablishedRuntimeOwner,
 } from '../qualifiedConnectedAccountEstablishedRuntimeOwner';
 import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1 } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
+import { materializeQualifiedConnectedAccountLaunchUses } from '../materialize/materializeQualifiedConnectedAccountLaunchUses';
 import type { ConnectedAccountPurposeBindingStore } from './ConnectedAccountPurposeBindingOwner';
 import {
   createDaemonConnectedAccountPurposeBindingRuntime,
@@ -106,6 +107,15 @@ const unavailableLegacyMaterializationOwner = {
 const unavailableDirectMaterial = async (): Promise<never> => {
   throw new Error('direct Team materialization must not be invoked');
 };
+const resolveDevelopmentSourceAuthority = ({
+  pluginId,
+  rootPath,
+}: Readonly<{ pluginId: string; rootPath: string }>) => Object.freeze({
+  kind: 'development' as const,
+  registeredRootId: `purpose-binding-fixture:${pluginId}`,
+  canonicalRoot: rootPath,
+  observedRevision: 1,
+});
 const testAuthentication = PluginConnectedAccountAuthenticationV2Schema.parse({
   defaultModeId: 'api-key',
   modes: [{
@@ -751,6 +761,150 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
     sessionLease.dispose();
   });
 
+  it('materializes a Session direct Team selection only through its materialization origin and the Session Team-binding admission', async () => {
+    const opened: unknown[] = [];
+    const disclosedMember = { service: openAiService, accountId: 'source-member' };
+    const { runtime, invokeDirectMaterial } = createInventoryRuntime({
+      openTeamDirect: async (request) => {
+        if (!('disclosedMember' in request)) {
+          throw new Error('expected a Connected Account purpose direct-material request');
+        }
+        opened.push({
+          resourceId: request.resourceId,
+          consumer: request.consumer,
+          slot: request.slot,
+          disclosedMember: request.disclosedMember,
+        });
+        return {
+          ok: true,
+          payload: {
+            v: 1,
+            domain: 'happier.team-credential-direct-material',
+            homeServerIdentityId: 'home-1',
+            teamId: 'team-1',
+            resourceId: 'resource-1',
+            resourceRevision: 1,
+            recipientAccountId: 'recipient-1',
+            sourceMember: {
+              kind: 'connected_account',
+              service: openAiService,
+              connectedAccountId: 'source-member',
+            },
+            sourceVersion: 'source-version-1',
+            material: {
+              kind: 'qualified_connected_account',
+              credential: { v: 1, values: { token: 'direct-token' } },
+              configuration: null,
+              authenticationModeId: 'api_key',
+            },
+          },
+        } as const;
+      },
+    });
+    const sessionLease = runtime.activateSessionPurposeBindings({
+      sessionId: 'session-team-purpose',
+      purposes: [purpose],
+      bindings: [{ purpose, target: { kind: 'account', account: disclosedMember } }],
+      directMaterialOrigins: [{ purpose, resourceId: 'resource-1', disclosedMember }],
+    });
+
+    await expect(runtime.owner.materialize({
+      purpose,
+      serviceRefs: [openAiService],
+      sessionId: 'session-team-purpose',
+      request: { kind: 'environment', keys: ['OPENAI_API_KEY'] },
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ kind: 'environment', env: { OPENAI_API_KEY: 'sk-team-direct' } });
+    expect(opened[0]).toEqual({
+      resourceId: 'resource-1',
+      consumer: { kind: 'session', sessionId: 'session-team-purpose' },
+      slot: { kind: 'connected_service_purpose', purpose },
+      disclosedMember,
+    });
+    expect(invokeDirectMaterial).toHaveBeenCalledOnce();
+    sessionLease.dispose();
+  });
+
+  it('opens a direct Team purpose target at pre-spawn launch materialization through the Session it launches', async () => {
+    const opened: unknown[] = [];
+    const disclosedMember = { service: openAiService, accountId: 'source-member' };
+    const { runtime, invokeDirectMaterial } = createInventoryRuntime({
+      openTeamDirect: async (request) => {
+        opened.push({ consumer: request.consumer, resourceId: request.resourceId });
+        return {
+          ok: true,
+          payload: {
+            v: 1,
+            domain: 'happier.team-credential-direct-material',
+            homeServerIdentityId: 'home-1',
+            teamId: 'team-1',
+            resourceId: 'resource-1',
+            resourceRevision: 1,
+            recipientAccountId: 'recipient-1',
+            sourceMember: {
+              kind: 'connected_account',
+              service: openAiService,
+              connectedAccountId: 'source-member',
+            },
+            sourceVersion: 'source-version-1',
+            material: {
+              kind: 'qualified_connected_account',
+              credential: { v: 1, values: { token: 'direct-token' } },
+              configuration: null,
+              authenticationModeId: 'api_key',
+            },
+          },
+        } as const;
+      },
+    });
+    const bindings = [{ purpose, target: { kind: 'account' as const, account: disclosedMember } }];
+    const directMaterialOrigins = [{ purpose, resourceId: 'resource-1', disclosedMember }];
+    // The exact pre-spawn subject the daemon spawn owner activates: one
+    // launch operation, whose direct material belongs to the committed Session.
+    const launchLease = runtime.activatePurposeBindings({
+      subject: {
+        kind: 'operation',
+        operationId: 'materialization-identity-1',
+        consumer: purpose.consumer,
+        sessionId: 'session-committed-before-launch',
+        isCurrent: () => true,
+      },
+      purposes: [purpose],
+      bindings,
+      directMaterialOrigins,
+    });
+
+    await expect(materializeQualifiedConnectedAccountLaunchUses({
+      connectedAccountsOwner: runtime.owner,
+      snapshot: {
+        purposes: [purpose],
+        bindings,
+        environmentUses: [{ purpose, serviceRefs: [openAiService], environmentKey: 'OPENAI_API_KEY' }],
+      },
+      exactPurposeBindingSubjectId: launchLease.subjectId,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ OPENAI_API_KEY: 'sk-team-direct' });
+    expect(opened[0]).toEqual({
+      consumer: { kind: 'session', sessionId: 'session-committed-before-launch' },
+      resourceId: 'resource-1',
+    });
+    expect(invokeDirectMaterial).toHaveBeenCalledOnce();
+    launchLease.dispose();
+
+    // An operation that launches no Session has no Home-admitted consumer.
+    expect(() => runtime.activatePurposeBindings({
+      subject: {
+        kind: 'operation',
+        operationId: 'materialization-identity-2',
+        consumer: purpose.consumer,
+        isCurrent: () => true,
+      },
+      purposes: [purpose],
+      bindings,
+      directMaterialOrigins,
+    })).toThrow('connected_account_operation_binding_direct_material_consumer_unsupported');
+  });
+
   it('lists only safe exact refs for an Action form purpose scope', async () => {
     const runtimeOwner = createSelectionRuntime(emptyStore());
 
@@ -1162,12 +1316,12 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
         id: purpose.consumer.localId,
         qualifiedId: `${purpose.consumer.pluginId}/agents/${purpose.consumer.localId}`,
       },
-      generation: 'generation-1',
+      occurrenceId: 'generation-1',
       correlationId: 'correlation-1',
       surface: 'agent',
       session: { id: 'session-1' },
       signal: invocationController.signal,
-      isGenerationCurrent: () => !invocationController.signal.aborted,
+      isOccurrenceCurrent: () => !invocationController.signal.aborted,
     }, [{
       purpose: purpose.purpose,
       serviceRefs: [openAiService],
@@ -1281,6 +1435,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
     const registry = await resolveExecutablePluginRuntimeRegistry({
       happyHomeDir,
       pluginIds: [githubService.pluginId],
+      resolveDevelopmentSourceAuthority,
     });
     let generationCurrent = true;
     const release = vi.fn(async () => undefined);
@@ -1348,6 +1503,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
     const configuration = {
       read: vi.fn(async () => null),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1565,6 +1721,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
     const registry = await resolveExecutablePluginRuntimeRegistry({
       happyHomeDir,
       pluginIds: [openAiService.pluginId],
+      resolveDevelopmentSourceAuthority,
     });
     let generationCurrent = true;
     const release = vi.fn(async () => undefined);
@@ -1619,6 +1776,7 @@ describe('createDaemonConnectedAccountPurposeBindingRuntime', () => {
         configuration: {
           read: vi.fn(async () => null),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },

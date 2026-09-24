@@ -15,6 +15,7 @@ import {
   type McpServerCatalogEntryV1,
   type McpServersSettingsV1,
   type ResolveEffectiveServersV1Result,
+  isSharedSavedSecretReferenceV1,
 } from '@happier-dev/protocol';
 
 import type { McpServerConfig } from '@/agent';
@@ -28,6 +29,8 @@ import {
 } from '@/mcp/servers/resolveMcpValueRefPlaintext';
 import { materializeMcpServerConfigRecord } from '@/mcp/servers/materializeMcpServerConfigRecord';
 import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { probeMcpStdioServerTools } from '@/mcp/servers/probeMcpStdioServerTools';
 import { redactMcpServerProbeError } from '@/mcp/servers/redactMcpServerProbeError';
 import { detectProviderMcpServers } from '@/mcp/providerDetection/detectProviderMcpServers';
@@ -52,6 +55,26 @@ function implicitBindingForMachine(params: Readonly<{ serverId: string; machineI
     createdAt: params.nowMs,
     updatedAt: params.nowMs,
   };
+}
+
+/**
+ * The shared Saved Secret references this test would materialize. A test is a
+ * new operation, so these are admitted against the Home's current catalog
+ * before use rather than read from a snapshot a missed change hint left behind.
+ */
+function listTestSharedSavedSecretReferences(resolved: ResolveEffectiveServersV1Result): Array<{ ref: string }> {
+  const refs = new Set<string>();
+  for (const item of Object.values(resolved.serversByName)) {
+    if (item.enabled !== true) continue;
+    const valueRefs = [
+      ...Object.values(item.config.env),
+      ...Object.values(item.config.remote?.headers ?? {}),
+    ];
+    for (const valueRef of valueRefs) {
+      if (valueRef.t === 'savedSecret' && isSharedSavedSecretReferenceV1(valueRef.secretId)) refs.add(valueRef.secretId);
+    }
+  }
+  return [...refs].map((ref) => ({ ref }));
 }
 
 function resolveServerForTestRequest(params: Readonly<{
@@ -182,14 +205,31 @@ export function registerMachineMcpServersRpcHandlers(params: Readonly<{
         ? deriveSettingsSecretsKeyForCredentials(credentials)
         : null;
       const settingsSecretsReadKeys = deriveSettingsSecretsReadKeysForCredentials(credentials);
+      let sharedCatalog = {
+        resources: accountSettingsContext?.savedSecretResources,
+        state: accountSettingsContext?.savedSecretCatalogState,
+      };
+      const sharedReferences = listTestSharedSavedSecretReferences(resolution.resolved);
+      if (sharedReferences.length > 0) {
+        try {
+          const admitted = await refreshSavedSecretCatalogForOperation({
+            expectedScopeKey: resolveAccountSettingsScopeKeyForToken(credentials.token),
+            references: sharedReferences,
+          });
+          sharedCatalog = { resources: admitted.savedSecretResources, state: admitted.savedSecretCatalogState };
+        } catch (error) {
+          const durationMs = Math.max(0, nowMs(params.deps?.nowMs) - startedAt);
+          return { ok: false, errorCode: 'materialization_failed', error: redactErrorText(error), durationMs };
+        }
+      }
       const savedSecretMaterializer = createSavedSecretMaterializerV1({
         accountSettings: settingsObj,
         settingsSecretsReadKeys,
-        resources: accountSettingsContext?.savedSecretResources,
-        resourceCatalogState: accountSettingsContext?.savedSecretCatalogState,
+        resources: sharedCatalog.resources,
+        resourceCatalogState: sharedCatalog.state,
       });
 
-      let mcpConfig: { serverName: string; config: McpServerConfig };
+      let mcpConfig: { serverName: string; config: McpServerConfig; cleanup: () => void };
       try {
         const materialized = await materializeMcpServerConfigRecord({
           resolved: resolution.resolved,
@@ -202,8 +242,11 @@ export function registerMachineMcpServersRpcHandlers(params: Readonly<{
           strictMode: true,
         });
         const config = materialized.mcpServers[resolution.serverName];
-        if (!config) throw new Error('materialize_missing_config');
-        mcpConfig = { serverName: resolution.serverName, config };
+        if (!config) {
+          materialized.cleanup();
+          throw new Error('materialize_missing_config');
+        }
+        mcpConfig = { serverName: resolution.serverName, config, cleanup: materialized.cleanup };
       } catch (error) {
         const durationMs = Math.max(0, nowMs(params.deps?.nowMs) - startedAt);
         return { ok: false, errorCode: 'materialization_failed', error: redactErrorText(error), durationMs };
@@ -229,6 +272,8 @@ export function registerMachineMcpServersRpcHandlers(params: Readonly<{
               ? 'mcp_list_tools_failed'
               : 'mcp_list_tools_failed';
         return { ok: false, errorCode: code, error: message, durationMs };
+      } finally {
+        mcpConfig.cleanup();
       }
     },
   );

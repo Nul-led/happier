@@ -660,11 +660,13 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         }).success).toBe(true);
     });
 
-    it("GET /v2/sessions refuses a released layout-zero shared projection until owner migration", async () => {
+    it("GET /v2/sessions omits one unmigrated layout-zero share and keeps the rest of the page", async () => {
         sessionFindMany
             .mockResolvedValueOnce([
                 {
-                    ...pagedSessionRow("legacy-shared"),
+                    ...pagedSessionRow("legacy-shared", {
+                        meaningfulActivityAt: new Date(9_000),
+                    }),
                     accountId: "owner",
                     metadata: "legacy-whole-bag",
                     metadataLayoutVersion: 0,
@@ -680,17 +682,25 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     }],
                     currentStorageState: "hosted",
                 },
+                pagedSessionRow("owned-current", {
+                    meaningfulActivityAt: new Date(8_000),
+                }),
             ])
             .mockResolvedValueOnce([]);
 
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
-        const { reply, response: res } = await route.invoke({ query: { limit: 1 } });
+        const { reply, response: res } = await route.invoke({ query: { limit: 2 } });
 
-        expect(reply.statusCode).toBe(409);
-        expect(res).toEqual({
-            error: "Session metadata privacy upgrade required",
-            code: "metadata_privacy_upgrade_required",
-        });
+        expect(reply.statusCode).toBe(200);
+        const payload = res as {
+            sessions: ReadonlyArray<{ id: string }>;
+            metadataUpgradeRequiredCount?: number;
+        };
+        // The readable row survives, the unreadable one is omitted, and the
+        // omission stays visible instead of silently shrinking the page.
+        expect(payload.sessions.map((session) => session.id)).toEqual(["owned-current"]);
+        expect(payload.metadataUpgradeRequiredCount).toBe(1);
+        expect(V2SessionListResponseSchema.safeParse(payload).success).toBe(true);
     });
 
     it("exposes the materialized turn observation time on v2 session rows", () => {

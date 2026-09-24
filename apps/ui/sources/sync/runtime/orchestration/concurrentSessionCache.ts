@@ -12,7 +12,8 @@ import { Encryption } from '@/sync/encryption/encryption';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchAndApplyMachines, type MachineDataKeyCacheEntry } from '@/sync/engine/machines/syncMachines';
 import { fetchAndApplySessions } from '@/sync/engine/sessions/sessionSnapshot';
-import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
+import { resolveUiClientEncryptionRequirementForScope } from '@/sync/domains/settings/clientEncryptionRequirement';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import {
     getEffectiveServerSelectionFromRawSettings,
     type RawServerSelectionSettings,
@@ -35,6 +36,7 @@ import {
 } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import {
     getAppliedActiveServerId,
+    isAppliedActiveServerRuntimeAvailable,
     subscribeAppliedActiveServer,
     subscribeApplyingActiveServer,
 } from '@/sync/runtime/orchestration/connectionManager';
@@ -64,11 +66,12 @@ import {
     type ManagedConnectionTransport,
     type TransportDisconnectEvent,
 } from '@happier-dev/connection-supervisor';
-import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import type { ClientEncryptionRequirement, HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import {
     reportServerAuthFailed,
     reportServerUnreachable,
     acquireServerReachabilitySupervisor,
+    invalidateServerReachabilitySupervisor,
     subscribeServerReachabilityNetworkAllowed,
     subscribeServerReachabilityState,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
@@ -78,7 +81,7 @@ import {
     resolveServerScopedTransport,
     type ResolvedServerScopedTransport,
 } from './serverScopedRpc/resolveServerScopedTransport';
-import { startNativeSshTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeSshTunnels/runtime';
+import { startNativeLoopbackTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeLoopbackTunnels/runtime';
 import { subscribeIrohHomeTunnelRecoveryRequired } from '@/sync/runtime/nativeIrohTunnels';
 import {
     createConcurrentServerSocketTransport,
@@ -112,6 +115,7 @@ import {
     resolveOrdinarySessionListContinuation,
     type OrdinarySessionListFrontier,
 } from '@/sync/engine/sessions/ordinarySessionListFrontier';
+import type { OrdinarySessionListLifecycle } from '@/sync/domains/session/listing/ordinarySessionListHomeState';
 
 type ConcurrentTarget = Readonly<{
     id: string;
@@ -155,6 +159,8 @@ type ManagedConcurrentServer = {
     refreshAbortController: AbortController | null;
     refreshTimer: ReturnType<typeof setTimeout> | null;
     sessionListFrontier: OrdinarySessionListFrontier;
+    /** One applied ordinary page has landed for this Home since it was managed. */
+    hasFetchedSessionListSnapshot: boolean;
     /**
      * Time of this Home's last successful ordinary Session-list observation. Kept in memory and
      * published to the store only on a phase transition, so a healthy Home refreshing every few
@@ -408,6 +414,25 @@ function publishConcurrentSessionListObservation(params: Readonly<{
     });
 }
 
+function publishConcurrentSessionListTargetObservation(params: Readonly<{
+    target: ConcurrentTarget;
+    phase: SessionListHomeObservation['phase'];
+}>): void {
+    const serverId = normalizeServerId(params.target.id);
+    if (!serverId) return;
+    const previous = storage.getState().concurrentSessionListCacheByServerId?.[serverId];
+    updateConcurrentSessionListCache({
+        serverId,
+        entry: {
+            serverName: String(params.target.serverName ?? '').trim() || null,
+            listObservation: {
+                phase: params.phase,
+                lastSuccessAt: previous?.listObservation?.lastSuccessAt ?? null,
+            },
+        },
+    });
+}
+
 /**
  * One successful Session-list observation for this exact Home. The timestamp always advances in
  * memory; the store is only rewritten when the published phase is not already `ready`, because a
@@ -563,7 +588,10 @@ function clearConcurrentSessionListCache(serverIdRaw: string): void {
     // The active ordinary Sync publishes its observation through this existing shared map. A
     // concurrent-runtime reconciliation stops managing that Home, but must not erase the active
     // owner's currentness fact while doing so.
-    if (areServerProfileIdentifiersEquivalent(serverId, activeServerId)) return;
+    if (
+        isAppliedActiveServerRuntimeAvailable()
+        && areServerProfileIdentifiersEquivalent(serverId, activeServerId)
+    ) return;
     storage.setState((state) => {
         const current = state.concurrentSessionListCacheByServerId ?? {};
         if (!(serverId in current)) return state;
@@ -625,10 +653,7 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
     const continuation = resolveOrdinarySessionListContinuation(previousFrontier);
     try {
         const result = await fetchAndApplySessions({
-            clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
-                syncedSettings: storage.getState().settings,
-                localSettings: storage.getState().settings,
-            }),
+            clientEncryptionRequirement: resolveEntryClientEncryptionRequirement(entry),
             serverId: entry.id,
             sessionListCursor: continuation?.kind === 'ordinary' ? continuation.cursor : null,
             sessionListAttentionCursor: continuation?.kind === 'attention' ? continuation.cursor : null,
@@ -666,6 +691,7 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
             log: { log: () => {} },
         });
         if (!result.current || !shouldContinue()) return;
+        entry.hasFetchedSessionListSnapshot = true;
         entry.sessionListFrontier = advanceOrdinarySessionListFrontier({
             previous: continuation ? previousFrontier : EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
             continuation,
@@ -719,10 +745,109 @@ async function refreshServerSnapshot(entry: ManagedConcurrentServer, signal: Abo
     }
 }
 
+/**
+ * Whether this runtime owns the Home's ordinary `/v2/sessions` corpus.
+ *
+ * Sync owns the applied active Home's ordinary corpus and this cache owns every
+ * other managed Home's. A filter mounted on such a Home reads the incumbent
+ * frontier through this seam instead of opening a second paginator over the
+ * same membership.
+ */
+export function isConcurrentOrdinarySessionListHome(serverIdRaw: string): boolean {
+    const serverId = normalizeServerId(serverIdRaw);
+    return serverId.length > 0 && managedServers.has(serverId);
+}
+
+/** This Home's ordinary list lifecycle, in the shape its single projector reads. */
+export function readConcurrentOrdinarySessionListLifecycle(
+    serverIdRaw: string,
+): OrdinarySessionListLifecycle {
+    const serverId = normalizeServerId(serverIdRaw);
+    const entry = managedServers.get(serverId);
+    if (!entry) {
+        return {
+            serverId: serverId || null,
+            hasFetchedSnapshot: false,
+            fetchInFlight: false,
+            fetchMoreInFlight: false,
+            frontier: EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+        };
+    }
+    const inFlight = entry.refreshInFlight !== null;
+    return {
+        serverId,
+        hasFetchedSnapshot: entry.hasFetchedSessionListSnapshot,
+        fetchInFlight: inFlight && !entry.hasFetchedSessionListSnapshot,
+        fetchMoreInFlight: inFlight && entry.hasFetchedSessionListSnapshot,
+        frontier: entry.sessionListFrontier,
+    };
+}
+
+/** Advance this Home's incumbent ordinary frontier. There is no second cursor. */
+export async function loadNextConcurrentOrdinarySessionListPage(serverIdRaw: string): Promise<void> {
+    const entry = managedServers.get(normalizeServerId(serverIdRaw));
+    if (!entry) return;
+    if (!resolveOrdinarySessionListContinuation(entry.sessionListFrontier)) return;
+    await runRefresh(entry, 'other');
+}
+
+/** Replace this Home's ordinary corpus from page one. */
+export async function refreshConcurrentOrdinarySessionList(serverIdRaw: string): Promise<void> {
+    const entry = managedServers.get(normalizeServerId(serverIdRaw));
+    if (!entry) return;
+    entry.sessionListFrontier = EMPTY_ORDINARY_SESSION_LIST_FRONTIER;
+    await runRefresh(entry, 'other');
+}
+
 export function isConcurrentSessionListQueryHomeOnline(serverIdRaw: string): boolean {
     const serverId = normalizeServerId(serverIdRaw);
     const entry = managedServers.get(serverId);
     return Boolean(entry && entry.reachabilityState.phase === 'online');
+}
+
+export type ConcurrentSessionListQueryHomeAvailability = 'online' | 'pending' | 'offline';
+
+/**
+ * Query availability projected from this secondary runtime's existing reachability and
+ * Session-list lifecycle. `pending` covers initial acquisition without inventing a second
+ * transport-state owner for consumers.
+ */
+export function getConcurrentSessionListQueryHomeAvailability(
+    serverIdRaw: string,
+): ConcurrentSessionListQueryHomeAvailability {
+    const serverId = normalizeServerId(serverIdRaw);
+    const entry = managedServers.get(serverId);
+    if (entry) {
+        if (entry.reachabilityState.phase === 'online') return 'online';
+        if (entry.reachabilityState.phase === 'idle' || entry.reachabilityState.phase === 'connecting') {
+            return 'pending';
+        }
+        return 'offline';
+    }
+    const phase = storage.getState().concurrentSessionListCacheByServerId?.[serverId]?.listObservation?.phase;
+    return phase === 'loading' || phase === 'refreshing' ? 'pending' : 'offline';
+}
+
+/**
+ * Explicit user retry for a secondary Home. The concurrent-cache owner keeps
+ * its existing reachability lease and reconciliation lifecycle authoritative;
+ * callers only ask it to invalidate that exact Home's probe and reconcile the
+ * selected target set.
+ */
+export async function retryConcurrentSessionListQueryHome(serverIdRaw: string): Promise<void> {
+    const serverId = normalizeServerId(serverIdRaw);
+    if (!serverId) return;
+    const entry = managedServers.get(serverId);
+    if (entry) {
+        await invalidateServerReachabilitySupervisor({
+            serverUrl: entry.serverUrl,
+            token: entry.credentials.token,
+        });
+        if (isManagedServerActive(entry) && entry.reachabilityState.phase === 'online') {
+            queueRefresh(entry);
+        }
+    }
+    scheduleReconcile();
 }
 
 export async function fetchConcurrentSessionListQueryPage(
@@ -749,12 +874,12 @@ export async function fetchConcurrentSessionListQueryPage(
         && entry.reachabilityState.phase === 'online'
     );
     return fetchAndApplySessions({
-        clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
-            syncedSettings: storage.getState().settings,
-            localSettings: storage.getState().settings,
-        }),
+        clientEncryptionRequirement: resolveEntryClientEncryptionRequirement(entry),
         serverId,
         source: page.source,
+        // Each membership is a distinct reader of this Home: an ad-hoc row-only
+        // read must not abort the mounted list's in-flight hydration.
+        sessionListReadScopeId: page.membership,
         sessionListPageSize: page.limit ?? (page.source.kind === 'query' ? page.source.body.limit : undefined),
         sessionListCursor: page.cursor,
         sessionListAttentionCursor: page.attentionCursor,
@@ -791,6 +916,25 @@ export async function fetchConcurrentSessionListQueryPage(
         applySessions: () => {},
         log: { log: () => {} },
     });
+}
+
+/**
+ * A concurrent Home is read under its own Account's encryption requirement, never
+ * the focused Account's settings projection: switching focus must not change which
+ * of this Home's Sessions its reader admits. An Account the credential cannot name
+ * is read under the strictest requirement rather than borrowing another Account's.
+ */
+function resolveEntryClientEncryptionRequirement(entry: ManagedConcurrentServer): ClientEncryptionRequirement {
+    let accountId: string | null = null;
+    try {
+        accountId = parseToken(entry.credentials.token);
+    } catch {
+        accountId = null;
+    }
+    const scope = createServerAccountScope(entry.id, accountId);
+    return scope
+        ? resolveUiClientEncryptionRequirementForScope({ scope, focusedSettings: storage.getState().settings })
+        : 'require_e2ee';
 }
 
 function isManagedServerActive(entry: ManagedConcurrentServer): boolean {
@@ -952,6 +1096,7 @@ async function createManagedServer(
         refreshAbortController: null,
         refreshTimer: null,
         sessionListFrontier: EMPTY_ORDINARY_SESSION_LIST_FRONTIER,
+        hasFetchedSessionListSnapshot: false,
         // Recreating the managed entry (credential rotation, carrier change) does not un-observe
         // this Home: its retained rows keep the success time already published for that exact
         // serverId, so the first attempt of the new entry cannot report "never observed".
@@ -981,15 +1126,19 @@ async function createManagedServer(
         }
 
         if (state.phase !== 'online') {
+            const isInitialConnection = state.phase === 'idle' || state.phase === 'connecting';
             const cachedMachines = storage.getState().machineListByServerId?.[entry.id] ?? null;
             updateConcurrentMachineListCache({
                 serverId: entry.id,
                 machines: cachedMachines,
-                status: 'error',
+                status: isInitialConnection ? 'loading' : 'error',
             });
             // Retained rows stay visible; the shared context owner labels them as this Home's
             // last known truth rather than letting a surface guess or drop them.
-            publishConcurrentSessionListObservation({ entry, phase: 'offline' });
+            publishConcurrentSessionListObservation({
+                entry,
+                phase: isInitialConnection ? 'loading' : 'offline',
+            });
             void entry.socketTransport?.disconnect({ intentional: true });
             return;
         }
@@ -1125,7 +1274,7 @@ async function acquireConcurrentHomeTransport(
     // Reuse the existing single AppState owner for every native loopback
     // carrier; concurrent Homes do not create a second lifecycle mount.
     if (target.homeConnectionDescriptor?.endpoints.some((endpoint) => endpoint.kind === 'iroh')) {
-        startNativeSshTunnelRuntimeAppStateLifecycle();
+        startNativeLoopbackTunnelRuntimeAppStateLifecycle();
     }
     return await resolveServerScopedTransport({
         profile: {
@@ -1137,15 +1286,18 @@ async function acquireConcurrentHomeTransport(
     });
 }
 
-async function reconcileConcurrentServers(requestRevision: number): Promise<void> {
-    if (!started || requestRevision !== reconcileRequestRevision) return;
+function resolveDesiredConcurrentTargets(): ConcurrentTarget[] {
     const profiles = listServerProfiles();
-    const activeServerId = getAppliedActiveServerId();
+    const appliedServerId = getAppliedActiveServerId();
+    // Once the focused switch begins, its old singleton has already been
+    // retired. The applying Home is the only Home that must stay out of the
+    // secondary cache; the former applied Home can now be reconciled there.
+    const activeServerId = applyingActiveServerId || appliedServerId;
     const stagedActiveServerId = normalizeServerId(getActiveServerSnapshot().serverId);
     const hasUnappliedStagedTarget = stagedActiveServerId
-        && !areServerProfileIdentifiersEquivalent(stagedActiveServerId, activeServerId);
+        && !areServerProfileIdentifiersEquivalent(stagedActiveServerId, appliedServerId);
     const selectionSettings = readConcurrentSelectionSettings();
-    const targets = resolveConcurrentTargets({
+    return resolveConcurrentTargets({
         activeServerId,
         profiles: profiles.map((profile) => ({
             id: profile.id,
@@ -1161,6 +1313,17 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         !areServerProfileIdentifiersEquivalent(target.id, applyingActiveServerId)
         && (!hasUnappliedStagedTarget || !areServerProfileIdentifiersEquivalent(target.id, stagedActiveServerId))
     ));
+}
+
+async function reconcileConcurrentServers(requestRevision: number): Promise<void> {
+    if (!started || requestRevision !== reconcileRequestRevision) return;
+    const targets = resolveDesiredConcurrentTargets();
+
+    for (const target of targets) {
+        if (!managedServers.has(target.id)) {
+            publishConcurrentSessionListTargetObservation({ target, phase: 'loading' });
+        }
+    }
 
     const desiredById = new Map(targets.map((target) => [target.id, target]));
 
@@ -1235,6 +1398,7 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
                 machines: storage.getState().machineListByServerId?.[target.id] ?? null,
                 status: 'error',
             });
+            publishConcurrentSessionListTargetObservation({ target, phase: 'offline' });
             return;
         }
         if (!started || requestRevision !== reconcileRequestRevision) {
@@ -1247,6 +1411,9 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         } catch {
             // Construction rollback is exact and local; a later reconciliation
             // retries this Home without poisoning other secondary runtimes.
+            if (started && requestRevision === reconcileRequestRevision) {
+                publishConcurrentSessionListTargetObservation({ target, phase: 'offline' });
+            }
             return;
         }
         // Reconcile the complete descriptor through this secondary Home's
@@ -1344,6 +1511,11 @@ export function startConcurrentSessionCacheSync(): void {
     applyingActiveServerUnsubscribe = subscribeApplyingActiveServer((nextServerId, _generation = -1) => {
         applyingActiveServerId = normalizeServerId(nextServerId);
         releaseFocusedSecondaryOwnership(nextServerId, false);
+        for (const target of resolveDesiredConcurrentTargets()) {
+            if (!managedServers.has(target.id)) {
+                publishConcurrentSessionListTargetObservation({ target, phase: 'loading' });
+            }
+        }
         scheduleReconcile();
     });
     activeServerUnsubscribe = subscribeAppliedActiveServer((nextServerIdRaw, _generation = -1) => {

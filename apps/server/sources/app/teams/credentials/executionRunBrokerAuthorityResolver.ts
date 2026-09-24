@@ -61,6 +61,9 @@ export function createExecutionRunBrokerCurrentnessResolver(input: Readonly<{
             intent: parsed.data.intent,
             runtimeState: parsed.data.runtimeState,
             activeTurnId: parsed.data.activeTurnId ?? null,
+            // The Run owner's own accepted selection (null: it inherits its
+            // parent Session's), for broker admission to authorize against.
+            teamCredentialProviderModel: parsed.data.teamCredentialProviderModel,
         };
     };
 }

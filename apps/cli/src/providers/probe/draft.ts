@@ -23,6 +23,7 @@ import {
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { readProviderSettingsForCli } from '../settings/read';
 import { resolveProviderConnectionForMachine } from '../registry/resolve';
 import { collectProviderConnectionDnsEvidence } from '../registry/dnsEvidence';
@@ -193,8 +194,12 @@ export function createProviderDraftProbeService(input: Readonly<{
   maxReplayEntries?: number;
   beforeAuthorizationConsume?: () => void | Promise<void>;
   openTeamDirect?: Parameters<typeof resolveRuntimeProviderCredential>[0]['openTeamDirect'];
+  /** The canonical operation-admission refresh; injectable for tests only. */
+  refreshSavedSecretCatalogForOperation?: typeof refreshSavedSecretCatalogForOperation;
 }>) {
   const now = input.now ?? Date.now;
+  const refreshForOperation = input.refreshSavedSecretCatalogForOperation
+    ?? refreshSavedSecretCatalogForOperation;
   const createAuthorizationId = input.createAuthorizationId ?? randomUUID;
   const authorizationTtlMs = Math.min(
     DEFAULT_AUTHORIZATION_TTL_MS,
@@ -341,6 +346,38 @@ export function createProviderDraftProbeService(input: Readonly<{
     }),
   };
 
+  /**
+   * Admits this draft probe against Home-current shared material.
+   *
+   * A hydrated catalog row is not authorization for a *new* operation:
+   * `AccountChange` is only a wake-up hint, so a shared Saved Secret revoked
+   * since hydration would otherwise still reach the provider. The batch
+   * refresh in `hydrateSavedSecretCatalog` is the single owner of that
+   * decision and returns the cached snapshot untouched for a personal
+   * reference, so a personal-secret draft probe still never touches the
+   * network.
+   */
+  async function admitProbeOperation(
+    request: DaemonProviderDraftProbeRequestV1,
+    lifetime: ProviderOperationLifetime,
+  ) {
+    if (request.savedSecretId === null) return { ok: true as const };
+    const expectedScopeKey = input.getAccountSettingsSnapshot()?.scopeKey;
+    if (expectedScopeKey === undefined || expectedScopeKey.length === 0) {
+      return { ok: true as const };
+    }
+    try {
+      await refreshForOperation({
+        expectedScopeKey,
+        references: [{ ref: request.savedSecretId }],
+        ...(lifetime.signal ? { signal: lifetime.signal } : {}),
+      });
+      return { ok: true as const };
+    } catch {
+      return { ok: false as const, error: error(request, 'provider_secret_missing') };
+    }
+  }
+
   async function prepare(
     request: DaemonProviderDraftProbeRequestV1,
     lifetime: ProviderOperationLifetime,
@@ -348,6 +385,8 @@ export function createProviderDraftProbeService(input: Readonly<{
     if (!reserveAction(request)) {
       return { ok: false as const, error: error(request, 'provider_probe_authorization_invalid') };
     }
+    const admitted = await admitProbeOperation(request, lifetime);
+    if (!admitted.ok) return admitted;
     const snapshot = input.getAccountSettingsSnapshot();
     if (!snapshot) return { ok: false as const, error: error(request, 'provider_probe_authorization_invalid') };
     const facts = await resolveDraftFacts({

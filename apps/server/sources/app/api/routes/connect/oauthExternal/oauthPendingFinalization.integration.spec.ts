@@ -15,6 +15,7 @@ import { registerExternalAuthFinalizeKeylessRoute } from "./registerExternalAuth
 import { auth } from "@/app/auth/auth";
 import type { AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
 import { HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 } from "@happier-dev/protocol/changes";
+import { digestTeamInvitationToken, mintTeamInvitationToken } from "@/app/teams/invitations/token";
 
 describe("OAuth pending finalization mutation boundary", () => {
     let harness: LightSqliteHarness | undefined;
@@ -49,6 +50,8 @@ describe("OAuth pending finalization mutation boundary", () => {
             profile?: Readonly<Record<string, unknown>>;
             initiatingEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
             providerReset?: boolean;
+            /** Mirrors a provider whose access token is identity-proof-only (`accessTokenCustody`). */
+            omitAccessToken?: boolean;
         }> = {},
     ) {
         const providerId = options.providerId ?? "github";
@@ -125,7 +128,11 @@ describe("OAuth pending finalization mutation boundary", () => {
                 proofHash: createHash("sha256").update(proof, "utf8").digest("hex"),
             }),
             securityBinding: { provider: runtime.reference, purpose: null, connection: null, admission: null },
-            accessTokenEnc: privacyKit.encodeBase64(encryptString(mode === "connect" ? prefix : [...prefix, "token"], "token")),
+            ...(options.omitAccessToken ? {} : {
+                accessTokenEnc: privacyKit.encodeBase64(
+                    encryptString(mode === "connect" ? prefix : [...prefix, "token"], "token"),
+                ),
+            }),
             profileEnc: privacyKit.encodeBase64(encryptString([...prefix, "profile"], JSON.stringify({
                 ...profile, avatar_url: "https://avatar.example.test/image", name: "Octocat" }))),
         }) } });
@@ -161,6 +168,20 @@ describe("OAuth pending finalization mutation boundary", () => {
         });
         return { account, pending, submit };
     }
+
+    it.each(["connect", "keyed"] as const)(
+        "finalizes a %s continuation that retains no access token",
+        async (mode) => {
+            // An identity-proof-only provider persists none, and the finalizer must still
+            // link the identity rather than refuse the continuation as unreadable.
+            const { pending, submit } = await fixture(mode, { omitAccessToken: true });
+            vi.stubGlobal("fetch", async () => new Response(null, { status: 404 }));
+            const response = await submit();
+            expect(response.statusCode, response.body).toBe(200);
+            expect(await db.accountIdentity.count()).toBe(1);
+            expect(await db.repeatKey.findUnique({ where: { key: pending } })).toBeNull();
+        },
+    );
 
     it.each(["connect", "keyed"] as const)("allows only one concurrent use of a %s pending proof", async (mode) => {
         const { pending, submit } = await fixture(mode);
@@ -206,6 +227,28 @@ describe("OAuth pending finalization mutation boundary", () => {
             kind: "account",
             entityId: HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1,
         } } })).toMatchObject({ cursor: 1, hint: null });
+    });
+
+    it("refuses a provider reset of a suspended Account after complete proof", async () => {
+        const { account: replaced, pending, submit } = await fixture("keyed", { providerReset: true });
+        await db.account.update({
+            where: { id: replaced.id },
+            data: { homeRole: "owner", status: "suspended" },
+        });
+        vi.stubGlobal("fetch", async () => new Response(null, { status: 404 }));
+
+        const response = await submit();
+
+        // A Home hold survives provider recovery: no replacement Account, no
+        // transferred Home role, and no present-user credential.
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toEqual({ error: "account-disabled" });
+        await expect(db.account.count()).resolves.toBe(1);
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: replaced.id },
+            select: { status: true, homeRole: true },
+        })).resolves.toEqual({ status: "suspended", homeRole: "owner" });
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.not.toBeNull();
     });
 
     it("keeps the one-shot pending proof when the replaced Account disappears before the reset transaction", async () => {
@@ -315,6 +358,79 @@ describe("OAuth pending finalization mutation boundary", () => {
         expect(await db.account.findUnique({ where: { id: account.id } })).toEqual(account);
         expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
         expect(await db.repeatKey.findUnique({ where: { key: pending } })).not.toBeNull();
+    });
+
+    /**
+     * A Team admission carried on the Home's OWN provider. `providerOrigin: "home"`
+     * means the method is one of this Home's authentication methods, so the Home
+     * method decision still applies to it; only a Team-owned connection replaces it.
+     */
+    async function homeOwnedTeamAdmissionFixture() {
+        const { account, pending, submit } = await fixture("connect");
+        const team = await db.team.create({ data: { name: "Home-provider Team", admissionMode: "invite_only" } });
+        await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: account.id, role: "member", status: "active",
+        } });
+        const token = mintTeamInvitationToken();
+        const invitation = await db.teamInvitation.create({ data: {
+            teamId: team.id,
+            tokenHash: Uint8Array.from(digestTeamInvitationToken(token)),
+            role: "member",
+            historyAccess: "from_membership",
+            expiresAt: new Date(Date.now() + 60_000),
+        } });
+        const runtime = (await resolveOAuthRuntimeById(process.env, "github"))!;
+        const existing = await db.repeatKey.findUniqueOrThrow({ where: { key: pending } });
+        const value = JSON.parse(existing.value);
+        await db.repeatKey.update({ where: { key: pending }, data: { value: JSON.stringify({
+            ...value,
+            securityBinding: {
+                provider: runtime.reference,
+                purpose: "team_admission",
+                connection: null,
+                admission: {
+                    kind: "team_invitation",
+                    teamId: team.id,
+                    providerId: "github",
+                    providerOrigin: "home",
+                    connectionId: null,
+                    connectionRevision: null,
+                    admissionMode: "invite_only",
+                    invitationId: invitation.id,
+                    tokenHash: Buffer.from(digestTeamInvitationToken(token)).toString("hex"),
+                },
+            },
+        }) } });
+        return { account, pending, submit };
+    }
+
+    it("admits a Team admission on a Home-owned provider while that Home method stays enabled", async () => {
+        const { account, pending, submit } = await homeOwnedTeamAdmissionFixture();
+        vi.stubGlobal("fetch", async () => new Response(null, { status: 404 }));
+
+        const response = await submit();
+
+        expect(response.statusCode, response.body).toBe(200);
+        await expect(db.accountIdentity.count({ where: { accountId: account.id, provider: "github" } })).resolves.toBe(1);
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.toBeNull();
+    });
+
+    it("refuses a Team admission on a Home-owned provider once the Home disables that method", async () => {
+        const { account, pending, submit } = await homeOwnedTeamAdmissionFixture();
+        await db.homeGovernancePolicy.create({ data: {
+            id: "home",
+            authenticationPolicy: { v: 1, enabledMethodIds: ["key_challenge"] },
+        } });
+        vi.stubGlobal("fetch", async () => new Response(null, { status: 404 }));
+
+        const response = await submit();
+
+        // A Team invitation does not widen the Home's own authentication methods:
+        // the ordinary gate still owns a Home-origin provider.
+        expect(response.statusCode, response.body).toBe(400);
+        expect(response.json()).toEqual({ error: "invalid-pending" });
+        await expect(db.accountIdentity.count({ where: { accountId: account.id, provider: "github" } })).resolves.toBe(0);
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.not.toBeNull();
     });
 
     it("links a Team-owned provider to the existing Account and retains its current Home authentication evidence", async () => {

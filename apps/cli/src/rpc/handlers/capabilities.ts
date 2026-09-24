@@ -38,7 +38,13 @@ import {
   PluginUpdatePolicyV1Schema,
 } from '@happier-dev/protocol';
 import type { AgentProviderCatalogObservationService } from '@/providers/probe/agentCatalogObservation';
+import {
+    isDynamicModelProbeEnabled,
+    resolveNativeCatalogBearer,
+    type NativeCatalogBearer,
+} from '@/providers/probe/nativeCatalogCredential';
 import { ProviderProbeCancelledError } from '@/providers/probe/client';
+import { resolveNativeCatalogObservationContext } from '@/providers/probe/resolveNativeCatalogObservationContext';
 import { resolveQualifiedPurposeBindingSnapshotForAgentSpawn } from '@/daemon/connectedServices/requestAuth/prepareConnectedAccountRequestAuthForSpawn';
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import { randomUUID } from 'node:crypto';
@@ -72,6 +78,7 @@ import {
     readUserPluginChangeStatus,
     requestUserPluginChange,
 } from '@/plugins/daemon/changeClient';
+import { controlDaemonPluginDevelopment } from '@/daemon/controlClient';
 import { readCurrentDaemonPluginCatalog } from '@/plugins/daemon/currentCatalog';
 import { setInstalledPluginEnabled } from '@/plugins/store/enabled';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
@@ -105,6 +112,7 @@ type CliProbeDependencies = Readonly<{
     agentRegistrySnapshot?: ReturnType<typeof getResolvedContributionRegistry>;
     activatePurposeBindings?: ConnectedAccountPurposeBindingOwner['activatePurposeBindings'];
     isAgentRegistryCurrent?: () => boolean;
+    resolveNativeCatalogBearer?: (input: Parameters<typeof resolveNativeCatalogBearer>[0]) => Promise<NativeCatalogBearer | null>;
 }>;
 
 type ConnectedServiceProbeEnvironment = Readonly<{
@@ -292,6 +300,22 @@ async function invokeCliProbeOrInstallMethod(
         { ...params, agentId },
         { requireCredentials: requiresMaterializedAuth },
     );
+    const modelConfig = method === 'probeModels' ? getAgentModelConfig(agentId) : null;
+    if (method === 'probeModels' && !isDynamicModelProbeEnabled({
+        modelConfig,
+        accountSettings: probeContext.accountSettings,
+        environment: process.env,
+    })) {
+        return { ok: true, result: await probeAgentModelsBestEffort({
+            agentId,
+            backendTarget: probeContext.backendTarget,
+            cwd,
+            timeoutMs,
+            accountSettings: probeContext.accountSettings,
+            credentials: probeContext.credentials,
+            env: process.env,
+        }) };
+    }
     let profileProbeEnvironment: Awaited<ReturnType<typeof resolveProfileProbeEnvironment>> = null;
     try {
         profileProbeEnvironment = await resolveProfileProbeEnvironment({
@@ -390,21 +414,20 @@ async function invokeCliProbeOrInstallMethod(
         return { ok: true, result };
       }
       if (method === 'probeModels') {
-        const modelConfig = getAgentModelConfig(agentId);
         const observation = modelConfig?.nativeCatalogObservation;
         const bindings = ConnectedServiceBindingsV2IngressSchema.safeParse(params?.connectedServices);
         const observationRuntime = dependencies.getAgentCatalogObservation?.() ?? null;
-        if (observation && observationRuntime && bindings.success) {
+        if (observation && observationRuntime) {
             const registry = dependencies.agentRegistrySnapshot ?? readCurrentContributionRegistry();
             const isCurrent = (): boolean => requestContext.signal?.aborted !== true
                 && (dependencies.isAgentRegistryCurrent?.() ?? true);
             const agent = registry.agentDefinitionsById.get(agentId);
             const consumer = agent?.identity;
-            const snapshot = resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
+            const snapshot = bindings.success ? resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
                 agentId,
                 bindings: bindings.data,
                 contributions: registry,
-            });
+            }) : null;
             const qualifiedPurpose = snapshot?.purposes.find((candidate) =>
                 candidate.purpose === observation.purpose
                 && candidate.consumer.pluginId === consumer?.pluginId
@@ -445,6 +468,44 @@ async function invokeCliProbeOrInstallMethod(
                         source: result.source,
                     },
                 };
+            }
+            const nativeContext = observation.nativeBearer
+                ? resolveNativeCatalogObservationContext({ agentId, observation, registry })
+                : null;
+            if (nativeContext && observation.nativeBearer) {
+                const credential = await (dependencies.resolveNativeCatalogBearer ?? resolveNativeCatalogBearer)({
+                    observation,
+                    catalogEntry: nativeContext.catalogEntry,
+                    environment: probeProcessEnv,
+                }).catch(() => null);
+                if (credential) {
+                    const result = await observationRuntime.service.observeNative({
+                        machineId: observationRuntime.machineId,
+                        operationId: randomUUID(),
+                        consumer: nativeContext.consumer,
+                        purpose: nativeContext.purpose,
+                        requestAuthUse: nativeContext.requestAuthUse,
+                        provider: nativeContext.provider,
+                        service: { pluginId: nativeContext.consumer.pluginId, localId: observation.connectedServiceId },
+                        credential,
+                        trigger: params?.bypassCache === true ? 'manual_refresh' : 'picker_open',
+                        isCurrent,
+                        ...(requestContext.signal ? { signal: requestContext.signal } : {}),
+                    });
+                    if (!isCurrent()) throw new ProviderProbeCancelledError();
+                    return {
+                        ok: true,
+                        result: {
+                            agentId,
+                            availableModels: [
+                                { id: 'default', name: 'Default' },
+                                ...result.models.filter((model) => model.id !== 'default'),
+                            ],
+                            supportsFreeform: modelConfig?.supportsSelection === true && modelConfig.supportsFreeform === true,
+                            source: result.source,
+                        },
+                    };
+                }
             }
         }
           return { ok: true, result: await probeAgentModelsBestEffort(commonProbeArgs) };
@@ -530,6 +591,8 @@ type PluginMarketplaceCapabilityMethod =
     | 'forgetTrust'
     | 'create'
     | 'develop'
+    | 'unregisterDevelopment'
+    | 'edit'
     | 'test'
     | 'pack'
     | 'changeStatus';
@@ -546,6 +609,8 @@ function resolveMarketplaceActionMethod(method: string): PluginMarketplaceCapabi
         || method === 'forgetTrust'
         || method === 'create'
         || method === 'develop'
+        || method === 'unregisterDevelopment'
+        || method === 'edit'
         || method === 'test'
         || method === 'pack'
         || method === 'changeStatus'
@@ -576,17 +641,7 @@ async function invokePluginChangeStatusAction(
     return { ok: true, result: { action: 'changeStatus', pendingChangeId, status } };
 }
 
-/**
- * Starts a local development source through the canonical daemon change owner
- * and hands the pending review back to the caller.
- *
- * `approval: 'none'` is deliberate and load-bearing. A local development source
- * is executable code the daemon will evaluate, and the terminal prompt owner
- * (`changeClient`) is not present for a remote client. Approving here would be
- * exactly the trust bypass §2 forbids, so the daemon's `sourceRootReviewRequired`
- * and `reviewRequired` results travel back verbatim and a present user decides
- * them through `daemon.plugins.install.review.decide`.
- */
+/** Registers an explicit trusted development root through the daemon owner. */
 async function invokePluginDevelopAction(
     params: Record<string, unknown> | undefined,
 ): Promise<CapabilitiesInvokeResponse> {
@@ -594,66 +649,49 @@ async function invokePluginDevelopAction(
     if (!sourceRootPath) {
         return { ok: false, error: { message: 'sourceRootPath is required', code: 'plugin_source_missing' } };
     }
-    const requestedPluginId = typeof params?.pluginId === 'string' ? params.pluginId.trim() : '';
     const sdkRegistryOrigin = typeof params?.sdkRegistryOrigin === 'string'
         ? params.sdkRegistryOrigin.trim()
         : '';
-    const change = await requestUserPluginChange({
-        request: {
-            kind: 'development',
-            sourceRootPath,
-            ...(requestedPluginId ? { pluginId: requestedPluginId } : {}),
-            ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
-        },
-        approval: 'none',
+    const result = await controlDaemonPluginDevelopment({
+        kind: 'registerExplicit',
+        rootPath: sourceRootPath,
+        ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
     });
-    if (
-        change.kind === 'sourceRootReviewRequired'
-        || change.kind === 'reviewRequired'
-        || change.kind === 'committed'
-    ) {
-        return { ok: true, result: { action: 'develop', sourceRootPath, change } };
+    if (result.kind !== 'failed') {
+        return { ok: true, result: { action: 'develop', sourceRootPath, status: result.status } };
     }
     return {
         ok: false,
         error: {
-            message: `The daemon did not start the development source (${change.kind}).`,
-            code: change.kind,
+            message: result.message,
+            code: result.code,
         },
     };
 }
 
-function projectPluginDevelopmentSources(
-    installedPlugins: readonly PluginCatalogEntry[],
-): readonly Readonly<{
-    pluginId: string;
-    sourceRootPath: string;
-    watch: Readonly<{ state: 'configured' }>;
-    reload: Readonly<{
-        state: 'clear' | 'attention';
-        diagnostics: typeof installedPlugins[number]['diagnostics'];
-    }>;
-    actions: Readonly<{ test: true; pack: true }>;
-}>[] {
-    return installedPlugins
-        .filter((entry) => entry.source.kind === 'path' && entry.source.devWatch === true)
-        .map((entry) => {
-            const diagnostics = [...entry.diagnostics, ...entry.compatibility.diagnostics];
-            return Object.freeze({
-                pluginId: entry.pluginId,
-                sourceRootPath: entry.source.locator,
-                watch: Object.freeze({ state: 'configured' as const }),
-                reload: Object.freeze({
-                    state: diagnostics.length === 0 ? 'clear' as const : 'attention' as const,
-                    diagnostics,
-                }),
-                actions: Object.freeze({ test: true as const, pack: true as const }),
-            });
-        });
+/** Forgets one exact explicit development root through the daemon owner. */
+async function invokePluginDevelopmentUnregisterAction(
+    params: Record<string, unknown> | undefined,
+): Promise<CapabilitiesInvokeResponse> {
+    const sourceRootPath = typeof params?.sourceRootPath === 'string' ? params.sourceRootPath.trim() : '';
+    if (!sourceRootPath) {
+        return { ok: false, error: { message: 'sourceRootPath is required', code: 'plugin_source_missing' } };
+    }
+    const result = await controlDaemonPluginDevelopment({
+        kind: 'unregisterExplicit',
+        rootPath: sourceRootPath,
+    });
+    if (result.kind === 'failed') {
+        return { ok: false, error: { message: result.message, code: result.code } };
+    }
+    return {
+        ok: true,
+        result: { action: 'unregisterDevelopment', sourceRootPath, status: result.status },
+    };
 }
 
 async function invokePluginDevelopmentAction(
-    action: Extract<PluginMarketplaceCapabilityMethod, 'create' | 'test' | 'pack'>,
+    action: Extract<PluginMarketplaceCapabilityMethod, 'create' | 'edit' | 'test' | 'pack'>,
     params: Record<string, unknown> | undefined,
 ): Promise<CapabilitiesInvokeResponse> {
     if (action === 'create') {
@@ -742,6 +780,17 @@ async function invokePluginDevelopmentAction(
     }
 
     const sourceRootPath = entry.source.locator;
+    if (action === 'edit') {
+        return {
+            ok: true,
+            result: {
+                action,
+                pluginId,
+                sourceRootPath,
+                sessionDirectory: entry.source.resolvedPath,
+            },
+        };
+    }
     if (action === 'test') {
         const result = await runPluginAuthorToolchain({
             operation: 'test',
@@ -795,11 +844,15 @@ async function invokePluginMarketplaceAction(
         return await invokePluginDevelopAction(params);
     }
 
+    if (action === 'unregisterDevelopment') {
+        return await invokePluginDevelopmentUnregisterAction(params);
+    }
+
     if (action === 'changeStatus') {
         return await invokePluginChangeStatusAction(params);
     }
 
-    if (action === 'create' || action === 'test' || action === 'pack') {
+    if (action === 'create' || action === 'edit' || action === 'test' || action === 'pack') {
         return await invokePluginDevelopmentAction(action, params);
     }
 
@@ -886,8 +939,28 @@ async function invokePluginMarketplaceAction(
             pluginId,
             ...(packageName ? { packageName } : {}),
         });
+        // A registry selection, like a review, is the present user's to answer:
+        // it travels back typed whether the listing named it before any
+        // registry access or the daemon's preparer named it at download.
+        if (!exactInstall.ok && exactInstall.code === 'registry_profile_required') {
+            return {
+                ok: true,
+                result: {
+                    action,
+                    pluginId,
+                    change: { kind: 'registryProfileRequired', ...exactInstall.requirement },
+                },
+            };
+        }
         if (!exactInstall.ok) {
             return { ok: false, error: { message: exactInstall.message, code: exactInstall.code } };
+        }
+        if (exactInstall.change.kind === 'registryProfileRequired') {
+            const { kind, registryOrigin, packageName, registryProfileId } = exactInstall.change;
+            return {
+                ok: true,
+                result: { action, pluginId, change: { kind, registryOrigin, packageName, registryProfileId } },
+            };
         }
         if (exactInstall.change.kind === 'reviewRequired') {
             return {
@@ -932,6 +1005,11 @@ async function invokePluginMarketplaceAction(
     // verbatim, exactly like an install review: only a present user can decide it.
     if (action === 'update' && change.kind === 'reviewRequired') {
         return { ok: true, result: { action, pluginId, change } };
+    }
+    // So is a registry selection the installed channel's registry now needs.
+    if (action === 'update' && change.kind === 'registryProfileRequired') {
+        const { kind, registryOrigin, packageName, registryProfileId } = change;
+        return { ok: true, result: { action, pluginId, change: { kind, registryOrigin, packageName, registryProfileId } } };
     }
     if (change.kind !== 'committed') {
         return {
@@ -1026,23 +1104,28 @@ function createPluginMarketplaceCapability(
                 forgetTrust: { title: 'Forget trust' },
                 create: { title: 'Create' },
                 develop: { title: 'Develop' },
+                unregisterDevelopment: { title: 'Stop development' },
+                edit: { title: 'Edit' },
                 test: { title: 'Test' },
                 pack: { title: 'Pack' },
                 changeStatus: { title: 'Plugin change status' },
             },
         },
         detect: async () => {
-            const installedPlugins = await readPluginCatalog();
+            const [installedPlugins, pendingChanges, developmentResult] = await Promise.all([
+                readPluginCatalog(),
+                listUserPluginChanges(),
+                controlDaemonPluginDevelopment({ kind: 'status' }),
+            ]);
             // A change an Agent (or another client) prepared has no caller left
             // to hand its issued id to. Projecting the daemon's outstanding
             // decisions here makes it discoverable on the same plugin-truth
             // read the app already refreshes, instead of requiring the id to
             // travel out of band.
-            const pendingChanges = await listUserPluginChanges();
             return {
                 installedPlugins,
-                developmentActions: { create: true, develop: true },
-                developmentSources: projectPluginDevelopmentSources(installedPlugins),
+                developmentActions: { create: true, develop: true, unregister: true },
+                developmentStatus: developmentResult.status,
                 pendingChanges: pendingChanges.changes,
             };
         },
@@ -1059,6 +1142,7 @@ export async function createCliCapabilitiesService(dependencies: Readonly<{
     }> | null;
     activatePurposeBindings?: CliProbeDependencies['activatePurposeBindings'];
     isAgentRegistryCurrent?: () => boolean;
+    resolveNativeCatalogBearer?: CliProbeDependencies['resolveNativeCatalogBearer'];
 }> = {}): Promise<ReturnType<typeof createCapabilitiesService>> {
     // Explicit ephemeral merged snapshot for this service's probes only. It is
     // never written back into a shared registry authority; currentness is

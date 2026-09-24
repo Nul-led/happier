@@ -13,7 +13,7 @@ import {
     isPlainMachineDataKeyMarker,
     resolvePublishedMachineDataEncryptionKeyV1,
 } from '@happier-dev/protocol';
-import { resolveExpectedRunnerMachineContentKeyBindingV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
+import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 
 type MachineEncryption = {
     decryptMetadata: (version: number, value: string) => Promise<any>;
@@ -435,20 +435,21 @@ export async function fetchAndApplyMachines(params: {
         const reusedKey = reusedKeyByMachineId.get(result.machineId);
         const decryptedKey = reusedKey ?? freshKeyByMachineId.get(result.machineId) ?? null;
         const machine = machineById.get(result.machineId)!;
-        const expectedRunnerBinding = machine.kind === 'ephemeral_session_runner'
-            ? resolveExpectedRunnerMachineContentKeyBindingV1({
-                credentials,
-                homeServerIdentityId: params.sourceServerId,
-                machineId: machine.id,
-            })
-            : null;
+        // Resolved for every Machine: the trusted classification must not be
+        // suppressed by the very field a hostile Home would rewrite.
+        const runnerTrust = resolveRunnerMachineContentKeyTrustV1({
+            credentials,
+            homeServerIdentityId: params.sourceServerId,
+            machineId: machine.id,
+        });
         const resolution = resolvePublishedMachineDataEncryptionKeyV1({
             machine,
             openedDataEncryptionKey: decryptedKey,
             expectedAccountMode: isTokenOnlyAuthCredentials(credentials)
                 ? 'plain'
                 : 'e2ee',
-            ...(expectedRunnerBinding ? { expectedRunnerBinding } : {}),
+            ...(runnerTrust ? { expectedRunnerBinding: runnerTrust.expectedRunnerBinding } : {}),
+            ...(runnerTrust?.trustedMachineKind ? { trustedMachineKind: runnerTrust.trustedMachineKind } : {}),
         });
         if (resolution.status !== 'e2ee') {
             // A rotated envelope that fails to open — or a machine that moved to plain or

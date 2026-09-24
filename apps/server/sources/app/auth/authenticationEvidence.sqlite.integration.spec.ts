@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+import { listProviderDescriptorsInTx } from "@/app/auth/providers/identityProviderCatalog";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -127,5 +128,116 @@ describe("authentication-evidence native method currentness", () => {
             where: { accountId_provider: { accountId: mtlsAccount.id, provider: "mtls" } },
         });
         expect(await isCurrent(mtlsAccount.id, "mtls")).toBe(false);
+    });
+
+    async function createTeamConnectionEvidence(presentationStatus: string) {
+        const team = await db.team.create({
+            data: { name: `WorkOS Evidence Team ${presentationStatus}` },
+        });
+        const provider = await db.identityProviderInstance.create({
+            data: {
+                ownerTeamId: team.id,
+                kind: "workos_sso",
+                displayName: "Evidence WorkOS",
+                enabled: true,
+                firstEnabledAt: new Date(),
+                config: { v: 1, kind: "workos_sso" },
+            },
+        });
+        const connection = await db.teamIdentityConnection.create({
+            data: {
+                teamId: team.id,
+                providerInstanceId: provider.id,
+                enabled: true,
+                firstEnabledAt: new Date(),
+                externalReference: {
+                    v: 1,
+                    kind: "workos_sso",
+                    organizationId: `org_${team.id}`,
+                    connectionId: `conn_${team.id}`,
+                },
+                settings: { v: 1, kind: "workos_sso" },
+                lastObservation: {
+                    v: 1,
+                    kind: "workos_sso",
+                    presentation: {
+                        displayName: "Acme Okta",
+                        strategy: "okta",
+                        status: presentationStatus,
+                        lastCheckedAt: "2026-09-22T00:00:00.000Z",
+                    },
+                    successfulTest: null,
+                },
+            },
+        });
+        const account = await db.account.create({
+            data: { encryptionMode: "plain", publicKey: null },
+        });
+        const identity = await db.accountIdentity.create({
+            data: {
+                accountId: account.id,
+                provider: provider.id,
+                providerUserId: `member-${presentationStatus}@example.test`,
+                profile: {},
+            },
+        });
+        const descriptors = await inTx((tx) => listProviderDescriptorsInTx(tx, process.env, {
+            kind: "team",
+            teamId: team.id,
+        }));
+        const descriptor = descriptors.find(({ reference }) => reference.id === provider.id);
+        return {
+            accountId: account.id,
+            evidence: {
+                kind: "provider" as const,
+                providerId: provider.id,
+                identityId: identity.id,
+                runtimeFingerprint: descriptor?.reference.runtimeFingerprint ?? "no-descriptor",
+                teamConnectionId: connection.id,
+            },
+        };
+    }
+
+    it("reads Team-connection evidence usability through the lifecycle owner's state", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            WORKOS_API_KEY: "sk_test",
+            WORKOS_CLIENT_ID: "client_test",
+        });
+        await db.homeGovernancePolicy.upsert({
+            where: { id: "home" },
+            create: {
+                id: "home",
+                teamProviderPolicy: {
+                    v: 1,
+                    allowedTeamProviderKinds: ["oidc", "workos_sso"],
+                    teamJitAllowed: true,
+                    approvedGitHubEnterpriseOrigins: [],
+                },
+            },
+            update: {},
+        });
+
+        const isEvidenceCurrent = async (target: Awaited<ReturnType<typeof createTeamConnectionEvidence>>) =>
+            await inTx((tx) => isAuthenticationEvidenceCurrentInTx(tx, {
+                env: process.env,
+                accountId: target.accountId,
+                evidence: target.evidence,
+            }));
+
+        // A live Team connection derives `connected` and keeps its evidence current.
+        const live = await createTeamConnectionEvidence("active");
+        expect(await isEvidenceCurrent(live)).toBe(true);
+
+        // The same connection whose upstream presentation is no longer active
+        // derives `needs_attention`. Qualification, policy resolution, admission
+        // finalization and the Home method gate all refuse it, so the credential
+        // evidence reader must not keep answering from the raw `enabled` column:
+        // both rows carry byte-identical `enabled` values, so this case fails on
+        // any implementation that re-derives usability from them.
+        const stale = await createTeamConnectionEvidence("inactive");
+        expect(await isEvidenceCurrent(stale)).toBe(false);
+
+        harness.restoreEnv();
     });
 });

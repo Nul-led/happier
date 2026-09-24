@@ -7,9 +7,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { createPresentUserSessionAccessAuthentication } from "./sessionAccessAuthentication.testkit";
 import * as contextInjection from "./sessionContextInjection";
 
-const authentication = createPresentUserSessionAccessAuthentication({
-    env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "true" },
-});
+const authentication = createPresentUserSessionAccessAuthentication({ env: {} });
 
 /** Builds the verified destination-runtime principal from the test's custody Account. */
 function admitRuntime(
@@ -49,7 +47,6 @@ describe("ordinary authenticated Follow context admission", () => {
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: "happier-follow-context-admission-",
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "true" },
         });
     }, 180_000);
     afterEach(async () => {

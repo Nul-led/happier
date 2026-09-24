@@ -5,13 +5,25 @@ import { readAuthFeatureEnv, readAuthMtlsFeatureEnv } from "./catalog/readFeatur
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
     resolveEffectiveAuthMethodDecisions,
-    toOldClientSafeAuthMethods,
+    toPublishedAuthMethods,
 } from "@/app/auth/methods/effectiveAuthMethods";
 import { resolveKeylessAccountsEnabled } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
 import { resolveKeylessAutoProvisionEligibility } from "@/app/auth/keyless/resolveKeylessAutoProvisionEligibility";
 import { resolveKeylessAccountsAvailability } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
 import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
+import { EMAIL_PASSWORD_AUTH_METHOD_ID } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
+
+/**
+ * Auto-redirect starts an external sign-in (a provider or mTLS). Key Challenge
+ * and native email/password are in-app forms, so neither is a candidate; the
+ * UI's redirect projection excludes email/password the same way. This keeps
+ * the existing auto-redirect behaviour now that the published method list
+ * carries `email_password` (it is on by default).
+ */
+function isAutoRedirectCandidate(methodId: string): boolean {
+    return methodId !== "key_challenge" && methodId !== EMAIL_PASSWORD_AUTH_METHOD_ID;
+}
 
 function uniqueStrings(values: readonly string[]): string[] {
     const seen = new Set<string>();
@@ -27,7 +39,7 @@ function uniqueStrings(values: readonly string[]): string[] {
 }
 
 export function deriveLegacySignupMethodsFromAuthMethods(
-    authMethods: FeaturesResponse['capabilities']['auth']['methods'],
+    authMethods: NonNullable<FeaturesResponse['capabilities']['auth']['methods']>,
     retainedMethodIds?: readonly string[],
 ): Array<{ id: string; enabled: boolean }> {
     const isEnabled = (legacyId: string): boolean => {
@@ -63,8 +75,8 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
     const authProviderRegistry = authProviderRegistryResult.providers;
 
     // One effective decision feeds publication, request admission, startup safety
-    // and Home administration. This function only translates it to the retained
-    // old-client-safe compatibility wire; it decides no availability itself.
+    // and Home administration. This function only translates it to the
+    // `/v1/features` wire; it decides no availability itself.
     const effectiveMethodDecisions = resolveEffectiveAuthMethodDecisions({ env });
     const keyChallengeMethod =
         effectiveMethodDecisions.find((m) => String(m?.id ?? "").trim().toLowerCase() === "key_challenge") ?? null;
@@ -174,12 +186,10 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
         providers[provider.id] = provider.resolveFeatures({ env, policy });
     }
 
-    // Retained released-client compatibility subset: the supported 0.2 web/mobile/
-    // desktop families classify an unknown method ID as an external OAuth provider,
-    // so `email_password` is omitted here. The complete contextual method list is
-    // Lane 03's `POST /v1/auth/entry` projection, not this static payload.
+    // The complete contextual (Team/invitation) method list is Lane 03's
+    // `POST /v1/auth/entry` projection, not this static payload.
     const authMethods: FeaturesResponse["capabilities"]["auth"]["methods"] =
-        toOldClientSafeAuthMethods(effectiveMethodDecisions);
+        toPublishedAuthMethods(effectiveMethodDecisions);
 
     const signupMethods = deriveLegacySignupMethodsFromAuthMethods(authMethods);
 
@@ -212,8 +222,7 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
         const authMethodCandidates = authMethods
             .filter((m) => {
                 const id = String(m.id ?? "").trim().toLowerCase();
-                if (!id) return false;
-                if (id === "key_challenge") return false;
+                if (!id || !isAutoRedirectCandidate(id)) return false;
                 return Array.isArray(m.actions) && m.actions.some((a) => a?.enabled === true && (a?.id === "login" || a?.id === "provision"));
             })
             .map((m) => String(m.id).trim().toLowerCase());

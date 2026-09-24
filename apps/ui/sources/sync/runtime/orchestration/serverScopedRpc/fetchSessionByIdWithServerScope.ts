@@ -24,12 +24,17 @@ import { fetchAccountEncryptionCurrentness } from '@/sync/api/account/apiAccount
 import { readSessionDetailAccessProjectionVersion } from '@/sync/api/session/sessionDetailAccessProjection';
 
 import {
-    createServerRequestForExplicitServerScope,
+    createServerRequestForResolvedServerScope,
     type ServerAccountRequestAuthority,
+    type ServerAccountRequestOptions,
 } from './createServerRequestWithServerScope';
 import { resolveServerAccountRequestContext } from './resolveServerAccountRequestContext';
 import { storage } from '@/sync/domains/state/storage';
-import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
+import {
+    resolveUiClientEncryptionRequirement,
+    resolveUiClientEncryptionRequirementForScope,
+} from '@/sync/domains/settings/clientEncryptionRequirement';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
 type AppliedSession = Omit<Session, 'presence'> & { presence?: 'online' | number };
 
@@ -281,7 +286,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     activeEncryption?: SessionByIdEncryption | null;
     sessionDataKeys: Map<string, Uint8Array>;
     sessionDataKeyEnvelopes?: Map<string, string>;
-    activeRequest: (path: string, init: RequestInit) => Promise<Response>;
+    activeRequest: (path: string, init?: RequestInit, options?: ServerAccountRequestOptions) => Promise<Response>;
     applySessions: (sessions: AppliedSession[]) => void;
     getExistingSession?: (sessionId: string) => Session | null | undefined;
     log: { log: (message: string) => void };
@@ -361,16 +366,20 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
 
     const scopedEncryption =
         getScopedSessionByIdEncryption(context.encryption);
+    // A scoped read admits Sessions under the target Account's own requirement.
+    const targetAccountScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
+    const scopedClientEncryptionRequirement = targetAccountScope
+        ? resolveUiClientEncryptionRequirementForScope({ scope: targetAccountScope, focusedSettings: currentSettings })
+        : clientEncryptionRequirement;
     if (!context.credentials) {
         throw new Error(
             `Authentication credentials are required to hydrate session ${params.sessionId}`,
         );
     }
     const request = params.authority?.request
-        ?? createServerRequestForExplicitServerScope({
-            serverUrl: context.targetServerUrl,
-            ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
-            token: context.token,
+        ?? createServerRequestForResolvedServerScope({
+            context,
+            activeRequest: params.activeRequest,
         });
     const accountCurrentnessSource =
         createOperationAccountCurrentnessSource({
@@ -398,7 +407,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
             params.includeMetadataTupleMutationSnapshot,
         isCurrent: params.isCurrent,
         accessProjectionVersion: readSessionDetailAccessProjectionVersion(context.targetServerId),
-        clientEncryptionRequirement,
+        clientEncryptionRequirement: scopedClientEncryptionRequirement,
     });
     if (
         params.includeMetadataTupleMutationSnapshot === true

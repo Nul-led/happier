@@ -1,5 +1,5 @@
 import {
-    applySessionBoardItemPlacementV1, applySessionBoardLayoutOperationV1, removeSessionBoardItemPlacementsV1,
+    applySessionBoardItemPlacementV1, applySessionBoardLayoutOperationV1, resolveSessionBoardItemPlacementDestinationV1, removeSessionBoardItemPlacementsV1,
     isSessionSurfaceItemSourceCompatible, bindSessionBoardMutationRequestV1,
     classifySessionBoardMutationTransportResultV1,
     createSessionBoardFailureV1, createSessionBoardOutcomeUnknownFailureV1,
@@ -26,6 +26,7 @@ import { sealSessionStoredContent, type SessionStoredContentContext } from '@/sy
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 import { selectPluginInlineSurfacePlacementsBySurface } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 import { classifyHttpMutationRequestFailure } from '@/sync/http/mutationRequestOutcome';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 function projectRecordOwnerFailure(
     actionId: Parameters<NonNullable<ActionExecutorDeps['sessionBoardAction']>>[0]['actionId'],
@@ -47,6 +48,12 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
     /** Observe the canonical HTTP issue boundary; preparation alone is not dispatch. */
     onMutationIssued?: () => void;
 }>): NonNullable<ActionExecutorDeps['sessionBoardAction']> {
+    // A caller may name the Home by its device-local profile id or by its published
+    // identity; both name the same Home. Record reads and cache invalidation address
+    // the Session by the captured scope's id, which the record repository and
+    // transport are keyed by; results and recovery details echo the Home exactly as
+    // the caller named it, because the executor binds them to that name.
+    const scopedSession: SessionAddress = { serverId: options.scope.serverId, sessionId: options.session.sessionId };
     const records = {
         async read(session: SessionAddress, address: HostSessionSystemRecordAddress) {
             const query = { type: 'read' as const, address };
@@ -106,7 +113,7 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
         });
         options.onMutationPrepared?.(outcomeUnknown.details);
         // A sent mutation may have committed even when its acknowledgement is lost.
-        const invalidate = () => options.repository.invalidate(options.session);
+        const invalidate = () => options.repository.invalidate(scopedSession);
         let issued = false;
         let response: Response;
         try {
@@ -141,7 +148,10 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
             : settlement.result;
     }
     const execute: NonNullable<ActionExecutorDeps['sessionBoardAction']> = async ({ actionId, input, context, signal }) => {
-        if (options.session.serverId !== options.scope.serverId || (context.serverId && context.serverId !== options.scope.serverId)) return createSessionBoardFailureV1('server_target_mismatch');
+        if (!areServerProfileIdentifiersEquivalent(options.session.serverId, options.scope.serverId)
+            || (context.serverId && !areServerProfileIdentifiersEquivalent(context.serverId, options.scope.serverId))) {
+            return createSessionBoardFailureV1('server_target_mismatch');
+        }
         if (signal?.aborted) return createSessionBoardFailureV1('cancelled');
         if (!options.capabilities.readTranscript || (actionId !== 'session.board.get' && !options.capabilities.editSessionRecords)) return createSessionBoardFailureV1('session_board_forbidden');
         if (actionId === 'session.board.get') {
@@ -169,7 +179,7 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
                 if (opened.status !== 'ready') { projectedEntries.push({ status: 'unavailable' }); continue; }
                 projectedEntries.push({ status: 'ready', itemId: record.address.localId, revision: record.revision, item: opened.value });
             }
-            return projectSessionBoardGetResultV1({ serverId: session.serverId, sessionId, capabilities: options.capabilities,
+            return projectSessionBoardGetResultV1({ serverId: options.session.serverId, sessionId, capabilities: options.capabilities,
                 layout: layout.layout, entries: projectedEntries,
                 ...(args.itemIds !== undefined ? { requestedItemIds: args.itemIds } : {}),
                 incomplete: listed?.status === 'ok' && listed.value.hasNext, page: listed?.status === 'ok'
@@ -216,7 +226,7 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
                 ...('itemId' in args ? { itemId: args.itemId, expectedItemRevision: args.expectedItemRevision } : {}),
             }, args, signal);
             if (!result.ok) return result;
-            return SessionBoardMutationActionResultV1Schema.parse({ v: 1, serverId: options.scope.serverId, sessionId, result: result.result, destination: null });
+            return SessionBoardMutationActionResultV1Schema.parse({ v: 1, serverId: options.session.serverId, sessionId, result: result.result, destination: null });
         }
         const parsed = SessionBoardItemUpsertInputV1Schema.safeParse(input);
         if (!parsed.success) return createSessionBoardFailureV1('session_board_invalid');
@@ -267,11 +277,11 @@ export function createSessionBoardActionAdapter(options: SessionSystemRecordTran
         });
         const result = await put(actionId, sessionId, request, args, signal);
         if (!result.ok) return result;
-        const tab = layout?.tabs.find((entry) => entry.items.some((placement) => placement.itemId === args.itemId));
-        const placement = tab?.items.find((entry) => entry.itemId === args.itemId);
         return SessionBoardMutationActionResultV1Schema.parse({
-            v: 1, serverId: session.serverId, sessionId, result: result.result,
-            destination: tab && placement ? { tabId: tab.id, width: placement.width } : null,
+            v: 1, serverId: options.session.serverId, sessionId, result: result.result,
+            destination: layout && args.placement
+                ? resolveSessionBoardItemPlacementDestinationV1(layout, { itemId: args.itemId, placement: args.placement })
+                : null,
             preview: { title: args.item.title, sourceKind: args.item.source.kind },
         });
     };

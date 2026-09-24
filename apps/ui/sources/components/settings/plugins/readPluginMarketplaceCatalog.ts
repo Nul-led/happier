@@ -5,6 +5,7 @@ import type {
 } from '@happier-dev/protocol/marketplace';
 import {
     decideMarketplaceListingInstallV1,
+    readMarketplaceListingRegistryProfileRequirementV1,
     type MarketplaceListingInstallBlockV1,
 } from '@happier-dev/protocol/marketplace';
 
@@ -23,6 +24,8 @@ export type PluginMarketplaceCatalogEntry = Readonly<{
     /** Catalog-supplied publisher label. It is presentation, not verified identity. */
     publisher: MarketplaceIndexItemV1['publisher'];
     categories: MarketplaceIndexItemV1['categories'];
+    contributions: MarketplaceIndexItemV1['summary']['contributions'];
+    links: MarketplaceIndexItemV1['links'];
     executableRealms: MarketplaceIndexItemV1['summary']['executableRealms'];
     platforms: MarketplaceIndexItemV1['compatibility']['platforms'];
     title: string;
@@ -35,6 +38,13 @@ export type PluginMarketplaceCatalogEntry = Readonly<{
      */
     packageName: string;
     installable: boolean;
+    /**
+     * The npm registry this machine must choose a profile for before the
+     * package can be fetched, or `null` when no registry selection is owed.
+     * Install stays offered: the daemon names the exact selection when asked,
+     * and the user answers it before the Install and Trust review.
+     */
+    registrySelectionOrigin: string | null;
     warning?: 'withdrawn' | 'unreviewed';
 }>;
 
@@ -148,8 +158,12 @@ export function projectDaemonMarketplaceIndexPage(
         // A withdrawal is a discovery warning the reader must see, never an
         // authority decision over installed code.
         const withdrawn = !decision.installable && decision.block === 'curated-review-withdrawn';
+        // A registry this machine has no usable profile for is a selection the
+        // user can make, not a dead end. The daemon's profiles are not on this
+        // page, so no candidate is named here; the install request names it.
+        const registryRequirement = readMarketplaceListingRegistryProfileRequirementV1(item, []);
 
-        if (!decision.installable && !withdrawn) {
+        if (!decision.installable && !withdrawn && registryRequirement === null) {
             nonInstallable.push({
                 pluginId: item.pluginId,
                 title: item.display.title,
@@ -169,13 +183,16 @@ export function projectDaemonMarketplaceIndexPage(
             updatePolicy: item.updatePolicy,
             publisher: item.publisher,
             categories: item.categories,
+            contributions: item.summary.contributions,
+            links: item.links,
             executableRealms: item.summary.executableRealms,
             platforms: item.compatibility.platforms,
             title: item.display.title,
             description: item.display.description,
             version: item.distribution.version,
             packageName: item.distribution.packageName,
-            installable: decision.installable,
+            installable: decision.installable || registryRequirement !== null,
+            registrySelectionOrigin: registryRequirement?.registryOrigin ?? null,
             ...(withdrawn
                 ? { warning: 'withdrawn' as const }
                 : sourceKind !== 'curated' && item.review.status === 'unreviewed'

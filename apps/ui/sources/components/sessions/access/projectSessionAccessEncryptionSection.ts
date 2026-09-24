@@ -47,17 +47,21 @@ function recipientState(item: SessionDataKeyEnvelopeItemV1): SessionAccessEncryp
 /**
  * The repeat affordance belongs to the rows that can actually use it.
  *
- * A delivered recipient needs nothing, and an Account that has not finished its own
- * encryption setup can only be explained — repeating delivery against it would fail
- * every time. Naming the operation for what the manager is repeating keeps the row
- * and the aggregate saying the same thing.
+ * `prepared` is the server's shape-only answer: it proves the stored envelope parses,
+ * never that this recipient can still open it. A recipient whose Account content key
+ * was replaced keeps a permanently `prepared` tuple they cannot read, and nothing
+ * deletes it, so the repeat affordance is the manager's only way to re-seal — the same
+ * operation, named the same way, as replacing structurally invalid bytes.
+ *
+ * An Account that has not finished its own encryption setup can only be explained:
+ * repeating delivery against it would fail every time.
  */
 function recipientActionLabel(state: SessionAccessEncryptionRecipientState): string | undefined {
     switch (state) {
         case 'pending': return t('session.access.prepareNow');
+        case 'prepared':
         case 'invalid':
         case 'encryption_inconsistent': return t('session.access.prepareAgain');
-        case 'prepared':
         case 'plain_account':
         case 'encryption_setup_required': return undefined;
     }
@@ -136,6 +140,7 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
                     ? t('session.access.preparingProgress', { count: preparation.preparedCount })
                     : t('session.access.preparing');
             return {
+                statusKey: 'preparing',
                 summaryLabel: t('session.access.preparing'),
                 accessibilityLabel: progressLabel,
                 progressLabel,
@@ -145,11 +150,16 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
         }
         case 'failed': {
             // Only a pass that followed a committed mutation may claim the access was
-            // saved. A failed opening discovery says nothing about any save.
+            // saved. A failed opening discovery says nothing about any save, and a pass
+            // the manager started themselves saved nothing at all.
             const failureLabel = preparation.origin === 'pass'
                 ? t('session.access.preparationFailed')
-                : t('session.access.preparationCheckFailed');
+                : preparation.origin === 'manual'
+                    ? t('session.access.preparationPassFailed')
+                    : t('session.access.preparationCheckFailed');
             return {
+                statusKey: 'failed',
+                announcement: failureLabel,
                 summaryLabel: failureLabel,
                 accessibilityLabel: failureLabel,
                 actionLabel: t('session.access.retryAction'),
@@ -169,6 +179,8 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
                     message: t('session.access.preparationKeyUnavailable'),
                 };
                 return {
+                    statusKey: 'unavailable',
+                    announcement: reason.message,
                     summaryLabel: reason.message,
                     accessibilityLabel: reason.message,
                     reason,
@@ -180,6 +192,8 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
             const actionable = summary.pending + summary.invalid + summary.recipientKeyUnavailable;
             if (actionable === 0) {
                 return {
+                    statusKey: 'ready',
+                    announcement: t('session.access.preparationAnnouncedComplete'),
                     summaryLabel: t('session.access.ready'),
                     accessibilityLabel: t('session.access.ready'),
                     showAllLabel,
@@ -188,6 +202,8 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
             }
             const summaryLabel = summarySegments(summary);
             return {
+                statusKey: 'needs_attention',
+                announcement: t('session.access.preparationAnnouncedNeedsAttention'),
                 summaryLabel,
                 accessibilityLabel: t('session.access.accessibleSummary', {
                     title: t('session.access.encryptedAccess'), label: summaryLabel,

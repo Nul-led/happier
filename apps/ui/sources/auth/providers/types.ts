@@ -63,6 +63,22 @@ export type AccountDirectoryOAuthStart = Readonly<{
     expiresAt: number;
 }>;
 
+/**
+ * The authenticated connect start.
+ *
+ * Without context it links a provider identity to the Account this device is
+ * signed in as. With Team context it is the Team-admission entry for an Account
+ * that already exists: the Team's identity is linked to that Account instead of
+ * seeding a second, freshly provisioned one.
+ */
+export interface GetConnectUrl {
+    (credentials: AuthCredentials): Promise<string>;
+    (
+        credentials: AuthCredentials,
+        context: TeamOAuthRequestContext,
+    ): Promise<TeamOAuthStart>;
+}
+
 export interface GetExternalAuthUrl {
     (params: ExternalAuthStartInput): Promise<string>;
     (
@@ -94,8 +110,13 @@ export type AuthProvider = Readonly<{
     connectButtonColor?: string;
     getRestoreRedirectNotice?: (params: { reason: RestoreRedirectReason }) => RestoreRedirectNotice | null;
     getExternalAuthUrl: GetExternalAuthUrl;
-    getConnectUrl: (credentials: AuthCredentials) => Promise<string>;
-    finalizeConnect: (credentials: AuthCredentials, params: { pending: string; username: string }) => Promise<{ token?: string }>;
-    cancelConnectPending: (credentials: AuthCredentials, pending: string) => Promise<void>;
+    getConnectUrl: GetConnectUrl;
+    /** `context` routes the request to the exact Home that started the connect. */
+    finalizeConnect: (
+        credentials: AuthCredentials,
+        params: { pending: string; username: string },
+        context?: HomeOAuthRequestContext,
+    ) => Promise<{ token?: string }>;
+    cancelConnectPending: (credentials: AuthCredentials, pending: string, context?: HomeOAuthRequestContext) => Promise<void>;
     disconnect: (credentials: AuthCredentials) => Promise<void>;
 }>;

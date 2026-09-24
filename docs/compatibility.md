@@ -234,8 +234,15 @@ The committed Account/client encryption requirements do not change listing
 or access-projection behavior. The predecessor still has no `effectiveAccess`
 producer or consumer and no ephemeral Runner. Its `V2SessionRecordSchema` and
 `SessionSummarySchema` remain `.passthrough()`, so current additive projection
-fields are accepted, and new clients fail closed against it through the
-`sessions.collaboration` decision rather than negotiating a parallel shape.
+fields are accepted. The former direction "a 0.3 client against a 0.2 Home", which the
+server-only `sessions.collaboration` decision and a UI direct-only legacy share adapter
+served, is not supported under the one-way 0.3 upgrade (every component updates to 0.3
+together, no rollback); that bit, its `HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED`
+switch and the adapter were removed on 2026-09-24. Current clients select the
+version-qualified projection, Team/Group grants and initial access from the exact Home's
+`sharing.session` decision. The surviving obligation is data: direct shares a 0.2 Home
+persisted in `SessionShare` remain effective and readable in 0.3 through the same
+access evaluator, independently of that decision.
 
 ### Session draft rollout
 
@@ -369,17 +376,55 @@ Managed Workflow Runs are origin-neutral `WorkflowRun` rows driven from the froz
 
 Workspace handoff is operation-scoped across UI, daemon, and Machine RPC versions. A current
 client may send the canonical `none`, `copy_once`, `create_relationship`, or existing
-`relationship` action only to a daemon that understands that exact action. A predecessor daemon
+`relationship`, or `linked_workspace` action only to a daemon that understands that exact action. A predecessor daemon
 that cannot execute the requested workspace action returns
 `workspace_sync_update_required`; the client keeps the connection and unrelated Machine/session
 operations usable and asks for that daemon to be updated. It must not reinterpret the request as a
 legacy file-transfer job or report a successful handoff without the workspace result.
+
+The development-line `linked_workspace` choice carries only the target Machine/path in the
+public Action. The current daemon resolves the admitted Session's source and the exact target
+WorkspaceRefs from its current Account settings, then invokes the controller-owned
+`daemon.workspaceSync.prepareBetween.v1` operation. A controller without that exact method
+returns `workspace_sync_update_required` for the linked operation; the caller must not silently
+fall back to a direct copy or claim that a first completed link prepared the destination.
+The result records only the links actually traversed and their observed statuses. A later
+retry starts a fresh route check, not a persisted cursor or replay of the second link.
 
 The current daemon remains the sole relationship-settings writer and uses the external Mutagen
 sidecar as the sole reconciliation engine. Mutagen session identifiers and private broker details
 are daemon-local implementation state, not wire or persistence compatibility contracts. A missing
 verified external engine artifact is an `engine_unavailable` failure for the requested workspace
 operation; it does not authorize a fallback to the retired replication engine.
+
+The current development Workspace Sync extension retains pairwise relationship persistence and
+derives linked sets from their existing WorkspaceRefs and controller roles. It does not persist
+a group or rewrite valid beta-controlled two-way relationships. Direct Project creation uses
+`workspace.sync.relationship.create` and the same relationship writer and destination approval
+owner as handoff; it cannot disguise existing-folder attachment as an older handoff request.
+
+Current status replaces the unmeasured `changedFiles` field with no substitute count and names
+the process-local cycle observation `lastCycleObservedAtMs`. Endpoint scan/transition problem
+facts come from the matching engine producer. Missing endpoint evidence is unknown, not clean.
+The controller's clean-result predicate gates dependent execution and fresh/recovered Copy once;
+raw manual Flush remains a diagnostic operation. A completed cycle does not establish immutable
+inputs or global convergence.
+
+Reviewed conflict resolution refines the development Action in place: source and explicit
+destination entry expectations are required, including complete structural identity for a
+directory replacement. Historical approval records remain readable, but an older loser-only
+pending request cannot execute by fabricating a reviewed source. Captured bytes use the existing
+finite transfer, and target authority rechecks the approved effect. Partial and unknown outcomes
+do not authorize automatic replay or unattended application to a later-reconnecting endpoint.
+These current-development shapes do not create a second resolver or a compatibility alias for
+an unshipped input. Exact operation support must be checked before effect; unrelated operations
+remain usable when that support is absent.
+
+The extended compact engine problem/selection contract requires a successor to the currently
+pinned `0.18.1-happier.9` artifact. Source-built integration evidence does not activate that contract
+in ordinary product runtime. Publication and adoption belong to the existing engine release/pin
+owner; consumers must not guess missing fields, accept a second dialect, or silently run a dirty
+fork as a fallback. This dependency remains pending until that owner publishes and adopts it.
 
 The first capable client imports the retired local existing-Session text/semantic stores and the
 singleton new-Session draft into the canonical draft repository. It removes each legacy value only
@@ -606,7 +651,79 @@ second Follow loop. The prospective `../0.2` source inspected at
 method; new clients therefore fail closed against it instead of negotiating a
 parallel format. Refresh that dirty sibling's relevant bytes before activation.
 
+## Plugin Platform direct-cut frontier
+
+The Plugin Platform simplification is a direct cut within the unreleased 0.3
+development line. The current working tree was rechecked on 2026-09-24 while
+the checkout HEAD was `08b245d0337e7ee6b1bad249cdb79081b809449b`.
+The repository-local immutable source tags rechecked at the same time were `cli-v0.2.11`,
+`cli-v0.2.11-preview.2`,
+`server-v0.2.11`, `server-v0.2.11-preview.2`, `ui-web-v0.2.11`, and
+`ui-web-v0.2.11-preview.186` at
+`98ea8fb76733b1dd785d38c31360179cafa84824`; `ui-mobile-v0.2.0` at
+`e49afc11e8d8c068043bc108722ca2ed90b11d1d`; and `ui-desktop-v0.2.0` at
+`ed11a23e45fb18b6ef7a7f13c256ab148c8d50a3`. Their app and package trees
+contain none of the current Happier Plugin Availability/materialization,
+`.happier-plugin` manifest, Provider-contribution, installed-generation,
+occurrence/currentness, or Plugin UI artifact contracts. The release registry
+uses `plugin-sdk-v` for the separately published Plugin SDK pair, but the local
+tag set contains no such immutable tag. This is repository-local source and
+publisher-contract evidence; it does not claim an independently queried
+deployment or npm-registry state.
+
+The prospective `../0.2` source was inspected read-only on branch `dev` at
+`439125d17582cdfa7534a156737d52559565353b`, including the committed tree,
+zero staged changes, four tracked unstaged changes, and no untracked files. Its
+dirty paths cover the Codex app-server and request-user-input implementation and
+tests, outside the Plugin Platform corridor. Neither the
+complete on-disk app/package tree nor the unstaged diff contains the Plugin
+Platform identifiers above, Re.Pack/Module Federation runtime identities,
+`immutableGenerationId`, `hostUiApiRange`, or a plugin persistence model/file.
+Refresh this comparison before activation if that moving predecessor changes.
+
+Consequently there is no released or prospective old/new Plugin Platform wire
+or persistence direction to preserve through aliases, dual writers, or
+framework-version admission. Managed third-party installation generations are
+the current design's immutable package custody, not a predecessor
+compatibility shim. Development source is evaluated into a process-local
+occurrence; its last accepted occurrence is not persisted for restart
+recovery. Current-development `AccountPluginIntent`, `AccountPluginRelease`,
+`AccountPluginUiArtifact`, and `PluginMachineMaterialization` rows, managed
+third-party generation-store files, and digest-keyed UI artifact caches remain
+forward-only current data; they do not create an old-reader or old-writer
+direction for `../0.2`.
+
+The repo-local development Stack uses dedicated `mac-host` server placement.
+Live-process file-descriptor evidence from server PID 51343 identifies its
+active SQLite database as the target-scoped
+`/Users/leeroy/.happier/stacks/repo-dev-a1cc5e0671/cli/stack-state/dev-target-mac-host-dfcbfd6a94d90609/server-light/happier-server-light.sqlite`.
+A read-only check on 2026-09-23 found all 118 current source migrations applied
+with matching checksums, including the `d484…` automations migration and the
+`20260920230000_migrate_session_subagent_source_custody` migration applied on
+2026-09-21. The current `reporterSourceCustody` schema is present, and SQLite
+`quick_check` and foreign-key checks are clean.
+
+The live ledger has 122 applied rows. Its four ledger-only development
+identities—`20260810140000_add_event_automations_v1`,
+`20260810210000_contract_session_turn_anchor_projection`,
+`20260813110000_add_automation_event_source_status_reporter_immutable_generation`,
+and `20260815180000_backfill_automation_execution_dispatch_state`—refer to
+source directories consolidated away during development. Their presence alone
+does not establish a deploy blocker; the canonical deploy result owns that
+decision. The parent-level mac-host database and the Linux-local database at
+`/home/leeroy.guest/.happier/stacks/repo-dev-a1cc5e0671/server-light/happier-server-light.sqlite`
+are inactive files, not the current Stack migration target. None of these
+development-only ledger shapes is a released compatibility direction or
+justification for a product alias, bridge, or reader.
+
 ## SDK protocol evolution
+
+Plugin UI executable compatibility is negotiated only through the artifact's
+`hostUiApiRange`. One artifact id names one byte-identical CommonJS bundle on
+web, iOS, and Android; React, React Native, Expo, Hermes, and app patch versions
+are not artifact admission keys. Artifact bytes are addressed by digest. A
+daemon-process-local occurrence establishes contribution currentness, but it
+must not become a second byte identity or mount-compatibility gate.
 
 A wire epoch describes compatible semantics, not an exact property census. Every
 material object boundary, including nested objects, is classified explicitly as
@@ -742,8 +859,11 @@ discarded without changing Home profiles or focus.
 
 ### Finite-transfer predecessor admission (0.3 development)
 
-The observed 0.2 daemon at `21977798f704992bc2db3a48cc98c43aeae220c5`
-registers the `daemon.bulkTransfer.upload.*` and `daemon.bulkTransfer.download.*`
+The prospective `../0.2` checkout rechecked on branch `dev` at
+`d1eef877f2cc995523a8532815198c977bda290c` (clean; the relevant files were
+unchanged while it advanced from the initially inspected
+`971c52142eb4caf8bca85edf75a059eb1a16a7fd`) registers the
+`daemon.bulkTransfer.upload.*` and `daemon.bulkTransfer.download.*`
 RPCs through `apiMachine` and the shared Session handler registrar, but its
 `DaemonStateSchema` has no `transfer` declaration. The current UI therefore
 permits the existing RPC viability probe for that absent declaration. It does
@@ -752,15 +872,22 @@ or disabled declaration still fails closed, and unknown route viability does
 not make transfers available.
 
 The same transfer-state reader supplies presentation and execution. An eligible
-Iroh endpoint wins preselection only when the current daemon declaration also
-supports finite import and export. Endpoint publication alone is not a transfer
-capability because that endpoint also carries workspace, provider, and Runner
-traffic. A current Runner instead uses its strict `finiteTransferRpc` operation
-declaration because it has no daemon transfer state. No failure after selecting
-Iroh switches to the retained RPC carrier. Remove the absence reader bridge only
-when daemons without the declaration cease to be supported predecessors. Composer
-media's new capability remains independently negotiated and is not implied by
-this bridge.
+Iroh endpoint wins preselection only when both the released
+`machines.transfer.directPeer` bit and the current `machines.peerMediation` bit are
+enabled and the current daemon declaration also supports finite import and export.
+The released direct-transfer bit retains its predecessor meaning independently of
+peer-mediation grant signing: a current server without a signer still advertises
+that bit according to its existing transfer configuration, so 0.2 clients can use
+the retained direct daemon transfer path. A predecessor-shaped payload with
+`directPeer: true` and no `peerMediation` field therefore preserves released
+transfer availability but cannot select Iroh in a current client. Endpoint
+publication alone is not a transfer capability because that endpoint also carries
+workspace, provider, and Runner traffic. A current Runner instead uses its strict
+`finiteTransferRpc` operation declaration because it has no daemon transfer state.
+No failure after selecting Iroh switches to the retained RPC carrier. Remove the
+absence reader bridge only when daemons without the declaration cease to be
+supported predecessors. Composer media's new capability remains independently
+negotiated and is not implied by this bridge.
 
 ### Request notification previews (development)
 

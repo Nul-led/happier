@@ -4754,6 +4754,88 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect((storage.getState().sessions[sessionId]?.metadata as any)?.summary?.text).toBe('Renamed session');
     });
 
+    it('migrates a dormant predecessor-shaped owner Session on the owner\'s explicit request without a content edit', async () => {
+        const sessionId = 'dormant_layout0_owner_share';
+        // A predecessor row as the Home stores it: no layout marker at all, one
+        // bag mixing recipient-safe presentation with owner-private facts.
+        const predecessorMetadata = {
+            path: '/Users/owner/private-repo',
+            host: 'owner-laptop',
+            summary: { text: 'Historical shared work', updatedAt: 42 },
+        };
+        const predecessorMetadataBytes = JSON.stringify(predecessorMetadata);
+        const predecessorAgentStateBytes = JSON.stringify({ controlledByUser: false });
+        requestMock.mockImplementation(async (path: string) => {
+            if (path === '/v1/account/encryption/currentness') {
+                return currentPlainAccountEncryptionCurrentnessResponse();
+            }
+            if (path !== `/v2/sessions/${sessionId}`) {
+                throw new Error(`Unexpected metadata request path: ${path}`);
+            }
+            return Response.json({ session: {
+                id: sessionId,
+                seq: 7,
+                createdAt: 1_000,
+                updatedAt: 1_000,
+                active: false,
+                activeAt: 1_000,
+                encryptionMode: 'plain',
+                dataEncryptionKey: null,
+                metadataVersion: 5,
+                metadata: predecessorMetadataBytes,
+                agentStateVersion: 3,
+                agentState: predecessorAgentStateBytes,
+                share: null,
+            } });
+        });
+        emitSessionMetadataUpdateWithServerScopeMock.mockResolvedValue({
+            result: 'success',
+            metadataLayoutVersion: 1,
+            version: 6,
+            agentStateVersion: 4,
+        });
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = {
+            token: 'active-token',
+            secret: encodeBase64(new Uint8Array(32).fill(9), 'base64'),
+        };
+        (sync as any).encryption = {
+            decryptEncryptionKey: vi.fn(async () => null),
+            initializeSessions: vi.fn(async () => undefined),
+            getSessionEncryption: vi.fn(() => null),
+        };
+
+        await expect(sync.migrateSessionMetadataOwnerLayout(sessionId)).resolves.toBeUndefined();
+
+        expect(emitSessionMetadataUpdateWithServerScopeMock).toHaveBeenCalledTimes(1);
+        const [{ patch }] = emitSessionMetadataUpdateWithServerScopeMock.mock.calls[0] as [{ patch: any }];
+        expect(patch).toMatchObject({
+            mode: 'owner_migration',
+            expectedAccountEncryptionMode: 'plain',
+            expectedAccountContentPublicKeyFingerprint: null,
+            source: {
+                metadataLayoutVersion: 0,
+                metadata: { version: 5, ciphertext: predecessorMetadataBytes },
+                ownerMetadata: null,
+                agentState: { version: 3, ciphertext: predecessorAgentStateBytes },
+            },
+            target: {
+                metadataLayoutVersion: 1,
+                ownerMetadata: expect.objectContaining({ t: 'plain' }),
+            },
+        });
+        // Recipients receive the strict shared projection only.
+        expect(patch.target.sharedMetadata.ciphertext).toContain('Historical shared work');
+        expect(patch.target.sharedMetadata.ciphertext).not.toContain('/Users/owner/private-repo');
+        expect(patch.target.sharedMetadata.ciphertext).not.toContain('owner-laptop');
+        // The owner keeps the complete, unchanged view.
+        const migrated = storage.getState().sessions[sessionId];
+        expect(migrated?.metadataLayoutVersion).toBe(1);
+        expect(migrated?.metadataVersion).toBe(6);
+        expect(migrated?.ownerMetadataView).toMatchObject(predecessorMetadata);
+    });
+
     it('drops stale direct transcript fetch results after the server scope resets mid-request', async () => {
         const sessionId = 'direct_session_scope_reset';
         storage.getState().applySessions([createExternalSession(sessionId)]);

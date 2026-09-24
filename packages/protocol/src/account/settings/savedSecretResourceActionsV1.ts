@@ -75,6 +75,14 @@ export const SharedSavedSecretUpdateInputV1Schema = z.object({
   displayName: z.string().min(1).max(100),
   kind: z.enum(['apiKey', 'token', 'password', 'other']),
   storedContent: SavedSecretResourceStoredContentV1Schema,
+  /**
+   * Explicit owner mode conversion (plan 10.08 §10.5/§11.0). Absent keeps the
+   * resource's current mode, so rename and value rotation are unchanged; the
+   * submitted `storedContent` must always match the resulting mode.
+   */
+  toMode: z.enum(['plain', 'e2ee']).optional(),
+  /** Owner and current-recipient envelopes for a Plain to E2EE conversion. */
+  keyEnvelopes: z.array(SavedSecretResourceRecipientEnvelopeInputV1Schema).optional(),
 }).strict();
 
 export const SharedSavedSecretDeleteInputV1Schema = z.object({

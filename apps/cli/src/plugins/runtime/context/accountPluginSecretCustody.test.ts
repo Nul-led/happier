@@ -1,5 +1,6 @@
 import {
     accountSettingsParse,
+    applyAccountSettingsSavedSecretMutation,
     formatSavedSecretCatalogReferenceV1,
     resolveAccountSettingsPluginSecret,
     resolveAccountSettingsPluginSecretBinding,
@@ -8,7 +9,10 @@ import {
 import { PluginError } from '@happier-dev/plugin-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
+import {
+    resolveAccountSettingsScopeKey,
+    resolveAccountSettingsScopeKeyForToken,
+} from '@/settings/accountSettings/accountSettingsScopeKey';
 import {
     clearActiveAccountSettingsSnapshot,
     getActiveAccountSettingsSnapshot,
@@ -46,6 +50,17 @@ vi.mock('@/persistence', () => ({
     readStoredCredentials: () => readStoredCredentialsMock(),
 }));
 
+// The Home features read is a network boundary of the catalog refresh owner.
+vi.mock('@/features/serverFeaturesClient', () => ({
+    fetchServerFeaturesSnapshot: vi.fn(async () => ({
+        status: 'ready' as const,
+        features: {
+            features: { teams: { enabled: true, credentialResources: { enabled: true } } },
+            capabilities: {},
+        },
+    })),
+}));
+
 describe('createAccountPluginSecretCustodyRouter', () => {
     it('binds and materializes a current shared ref, rotates by revision, and fails terminally after revocation', async () => {
         const resourceId = 'resource-plugin';
@@ -77,6 +92,10 @@ describe('createAccountPluginSecretCustodyRouter', () => {
         const router = createAccountPluginSecretCustodyRouter({
             owner: {
                 readSnapshot: () => snapshot,
+                // This case drives the catalog by replacing `snapshot`, which
+                // stands for each fresh Home answer; the production admission
+                // (proven below) is what writes that answer into the snapshot.
+                async admitSharedSecretForOperation() {},
                 async updateOnce(input: Readonly<{
                     expectedVersion: number;
                     mutate(settings: Readonly<Record<string, unknown>>): Record<string, unknown>;
@@ -149,6 +168,65 @@ describe('createAccountPluginSecretCustodyRouter', () => {
             localId: 'token',
         })).toBeNull();
         expect(snapshot.settings.secrets).toEqual([]);
+    });
+
+    it('re-reads the Home before a new plugin read spends a shared secret whose revocation hint was missed', async () => {
+        resetActiveAccountSettingsSnapshotForTests();
+        const token = 'plugin-account-token';
+        const resourceId = 'resource-plugin-revoked';
+        const sharedRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+        try {
+            setActiveAccountSettingsSnapshot({
+                source: 'network',
+                settings: accountSettingsParse(applyAccountSettingsSavedSecretMutation(accountSettingsParse({}), {
+                    kind: 'bindPluginSecret',
+                    target: { pluginId: 'acme.example', localId: 'token' },
+                    expectedSecretId: null,
+                    expectedSecretUpdatedAt: null,
+                    secretId: sharedRef,
+                }).settings),
+                settingsVersion: 4,
+                loadedAtMs: 1,
+                settingsSecretsReadKeys: [],
+                scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+                savedSecretCatalogState: 'ready',
+                // Hydrated before the owner removed the grant; the
+                // AccountChange that would have said so never arrived.
+                savedSecretResources: [{
+                    resourceId,
+                    ownerAccountId: 'owner-a',
+                    displayName: 'Shared plugin token',
+                    kind: 'token',
+                    encryptionMode: 'plain',
+                    revision: 3,
+                    storedContent: sealSavedSecretResourceStoredContentV1({
+                        resourceId,
+                        mode: 'plain',
+                        content: { v: 1, name: 'Shared plugin token', kind: 'token', value: 'revoked-value' },
+                    }),
+                    materialStatus: 'ready',
+                }],
+            });
+            readStoredCredentialsMock.mockResolvedValue({ token, encryption: null });
+            // The Home's current authorized answer no longer contains the row.
+            axiosGetMock.mockResolvedValueOnce({ status: 200, data: { resources: [] } });
+            const custody = createAccountPluginSecretCustodyRouter().resolve({
+                pluginId: 'acme.example',
+                declaration: { id: 'token', custody: 'account' },
+            });
+            if (!custody) throw new Error('expected Account custody');
+
+            await expect(custody.get('token')).rejects.toMatchObject({ code: 'plugin_secret_custody_unavailable' });
+            expect(axiosGetMock).toHaveBeenCalledWith(
+                expect.stringContaining('/v1/account/saved-secrets/resources/materials'),
+                expect.anything(),
+            );
+            expect(JSON.stringify(getActiveAccountSettingsSnapshot()?.savedSecretResources ?? [])).not.toContain('revoked-value');
+        } finally {
+            axiosGetMock.mockReset();
+            readStoredCredentialsMock.mockReset();
+            resetActiveAccountSettingsSnapshotForTests();
+        }
     });
 
     it('creates and binds a SavedSecret through one explicit Account Settings version', async () => {
@@ -416,7 +494,7 @@ describe('createAccountPluginSecretCustodyRouter', () => {
                 account: accountCustody.resolve,
             }).resolve,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
             registerRawForRedaction: () => {},
         });
 
@@ -454,7 +532,7 @@ describe('createAccountPluginSecretCustodyRouter', () => {
                     account: accountCustody.resolve,
                 }).resolve,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: () => {},
             });
 
@@ -504,7 +582,7 @@ describe('createAccountPluginSecretCustodyRouter', () => {
                     account: accountCustody.resolve,
                 }).resolve,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: () => {},
             });
 
@@ -559,7 +637,7 @@ describe('createAccountPluginSecretCustodyRouter', () => {
                     account: accountCustody.resolve,
                 }).resolve,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: () => {},
             });
 
@@ -633,7 +711,7 @@ describe('createAccountPluginSecretCustodyRouter', () => {
                     account: accountCustody.resolve,
                 }).resolve,
                 signal: controller.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 registerRawForRedaction: () => {},
             });
 

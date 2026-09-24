@@ -210,6 +210,16 @@ export function useTemporaryComputerLaunch(input: Readonly<{
     onClosed?: (projection: RunnerActivationProjectionV1) => Promise<void> | void;
     /** Abandons private custody when creation failed before a server activation existed. */
     onAbandoned?: () => Promise<void> | void;
+    /**
+     * Sends the composer again, through the one submission owner.
+     *
+     * A replacement package is a fresh submission: closure released this draft's
+     * creator settlement custody, and only the Send owner allocates another one.
+     * Restarting this controller directly would prepare an activation whose
+     * custody no longer exists. An observing device supplies none, so its
+     * replacement action only clears the acknowledged terminal projection.
+     */
+    requestReplacementLaunch?: () => Promise<void> | void;
 }>): TemporaryComputerLaunchController {
     const [status, setStatus] = React.useState<TemporaryComputerLaunchStatus>('idle');
     const [projection, setProjection] = React.useState<RunnerActivationProjectionV1 | null>(null);
@@ -227,7 +237,6 @@ export function useTemporaryComputerLaunch(input: Readonly<{
     const claimedActivationIdsRef = React.useRef(new Set<string>());
     const claimingActivationIdsRef = React.useRef(new Set<string>());
     const [claimRetirementRevision, setClaimRetirementRevision] = React.useState(0);
-    const reviewingActivationIdsRef = React.useRef(new Set<string>());
     const materializingActivationIdsRef = React.useRef(new Set<string>());
     const refreshAbortControllerRef = React.useRef<AbortController | null>(null);
     const mountedRef = React.useRef(true);
@@ -431,6 +440,14 @@ export function useTemporaryComputerLaunch(input: Readonly<{
         });
     }, [input.client, input.serverId, projection?.state]);
 
+    // One live review producer per claimed, still-unreviewed activation. An
+    // identical refetch (a wake, a manual refresh) keeps that producer instead
+    // of cancelling it: nothing would start a replacement while it still held
+    // the activation. A finished or failed attempt releases its own ownership
+    // only, so the next projection read retries a failure exactly as before.
+    // The producer is aborted only when its activation leaves that state, is
+    // replaced by another activation, or the owner unmounts.
+    const reviewOwnerRef = React.useRef<Readonly<{ activationId: string; controller: AbortController }> | null>(null);
     React.useEffect(() => {
         if (!projection || projection.state !== 'claimed' || projection.review !== null) return;
         const prepareReview = lifecycleCallbacksRef.current.prepareReview;
@@ -438,23 +455,38 @@ export function useTemporaryComputerLaunch(input: Readonly<{
             setStatus('review_unavailable');
             return;
         }
-        if (reviewingActivationIdsRef.current.has(projection.activationId)) return;
-        reviewingActivationIdsRef.current.add(projection.activationId);
+        if (reviewOwnerRef.current?.activationId === projection.activationId) {
+            // The live producer continues; the refetched projection must not
+            // present this activation as idle while it is still preparing.
+            setStatus('preparing_encryption');
+            return;
+        }
+        reviewOwnerRef.current?.controller.abort(new Error('runner_activation_review_superseded'));
+        const owner = { activationId: projection.activationId, controller: new AbortController() } as const;
+        reviewOwnerRef.current = owner;
         setStatus('preparing_encryption');
         setError(null);
-        const controller = new AbortController();
-        void prepareReview(projection, controller.signal).then(refresh).catch((caught) => {
-            if (controller.signal.aborted) return;
+        void prepareReview(projection, owner.controller.signal).then(() => refreshRef.current()).catch((caught) => {
+            if (owner.controller.signal.aborted) return;
             if (!mountedRef.current) return;
             setError(caught);
             setStatus(caught instanceof TemporaryComputerLaunchDependencyUnavailableError && caught.dependency === 'review'
                 ? 'review_unavailable'
                 : 'failed');
         }).finally(() => {
-            reviewingActivationIdsRef.current.delete(projection.activationId);
+            if (reviewOwnerRef.current === owner) reviewOwnerRef.current = null;
         });
-        return () => controller.abort(new Error('runner_activation_review_superseded'));
-    }, [input.prepareReview !== undefined, projection, refresh]);
+    }, [input.prepareReview !== undefined, projection]);
+    const reviewTargetActivationId = projection?.state === 'claimed' && projection.review === null
+        ? projection.activationId
+        : null;
+    React.useEffect(() => () => {
+        const owner = reviewOwnerRef.current;
+        if (owner && owner.activationId === reviewTargetActivationId) {
+            owner.controller.abort(new Error('runner_activation_review_superseded'));
+            reviewOwnerRef.current = null;
+        }
+    }, [reviewTargetActivationId]);
 
     React.useEffect(() => {
         if (!projection || projection.state !== 'consented' || projection.readiness === null) return;
@@ -759,6 +791,7 @@ export function useTemporaryComputerLaunch(input: Readonly<{
         setStatus('idle');
     }, [projection, status]);
 
+    const requestReplacementLaunch = input.requestReplacementLaunch;
     const replaceTerminal = React.useCallback(async () => {
         if (projection?.state !== 'closed' || closureCleanupFailedIdsRef.current.has(projection.activationId)) return;
         // The dismissed-id fence lets `start` distinguish this explicit user
@@ -767,8 +800,8 @@ export function useTemporaryComputerLaunch(input: Readonly<{
         setProjection(null);
         setError(null);
         setStatus('idle');
-        await start();
-    }, [projection, start]);
+        await requestReplacementLaunch?.();
+    }, [projection, requestReplacementLaunch]);
 
     // The frozen reopen window. `status` is still the internal lifecycle; only
     // the presented status is widened, so no transition logic has to learn a

@@ -96,8 +96,8 @@ const machineCapabilitiesInvokeMock = vi.fn(async () => ({
     supported: true,
     response: { ok: true, result: { plan: null } },
 }));
-const applySettingsMock = vi.fn();
-const mutateAccountSettingsOnceMock = vi.fn();
+const applySettingsMock = vi.hoisted(() => vi.fn());
+const mutateAccountSettingsOnceMock = vi.hoisted(() => vi.fn());
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
 const cliDetectionState = {
     available: { codex: false } as Record<string, boolean | null>,
@@ -209,7 +209,6 @@ function buildExternalSessionsAgentProjection() {
                 },
             },
         },
-        backendsById: {},
         diagnostics: [],
     };
 }
@@ -410,7 +409,6 @@ function buildCollidingInstalledAgentProjection(): PluginProjectionV2 {
                 },
             },
         },
-        backendsById: {},
         actionsById: {},
         toolsById: {},
         commandsById: {},
@@ -607,6 +605,15 @@ vi.mock('@/sync/sync', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useSettingsVersion: () => 7,
+    useActiveServerAccountScope: () => null,
+}));
+
+// The Agent purpose section observes the Home's entitled Team credential
+// catalog (a Home query); no Team resource is offered in this suite.
+vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
+    useHomeTeamCredentialModelCatalog: () => ({
+        resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
+    }),
 }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
@@ -718,6 +725,7 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
                 administrationTargetState.selectedTarget?.serverIdentityId
                 === (serverIdentityByProfileId[activeServerSnapshot.serverId] ?? activeServerSnapshot.serverId),
             resolveExecutionTarget: () => administrationTargetState.executionTarget,
+            pickerRows: [],
             candidates: [
                 { target: { serverIdentityId: 'server1', machineId: 'm1' } },
                 { target: { serverIdentityId: 'server1', machineId: 'm2' } },
@@ -978,6 +986,47 @@ async function renderPluginAgentSettingsScreen() {
     return renderScreen(React.createElement(Screen));
 }
 
+type RenderedAgentScreen = Awaited<ReturnType<typeof renderPluginAgentSettingsScreen>>;
+
+/** The page-header enabled switch of an agent detail. */
+function findEnabledSwitch(screen: RenderedAgentScreen) {
+    return screen.findAll((node: any) => node.type === 'Switch' && node.props?.testID === 'settings.agents.detail.enabled')[0];
+}
+
+/** The agent detail's page header (identity: title, description and identity mark). */
+function findAgentHeader(screen: RenderedAgentScreen) {
+    return screen.findAll((node: any) => typeof node.type !== 'string'
+        && node.props?.testID === 'settings.agents.detail.header'
+        && typeof node.props?.title === 'string')[0];
+}
+
+function readAgentHeaderIconAgentId(screen: RenderedAgentScreen): unknown {
+    return findAgentHeader(screen)?.findAll((node: any) => node.props?.entry !== undefined)[0]?.props.entry.iconAgentId;
+}
+
+/**
+ * A control a row or section carries as its accessory (`rightElement`, `action`). The list
+ * primitives are pass-through mocks here, so those elements are read from the owner's props.
+ */
+function findAccessoryByTestId(screen: RenderedAgentScreen, testID: string): React.ReactElement<any> | null {
+    for (const node of screen.findAll((candidate: any) => Boolean(candidate.props?.rightElement || candidate.props?.action))) {
+        for (const element of [node.props.rightElement, node.props.action]) {
+            if (React.isValidElement(element) && (element.props as { testID?: string }).testID === testID) return element;
+        }
+    }
+    return null;
+}
+
+/** A segmented choice row (two to four visible options) by its title. */
+function findSegmentedChoice(screen: RenderedAgentScreen, title: string) {
+    return screen.findAll((node: any) => (
+        typeof node.type !== 'string'
+        && node.props?.title === title
+        && Array.isArray(node.props?.options)
+        && typeof node.props?.onChange === 'function'
+    ))[0];
+}
+
 function setAdministrationExecutionTarget(machineId: string, serverId: string) {
     const displayName = ({
         m1: 'Machine One',
@@ -1071,6 +1120,7 @@ describe('PluginAgentSettingsScreen', () => {
         settingsState.opencodeServerBaseUrlByServerIdV1 = {};
         settingsState.externalSessionsSettingsV1 = undefined;
         settingsState.connectedAccountPurposeBindingsV1 = { v: 1, bindings: [] };
+        settingsState.connectedServicesDefaultAuthByAgentIdV1 = undefined;
         machinesState = [
             { id: 'm1', metadata: { displayName: 'Machine One', host: 'm1', homeDir: '/Users/m1' } },
             { id: 'm2', metadata: { displayName: 'Machine Two', host: 'm2', homeDir: '/Users/m2' } },
@@ -1316,21 +1366,19 @@ describe('PluginAgentSettingsScreen', () => {
         await act(async () => {});
         await flushHookEffects();
 
-        const enabledItem = screen.findAllByType('Item' as any)
-            .find((item: any) => item.props?.title === 'settingsAgents.enabledTitle');
-        expect(enabledItem?.props.disabled).toBe(true);
-        expect(enabledItem?.props.rightElement?.props.disabled).toBe(true);
-        enabledItem?.props.onPress?.();
+        const enabledSwitch = findEnabledSwitch(screen);
+        expect(enabledSwitch?.props.disabled).toBe(true);
+        enabledSwitch?.props.onValueChange?.(false);
+        // One notice explains why every Account writer on the page is read-only.
+        expect(screen.findByTestId('settings.agents.detail.accountScope')).toBeTruthy();
 
-        const permissionMenu = screen.findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.permissions.defaultPermissionModeTitle');
-        expect(permissionMenu?.props.itemTrigger.itemProps.disabled).toBe(true);
-        permissionMenu?.props.onSelect('ask');
+        const permissionChoice = findSegmentedChoice(screen, 'settingsSession.permissions.defaultPermissionModeTitle');
+        expect(permissionChoice?.props.disabled).toBe(true);
+        permissionChoice?.props.onChange('ask');
 
-        const sourceMenu = screen.findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.title === 'settingsAgents.cliSourcePreference.title');
-        expect(sourceMenu?.props.itemTrigger.itemProps.disabled).toBe(true);
-        sourceMenu?.props.onSelect('managed-first');
+        const sourceChoice = findSegmentedChoice(screen, 'settingsAgents.cliSourcePreference.title');
+        expect(sourceChoice?.props.disabled).toBe(true);
+        sourceChoice?.props.onChange('managed-first');
 
         const chooser = screen.findByType('ConnectedAccountPurposeTargetChooser' as any);
         expect(chooser.props.disabled).toBe(true);
@@ -1423,9 +1471,7 @@ describe('PluginAgentSettingsScreen', () => {
 
         const screen = await renderPluginAgentSettingsScreen();
         await flushHookEffects({ cycles: 3, turns: 2 });
-        expect(screen.findAllByType('Item' as any).some(
-            (node: any) => node.props?.title === 'Acme Review Provider',
-        )).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
 
         machineContributionRegistryProjectionDescribeMock.mockRejectedValueOnce(new Error('projection unavailable'));
         machineProjectionRevisionState.revision += 1;
@@ -1434,9 +1480,7 @@ describe('PluginAgentSettingsScreen', () => {
         });
         await flushHookEffects({ cycles: 3, turns: 2 });
 
-        expect(screen.findAllByType('Item' as any).some(
-            (node: any) => node.props?.title === 'Acme Review Provider',
-        )).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
         expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
     });
 
@@ -1842,8 +1886,7 @@ describe('PluginAgentSettingsScreen', () => {
         await act(async () => {});
         await flushHookEffects();
 
-        const initialItems = screen.findAllByType('Item' as any);
-        expect(initialItems.some((node: any) => node.props?.title === 'Acme Review Provider')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
         useCLIDetectionMock.mockClear();
 
         let resolveReload!: (value: {
@@ -1867,7 +1910,7 @@ describe('PluginAgentSettingsScreen', () => {
             serverId: 'server2',
         }));
         const loadingItems = screen.findAllByType('Item' as any);
-        expect(loadingItems.some((node: any) => node.props?.title === 'Acme Review Provider')).toBe(false);
+        expect(findAgentHeader(screen)).toBeUndefined();
         expect(loadingItems.some((node: any) => node.props?.title === 'common.loading')).toBe(true);
         expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
         expect(useCLIDetectionMock).not.toHaveBeenCalledWith('m3', expect.objectContaining({
@@ -1882,8 +1925,7 @@ describe('PluginAgentSettingsScreen', () => {
         });
         await flushHookEffects();
 
-        const readyItems = screen.findAllByType('Item' as any);
-        expect(readyItems.some((node: any) => node.props?.title === 'Acme Review Provider')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
         expect(useCLIDetectionMock).toHaveBeenCalledWith('m3', expect.objectContaining({
             autoDetect: true,
         }));
@@ -1930,11 +1972,10 @@ describe('PluginAgentSettingsScreen', () => {
         expect(screen.findByTestId('settings-provider-auth-status')).toBeTruthy();
         expect(screen.findAllByType('AgentCliInstallItem' as any)).toHaveLength(1);
         const items = screen.findAllByType('Item' as any);
-        expect(items.some((node: any) => node.props?.title === 'Acme Review Provider')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Provider');
         expect(items.some((node: any) => node.props?.title === 'settingsAgents.notAvailable')).toBe(false);
-        expect(items.some((node: any) => node.props?.subtitle === 'settingsAgents.channelPlugin')).toBe(true);
-        const projectedIdentityRow = items.find((node: any) => node.props?.title === 'Acme Review Provider');
-        expect(projectedIdentityRow?.props?.icon?.props?.entry?.iconAgentId).toBe('codex');
+        expect(findAgentHeader(screen)?.props.description).toContain('settingsAgents.channelPlugin');
+        expect(readAgentHeaderIconAgentId(screen)).toBe('codex');
     });
 
     it('renders the projected provider detail screen even when the provider has no built-in runtime carrier', async () => {
@@ -1955,10 +1996,9 @@ describe('PluginAgentSettingsScreen', () => {
 
         const screen = await renderPluginAgentSettingsScreen();
         const items = screen.findAllByType('Item' as any);
-        expect(items.some((node: any) => node.props?.title === 'Acme Headless Provider')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Headless Provider');
         expect(items.some((node: any) => node.props?.title === 'settingsAgents.notAvailable')).toBe(false);
-        const projectedIdentityRow = items.find((node: any) => node.props?.title === 'Acme Headless Provider');
-        expect(projectedIdentityRow?.props?.icon?.props?.entry?.iconAgentId).toBe('claude');
+        expect(readAgentHeaderIconAgentId(screen)).toBe('claude');
     });
 
     it('renders the installed Agent plugin settings on the no-CLI Agent screen', async () => {
@@ -2047,8 +2087,7 @@ describe('PluginAgentSettingsScreen', () => {
         });
 
         const screen = await renderPluginAgentSettingsScreen();
-        const enabledRow = screen.findAllByType('Item' as any).find((node: any) => node.props?.title === 'settingsAgents.enabledTitle');
-        expect(enabledRow).toBeUndefined();
+        expect(findEnabledSwitch(screen)).toBeUndefined();
     });
 
     it('surfaces provider CLI install via capability installer item', async () => {
@@ -2151,9 +2190,7 @@ describe('PluginAgentSettingsScreen', () => {
         await act(async () => {});
         await flushHookEffects();
 
-        const items = screen.findAllByType('Item' as any);
-        expect(items.some((node: any) => node.props?.title === 'Acme Voice Claude')).toBe(true);
-        expect(items.some((node: any) => node.props?.title === 'Other Voice Claude')).toBe(false);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Voice Claude');
         const installer = screen.findByType('AgentCliInstallItem' as any);
         expect(installer.props).toMatchObject({
             capabilityId: 'cli.acme.voice.claude',
@@ -2225,8 +2262,8 @@ describe('PluginAgentSettingsScreen', () => {
         expect(screen.findAllByType('AgentCliInstallItem' as any)).toHaveLength(1);
         expect(screen.findAllByType('AgentAuthenticationTerminalPane' as any)).toHaveLength(0);
         expect(screen.findByTestId('settings-provider-auth-status')).toBeTruthy();
-        expect(screen.findByTestId('settings-provider-auth-check-now')).toBeNull();
-        expect(screen.findByTestId('settings-provider-auth-login')).toBeNull();
+        expect(findAccessoryByTestId(screen, 'settings-provider-auth-check-now')).toBeNull();
+        expect(findAccessoryByTestId(screen, 'settings-provider-auth-login')).toBeNull();
     });
 
     it('renders the canonical Administration target selector instead of a route-owned machine picker', async () => {
@@ -2341,6 +2378,70 @@ describe('PluginAgentSettingsScreen', () => {
 
     });
 
+    it('keeps account-level settings usable with no machine selected and asks for a machine only where one matters', async () => {
+        administrationTargetState.selectedTarget = null;
+        administrationTargetState.executionTarget = null;
+        // With no machine there is no daemon projection, so no CLI declaration either.
+        mockAgentCatalogProjection.mockImplementation((agentId: string) => (agentId === 'codex' ? {
+            agentId,
+            catalogAgentId: agentId,
+            iconAgentId: agentId,
+            title: 'Codex',
+            subtitle: agentId,
+            iconName: 'code-slash-outline',
+            isBuiltIn: true,
+            backendTargetKey: buildCanonicalBackendTargetKey(agentId),
+            enabled: true,
+            identity: null,
+            connectedAccounts: [],
+            cli: null,
+            authPlugin: null,
+            backendEntry: null,
+        } : null));
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await flushHookEffects();
+
+        expect(findEnabledSwitch(screen)?.props.disabled).toBe(false);
+        const permissionChoice = findSegmentedChoice(screen, 'settingsSession.permissions.defaultPermissionModeTitle');
+        expect(permissionChoice).toBeTruthy();
+        await act(async () => {
+            permissionChoice?.props.onChange('yolo');
+        });
+        expect(applySettingsMock).toHaveBeenCalledWith({
+            sessionDefaultPermissionModeByTargetKey: { [buildCanonicalBackendTargetKey('codex')]: 'yolo' },
+        });
+        expect(screen.findByTestId('settings.agents.detail.noMachine')).toBeTruthy();
+        expect(machineContributionRegistryProjectionDescribeMock).not.toHaveBeenCalled();
+    });
+
+    it('shows account-level settings immediately while the machine projection is still loading', async () => {
+        machineContributionRegistryProjectionDescribeMock.mockReturnValue(new Promise(() => {}));
+        mockAgentCatalogProjection.mockImplementation((agentId: string) => (agentId === 'codex' ? {
+            agentId,
+            catalogAgentId: agentId,
+            iconAgentId: agentId,
+            title: 'Codex',
+            subtitle: agentId,
+            iconName: 'code-slash-outline',
+            isBuiltIn: true,
+            backendTargetKey: buildCanonicalBackendTargetKey(agentId),
+            enabled: true,
+            identity: null,
+            connectedAccounts: [],
+            cli: null,
+            authPlugin: null,
+            backendEntry: null,
+        } : null));
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await flushHookEffects();
+
+        expect(screen.findByTestId('settings.agents.projection.status')).toBeNull();
+        expect(findSegmentedChoice(screen, 'settingsSession.permissions.defaultPermissionModeTitle')).toBeTruthy();
+        expect(screen.findByTestId('settings.agents.detail.machineChecking')).toBeTruthy();
+    });
+
     it('includes a permissions section to set the default permission mode for this backend', async () => {
         const screen = await renderPluginAgentSettingsScreen();
         const items = screen.findAllByType('Item' as any);
@@ -2369,12 +2470,12 @@ describe('PluginAgentSettingsScreen', () => {
         });
 
         const screen = await renderPluginAgentSettingsScreen();
-        const enabledItem = screen.findAllByType('Item' as any).find((item: any) => item?.props?.title === 'settingsAgents.enabledTitle');
+        const enabledSwitch = findEnabledSwitch(screen);
 
-        expect(enabledItem?.props?.rightElement?.props?.value).toBe(false);
+        expect(enabledSwitch?.props?.value).toBe(false);
 
         await act(async () => {
-            enabledItem?.props?.onPress();
+            enabledSwitch?.props?.onValueChange(true);
         });
         await flushHookEffects();
 
@@ -2394,14 +2495,12 @@ describe('PluginAgentSettingsScreen', () => {
         };
 
         const screen = await renderPluginAgentSettingsScreen();
-        const permissionMenu = screen
-            .findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.permissions.defaultPermissionModeTitle');
+        const permissionChoice = findSegmentedChoice(screen, 'settingsSession.permissions.defaultPermissionModeTitle');
 
-        expect(permissionMenu?.props?.selectedId).toBe('ask');
+        expect(permissionChoice?.props?.value).toBe('ask');
 
         await act(async () => {
-            permissionMenu?.props?.onSelect('default');
+            permissionChoice?.props?.onChange('default');
         });
         await flushHookEffects();
 
@@ -2429,7 +2528,8 @@ describe('PluginAgentSettingsScreen', () => {
 
         const screen = await renderPluginAgentSettingsScreen();
         expect(screen.findByTestId('settings-provider-auth-status')).toBeTruthy();
-        expect(screen.findByTestId('settings-provider-auth-account')).toBeTruthy();
+        // Readiness states the sign-in in one row: state, account and method together.
+        expect(screen.findByTestId('settings-provider-auth-status')?.props.subtitle).toContain('alice@example.com');
     });
 
     it('renders a login action when local auth is supported but logged out', async () => {
@@ -2445,7 +2545,7 @@ describe('PluginAgentSettingsScreen', () => {
         cliDetectionState.timestamp = 123;
 
         const screen = await renderPluginAgentSettingsScreen();
-        expect(screen.findByTestId('settings-provider-auth-login')).toBeTruthy();
+        expect(findAccessoryByTestId(screen, 'settings-provider-auth-login')).toBeTruthy();
     });
 
     it('uses the shared pane scope host for the provider auth terminal', async () => {
@@ -2465,7 +2565,9 @@ describe('PluginAgentSettingsScreen', () => {
         expect(hostBefore.props.bottomPaneBuiltinAdapter.render()).toBeNull();
         expect(hostBefore.props.scopeId).toBe('settings:provider:codex');
 
-        await screen.pressByTestIdAsync('settings-provider-auth-login');
+        await act(async () => {
+            findAccessoryByTestId(screen, 'settings-provider-auth-login')?.props.onPress();
+        });
         await flushHookEffects();
 
         expect(paneApi.openBottom).toHaveBeenCalledWith({ tabId: 'agent-auth-terminal' });
@@ -2558,14 +2660,12 @@ describe('PluginAgentSettingsScreen', () => {
 
     it('renders and updates the backend CLI source preference when a managed install exists', async () => {
         const screen = await renderPluginAgentSettingsScreen();
-        const sourceMenu = screen
-            .findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.title === 'settingsAgents.cliSourcePreference.title');
-        expect(sourceMenu).toBeTruthy();
-        expect(sourceMenu!.props.selectedId).toBe('system-first');
+        const sourceChoice = findSegmentedChoice(screen, 'settingsAgents.cliSourcePreference.title');
+        expect(sourceChoice).toBeTruthy();
+        expect(sourceChoice!.props.value).toBe('system-first');
 
         await act(async () => {
-            sourceMenu!.props.onSelect('managed-first');
+            sourceChoice!.props.onChange('managed-first');
         });
         await flushHookEffects();
 
@@ -2584,14 +2684,12 @@ describe('PluginAgentSettingsScreen', () => {
         };
 
         const screen = await renderPluginAgentSettingsScreen();
-        const sourceMenu = screen
-            .findAllByType('DropdownMenu' as any)
-            .find((node: any) => node.props?.itemTrigger?.title === 'settingsAgents.cliSourcePreference.title');
+        const sourceChoice = findSegmentedChoice(screen, 'settingsAgents.cliSourcePreference.title');
 
-        expect(sourceMenu?.props?.selectedId).toBe('managed-first');
+        expect(sourceChoice?.props?.value).toBe('managed-first');
 
         await act(async () => {
-            sourceMenu?.props?.onSelect('system-first');
+            sourceChoice?.props?.onChange('system-first');
         });
         await flushHookEffects();
 
@@ -2660,10 +2758,11 @@ describe('PluginAgentSettingsScreen', () => {
 
         const screen = await renderPluginAgentSettingsScreen();
         const items = screen.findAllByType('Item' as any);
-        expect(items.some((node: any) => node.props?.title === 'Acme Review Backend')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Review Backend');
         expect(items.some((node: any) => node.props?.title === 'settingsAgents.notFoundTitle')).toBe(false);
-        const fallbackIdentityRow = items.find((node: any) => node.props?.title === 'Acme Review Backend');
-        expect(fallbackIdentityRow?.props?.icon?.props?.entry?.iconAgentId).toBe('claude');
+        // The page header carries the agent's identity mark.
+        const header = screen.findByTestId('settings.agents.detail.header');
+        expect(header?.findAll((node: any) => node.props?.entry?.iconAgentId === 'claude').length).toBeGreaterThan(0);
         expect(screen.findAllByType('BadgeGrid' as any)).toHaveLength(0);
         expect(items.some((node: any) => node.props?.title === 'settingsProviders.models.manage')).toBe(false);
     });
@@ -2716,10 +2815,16 @@ describe('PluginAgentSettingsScreen', () => {
         expect(useCLIDetectionMock).toHaveBeenLastCalledWith('m1', expect.objectContaining({
             agentIds: ['acme.review.provider'],
         }));
-        expect(screen.findByTestId('settings-provider-detected-cli')?.props.subtitle)
+        expect(screen.findByTestId('settings-provider-detected-cli')?.props.row.subtitle)
             .toBe('acme-review • machine.detectedCliUnknown');
         expect(screen.findByType('AgentCliInstallItem' as any).props.capabilityId)
             .toBe('cli.acme.review.provider');
+        // Capabilities sit in a closed disclosure whose header summarizes them.
+        const capabilitiesHeader = screen.findByTestId('settings.agents.detail.capabilities.header');
+        expect(capabilitiesHeader?.props.detail).toBe('settingsAgents.resumeSupportTitle · settingsAgents.localControlTitle');
+        await act(async () => {
+            capabilitiesHeader?.props.onPress();
+        });
         expect(screen.findByType('BadgeGrid' as any).props.items).toEqual([
             expect.objectContaining({ id: 'resume', status: 'positive' }),
             expect.objectContaining({ id: 'localControl', status: 'positive' }),
@@ -2778,8 +2883,7 @@ describe('PluginAgentSettingsScreen', () => {
 
         // The fallback screen really is the one rendering (identity row), and
         // the canonical External Sessions section is composed alongside it.
-        const items = screen.findAllByType('Item' as any);
-        expect(items.some((node: any) => node.props?.title === 'Acme Transcripts')).toBe(true);
+        expect(findAgentHeader(screen)?.props.title).toBe('Acme Transcripts');
         expect(screen.findByType('MachineAdministrationTargetSelector')).toBeTruthy();
         expect(screen.findByTestId('settings-external-sessions-manage-all')).toBeTruthy();
         // The machine declares External Sessions while its daemon projects no
@@ -2839,6 +2943,53 @@ describe('PluginAgentSettingsScreen', () => {
         expect(textNodes.some((node: any) => node.props?.children === 'Unknown')).toBe(false);
     });
 
+    it('shows a released service-keyed Agent default on the purpose chooser and folds it away on the next write', async () => {
+        mockProviderId = 'acme.review.provider';
+        // The shape the Connected Services page persisted before the purpose-binding store owned Agent defaults.
+        settingsState.connectedServicesDefaultAuthByAgentIdV1 = {
+            v: 1,
+            bindingsByAgentId: {
+                'acme.review.provider': {
+                    v: 1,
+                    bindingsByServiceId: {
+                        'acme.review/account': { source: 'connected', selection: 'profile', profileId: 'legacy-work' },
+                    },
+                },
+            },
+        };
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: {
+                ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+                agentsById: {
+                    ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById,
+                    'acme.review.provider': {
+                        ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById['acme.review.provider'],
+                        connectedAccounts: [{
+                            purpose: 'primary',
+                            service: { pluginId: 'acme.review', localId: 'account' },
+                            required: false,
+                        }],
+                    },
+                },
+            },
+        });
+        const screen = await renderPluginAgentSettingsScreen();
+        await act(async () => {});
+        await flushHookEffects();
+
+        const chooser = screen.findByType('ConnectedAccountPurposeTargetChooser' as any);
+        expect(chooser.props.value).toEqual({
+            kind: 'account',
+            account: { service: { pluginId: 'acme.review', localId: 'account' }, accountId: 'legacy-work' },
+        });
+        chooser.props.onChange(null);
+        expect(applySettingsMock).toHaveBeenCalledWith({
+            connectedAccountPurposeBindingsV1: { v: 1, bindings: [] },
+            connectedServicesDefaultAuthByAgentIdV1: { v: 1, bindingsByAgentId: {} },
+        });
+    });
+
     it('writes projected Agent account defaults through the qualified purpose binding owner', async () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
@@ -2893,6 +3044,55 @@ describe('PluginAgentSettingsScreen', () => {
             },
         }));
     });
+    it('writes a Team resource choice as the canonical Team selection, never a purpose target', async () => {
+        mockProviderId = 'acme.review.provider';
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: true,
+            projection: {
+                ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+                agentsById: {
+                    ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById,
+                    'acme.review.provider': {
+                        ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById['acme.review.provider'],
+                        connectedAccounts: [{
+                            purpose: 'primary',
+                            service: { pluginId: 'acme.review', localId: 'account' },
+                            required: false,
+                        }],
+                    },
+                },
+            },
+        });
+        const screen = await renderPluginAgentSettingsScreen();
+        await act(async () => {});
+        await flushHookEffects();
+
+        const chooser = screen.findByType('ConnectedAccountPurposeTargetChooser' as any);
+        expect(chooser.props.declaration).toMatchObject({
+            purpose: 'primary',
+            service: { pluginId: 'acme.review', localId: 'account' },
+        });
+        const teamResource = {
+            teamId: 'team-acme',
+            selection: { source: 'team_resource' as const, resourceId: 'resource-pool', deliveryMode: 'brokered' as const },
+        };
+        chooser.props.onChange(null, teamResource);
+        // Lane 10 child 02 :271 / child 06 :506: the purpose target union stays
+        // `account | group`; the Agent default persists the Team selection.
+        expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
+            connectedAccountPurposeBindingsV1: {
+                v: 1,
+                bindings: [],
+                teamResourceSelections: [{
+                    purpose: {
+                        consumer: { pluginId: 'acme.review', localId: 'provider' },
+                        purpose: 'primary',
+                    },
+                    ...teamResource,
+                }],
+            },
+        }));
+    });
 });
 const settingsState = {
     backendEnabledByTargetKey: {},
@@ -2904,4 +3104,5 @@ const settingsState = {
     opencodeServerBaseUrlByServerIdV1: {} as Record<string, string>,
     externalSessionsSettingsV1: undefined as any,
     connectedAccountPurposeBindingsV1: { v: 1 as const, bindings: [] as any[] },
+    connectedServicesDefaultAuthByAgentIdV1: undefined as any,
 };

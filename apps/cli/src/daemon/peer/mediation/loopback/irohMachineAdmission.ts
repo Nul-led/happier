@@ -20,7 +20,10 @@ import {
   verifyMachineCarrierHandshakeV1,
   type MachineCarrierRole,
 } from '../../iroh/machineCarrier';
-import { verifyProviderBrokerRouteGrantV1 } from '../verifyProviderBrokerRouteGrantV1';
+import {
+  providerBrokerRouteGrantExpectedBindingV1,
+  verifyProviderBrokerRouteGrantV1,
+} from '../verifyProviderBrokerRouteGrantV1';
 import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
 import {
   isFirstBytesLocalCapability,
@@ -203,24 +206,18 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
         ) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
         // The machine/1 transport identity check above is necessary but not
         // sufficient: the Home-signed cross-account authority must also be
-        // current and bound to this exact transport. Reuse the broker grant
+        // authentic and bound to this exact transport. Reuse the broker grant
         // verifier here; the callback owns the mutable resource/consumer
-        // decision and local application target selection.
+        // decision and local application target selection. Expiry is also the
+        // callback's decision: an expired authority may still open a stream
+        // that can only release the exact claim it already holds (L10/04
+        // §5.6, L10/11 A3), which cannot be told apart before the request.
         const verification = verifyProviderBrokerRouteGrantV1({
           authority: providerHandshake.authority,
           trustRoots: options.admission.resolveTrustRoots?.() ?? options.trustRoots,
           nowMs: options.nowMs(),
-          expected: {
-            teamId: providerHandshake.authority.payload.teamId,
-            resourceId: providerHandshake.authority.payload.resourceId,
-            expectedResourceRevision: providerHandshake.authority.payload.expectedResourceRevision,
-            modelId: providerHandshake.authority.payload.modelId,
-            sourceRevision: providerHandshake.authority.payload.sourceRevision,
-            initiator: providerHandshake.authority.payload.initiator,
-            target: providerHandshake.authority.payload.target,
-            consumer: providerHandshake.authority.payload.consumer,
-            application: providerHandshake.authority.payload.application,
-          },
+          enforceExpiry: false,
+          expected: providerBrokerRouteGrantExpectedBindingV1(providerHandshake.authority),
           authenticatedRemoteEndpointId,
         });
         if (!verification.valid) return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();

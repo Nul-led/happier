@@ -67,7 +67,6 @@ import { buildSessionMetadataEnvelopeCreateFields } from '@/session/metadata/bui
 import {
   buildSessionInitialAccessCreateFields,
   materializeSessionInitialAccessCreateFields,
-  readSessionInitialAccessUpdateRequiredError,
   readSessionTeamCredentialBindingUpdateRequiredError,
   readSessionInitialAccessServerError,
 } from '@/api/session/sessionCreationInitialAccess';
@@ -171,7 +170,7 @@ export function resolveSessionDetailAccessProjectionVersion(params: Readonly<{
 }>): 1 | undefined {
   if (!params.serverFeaturesSnapshot) return undefined;
   return resolveCliFeatureDecision({
-    featureId: 'sessions.collaboration',
+    featureId: 'sharing.session',
     env: params.env ?? process.env,
     serverSnapshot: params.serverFeaturesSnapshot,
   }).state === 'enabled'
@@ -307,7 +306,7 @@ export async function fetchSessionById(params: Readonly<{
   reason?: SessionSnapshotRefreshReason;
   signal?: AbortSignal;
   deadlineAtMs?: number;
-  /** Supply only after the exact Home's canonical sessions.collaboration decision is enabled. */
+  /** Supply only after the exact Home's canonical sharing.session decision is enabled. */
   accessProjectionVersion?: 1;
   /** Exact Home snapshot already owned by the caller's runtime/connection; never fetched here. */
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
@@ -518,7 +517,7 @@ export async function fetchSessionByIdCompat(params: Readonly<{
   sessionId: string;
   reason?: SessionSnapshotRefreshReason;
   signal?: AbortSignal;
-  /** Supply only after the exact Home's canonical sessions.collaboration decision is enabled. */
+  /** Supply only after the exact Home's canonical sharing.session decision is enabled. */
   accessProjectionVersion?: 1;
   /** Exact Home snapshot already owned by the caller's runtime/connection; never fetched here. */
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
@@ -976,6 +975,11 @@ export async function applySessionAgentTransitionCutover(params: Readonly<{
   currentView: SessionAgentTransitionCurrentViewWriteV1;
   /** Sealed or plaintext `SessionStoredMessageContent` divider envelope. */
   divider: Readonly<{ localId: string; content: unknown }>;
+  /**
+   * The target Agent's Team slot bindings, written by the Home in the same
+   * transaction as the target current view (lane 10 child 01 principle 3).
+   */
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
 }>): Promise<ApplySessionAgentTransitionCutoverHttpResult> {
   const serverUrl = resolveServerHttpBaseUrl();
   const encodedSessionId = encodeSessionIdPathSegment(params.sessionId);
@@ -987,6 +991,9 @@ export async function applySessionAgentTransitionCutover(params: Readonly<{
         v: 1,
         currentView: params.currentView,
         divider: params.divider,
+        ...(params.teamCredentialBindings && params.teamCredentialBindings.length > 0
+          ? { teamCredentialBindings: params.teamCredentialBindings }
+          : {}),
       },
       {
         headers: {
@@ -1364,18 +1371,27 @@ export async function getOrCreateSessionByTag(params: Readonly<{
 }> {
   const serverUrl = resolveServerHttpBaseUrl();
 
-  const {
-    desiredSessionEncryptionMode,
-    accountEncryptionCurrentness,
-    serverSupportsFeatureSnapshot,
-    serverFeaturesSnapshot,
-  } = await resolveSessionCreateEncryptionMode({
+  const encryptionModeResolution = await resolveSessionCreateEncryptionMode({
     token: params.credentials.token,
     serverBaseUrl: serverUrl,
     ...(params.accountEncryptionCurrentness
       ? { accountEncryptionCurrentness: params.accountEncryptionCurrentness }
       : {}),
   });
+  if (encryptionModeResolution.status === 'currentness_unavailable') {
+    // Same contract as ApiClient.getOrCreateSession (api.ts): the preflight read
+    // failed before any Session request, so its wrapped transport failure is what
+    // callers classify (offline, stable auth status). An unavailable currentness
+    // is never reinterpreted as a Plain Account.
+    const { error } = encryptionModeResolution;
+    throw error.cause ?? error;
+  }
+  const {
+    desiredSessionEncryptionMode,
+    accountEncryptionCurrentness,
+    serverSupportsFeatureSnapshot,
+    serverFeaturesSnapshot,
+  } = encryptionModeResolution;
 
   const initialAccessFields = buildSessionInitialAccessCreateFields(params, serverFeaturesSnapshot);
   const sessionEncryptionContext =
@@ -1466,8 +1482,6 @@ export async function getOrCreateSessionByTag(params: Readonly<{
     }
   }
   if (response.status !== 200) {
-    const updateRequired = readSessionInitialAccessUpdateRequiredError(response.data);
-    if (updateRequired) throw updateRequired;
     const teamCredentialUpdateRequired = readSessionTeamCredentialBindingUpdateRequiredError(response.data);
     if (teamCredentialUpdateRequired) throw teamCredentialUpdateRequired;
     throw new Error(`Unexpected status from /v1/sessions: ${response.status}`);

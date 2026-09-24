@@ -2,22 +2,35 @@ import {
   resolveConnectedServiceSessionSelection,
 } from '@happier-dev/agents';
 import {
-  BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema,
-  ConnectedServicesDefaultAuthByAgentIdV1Schema,
   ConnectedServiceBindingsV2Schema,
+  QualifiedConnectedAccountPurposeBindingsV1Schema,
   TeamCredentialResourceEntitledPageV1Schema,
   buildQualifiedPluginContributionKey,
+  projectAgentConnectedAccountPurposeDefaultsToSessionBindings,
+  resolveAgentConnectedAccountPurposeDefaults,
   type ActionExecutorDeps,
+  type AgentConnectedAccountPurposeDefault,
+  type QualifiedConnectedAccountPurposeV1,
   type ConnectedServiceBindingSelectionV1,
   type ConnectedServiceBindingSelectionV2,
   type ConnectedServiceBindingsV2,
-  type ConnectedServicesDefaultAuthTeamResourceBindingV2,
   type TeamCredentialResourceCatalogEntryV1,
   type TeamResourceConnectedServiceSelectionV2,
 } from '@happier-dev/protocol';
+import {
+  SessionTeamCredentialBindingIntentsV1Schema,
+  sessionTeamCredentialSlotKeyV1,
+  type SessionTeamCredentialBindingIntentListV1,
+  type SessionTeamCredentialBindingIntentV1,
+} from '@happier-dev/protocol/teams';
 
 import type { StoredCredentials } from '@/persistence';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
+import { configuration } from '@/configuration';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
+import { readCurrentContributionRegistry } from '@/agent/catalog/snapshot';
+import { resolveQualifiedPurposeDeclarationSnapshotForAgentSpawn } from '@/daemon/connectedServices/requestAuth/prepareConnectedAccountRequestAuthForSpawn';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 
 export function agentSupportsSpawnConnectedServicesDefaults(agentId: string): boolean {
@@ -78,6 +91,28 @@ export function createSpawnConnectedServicesTeamResourceCatalogResolver(params: 
   };
 }
 
+/**
+ * The Team catalog read for a daemon/runner component that holds only the
+ * active Home's stored credentials: that Home's recipient catalog through the
+ * canonical Action transport. Absent when the credentials carry no Account.
+ */
+export function createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver(
+  credentials: StoredCredentials,
+): ResolveSpawnConnectedServicesTeamResourceCatalog | undefined {
+  const accountId = readAccountIdFromToken(credentials.token);
+  const homeDomainAction = createAccountServerActionDeps({
+    token: credentials.token,
+    credentials,
+  }).homeDomainAction;
+  return accountId && homeDomainAction
+    ? createSpawnConnectedServicesTeamResourceCatalogResolver({
+        homeDomainAction,
+        serverId: configuration.activeServerId,
+        accountId,
+      })
+    : undefined;
+}
+
 export class ConnectedServicesDefaultUnavailableError extends Error {
   readonly code = 'connected_services_default_unavailable';
 
@@ -109,6 +144,13 @@ export async function resolveSessionSpawnConnectedServicesDefaultsPayload(params
 }>): Promise<Readonly<{
   connectedServices: ConnectedServiceBindingsV2;
   connectedServicesUpdatedAt: number;
+  /**
+   * The Session Team slot bindings the defaulted Team targets need: the Home
+   * admits a Team target only through the Session's own binding, written when
+   * the Session is created (lane 10 child 01). Resolved against the same
+   * catalog read as the defaults, so both carry one current revision.
+   */
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
 }> | null> {
   const agentId = params.agentId.trim();
   if (!agentSupportsSpawnConnectedServicesDefaults(agentId)) return null;
@@ -147,9 +189,19 @@ export async function resolveSessionSpawnConnectedServicesDefaultsPayload(params
       throw new ConnectedServicesDefaultUnavailableError(disposition.reason);
     }
     if (disposition.kind === 'native') return null;
+    const teamCredentialBindings = resolvePurposeTeamCredentialBindingIntents({
+      teamResourceSelections: readAgentPurposeDefaults({ accountSettings: accountSettingsContext.settings, agentId })
+        .flatMap((entry) => (
+          entry.teamResource
+            ? [{ purpose: entry.purpose, services: [entry.service], ...entry.teamResource }]
+            : []
+        )),
+      teamCredentialResourceCatalog,
+    });
     return {
       connectedServices: disposition.bindings,
       connectedServicesUpdatedAt: Date.now(),
+      ...(teamCredentialBindings.length > 0 ? { teamCredentialBindings } : {}),
     };
   } catch (error) {
     if (error instanceof ConnectedServicesDefaultUnavailableError) throw error;
@@ -157,20 +209,41 @@ export async function resolveSessionSpawnConnectedServicesDefaultsPayload(params
   }
 }
 
+/**
+ * The Agent's default authentication, read through the one owner
+ * (`connectedAccountPurposeBindingsV1`, with released service-keyed defaults
+ * migrated forward on read). The Agent's purposes come from its current
+ * contribution projection — the same declarations its Session materializes.
+ */
+function readAgentPurposeDefaults(params: Readonly<{
+  accountSettings: unknown;
+  agentId: string;
+}>): readonly AgentConnectedAccountPurposeDefault[] {
+  const snapshot = resolveQualifiedPurposeDeclarationSnapshotForAgentSpawn({
+    agentId: params.agentId,
+    contributions: readCurrentContributionRegistry(),
+  });
+  const consumer = snapshot?.authorizedPurposes[0]?.purpose.consumer;
+  if (!snapshot || !consumer) return [];
+  const settings = params.accountSettings && typeof params.accountSettings === 'object' && !Array.isArray(params.accountSettings)
+    ? params.accountSettings as Readonly<Record<string, unknown>>
+    : {};
+  return resolveAgentConnectedAccountPurposeDefaults({
+    settings,
+    agentId: params.agentId,
+    consumer,
+    declarations: snapshot.authorizedPurposes.flatMap((scope) => (
+      scope.serviceRefs[0] ? [{ purpose: scope.purpose.purpose, service: scope.serviceRefs[0] }] : []
+    )),
+  });
+}
+
 function readTeamResourceDefaultTeamIds(params: Readonly<{
   accountSettings: unknown;
   agentId: string;
 }>): readonly string[] {
-  const settingsRecord = params.accountSettings && typeof params.accountSettings === 'object' && !Array.isArray(params.accountSettings)
-    ? params.accountSettings as { connectedServicesDefaultAuthByAgentIdV1?: unknown }
-    : {};
-  const parsed = ConnectedServicesDefaultAuthByAgentIdV1Schema.safeParse(
-    settingsRecord.connectedServicesDefaultAuthByAgentIdV1,
-  );
-  if (!parsed.success) return [];
-  const bindings = parsed.data.bindingsByAgentId[params.agentId]?.bindingsByServiceId ?? {};
-  return Array.from(new Set(Object.values(bindings).flatMap((binding) => (
-    binding.source === 'team_resource' ? [binding.teamId] : []
+  return Array.from(new Set(readAgentPurposeDefaults(params).flatMap((entry) => (
+    entry.teamResource ? [entry.teamResource.teamId] : []
   ))));
 }
 
@@ -188,52 +261,144 @@ function normalizeBindingForSpawn(
     : { source: 'connected', ...resolution.selection };
 }
 
-function isTeamResourceDefaultBinding(value: unknown): boolean {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && (value as { source?: unknown }).source === 'team_resource');
-}
-
+/**
+ * A durable Team default is a reference, not an entitlement: it resolves only
+ * while the settings' own Home still offers that exact selection from the
+ * named Team. The catalog is read from the same Home the settings came from.
+ */
 function resolveCurrentTeamResourceDefaultBinding(params: Readonly<{
   serviceId: string;
-  binding: ConnectedServicesDefaultAuthTeamResourceBindingV2;
+  teamId: string;
+  selection: TeamResourceConnectedServiceSelectionV2;
   catalog: SpawnConnectedServicesTeamResourceCatalog | undefined;
 }>): TeamResourceConnectedServiceSelectionV2 | null {
-  const { binding, catalog } = params;
-  if (
-    !catalog
-    || catalog.serverId !== binding.serverId
-    || catalog.accountId !== binding.accountId
-  ) return null;
+  return resolveCurrentTeamResourceDefault(params)?.selection ?? null;
+}
+
+function resolveCurrentTeamResourceDefault(params: Readonly<{
+  serviceId: string | readonly string[];
+  teamId: string;
+  selection: TeamResourceConnectedServiceSelectionV2;
+  catalog: SpawnConnectedServicesTeamResourceCatalog | undefined;
+}>): Readonly<{
+  resource: TeamCredentialResourceCatalogEntryV1;
+  selection: TeamResourceConnectedServiceSelectionV2;
+}> | null {
+  const { selection, catalog } = params;
+  if (!catalog) return null;
+  const serviceIds = typeof params.serviceId === 'string' ? [params.serviceId] : params.serviceId;
 
   const resource = catalog.resources.find((candidate) => (
-    candidate.id === binding.resourceId
-    && candidate.teamId === binding.teamId
-    && candidate.resourceRevision === binding.expectedResourceRevision
+    candidate.id === selection.resourceId
+    && candidate.teamId === params.teamId
     && candidate.readiness.kind === 'available'
     && candidate.sourcePresentation?.kind === 'connected_service'
-    && buildQualifiedPluginContributionKey(candidate.sourcePresentation.service) === params.serviceId
+    && serviceIds.includes(buildQualifiedPluginContributionKey(candidate.sourcePresentation.service))
   ));
   if (!resource) return null;
 
-  return resource.connectedServiceSelections.find((selection) => {
+  const offeredSelection = resource.connectedServiceSelections.find((offered) => {
     if (
-      selection.resourceId !== binding.resourceId
-      || selection.deliveryMode !== binding.deliveryMode
+      offered.resourceId !== selection.resourceId
+      || offered.deliveryMode !== selection.deliveryMode
     ) return false;
-    if (selection.deliveryMode === 'brokered') return true;
-    if (binding.deliveryMode !== 'direct') return false;
-    return selection.disclosedMember.accountId === binding.disclosedMember.accountId
-      && selection.disclosedMember.service.pluginId === binding.disclosedMember.service.pluginId
-      && selection.disclosedMember.service.localId === binding.disclosedMember.service.localId;
-  }) ?? null;
+    if (offered.deliveryMode === 'brokered') return true;
+    if (selection.deliveryMode !== 'direct') return false;
+    return offered.disclosedMember.accountId === selection.disclosedMember.accountId
+      && offered.disclosedMember.service.pluginId === selection.disclosedMember.service.pluginId
+      && offered.disclosedMember.service.localId === selection.disclosedMember.service.localId;
+  });
+  return offeredSelection ? { resource, selection: offeredSelection } : null;
 }
 
-function isLegacySpawnBinding(
-  value: unknown,
-): value is ConnectedServiceBindingSelectionV1 {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && ((value as { source?: unknown }).source === 'native'
-      || (value as { source?: unknown }).source === 'connected'));
+/**
+ * One durable Team resource default of a purpose, as the Session it launches
+ * must bind it: the canonical Team selection, the Team that offers it, and the
+ * purpose's declared services the resource must serve.
+ */
+export type PurposeTeamResourceSelectionForSession = Readonly<{
+  purpose: QualifiedConnectedAccountPurposeV1;
+  teamId: string;
+  selection: TeamResourceConnectedServiceSelectionV2;
+  services: readonly Readonly<{ pluginId: string; localId: string }>[];
+}>;
+
+/**
+ * The Session Team slot bindings a new Session must be created with so the
+ * Home admits the durable Team resource defaults it will materialize (lane 10
+ * child 01: a Session uses a Team resource only through its own admitted
+ * binding). One intent per durable Team selection, carrying the resource
+ * revision the settings' own Home currently offers. A Team default that no
+ * longer resolves fails typed — never a silent personal/native fallback.
+ */
+export function resolvePurposeTeamCredentialBindingIntents(params: Readonly<{
+  teamResourceSelections: readonly PurposeTeamResourceSelectionForSession[];
+  teamCredentialResourceCatalog: SpawnConnectedServicesTeamResourceCatalog | undefined;
+}>): SessionTeamCredentialBindingIntentListV1 {
+  const intents: SessionTeamCredentialBindingIntentV1[] = [];
+  for (const entry of params.teamResourceSelections) {
+    const resolved = resolveCurrentTeamResourceDefault({
+      serviceId: entry.services.map((service) => buildQualifiedPluginContributionKey(service)),
+      teamId: entry.teamId,
+      selection: entry.selection,
+      catalog: params.teamCredentialResourceCatalog,
+    });
+    if (!resolved) {
+      throw new ConnectedServicesDefaultUnavailableError(
+        'connected_services_team_default_requires_current_resource',
+      );
+    }
+    intents.push({
+      v: 1,
+      slot: { kind: 'connected_service_purpose', purpose: entry.purpose },
+      resourceId: resolved.resource.id,
+      expectedResourceRevision: resolved.resource.resourceRevision,
+      deliveryMode: resolved.selection.deliveryMode,
+      teamId: resolved.resource.teamId,
+    });
+  }
+  return SessionTeamCredentialBindingIntentsV1Schema.parse(intents);
+}
+
+/**
+ * A Session's creation-time Team slot bindings: an explicit binding the
+ * caller chose for a slot wins; admitted durable defaults fill the others.
+ */
+export function mergeSessionTeamCredentialBindingIntents(params: Readonly<{
+  explicit: SessionTeamCredentialBindingIntentListV1 | undefined;
+  admitted: SessionTeamCredentialBindingIntentListV1 | null;
+}>): SessionTeamCredentialBindingIntentListV1 | undefined {
+  if (!params.admitted || params.admitted.length === 0) return params.explicit;
+  const explicitSlotKeys = new Set(
+    (params.explicit ?? []).map((intent) => sessionTeamCredentialSlotKeyV1(intent.slot)),
+  );
+  return SessionTeamCredentialBindingIntentsV1Schema.parse([
+    ...(params.explicit ?? []),
+    ...params.admitted.filter((intent) => !explicitSlotKeys.has(sessionTeamCredentialSlotKeyV1(intent.slot))),
+  ]);
+}
+
+export async function resolvePurposeTeamCredentialBindingIntentsFromHome(params: Readonly<{
+  teamResourceSelections: readonly PurposeTeamResourceSelectionForSession[];
+  resolveTeamCredentialResourceCatalog: ResolveSpawnConnectedServicesTeamResourceCatalog | undefined;
+}>): Promise<SessionTeamCredentialBindingIntentListV1> {
+  const teamIds = Array.from(new Set(params.teamResourceSelections.map((entry) => entry.teamId)));
+  if (teamIds.length === 0) {
+    return resolvePurposeTeamCredentialBindingIntents({
+      teamResourceSelections: params.teamResourceSelections,
+      teamCredentialResourceCatalog: undefined,
+    });
+  }
+  let catalog: SpawnConnectedServicesTeamResourceCatalog | null = null;
+  try {
+    catalog = await params.resolveTeamCredentialResourceCatalog?.({ teamIds }) ?? null;
+  } catch {
+    catalog = null;
+  }
+  return resolvePurposeTeamCredentialBindingIntents({
+    teamResourceSelections: params.teamResourceSelections,
+    teamCredentialResourceCatalog: catalog ?? undefined,
+  });
 }
 
 export function resolveSpawnConnectedServicesDefaultDisposition(params: Readonly<{
@@ -245,37 +410,41 @@ export function resolveSpawnConnectedServicesDefaultDisposition(params: Readonly
   if (supportedServiceIds.length === 0) return { kind: 'native' };
 
   const settingsRecord = params.accountSettings && typeof params.accountSettings === 'object' && !Array.isArray(params.accountSettings)
-    ? params.accountSettings as { connectedServicesDefaultAuthByAgentIdV1?: unknown }
+    ? params.accountSettings as { connectedAccountPurposeBindingsV1?: unknown }
     : {};
-  if (!Object.prototype.hasOwnProperty.call(settingsRecord, 'connectedServicesDefaultAuthByAgentIdV1')) {
-    return { kind: 'native' };
-  }
-  const rawDefaults = settingsRecord.connectedServicesDefaultAuthByAgentIdV1;
-  const currentDefaults = ConnectedServicesDefaultAuthByAgentIdV1Schema.safeParse(rawDefaults);
-  const parsedDefaults = BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema.safeParse(rawDefaults);
-  if (!parsedDefaults.success) {
+  if (
+    settingsRecord.connectedAccountPurposeBindingsV1 !== undefined
+    && !QualifiedConnectedAccountPurposeBindingsV1Schema.safeParse(settingsRecord.connectedAccountPurposeBindingsV1).success
+  ) {
     return {
       kind: 'unavailable',
       reason: 'connected_services_default_settings_invalid',
     };
   }
 
-  const configuredBindings = parsedDefaults.data.bindingsByAgentId[params.agentId]?.bindingsByServiceId ?? {};
-  const currentBindings = currentDefaults.success
-    ? currentDefaults.data.bindingsByAgentId[params.agentId]?.bindingsByServiceId ?? {}
-    : {};
+  const defaults = readAgentPurposeDefaults({ accountSettings: params.accountSettings, agentId: params.agentId });
+  const configuredBindings = projectAgentConnectedAccountPurposeDefaultsToSessionBindings(defaults)
+    ?.bindingsByServiceId ?? {};
+  const teamIdByServiceId = new Map(defaults.flatMap((entry) => (
+    entry.teamResource
+      ? [[buildQualifiedPluginContributionKey(entry.service), entry.teamResource.teamId] as const]
+      : []
+  )));
   const bindingsByServiceId: Record<string, ConnectedServiceBindingSelectionV2> = {};
   let hasNonNativeBinding = false;
 
   for (const serviceId of supportedServiceIds) {
-    const currentBinding = currentBindings[serviceId];
-    if (isTeamResourceDefaultBinding(currentBinding)) {
-      const teamBinding = currentBinding as ConnectedServicesDefaultAuthTeamResourceBindingV2;
-      const resolved = resolveCurrentTeamResourceDefaultBinding({
-        serviceId,
-        binding: teamBinding,
-        catalog: params.teamCredentialResourceCatalog,
-      });
+    const configuredBinding = configuredBindings[serviceId];
+    if (configuredBinding?.source === 'team_resource') {
+      const teamId = teamIdByServiceId.get(serviceId);
+      const resolved = teamId
+        ? resolveCurrentTeamResourceDefaultBinding({
+            serviceId,
+            teamId,
+            selection: configuredBinding,
+            catalog: params.teamCredentialResourceCatalog,
+          })
+        : null;
       if (!resolved) {
         return {
           kind: 'unavailable',
@@ -286,10 +455,9 @@ export function resolveSpawnConnectedServicesDefaultDisposition(params: Readonly
       hasNonNativeBinding = true;
       continue;
     }
-    const configuredBinding = configuredBindings[serviceId];
     const binding = normalizeBindingForSpawn(
       serviceId,
-      isLegacySpawnBinding(configuredBinding) ? configuredBinding : undefined,
+      configuredBinding?.source === 'connected' ? configuredBinding : undefined,
     );
     bindingsByServiceId[serviceId] = binding;
     if (binding.source === 'connected') {

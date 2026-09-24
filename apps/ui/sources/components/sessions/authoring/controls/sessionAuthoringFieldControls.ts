@@ -137,6 +137,8 @@ export type SessionAuthoringFieldControlModel =
         field: 'connectedServices';
         kind: 'connectedServices';
         agentId: string;
+        /** The Agent's contribution identity: it keys the Agent's default authentication. */
+        agentIdentity: AgentExecutionTargetV1['identity'] | null;
         connectedAccounts: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
         context: SessionAuthoringConnectedServicesContext;
     }>
@@ -601,6 +603,7 @@ export function resolveSessionAuthoringFieldControl(params: Readonly<{
                 field,
                 kind: 'connectedServices',
                 agentId,
+                agentIdentity: selectedAgentTarget?.target.identity ?? null,
                 connectedAccounts: declarations,
                 context: facts.connectedServices,
             };

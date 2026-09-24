@@ -8,6 +8,7 @@ import { installAgentInputCommonModuleMocks } from '@/components/sessions/agentI
 import type { AgentExecutionTargetV1 } from '@happier-dev/protocol';
 import { TeamCredentialResourceCatalogEntryV1Schema } from '@happier-dev/protocol/teams';
 import type { WorkflowSessionAuthoringSelection } from '@happier-dev/protocol/workflows/workflowV1';
+import type { Settings } from '@/sync/domains/settings/settings';
 
 /**
  * The shared authoring controls are controlled and inert: values in, one
@@ -26,7 +27,7 @@ const applySettingsSpy = vi.hoisted(() => vi.fn());
 // Account holds decides whether the Connected Services owner seeds its
 // default-auth preview, so they are supplied here rather than mocked away
 // below the owner.
-const accountSettings = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+const accountSettings = vi.hoisted(() => ({ current: null as Settings | null }));
 
 installAgentInputCommonModuleMocks({
     storage: async () => {
@@ -34,7 +35,7 @@ installAgentInputCommonModuleMocks({
             import('@/dev/testkit/mocks/storage'),
             import('@/sync/domains/settings/settings'),
         ]);
-        const readSettings = () => (accountSettings.current ?? settingsDefaults) as Record<string, unknown>;
+        const readSettings = (): Settings => accountSettings.current ?? settingsDefaults;
         return createStorageModuleStub({
             useSettings: () => readSettings(),
             useSetting: createUseSettingMock({ fallback: (key) => readSettings()[key] }),
@@ -182,7 +183,9 @@ function claudeWithGithubDeclaration() {
 /** A second declared service, so "untouched by this edit" is observable. */
 const LINEAR_DECLARATION = {
     service: { pluginId: 'happier.connect.linear', localId: 'linear' },
-    purpose: 'auth',
+    // Purpose ids are unique within one consumer contribution
+    // (`ConnectedAccountPurposeDeclarationsV1Schema`).
+    purpose: 'linear-auth',
 } as never;
 
 const GITHUB_SERVICE_KEY = 'happier.connect.github/github';
@@ -426,6 +429,7 @@ describe('SessionAuthoringControls', () => {
                 inferenceRequests: 'available',
                 totalTokens: 'unavailable',
                 costUsd: 'unavailable',
+                limitCoverage: 'unavailable',
             },
             providerModels: [],
             connectedServiceSelections: [

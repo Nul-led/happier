@@ -96,3 +96,31 @@ export function buildSessionDiscussionTimelineItems<TMessage extends SessionDisc
     }
     return items;
 }
+
+/**
+ * The canonical rows a reader has actually been shown as readable content.
+ *
+ * A visible row whose content the Session cipher could not open is an
+ * unavailable placeholder, not something read. The private cursor is one
+ * monotone sequence, so a later readable row must not carry it past an earlier
+ * unread unreadable one: only rows before the first retained unreadable row
+ * above the confirmed cursor qualify. An unreadable row the cursor already
+ * covers was read before and blocks nothing. Optimistic or unknown rows are
+ * never in `messages` and never qualify.
+ */
+export function resolveReadableVisibleDiscussionSeqs(input: Readonly<{
+    messages: readonly Pick<SessionDiscussionOpenedMessageV1, 'id' | 'seq' | 'content'>[];
+    visibleMessageIds: ReadonlySet<string>;
+    /** The confirmed private read cursor, or null when this viewer has none. */
+    lastReadSeq: number | null;
+}>): readonly number[] {
+    const seqs: number[] = [];
+    for (const message of input.messages) {
+        if (message.content === null) {
+            if (input.lastReadSeq !== null && message.seq <= input.lastReadSeq) continue;
+            break;
+        }
+        if (input.visibleMessageIds.has(message.id)) seqs.push(message.seq);
+    }
+    return seqs;
+}

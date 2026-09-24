@@ -31,8 +31,6 @@ const payload: ProviderBrokerRouteGrantPayloadV1 = {
   expiresAt: 10_000,
   teamId: 'team-1',
   resourceId: 'resource-1',
-  expectedResourceRevision: 7,
-  modelId: 'gpt-5',
   sourceRevision: 'source-revision-7',
   initiator: {
     accountId: 'recipient-1',
@@ -56,7 +54,6 @@ const payload: ProviderBrokerRouteGrantPayloadV1 = {
 const expectedBinding = {
   teamId: payload.teamId,
   resourceId: payload.resourceId,
-  modelId: payload.modelId,
   sourceRevision: payload.sourceRevision,
   initiator: payload.initiator,
   target: payload.target,

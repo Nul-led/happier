@@ -18,6 +18,7 @@ import { AccountEmailPasswordSection } from './AccountEmailPasswordSection';
 import {
     AccountSecurityActionApprovalPendingError,
 } from './accountSecurityActionClient';
+import { resetAccountSecurityProjectionStoreForTests } from './accountSecurityProjectionStore';
 
 const auth = vi.hoisted(() => ({
     credentials: {
@@ -98,6 +99,9 @@ beforeEach(() => {
         return 1;
     });
     network.serverFetch.mockReset();
+    // The projection store is module state: a projection read by one test must
+    // not seed the next test's first paint.
+    resetAccountSecurityProjectionStoreForTests();
 });
 
 afterEach(async () => {
@@ -631,6 +635,44 @@ it('retires exact callback-claimed custody when the user cancels enrollment', as
     expect(client.enrollPlainPassword).not.toHaveBeenCalled();
 });
 
+it('stops an in-flight preparation when the person cancels, instead of dispatching after it', async () => {
+    let releaseProof!: (value: unknown) => void;
+    externalAuth.readProof.mockReturnValueOnce(new Promise((resolve) => { releaseProof = resolve; }));
+    const client = {
+        read: vi.fn(async () => plainNotEnrolledProjection()),
+        enrollPlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
+        enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
+        changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
+    };
+
+    screen = await renderScreen(
+        <AccountEmailPasswordSection client={client} verificationToken="mailbox-proof" />,
+    );
+    await vi.waitFor(() => expect(externalAuth.readProof).toHaveBeenCalledTimes(1));
+
+    await screen.pressByTestIdAsync('settings-account-password-form-cancel');
+    await act(async () => {
+        releaseProof({
+            normalizedNativeEmail: 'person@example.test',
+            targetCredential: plainTargetCredential(),
+            externalAuthProof: { provider: 'github', pending: 'server-pending', proof: 'local-proof' },
+        });
+        await Promise.resolve();
+    });
+
+    // Cancel is an escape the person may press while the section is busy. The
+    // preparation it belonged to must not still reach the Home afterwards.
+    expect(client.enrollPlainPassword).not.toHaveBeenCalled();
+
+    // Cancelling retired that operation, so the section is usable again in the
+    // same mounted Account: reopening the form offers editable fields rather
+    // than a section latched busy by the operation nobody is waiting for.
+    await screen.pressByTestIdAsync('settings-account-password');
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-change-password-form')).not.toBeNull());
+    expect(screen.findByTestId('settings-account-new-password')?.props.editable).toBe(true);
+});
+
 it('aborts mounted proof submission and retires process-local custody on unmount', async () => {
     externalAuth.readProof.mockResolvedValue({
         normalizedNativeEmail: 'person@example.test',
@@ -814,10 +856,12 @@ it('requests mailbox verification before acquiring a Plain enrollment proof', as
     screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
     await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password')).not.toBeNull());
     await screen.pressByTestIdAsync('settings-account-password');
+    // The password typed here would be discarded and asked for again on the
+    // verified continuation, so this step must not collect one.
+    expect(screen.findByTestId('settings-account-new-password')).toBeNull();
+    expect(screen.findByTestId('settings-account-confirm-password')).toBeNull();
     await act(async () => {
         screen?.changeTextByTestId('settings-account-password-enroll-email', 'Person@Example.test');
-        screen?.changeTextByTestId('settings-account-new-password', 'correct horse battery staple');
-        screen?.changeTextByTestId('settings-account-confirm-password', 'correct horse battery staple');
     });
     await screen.pressByTestIdAsync('settings-account-change-password-submit');
 
@@ -864,10 +908,12 @@ it('requests exact-Account mailbox verification before first E2EE password enrol
     screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
     await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password')).not.toBeNull());
     await screen.pressByTestIdAsync('settings-account-password');
+    // Exactly as for Plain: this step only proves the mailbox, so a password
+    // typed here would be discarded and asked for again on the continuation.
+    expect(screen.findByTestId('settings-account-new-password')).toBeNull();
+    expect(screen.findByTestId('settings-account-confirm-password')).toBeNull();
     await act(async () => {
         screen?.changeTextByTestId('settings-account-password-enroll-email', 'Person@Example.test');
-        screen?.changeTextByTestId('settings-account-new-password', 'correct horse battery staple');
-        screen?.changeTextByTestId('settings-account-confirm-password', 'correct horse battery staple');
     });
     await screen.pressByTestIdAsync('settings-account-change-password-submit');
 
@@ -1149,4 +1195,142 @@ it('settles the surface after native OAuth enrollment completes without a second
     // The Home owns enrolment truth; the surface re-reads it rather than
     // assuming the projection it loaded before the mutation is still current.
     expect(client.read).toHaveBeenCalledTimes(2);
+});
+
+function clientFor(read: () => Promise<unknown>, overrides: Record<string, unknown> = {}) {
+    return {
+        read: vi.fn(read),
+        enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(),
+        requestPasswordEnrollmentEmail: vi.fn(),
+        changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
+        ...overrides,
+    } as never;
+}
+
+it('keeps the section and its rows in place while the projection loads', async () => {
+    const pending = deferred<ReturnType<typeof projection>>();
+    screen = await renderScreen(<AccountEmailPasswordSection client={clientFor(() => pending.promise)} />);
+
+    // The rows exist before their values do, so nothing below them moves when
+    // the projection arrives.
+    expect(screen.findByTestId('settings-account-sign-in-email-loading')).not.toBeNull();
+    expect(screen.findByTestId('settings-account-password-loading')).not.toBeNull();
+
+    await act(async () => {
+        pending.resolve(projection('person@example.test'));
+        await pending.promise;
+    });
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
+    expect(screen.findByTestId('settings-account-sign-in-email-loading')).toBeNull();
+    expect(screen.getTextContent()).toContain('person@example.test');
+});
+
+it('keeps the unavailable row on screen while a retry is in flight', async () => {
+    const retry = deferred<ReturnType<typeof projection>>();
+    const read = vi.fn<() => Promise<ReturnType<typeof projection>>>()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockReturnValueOnce(retry.promise);
+    screen = await renderScreen(<AccountEmailPasswordSection client={clientFor(read)} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-security-unavailable')).not.toBeNull());
+
+    await act(async () => {
+        screen?.pressByTestId('settings-account-security-unavailable');
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    // Retrying never blanks the section: the row stays until the answer lands.
+    expect(screen.findByTestId('settings-account-security-unavailable')).not.toBeNull();
+
+    await act(async () => {
+        retry.resolve(projection('person@example.test'));
+        await retry.promise;
+    });
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
+    expect(screen.findByTestId('settings-account-security-unavailable')).toBeNull();
+});
+
+it('shows a failure of the mailbox-first step even though that step has no password field', async () => {
+    const client = clientFor(async () => plainNotEnrolledProjection(), {
+        requestPasswordEnrollmentEmail: vi.fn(async () => {
+            throw new HappyError('refused', false, { kind: 'auth', code: 'unrecognised_refusal' });
+        }),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password')).not.toBeNull());
+    await screen.pressByTestIdAsync('settings-account-password');
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-password-enroll-email', 'person@example.test');
+    });
+    await screen.pressByTestIdAsync('settings-account-change-password-submit');
+
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password-form-error')).not.toBeNull());
+});
+
+it('submits the password form from the keyboard on the last field', async () => {
+    const client = clientFor(async () => projection('person@example.test'), {
+        changePlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password')).not.toBeNull());
+    await screen.pressByTestIdAsync('settings-account-password');
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-current-password', 'previous horse battery staple');
+        screen?.changeTextByTestId('settings-account-new-password', 'correct horse battery staple');
+        screen?.changeTextByTestId('settings-account-confirm-password', 'correct horse battery staple');
+    });
+    await act(async () => {
+        screen?.findHostByTestId('settings-account-confirm-password')?.props.onSubmitEditing?.();
+    });
+
+    await vi.waitFor(() => expect((client as { changePlainPassword: ReturnType<typeof vi.fn> }).changePlainPassword).toHaveBeenCalledTimes(1));
+});
+
+it('submits the sign-in email form from the keyboard', async () => {
+    const client = clientFor(async () => projection('person@example.test'), {
+        requestEmailChange: vi.fn(async () => ({ v: 1 as const, status: 'verification_sent' as const })),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
+    await screen.pressByTestIdAsync('settings-account-sign-in-email');
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-change-email-input', 'next@example.test');
+    });
+    await act(async () => {
+        screen?.findHostByTestId('settings-account-change-email-input')?.props.onSubmitEditing?.();
+    });
+
+    await vi.waitFor(() => expect((client as { requestEmailChange: ReturnType<typeof vi.fn> }).requestEmailChange).toHaveBeenCalledWith(
+        { email: 'next@example.test' }, expect.any(AbortSignal),
+    ));
+});
+
+it('shows one problem once, on the surface that produced it, while an address is pending', async () => {
+    const client = clientFor(async () => projection('person@example.test'), {
+        requestEmailChange: vi.fn(async () => ({ v: 1 as const, status: 'verification_sent' as const })),
+        changePlainPassword: vi.fn(async () => {
+            throw new HappyError('wrong', false, { kind: 'auth', code: 'authentication_failed' });
+        }),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
+    await screen.pressByTestIdAsync('settings-account-sign-in-email');
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-change-email-input', 'next@example.test');
+    });
+    await screen.pressByTestIdAsync('settings-account-change-email-submit');
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-pending-email-actions')).not.toBeNull());
+
+    await screen.pressByTestIdAsync('settings-account-password');
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-current-password', 'not my password at all');
+        screen?.changeTextByTestId('settings-account-new-password', 'correct horse battery staple');
+        screen?.changeTextByTestId('settings-account-confirm-password', 'correct horse battery staple');
+    });
+    await screen.pressByTestIdAsync('settings-account-change-password-submit');
+
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-current-password-error')).not.toBeNull());
+    const message = nativePasswordTranslations.en.signInFailed;
+    expect(screen.getTextContent().split(message).length - 1).toBe(1);
+    // The pending address is still announced in its own row.
+    expect(screen.findByTestId('settings-account-pending-email-actions')).not.toBeNull();
 });

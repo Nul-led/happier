@@ -83,6 +83,35 @@ describe('ActionExecutor prepared invocation', () => {
     }));
   });
 
+  it('admits a mounted plugin surface driven by the present user, and still refuses an autonomous one', async () => {
+    const payload = { sessions: [{ id: 'listed-session', active: false, presence: 'offline', updatedAt: 10 }], nextCursor: null };
+    const sessionList = vi.fn(async () => payload);
+    const executor = createExecutor({ sessionList, isActionApprovalRequired: () => false });
+
+    // A trusted plugin mounted in front of the person is that person reading
+    // their own list, so it gets the corpus a `ui` caller gets.
+    await expect(executor.execute('session.list', {}, {
+      surface: 'plugin',
+      authority: 'present_user',
+      actionCaller: {
+        kind: 'plugin',
+        pluginId: 'acme.board',
+        contributionLocalId: 'sessions-panel',
+      },
+    })).resolves.toEqual({ ok: true, result: payload });
+
+    // The same plugin invoked with no present user stays bound to its corpus.
+    await expect(executor.execute('session.list', {}, {
+      surface: 'plugin',
+      authority: 'account_automation',
+      actionCaller: { kind: 'plugin', pluginId: 'acme.board' },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'unsupported_action',
+      error: 'unsupported_action:session.list',
+    });
+  });
+
   it('settles admission failures without exposing a runnable mutation', async () => {
     const sessionList = vi.fn(async () => ({ sessions: [] }));
     const executor = createExecutor({ sessionList });

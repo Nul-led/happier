@@ -2,6 +2,8 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
+import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
 const executeDirectoryMock = vi.hoisted(() => vi.fn());
 const routerPushMock = vi.hoisted(() => vi.fn());
@@ -122,5 +124,46 @@ describe('DirectoryPeopleList', () => {
         await vi.waitFor(() => expect(screen.findByTestId('directory-people-retry')).not.toBeNull());
         expect(screen.findByTestId('directory-person:person-1')).not.toBeNull();
         expect(executeDirectoryMock.mock.calls[1]?.[1]).toMatchObject({ cursor: 'cursor-2' });
+    });
+
+    it('reloads a mounted roster on its own Home Team change, and only that change', async () => {
+        const personPage = (displayName: string) => ({
+            ok: true,
+            value: {
+                items: [{
+                    v: 1,
+                    id: 'person-1',
+                    sourceId: 'source-1',
+                    externalUserId: 'external-1',
+                    displayName,
+                    email: 'person@example.com',
+                    externalLogin: null,
+                    state: 'active',
+                    accountBinding: { state: 'unbound' },
+                    sourceLabel: 'Example directory',
+                }],
+                nextCursor: null,
+            },
+        });
+        executeDirectoryMock.mockResolvedValue(personPage('Before rename'));
+
+        const screen = await renderScreen(
+            <DirectoryPeopleList scope={scope} address={address} sourceId="source-1" />,
+        );
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('directory-person:person-1')?.props.title).toBe('Before rename');
+        });
+        expect(executeDirectoryMock).toHaveBeenCalledTimes(1);
+
+        // The Home renames the person upstream and publishes the Team change.
+        executeDirectoryMock.mockResolvedValue(personPage('After rename'));
+        publishHomeAccountChange('home-2', [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        await Promise.resolve();
+        expect(executeDirectoryMock).toHaveBeenCalledTimes(1);
+
+        publishHomeAccountChange('home-1', [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('directory-person:person-1')?.props.title).toBe('After rename');
+        });
     });
 });

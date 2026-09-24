@@ -13,6 +13,7 @@ import {
   type BackendTargetRefV2Input,
 } from '../backends/targets/backendTargetRefV2.js';
 import type { ActionInputFieldHint, ActionSpec } from './actionSpecs.js';
+import { unwrapActionInputSchema } from './actionInputSchemaPath.js';
 
 function setByPath(obj: Record<string, any>, path: string, value: unknown): void {
   const parts = String(path ?? '')
@@ -65,39 +66,6 @@ function cloneSeedValue(value: unknown): unknown {
   );
 }
 
-function unwrapSeedSchema(
-  schema: z.ZodTypeAny,
-): Readonly<{ schema: z.ZodTypeAny; optional: boolean; nullable: boolean }> {
-  let current = schema;
-  let optional = false;
-  let nullable = false;
-
-  for (;;) {
-    if (current instanceof z.ZodOptional) {
-      optional = true;
-      current = (current as any)._def.innerType;
-      continue;
-    }
-    if (current instanceof z.ZodDefault) {
-      optional = true;
-      current = (current as any)._def.innerType;
-      continue;
-    }
-    if (current instanceof z.ZodNullable) {
-      nullable = true;
-      current = (current as any)._def.innerType;
-      continue;
-    }
-    if (current instanceof z.ZodPipe) {
-      current = (current as any)._def.in;
-      continue;
-    }
-    break;
-  }
-
-  return { schema: current, optional, nullable };
-}
-
 function readDefaultValueAtPath(value: unknown, pathParts: readonly string[]): unknown {
   if (pathParts.length === 0) return value;
 
@@ -128,7 +96,7 @@ function readSchemaSeedDefaultAtPath(
     return { hasDefault: false, value: undefined };
   }
 
-  const unwrapped = unwrapSeedSchema(schema);
+  const unwrapped = unwrapActionInputSchema(schema);
   if (unwrapped.optional || unwrapped.nullable) {
     return { hasDefault: false, value: undefined };
   }

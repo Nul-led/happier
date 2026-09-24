@@ -43,6 +43,18 @@ import {
 
 const service = Object.freeze({ pluginId: 'acme.accounts', localId: 'work' });
 const account = Object.freeze({ service, accountId: 'account-1' });
+const managedCustody = (immutableGenerationId = 'artifact-1') => Object.freeze({
+  kind: 'managed' as const,
+  immutableGenerationId,
+  installSource: 'npm' as const,
+});
+const runtimeIdentity = (
+  occurrenceId = 'generation-1',
+  immutableGenerationId = 'artifact-1',
+) => Object.freeze({
+  occurrenceId,
+  sourceCustody: managedCustody(immutableGenerationId),
+});
 type QualifiedConnectedAccountCredentialMutationV4 = ReturnType<
   typeof QualifiedConnectedAccountCredentialMutationV4Schema.parse
 >;
@@ -103,6 +115,7 @@ function createServiceConfigurationPersistenceHarness(
     mutateCredential: vi.fn(),
     mutateConfiguration: vi.fn(),
     secrets: {
+      admit: vi.fn(async () => undefined),
       has: vi.fn(async () => false),
       read: vi.fn(async () => null),
     },
@@ -193,7 +206,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       scopeKey: 'account-a-scope',
     });
 
-    const secrets = createActiveAccountSettingsConnectedAccountSecrets();
+    const secrets = createActiveAccountSettingsConnectedAccountSecrets({ expectedScopeKey: 'account-a-scope' });
     await expect(secrets.has(secretRef)).resolves.toBe(true);
     await expect(secrets.read(secretRef)).resolves.toBe('shared-token-value');
 
@@ -242,6 +255,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -264,8 +278,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: {},
-      generation: 'generation-a',
-      immutableGenerationId: 'artifact-a',
+      ...runtimeIdentity('generation-a', 'artifact-a'),
     });
     await vi.waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
     expect(submittedContent?.t).toBe('encrypted');
@@ -324,6 +337,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -343,8 +357,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: {},
-      generation: 'generation-a',
-      immutableGenerationId: 'artifact-a',
+      ...runtimeIdentity('generation-a', 'artifact-a'),
     });
     await vi.waitFor(() => expect(fetchSettings).toHaveBeenCalledOnce());
     clearActiveAccountSettingsSnapshot();
@@ -389,6 +402,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -408,8 +422,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: {},
-      generation: 'generation-a',
-      immutableGenerationId: 'artifact-a',
+      ...runtimeIdentity('generation-a', 'artifact-a'),
     });
     await vi.waitFor(() => expect(fetchSettings).toHaveBeenCalledOnce());
     clearActiveAccountSettingsSnapshot();
@@ -464,6 +477,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -483,8 +497,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: {},
-      generation: 'generation-a',
-      immutableGenerationId: 'artifact-a',
+      ...runtimeIdentity('generation-a', 'artifact-a'),
     });
     await vi.waitFor(() => expect(updateSettings).toHaveBeenCalledOnce());
     clearActiveAccountSettingsSnapshot();
@@ -545,6 +558,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -565,8 +579,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         values: { endpoint: 'https://api.example.test' },
         currentSecretRefs: {},
         secretValues: {},
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        ...runtimeIdentity(),
       })).resolves.toMatchObject({ status: 'committed' });
 
       expect(decryptSecretValueWithKeysV1(
@@ -610,6 +623,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -630,8 +644,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         values: { endpoint: 'https://api.example.test' },
         currentSecretRefs: {},
         secretValues: {},
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        ...runtimeIdentity(),
       })).resolves.toEqual({
         status: 'conflict',
         code: 'connected_account_configuration_settings_conflict',
@@ -722,6 +735,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -744,8 +758,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         values: { endpoint: 'https://caller.example.test' },
         currentSecretRefs: {},
         secretValues: { clientSecret: 'caller-secret-value' },
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        ...runtimeIdentity(),
       })).resolves.toEqual({
         status: 'conflict',
         code: 'connected_account_configuration_settings_conflict',
@@ -798,8 +811,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://new.example.test' },
       currentSecretRefs: secretReferences({ clientSecret: generated.id }),
       secretValues: { clientSecret: 'replacement-value' },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toMatchObject({
       status: 'committed',
       record: { secretRefs: { clientSecret: 'generated-next' } },
@@ -842,8 +854,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: {},
       currentSecretRefs: secretReferences({ clientSecret: generated.id }),
       secretValues: { clientSecret: 'replacement-value' },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toMatchObject({ status: 'committed' });
 
     expect((harness.settings().secrets as readonly { id: string }[])
@@ -880,6 +891,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -903,8 +915,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: {},
       currentSecretRefs: {},
       secretValues: { clientSecret: 'must-not-persist' },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toEqual({
       status: 'conflict',
       code: 'connected_account_configuration_changed',
@@ -934,6 +945,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: hasSavedSecret,
         read: readSavedSecret,
       },
@@ -956,8 +968,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         secretRefs: {},
         secretValues: { clientSecret: 'attempt-secret' },
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     });
     expect(committed).toMatchObject({
       status: 'committed',
@@ -992,8 +1003,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         secretRefs: {},
         secretValues: { clientSecret: 'other-secret' },
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toEqual({
       status: 'conflict',
       code: 'connected_account_configuration_changed',
@@ -1005,8 +1015,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         values: { tenant: 'acme' },
         secretRefs: { clientSecret: 'global-secret-id' },
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toEqual({
       status: 'unavailable',
       code: 'connected_account_configuration_persistence_unavailable',
@@ -1046,6 +1055,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1066,8 +1076,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: { clientSecret: 'never-return-this' },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toEqual({
       status: 'committed',
       record: {
@@ -1126,8 +1135,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         values: { endpoint: 'https://attempt.example.test' },
         secretRefs: {},
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity(),
     })).resolves.toMatchObject({
       status: 'committed',
       record: { revision: 'configuration-2' },
@@ -1159,6 +1167,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1174,7 +1183,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       intent: 'connect' as const,
       service,
       modeId: 'oauth',
-      immutableGenerationId: 'artifact-acme-1',
+      sourceCustody: managedCustody('artifact-acme-1'),
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'configuration-1',
@@ -1276,6 +1285,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1287,7 +1297,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       intent: 'connect',
       service,
       modeId: 'device',
-      immutableGenerationId: 'artifact-acme-1',
+      sourceCustody: managedCustody('artifact-acme-1'),
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'configuration-1',
@@ -1376,6 +1386,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1392,7 +1403,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: {
         accessToken: 'access-1',
         refreshToken: 'refresh-1',
@@ -1460,6 +1471,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1475,7 +1487,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { apiKey: 'sk-test' },
       displayName: 'OpenAI',
       scopes: [],
@@ -1622,6 +1634,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         readConfiguration: vi.fn(async () => null),
         mutateConfiguration: vi.fn(),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -1637,7 +1650,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         expectedCredentialRevision: null,
         expectedCredentialConfigurationRevision: null,
         expectedConfigurationRevision: 'unconfigured',
-        generation: 'generation-1',
+        sourceCustody: managedCustody(),
         stagedCredentials: retainStringValues(stagedCredentials),
         displayName: legacyServiceId,
         scopes: ['read', 'write'],
@@ -1696,6 +1709,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         mutateCredential,
         mutateConfiguration: vi.fn(),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -1709,7 +1723,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         expectedCredentialRevision: credentialRevision,
         expectedCredentialConfigurationRevision: configurationRevision,
         expectedConfigurationRevision: 'admitted-service-configuration',
-        generation: 'generation-1',
+        sourceCustody: managedCustody(),
         stagedCredentials: { token: 'new-token' },
         providerIdentity: { accountId: 'provider-account-1' },
         displayName: 'Person',
@@ -1746,6 +1760,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential,
       mutateConfiguration,
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1761,7 +1776,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'configuration-1',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { accessToken: 'access-1' },
       stagedAccountConfigurationContent: {
         values: { tenant: 'acme' },
@@ -1801,6 +1816,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential,
       mutateConfiguration,
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1816,7 +1832,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { accessToken: 'access-1' },
       displayName: 'Person',
       scopes: [],
@@ -1863,6 +1879,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         mutateCredential,
         mutateConfiguration,
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -1878,7 +1895,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         expectedCredentialRevision: null,
         expectedCredentialConfigurationRevision: null,
         expectedConfigurationRevision: 'unconfigured',
-        generation: 'generation-1',
+        sourceCustody: managedCustody(),
         stagedCredentials: { accessToken: 'access-1' },
         displayName: 'Person',
         scopes: [],
@@ -1910,6 +1927,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential,
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -1922,7 +1940,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       authenticationModeId: 'oauth',
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'configuration-1',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { accessToken: 'access-1' },
       displayName: 'Person',
       scopes: [],
@@ -2011,6 +2029,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential,
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2026,7 +2045,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: {
         accessToken: 'access-1',
         refreshToken: 'refresh-1',
@@ -2101,6 +2120,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential,
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2113,7 +2133,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: oldCredential.credentialRevision,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { accessToken: 'access-1' },
       displayName: 'Person',
       scopes: [],
@@ -2182,6 +2202,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         mutateCredential,
         mutateConfiguration: vi.fn(),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -2195,7 +2216,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         expectedCredentialRevision: 'csr_0000000000000000000000',
         expectedCredentialConfigurationRevision: 'configuration-1',
         expectedConfigurationRevision: 'configuration-1',
-        generation: 'generation-1',
+        sourceCustody: managedCustody(),
         stagedCredentials: { accessToken: 'access-1' },
         displayName: 'Person',
         scopes: [],
@@ -2226,6 +2247,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       }),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2239,7 +2261,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { accessToken: 'access-1' },
       displayName: 'Person',
       scopes: [],
@@ -2283,6 +2305,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2329,6 +2352,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2420,6 +2444,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         mutateCredential: vi.fn(),
         mutateConfiguration,
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: hasSavedSecret,
           read: readSavedSecret,
         },
@@ -2442,8 +2467,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
         target,
         expectedRevision: null,
         replacement,
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        ...runtimeIdentity(),
       })).resolves.toEqual({
         status: 'committed',
         record: {
@@ -2522,8 +2546,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
           values: { tenant: 'acme' },
           secretRefs: { clientSecret: 'global-secret-id' },
         },
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        ...runtimeIdentity(),
       })).resolves.toEqual({
         status: 'unavailable',
         code: 'connected_account_configuration_persistence_unavailable',
@@ -2629,6 +2652,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2642,7 +2666,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: retainStringValues(stagedCredentials),
       displayName: legacyServiceId,
       scopes: [],
@@ -2756,6 +2780,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2772,7 +2797,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { apiKey: 'sk-test' },
       displayName: 'OpenAI',
       scopes: [],
@@ -2830,6 +2855,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2901,6 +2927,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -2976,6 +3003,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -3000,7 +3028,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { apiKey: 'sk-test' },
       displayName: 'OpenAI',
       scopes: [],
@@ -3061,6 +3089,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       readConfiguration: vi.fn(async () => null),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -3077,7 +3106,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       expectedCredentialRevision: null,
       expectedCredentialConfigurationRevision: null,
       expectedConfigurationRevision: 'unconfigured',
-      generation: 'generation-1',
+      sourceCustody: managedCustody(),
       stagedCredentials: { setupToken: 'setup-token' },
       displayName: 'Claude',
       scopes: [],
@@ -3122,6 +3151,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       mutateCredential: vi.fn(),
       mutateConfiguration: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },
@@ -3143,8 +3173,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
       values: { endpoint: 'https://api.example.test' },
       currentSecretRefs: {},
       secretValues: { clientSecret: 'plain-client-secret' },
-      generation: 'generation-plain',
-      immutableGenerationId: 'artifact-plain',
+      ...runtimeIdentity('generation-plain', 'artifact-plain'),
     });
 
     expect(result).toMatchObject({

@@ -44,6 +44,7 @@ function usageResult(overrides?: Readonly<{
     totalTokens?: number;
     costIncomplete?: boolean;
     estimatedUsd?: number;
+    reportedUsd?: number;
     directRecordedUseOnly?: boolean;
     requestCountCoverage?: 'complete' | 'brokered_only';
     tokenCoverage?: 'complete' | 'partial' | 'unavailable';
@@ -60,7 +61,7 @@ function usageResult(overrides?: Readonly<{
             eventCount: 3,
             requestCount: overrides?.requestCount ?? 12,
             tokens: { ...NO_TOKENS, total: overrides?.totalTokens ?? 4200 },
-            cost: { ...NO_COST, estimatedUsd: overrides?.estimatedUsd ?? 0 },
+            cost: { ...NO_COST, estimatedUsd: overrides?.estimatedUsd ?? 0, reportedUsd: overrides?.reportedUsd ?? 0 },
         },
         coverage: {
             requestAdmissionCount: overrides?.requestCount ?? 12,
@@ -278,6 +279,29 @@ describe('TeamCredentialUsageScreen', () => {
         // A missing price is not a free request, so no zero amount may appear.
         expect(text).not.toContain('$0.00');
         expect(text).toContain('teams.credentials.usage.costIncomplete');
+    });
+
+    it('says whether a cost is reported or estimated and lets the reader ask for either', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, USAGE_QUERY_PATH, {
+            body: usageResult({ estimatedUsd: 3, reportedUsd: 2 }),
+        });
+
+        const screen = await renderUsage(serverId);
+        await waitForTestId(screen, 'team-credential-usage-cost-mode:estimated');
+        // A mixed automatic total names both of its components.
+        expect(screen.findAllByTestId('team-credential-usage-cost')[0]?.props.subtitle)
+            .toBe('usage.reported + usage.estimated');
+        expect(harness.requestsFor(USAGE_QUERY_PATH).at(-1)?.input).toMatchObject({ costMode: 'auto' });
+
+        harness.answer(serverId, USAGE_QUERY_PATH, { body: usageResult({ estimatedUsd: 3, reportedUsd: 2 }) });
+        screen.pressByTestId('team-credential-usage-cost-mode:estimated');
+        await vi.waitFor(() => {
+            expect(harness.requestsFor(USAGE_QUERY_PATH).at(-1)?.input).toMatchObject({ costMode: 'estimated' });
+        });
+        await vi.waitFor(() => {
+            expect(screen.findAllByTestId('team-credential-usage-cost')[0]?.props.subtitle).toBe('usage.estimated');
+        });
     });
 
     it('keeps a real zero a real zero when the Home priced the whole period', async () => {
@@ -584,6 +608,81 @@ describe('TeamCredentialUsageScreen', () => {
         releaseRefresh();
         await vi.waitFor(() => expect(screen.getTextContent()).toContain('8,400'));
         now.mockRestore();
+    });
+
+    it('rereads through a current end time when the Home says this resource recorded usage, coalescing wakes while a read is in flight', async () => {
+        const { handleEphemeralSocketUpdate } = await import('@/sync/engine/socket/socket');
+        const deliver = (update: unknown, sourceServerId: string) => handleEphemeralSocketUpdate({
+            update,
+            sourceServerId,
+            addActivityUpdate: () => {},
+            addMachineActivityUpdate: () => {},
+            getSessionEncryption: () => null,
+            getSession: () => undefined,
+            applyMessages: () => {},
+        });
+        const now = vi.spyOn(Date, 'now');
+        now.mockReturnValue(Date.UTC(2026, 8, 14, 10));
+        const serverId = await addHome();
+        harness.answer(serverId, USAGE_QUERY_PATH, { body: usageResult({ totalTokens: 4200 }) });
+
+        const screen = await renderUsage(serverId);
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('4,200'));
+        const readsAfterMount = harness.requestsFor(USAGE_QUERY_PATH).length;
+        const firstEndMs = (harness.requestsFor(USAGE_QUERY_PATH).at(-1)?.input as { endMs: number }).endMs;
+
+        // Another resource, or the same resource id on another Home, is not this view.
+        now.mockReturnValue(Date.UTC(2026, 8, 14, 11));
+        await deliver({ type: 'team-credential-usage-changed', resourceId: 'resource-2' }, serverId);
+        await deliver({ type: 'team-credential-usage-changed', resourceId: 'resource-1' }, 'another-home');
+        expect(harness.requestsFor(USAGE_QUERY_PATH)).toHaveLength(readsAfterMount);
+
+        let releaseRead!: () => void;
+        harness.answer(serverId, USAGE_QUERY_PATH, {
+            body: usageResult({ totalTokens: 8400 }),
+            respondAfter: new Promise<void>((resolve) => { releaseRead = resolve; }),
+        });
+        await deliver({ type: 'team-credential-usage-changed', resourceId: 'resource-1' }, serverId);
+        await vi.waitFor(() => expect(harness.requestsFor(USAGE_QUERY_PATH)).toHaveLength(readsAfterMount + 1));
+        expect((harness.requestsFor(USAGE_QUERY_PATH).at(-1)?.input as { endMs: number }).endMs)
+            .toBeGreaterThan(firstEndMs);
+        expect(screen.getTextContent()).toContain('4,200');
+
+        // Two more writes land while that read is in flight: one trailing read covers both.
+        now.mockReturnValue(Date.UTC(2026, 8, 14, 12));
+        harness.answer(serverId, USAGE_QUERY_PATH, { body: usageResult({ totalTokens: 9000 }) });
+        await deliver({ type: 'team-credential-usage-changed', resourceId: 'resource-1' }, serverId);
+        await deliver({ type: 'team-credential-usage-changed', resourceId: 'resource-1' }, serverId);
+        expect(harness.requestsFor(USAGE_QUERY_PATH)).toHaveLength(readsAfterMount + 1);
+        releaseRead();
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('9,000'));
+        expect(harness.requestsFor(USAGE_QUERY_PATH)).toHaveLength(readsAfterMount + 2);
+        now.mockRestore();
+    });
+
+    it('does not offer the retained period as a file after the new period fails', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, USAGE_QUERY_PATH, { body: usageResult({ totalTokens: 4200 }) });
+
+        const screen = await renderUsage(serverId);
+        await waitForTestId(screen, 'team-credential-usage-export');
+        expect(screen.findAllByTestId('team-credential-usage-export')[0]?.props.disabled).toBeFalsy();
+
+        harness.answer(serverId, USAGE_QUERY_PATH, { status: 503, body: { error: 'unavailable' } });
+        screen.pressByTestId('team-credential-usage-period:today');
+        await vi.waitFor(() => {
+            expect(harness.requestsFor(USAGE_QUERY_PATH).at(-1)?.input).toMatchObject({ granularity: 'hour' });
+        });
+
+        // Settle on the FAILED state, not the loading window on the way to it:
+        // the old gate covered `status === 'loading'` and would pass there.
+        await waitForTestId(screen, 'team-credential-usage-retry');
+
+        // The previous period's numbers deliberately stay on screen, but the
+        // file would stamp the NEW period's dates on them, so it is withheld
+        // until the query that produced these numbers is the one being asked.
+        expect(screen.findAllByTestId('team-credential-usage-export')[0]?.props.disabled).toBe(true);
+        expect(screen.getTextContent()).toContain('4,200');
     });
 
     it('asks the Home for the canonical period the reader selected', async () => {

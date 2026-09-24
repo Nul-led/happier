@@ -161,6 +161,9 @@ describe('happier session delegate start command', () => {
           {
             backendTargetKeys: [expectedKey],
             instructions: 'Delegate.',
+            retentionPolicy: 'ephemeral',
+            runClass: 'bounded',
+            ioMode: 'request_response',
           },
           { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
         );
@@ -183,6 +186,47 @@ describe('happier session delegate start command', () => {
     } finally {
       output.restore();
     }
+  });
+
+  it('parses every delegate Action field through the shared compiled parser, keeping established spellings', async () => {
+    mockActionExecution([{ value: 'agent:com.acme.agent/acme', label: 'Acme Agent' }]);
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(
+        [
+          'delegate', 'start', 'sess-delegate', '--agent', 'Acme Agent', 'Delegate.',
+          // `--retention` is the established spelling; `--model-id` was unreachable before.
+          '--retention', 'resumable', '--run-class', 'long_lived', '--model-id', 'model-a', '--json',
+        ],
+        { readCredentialsFn: async () => credentials },
+      );
+      expect(execute).toHaveBeenNthCalledWith(
+        2,
+        'subagents.delegate.start',
+        {
+          backendTargetKeys: ['agent:com.acme.agent/acme'],
+          instructions: 'Delegate.',
+          retentionPolicy: 'resumable',
+          runClass: 'long_lived',
+          ioMode: 'request_response',
+          modelId: 'model-a',
+        },
+        { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
+      );
+    } finally {
+      output.restore();
+    }
+  });
+
+  it.each([
+    ['an unknown option', ['delegate', 'start', 'sess', '--agent', 'Acme Agent', 'Delegate.', '--bogus', '--json']],
+    ['an invalid enum value', ['delegate', 'start', 'sess', '--agent', 'Acme Agent', 'Delegate.', '--run-class', 'forever', '--json']],
+    ['instructions supplied twice', ['delegate', 'start', 'sess', '--agent', 'Acme Agent', 'Delegate.', '--instructions', 'Again.', '--json']],
+  ])('refuses %s before any credential read', async (_name, argv) => {
+    const { cmdSessionDelegateStart } = await import('./start');
+    const readCredentialsFn = vi.fn(async () => credentials);
+    await expect(cmdSessionDelegateStart(argv, { readCredentialsFn })).rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
   });
 
   it('selects the credential-aware Action executor before any legacy Session bootstrap for API tokens', async () => {
@@ -236,6 +280,9 @@ describe('happier session delegate start command', () => {
         {
           backendTargetKeys: ['agent:com.acme.agent/acme'],
           instructions: 'Delegate.',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
         },
         { authority: 'present_user', defaultSessionId: 'sess-delegate-1' },
       );

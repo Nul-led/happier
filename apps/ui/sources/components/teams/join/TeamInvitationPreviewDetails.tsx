@@ -8,6 +8,8 @@ import { Text } from '@/components/ui/text/Text';
 import { teamRoleLabel } from '@/components/settings/teams/teamLabels';
 import { t } from '@/text';
 
+import { presentTeamsDisabledOnHome } from '@/components/teams/entry/teamAuthenticationFailure';
+
 import { resolveTeamJoinPresentation } from './teamJoinOutcome';
 import type { TeamInvitationPreviewState } from '@/hooks/teams/useTeamInvitationPreview';
 
@@ -83,6 +85,22 @@ export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPr
                 kind="warning"
                 title={t('teams.join.invalidTitle')}
                 reason={t('teams.join.askForNew')}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    if (state.kind === 'feature_unavailable') {
+        // Teams are turned off on this Home. Asking for a new link would not
+        // help, so this says what is actually true instead of borrowing the
+        // unusable-link copy.
+        const disabled = presentTeamsDisabledOnHome();
+        return (
+            <SurfaceStateCard
+                testID="team-join-preview-feature-unavailable"
+                kind="warning"
+                title={disabled.title}
+                reason={disabled.body}
                 accessibilitySemantics="status"
             />
         );

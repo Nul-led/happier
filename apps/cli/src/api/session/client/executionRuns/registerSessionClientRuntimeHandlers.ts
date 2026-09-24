@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { resolveAgentIdFromSessionMetadata, resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
-import { parseSessionPermissionModeAlias, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
+import { parseSessionPermissionModeAlias, SessionAccessGrantSetActionInputV1Schema, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import { configuration } from '@/configuration';
 import { notifyDaemonConnectedServiceUsageLimitWaitResumeCancel } from '@/daemon/controlClient';
 import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
@@ -29,8 +29,7 @@ import {
     createRestrictedCurrentSessionListActionDependency,
     createSessionListActionDependency,
 } from '@/session/actions/sessionListActionDependency';
-import { setSessionModel } from '@/session/services/setSessionModel';
-import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import type { BrowserDaemonControlRoutes } from '@/daemon/browser/control/routes';
 import type { BrowserContextRoutes } from '@/daemon/browser/context/routes';
 import type { BrowserAutomationRoutes } from '@/daemon/browser/automation/routes';
@@ -70,9 +69,9 @@ import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { createProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/createHandler';
 import type { ExecutionRunHostBridgeContract } from '@/agent/runtime/bridges/executionRun/executionRunBridgeContract';
 import { createDaemonApprovalExecutionOriginCurrentnessFromCredentials } from '@/daemon/externalActions/daemonExternalActionTargetResolver';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
-import { createSessionFollowSourceHydrator } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
+import { createSessionFollowSourceHydrator, resolveAccountVoiceFollowDisclosure } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
 import { resolveSessionFollowContextUtf8AllowanceV1 } from '@/agent/runtime/session/follow/sessionFollowContextBudget';
 
 export function resolveSessionClientParentProvider(metadata: unknown): ACPProvider {
@@ -196,21 +195,18 @@ export function registerSessionClientRuntimeHandlers(
     });
     const approvalServerId = params.serverId;
     const approvalServerApiUrl = params.serverUrl;
-    const tokenPayload = decodeJwtPayload(params.token);
-    const rawTokenSubject = typeof tokenPayload?.sub === 'string' && tokenPayload.sub.trim().length > 0
-        ? tokenPayload.sub
-        : null;
+    const tokenAccountId = readAccountIdFromToken(params.token);
     const restrictedRuntimeAdmission = params.runtimePrincipalAccountId !== undefined
-        && rawTokenSubject !== null
-        && params.runtimePrincipalAccountId === rawTokenSubject
+        && tokenAccountId !== null
+        && params.runtimePrincipalAccountId === tokenAccountId
         ? Object.freeze({
-            accountId: rawTokenSubject,
+            accountId: tokenAccountId,
             credentials: Object.freeze({ token: params.token, encryption: null }),
         })
         : null;
     const runtimeAccountId = params.runtimePrincipalAccountId !== undefined
         ? restrictedRuntimeAdmission?.accountId
-        : rawTokenSubject ?? undefined;
+        : tokenAccountId ?? undefined;
     const transcriptQueryContext = params.getTranscriptQueryContext();
     const transcriptTransportContext: SessionStoredContentCryptoContext =
         transcriptQueryContext.encryptionMode === 'plain'
@@ -236,9 +232,15 @@ export function registerSessionClientRuntimeHandlers(
             hydrateObservation: async (input) => {
                 const credentials = await readOwnerAccountCredentials();
                 if (!credentials) return null;
+                // The Account's Voice disclosure policy bounds this daemon read
+                // exactly as it bounds the foreground Voice path: content switches,
+                // update level (`none` discloses nothing), the user-message filter
+                // and the snippet count, all from the same Protocol owners.
+                const disclosure = resolveAccountVoiceFollowDisclosure(await resolveOwnerAccountSettings());
                 return await createSessionFollowSourceHydrator({
                     session: parentSessionForTools,
                     credentials,
+                    disclosure,
                 })(input);
             },
         })
@@ -287,8 +289,9 @@ export function registerSessionClientRuntimeHandlers(
             ...(typeof params.sessionRuntimeControls?.resolveComposerAttachmentForDispatch === 'function'
                 ? { resolveComposerAttachmentForDispatch: params.sessionRuntimeControls.resolveComposerAttachmentForDispatch }
                 : {}),
-            prepareRunTeamCredentialProviderBinding: async ({ runId, selection: explicitSelection }: Readonly<{
+            prepareRunTeamCredentialProviderBinding: async ({ runId, agentId, selection: explicitSelection }: Readonly<{
                 runId: string;
+                agentId: string;
                 selection?: TeamCredentialProviderModelSelectionV1;
             }>) => {
                 const prepare = params.sessionRuntimeControls?.prepareRunTeamCredentialProviderBinding;
@@ -309,6 +312,7 @@ export function registerSessionClientRuntimeHandlers(
                 if (!resourceId || !modelId) return null;
                 return await prepare({
                     runId,
+                    agentId,
                     resourceId,
                     modelId,
                     ...(explicitSelection ? { selection: explicitSelection } : {}),
@@ -366,6 +370,11 @@ export function registerSessionClientRuntimeHandlers(
                     }),
                     confirmSessionAction: (confirmation, binding) =>
                         parentSessionForTools.confirmSessionAction(confirmation, binding),
+                    // The Run's Board and Discussions are its parent Session's,
+                    // opened with the material this client already holds.
+                    getStoredContentEncryptionContext: () => transcriptQueryContext.encryptionMode === 'plain'
+                        ? { mode: 'plain' as const }
+                        : { mode: 'e2ee' as const, ctx: transcriptQueryContext },
                 }, {
                     getCurrentSessionLocation: () => ({
                         path: workingDirectory,
@@ -586,7 +595,7 @@ export function registerSessionClientRuntimeHandlers(
             ? { machineId: sessionMachineId }
             : {}),
         ...(sessionInteractionHost ? { sessionInteractionHost } : {}),
-        prepareAttachedTeamCredentialSessionBinding: async ({ sessionId, selection, consent }) => {
+        grantAttachedRunTeamVisibility: async ({ sessionId, teamId }) => {
             if (sessionId !== params.sessionId) {
                 return {
                     ok: false,
@@ -602,32 +611,51 @@ export function registerSessionClientRuntimeHandlers(
                     errorCode: 'execution_run_team_session_binding_unavailable',
                 };
             }
-            try {
-                const serverFeaturesSnapshot = params.getServerFeaturesSnapshot?.();
-                const result = await runWithServerHttpBaseUrl(approvalServerApiUrl, async () => (
-                    await setSessionModel({
-                        credentials,
-                        idOrPrefix: sessionId,
-                        teamCredentialModel: selection,
-                        ...(consent ? { teamVisibilityGrantConsent: { teamId: consent.teamId } } : {}),
-                        ...(serverFeaturesSnapshot
-                            ? { serverFeaturesSnapshot }
-                            : {}),
-                    })
-                ));
-                if (result.ok || ('status' in result && result.status === 'restart_required')) {
-                    return { ok: true };
-                }
+            // The same Team grant the Home's own consent path writes
+            // (`grantRequiredTeamVisibilityAndValidateBindingInTx`), through the
+            // Session access owner's canonical Account adapter.
+            const sessionAccessAction = createAccountServerActionDeps({
+                token: credentials.token,
+                credentials,
+                isCredentialCurrent: async () => (await readOwnerAccountCredentials())?.token === credentials.token,
+                serverId: approvalServerId,
+                serverHttpBaseUrl: approvalServerApiUrl,
+                ...(params.getServerFeaturesSnapshot
+                    ? { resolveServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
+                    : {}),
+            }).sessionAccessAction;
+            if (!sessionAccessAction) {
                 return {
                     ok: false,
-                    error: 'The parent Session could not accept the selected Team credential model',
+                    error: 'Session access owner is unavailable',
+                    errorCode: 'execution_run_team_session_binding_unavailable',
+                };
+            }
+            try {
+                const result = await sessionAccessAction({
+                    actionId: 'session.access.grant.set',
+                    input: SessionAccessGrantSetActionInputV1Schema.parse({
+                        sessionId,
+                        subject: { kind: 'team', teamId },
+                        accessLevel: 'edit',
+                        canApprovePermissions: false,
+                    }),
+                    context: {},
+                });
+                const failure = result && typeof result === 'object' && 'ok' in result && result.ok === false
+                    ? result as Readonly<{ errorCode?: unknown }>
+                    : null;
+                if (!failure) return { ok: true };
+                return {
+                    ok: false,
+                    error: 'The Session could not be made visible to the selected Team',
                     errorCode: 'execution_run_team_session_binding_rejected',
-                    details: result,
+                    details: failure,
                 };
             } catch (error) {
                 return {
                     ok: false,
-                    error: error instanceof Error ? error.message : 'Team credential Session binding failed',
+                    error: error instanceof Error ? error.message : 'Team visibility grant failed',
                     errorCode: 'execution_run_team_session_binding_rejected',
                 };
             }

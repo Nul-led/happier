@@ -31,6 +31,7 @@ export * from './harness/sidechainTranscriptListHarness';
 export * from './harness/popoverHarness';
 export * from './fixtures/homeGovernanceFixtures';
 export * from './fixtures/teamFixtures';
+export * from './harness/approvalInbox';
 export * from './harness/homeGovernanceHarness';
 export * from './harness/providerSettingsHarness';
 export * from './harness/rootLayoutTestkit';

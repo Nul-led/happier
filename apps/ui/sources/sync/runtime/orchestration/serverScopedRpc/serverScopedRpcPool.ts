@@ -1,4 +1,4 @@
-import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import {
     createNotAuthenticatedError,
     isAuthenticationResponseStatus,
@@ -12,6 +12,7 @@ import {
 
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
+import { createServerRequestForExplicitServerScope } from './createServerRequestWithServerScope';
 
 export type ScopedMachineTransport =
     | Readonly<{ mode: 'plain' }>
@@ -60,12 +61,19 @@ function setMachineTransportCache(cacheKey: string, value: ScopedMachineTranspor
 async function fetchMachineTransport(params: Readonly<{
     serverUrl: string;
     runtimeOrigin?: string;
+    homeCarrier?: HomeCarrier;
     token: string;
     machineId: string;
     serverId: string;
     accountId?: string;
     expectedAccountMode?: 'plain' | 'e2ee';
     expectedRunnerBinding?: ExpectedRunnerMachineContentKeyBindingV1;
+    /**
+     * Classification the caller established without this Home's help. The
+     * response `kind` is only ever a hint, so it is never the fact that decides
+     * whether the released persistent-Machine key fallback applies.
+     */
+    trustedMachineKind?: 'ephemeral_session_runner';
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
     timeoutMs: number;
 }>): Promise<ScopedMachineTransport | null> {
@@ -75,20 +83,17 @@ async function fetchMachineTransport(params: Readonly<{
         : null;
 
     try {
-        const response = await runtimeFetchWithServerReachability({
+        const request = createServerRequestForExplicitServerScope({
             serverUrl: params.serverUrl,
             token: params.token,
-            url: `${params.runtimeOrigin ?? params.serverUrl}/v1/machines/${encodeURIComponent(params.machineId)}`,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
-            init: {
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${params.token}`,
-                    'Content-Type': 'application/json',
-                },
-                ...(controller ? { signal: controller.signal } : {}),
-            },
+            ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
             timeoutMs: params.timeoutMs,
+        });
+        const response = await request(`/v1/machines/${encodeURIComponent(params.machineId)}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+            ...(controller ? { signal: controller.signal } : {}),
         });
         if (!response.ok) {
             if (isAuthenticationResponseStatus(response.status)) {
@@ -131,6 +136,9 @@ async function fetchMachineTransport(params: Readonly<{
             ...(params.expectedRunnerBinding
                 ? { expectedRunnerBinding: params.expectedRunnerBinding }
                 : {}),
+            ...(params.trustedMachineKind
+                ? { trustedMachineKind: params.trustedMachineKind }
+                : {}),
         });
         if (resolution.status === 'plain') return { mode: 'plain' };
         if (resolution.status === 'legacy') return { mode: 'e2ee', dataKey: null };
@@ -151,11 +159,13 @@ export async function resolveScopedMachineTransport(params: Readonly<{
     serverId: string;
     serverUrl: string;
     runtimeOrigin?: string;
+    homeCarrier?: HomeCarrier;
     token: string;
     machineId: string;
     accountId?: string;
     expectedAccountMode?: 'plain' | 'e2ee';
     expectedRunnerBinding?: ExpectedRunnerMachineContentKeyBindingV1;
+    trustedMachineKind?: 'ephemeral_session_runner';
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
     timeoutMs?: number;
 }>): Promise<ScopedMachineTransport | null> {
@@ -182,6 +192,7 @@ export async function resolveScopedMachineTransport(params: Readonly<{
             serverId,
             serverUrl: params.serverUrl,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
+            ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
             token,
             machineId,
             ...(params.accountId ? { accountId: params.accountId } : {}),
@@ -190,6 +201,9 @@ export async function resolveScopedMachineTransport(params: Readonly<{
                 : {}),
             ...(params.expectedRunnerBinding
                 ? { expectedRunnerBinding: params.expectedRunnerBinding }
+                : {}),
+            ...(params.trustedMachineKind
+                ? { trustedMachineKind: params.trustedMachineKind }
                 : {}),
             decryptEncryptionKey: params.decryptEncryptionKey,
             timeoutMs,

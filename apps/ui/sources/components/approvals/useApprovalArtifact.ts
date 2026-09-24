@@ -96,7 +96,10 @@ export function useApprovalArtifact(input: Readonly<{ artifactId: string | null;
         && typeof local.body !== 'string'
             ? local.updatedAt
             : null;
-    const localMatches = !serverId || (resolution.kind === 'bound' && areServerAccountScopesEqual(activeScope, resolution.scope));
+    // The local store row belongs to the active Home. An unresolvable Home is not
+    // the active Home merely because it has no local profile id.
+    const localMatches = !unresolvedServer
+        && (!serverId || (resolution.kind === 'bound' && areServerAccountScopesEqual(activeScope, resolution.scope)));
     const [loaded, setLoaded] = React.useState<Readonly<{
         artifactId: string;
         serverId: string | null;

@@ -209,6 +209,26 @@ vi.mock('@/session/metadata/updateSessionMetadataWithRetry', () => ({
   updateSessionMetadataWithRetry: hoisted.updateSessionMetadataWithRetry,
 }));
 
+// HTTP boundary of a daemon-committed launch Session: the row read and the
+// Account currentness read behind the attach context, and the archive write.
+const committedSessionNetwork = vi.hoisted(() => ({
+  fetchSessionByIdCompat: vi.fn(),
+  fetchAccountEncryptionCurrentness: vi.fn(),
+  setSessionArchivedStateById: vi.fn(),
+}));
+vi.mock('@/session/transport/http/sessionsHttp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/transport/http/sessionsHttp')>()),
+  fetchSessionByIdCompat: committedSessionNetwork.fetchSessionByIdCompat,
+}));
+vi.mock('@/api/client/connectedServiceCredentialApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/client/connectedServiceCredentialApi')>()),
+  fetchAccountEncryptionCurrentness: committedSessionNetwork.fetchAccountEncryptionCurrentness,
+}));
+vi.mock('@/session/services/sessionArchivedStateById', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/services/sessionArchivedStateById')>()),
+  setSessionArchivedStateById: committedSessionNetwork.setSessionArchivedStateById,
+}));
+
 function createParams() {
   return {
     options: {
@@ -301,8 +321,12 @@ function createAdmittedRuntimeRegistry(
         pluginVersion: '1.0.0',
         agentId,
         localAgentId: agentId === 'ohMyPi' ? 'ohmypi' : agentId,
-        generation: `${agentId}-generation`,
-        immutableGenerationId: `${agentId}-immutable-generation`,
+        occurrenceId: `${agentId}-occurrence`,
+        sourceCustody: {
+          kind: 'managed' as const,
+          immutableGenerationId: `${agentId}-immutable-generation`,
+          installSource: 'localPath' as const,
+        },
         hasPrimaryRuntime: true as const,
         retirementSignal: new AbortController().signal,
         isCurrent: () => true,
@@ -1571,8 +1595,12 @@ describe('executeSpawnSessionRequest', () => {
           pluginId: 'happier.agent.codex',
           pluginVersion: '1.0.0',
           agentId: 'codex',
-          generation: 'agent-generation-q',
-          immutableGenerationId: 'agent-immutable-q',
+          occurrenceId: expect.any(String),
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'agent-immutable-q',
+            installSource: 'localPath',
+          },
           hasPrimaryRuntime: true,
         }]]),
         runtimeCapabilitiesByPluginId: new Map([[
@@ -2242,9 +2270,9 @@ describe('executeSpawnSessionRequest', () => {
     expect(routeSpawnModeAndWaitForWebhook).not.toHaveBeenCalled();
   });
 
-  it('uses account settings version hints only for daemon freshness refresh', async () => {
+  it('registers the established workspace once without turning plugin trust or failure into a session result', async () => {
     hoisted.requireCatalogEntry.mockReturnValue({});
-    hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
+    hoisted.resolveSpawnBackendIdentity.mockResolvedValue({
       ok: true,
       normalizedExistingSessionId: '',
       effectiveResume: '',
@@ -2256,39 +2284,70 @@ describe('executeSpawnSessionRequest', () => {
       sessionAttachPayload: { v: 2, encryptionMode: 'plain' },
       catalogAgentId: 'codex',
     });
-    hoisted.refreshAccountSettingsForMinimumVersion.mockResolvedValueOnce(null);
-    hoisted.ensureSessionDirectory.mockImplementationOnce(
+    hoisted.refreshAccountSettingsForMinimumVersion.mockResolvedValue(null);
+    hoisted.ensureSessionDirectory.mockImplementation(
       async () => ({ ok: true, directoryCreated: false }),
     );
     const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
     const { createSessionAttachFile } = await import('../sessionAttachFile');
     const { routeSpawnModeAndWaitForWebhook } = await import('../spawn/routeSpawnModeAndWaitForWebhook');
     const { resolveSpawnChildEnvironment } = await import('../spawn/resolveSpawnChildEnvironment');
-    vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
+    vi.mocked(resolveSpawnChildEnvironment).mockResolvedValue({
       ok: true,
       cleanupOnFailure: null,
       cleanupOnExit: null,
       expandedEnvironmentVariables: {},
       extraEnvForChild: {},
     });
-    vi.mocked(routeSpawnModeAndWaitForWebhook).mockResolvedValueOnce({
+    vi.mocked(routeSpawnModeAndWaitForWebhook).mockResolvedValue({
       type: 'success',
       sessionId: 'session-1',
     });
-    const result = await executeSpawnSessionRequest({
+    const controlPluginDevelopment = vi.fn()
+      .mockResolvedValueOnce({
+        kind: 'trustRequired' as const,
+        projectRoot: '/tmp/project',
+        pluginRoot: '/tmp/project/.happier/plugins',
+        status: { roots: [], plugins: [] },
+      })
+      .mockResolvedValueOnce({
+        kind: 'failed' as const,
+        code: 'plugin_development_root_invalid',
+        message: 'Workspace plugin discovery failed',
+        status: { roots: [], plugins: [] },
+      });
+    const params = {
       ...createParams(),
       options: {
         ...createParams().options,
         resume: undefined,
         accountSettingsVersionHint: 42,
       },
-    });
+      controlPluginDevelopment,
+    };
+    const trustRequiredResult = await executeSpawnSessionRequest(params);
 
-    expect(result).toEqual({
+    expect(trustRequiredResult).toEqual({
       type: 'success',
       sessionId: 'session-1',
     });
     expect(hoisted.ensureSessionDirectory).toHaveBeenCalled();
+    expect(controlPluginDevelopment).toHaveBeenCalledOnce();
+    expect(controlPluginDevelopment).toHaveBeenCalledWith({
+      kind: 'registerWorkspace',
+      projectRoot: '/tmp/project',
+    });
+
+    const failedResult = await executeSpawnSessionRequest(params);
+    expect(failedResult).toEqual({
+      type: 'success',
+      sessionId: 'session-1',
+    });
+    expect(controlPluginDevelopment).toHaveBeenCalledTimes(2);
+    expect(controlPluginDevelopment).toHaveBeenNthCalledWith(2, {
+      kind: 'registerWorkspace',
+      projectRoot: '/tmp/project',
+    });
     expect(hoisted.refreshAccountSettingsForMinimumVersion).toHaveBeenCalledWith(expect.objectContaining({
       minSettingsVersion: 42,
     }));
@@ -2764,7 +2823,13 @@ describe('executeSpawnSessionRequest', () => {
       catalogEntry: {},
       expectLegacyServiceKeyedCompatibility: false,
     },
-  ])('activates one canonical Agent session lease before spawn and retires it on launch refusal ($label)', async ({ catalogEntry, expectLegacyServiceKeyedCompatibility }) => {
+    {
+      label: 'direct Team resource default',
+      catalogEntry: {},
+      expectLegacyServiceKeyedCompatibility: false,
+      directMaterialResourceId: 'team-resource-a',
+    },
+  ])('activates one canonical Agent session lease before spawn and retires it on launch refusal ($label)', async ({ catalogEntry, expectLegacyServiceKeyedCompatibility, directMaterialResourceId }) => {
     const events: string[] = [];
     const agentPurpose = {
       consumer: { pluginId: 'happier.agent.pi', localId: 'pi' },
@@ -2798,6 +2863,13 @@ describe('executeSpawnSessionRequest', () => {
       },
       purpose: 'openai-upstream',
     };
+    const directMaterialOrigins = directMaterialResourceId
+      ? [{
+          purpose: agentPurpose,
+          resourceId: directMaterialResourceId,
+          disclosedMember: agentPurposeBinding.target.account,
+        }]
+      : undefined;
     hoisted.requireCatalogEntry.mockReturnValue(catalogEntry);
     hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
       ok: true,
@@ -2821,8 +2893,12 @@ describe('executeSpawnSessionRequest', () => {
         pluginId: 'happier.agent.pi',
         pluginVersion: '1.0.0',
         agentId: 'pi',
-        generation: 'agent-generation-pi',
-        immutableGenerationId: 'agent-immutable-pi',
+        occurrenceId: 'pi-occurrence',
+        sourceCustody: {
+          kind: 'managed' as const,
+          immutableGenerationId: 'agent-immutable-pi',
+          installSource: 'localPath' as const,
+        },
         hasPrimaryRuntime: true,
       });
       return [];
@@ -2912,6 +2988,7 @@ describe('executeSpawnSessionRequest', () => {
         purposes: [agentPurposeBinding.purpose],
         bindings: [agentPurposeBinding],
         requestAuthUses: [agentRequestAuthUse],
+        ...(directMaterialOrigins ? { directMaterialOrigins } : {}),
       },
     });
     vi.mocked(resolveSpawnChildEnvironment).mockImplementationOnce(async () => {
@@ -3023,6 +3100,7 @@ describe('executeSpawnSessionRequest', () => {
       sessionId: 'session-1',
       purposes: [agentPurpose],
       bindings: [agentPurposeBinding],
+      ...(directMaterialOrigins ? { directMaterialOrigins } : {}),
     });
     expect(requestAuthRegistry.activate).toHaveBeenCalledWith({
       subject: expect.objectContaining({ subjectId: 'agent-session:session-1' }),
@@ -3144,6 +3222,165 @@ describe('executeSpawnSessionRequest', () => {
         [HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY]: expect.stringContaining(String(materializationKey)),
       }),
     }));
+  });
+
+  describe('a fresh launch selecting directly delivered Team material', () => {
+    const purpose = { consumer: { pluginId: 'happier.agent.codex', localId: 'codex' }, purpose: 'primary' };
+    const teamSlotBinding = {
+      v: 1 as const,
+      slot: { kind: 'connected_service_purpose' as const, purpose },
+      resourceId: 'resource-1',
+      expectedResourceRevision: 3,
+      deliveryMode: 'direct' as const,
+      teamId: 'team-1',
+    };
+    const directTeamOptions = {
+      directory: '/tmp/project',
+      backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const },
+      spawnNonce: 'nonce-direct-team',
+      connectedServices: {
+        v: 2 as const,
+        bindingsByServiceId: {
+          'happier.agent.codex/openai-codex': {
+            source: 'team_resource' as const,
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
+            disclosedMember: {
+              service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+              accountId: 'source-member',
+            },
+          },
+        },
+      },
+      teamCredentialBindings: [teamSlotBinding],
+      primaryTeamId: 'team-1',
+    };
+
+    async function arrangeCommittedLaunch() {
+      hoisted.requireCatalogEntry.mockReturnValue({});
+      hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
+        ok: true,
+        normalizedExistingSessionId: '',
+        effectiveResume: '',
+        effectiveBackendTargetV2: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
+        sessionAttachPayload: null,
+        catalogAgentId: 'codex',
+      });
+      hoisted.ensureSessionDirectory.mockImplementationOnce(async () => ({ ok: true, directoryCreated: false }));
+      const getOrCreateSession = vi.fn(async (input: { metadata: Record<string, unknown> }) => ({
+        id: 'session-committed',
+        metadata: input.metadata,
+        sessionCreationOutcome: {
+          disposition: 'created' as const,
+          organizationPlacement: { folderId: null, tagIds: [] },
+        },
+      }));
+      committedSessionNetwork.fetchSessionByIdCompat.mockImplementation(async () => ({
+        id: 'session-committed',
+        seq: 0,
+        encryptionMode: 'plain',
+        metadata: JSON.stringify(getOrCreateSession.mock.calls[0]?.[0].metadata ?? {}),
+        metadataVersion: 1,
+        agentState: null,
+        agentStateVersion: 0,
+        dataEncryptionKey: null,
+      }));
+      committedSessionNetwork.fetchAccountEncryptionCurrentness.mockResolvedValue({
+        mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+      });
+      committedSessionNetwork.setSessionArchivedStateById.mockResolvedValue({ archivedAt: 1 });
+      const { shouldResolveConnectedServiceAuthForSpawn } = await import('../connectedServices/shouldResolveConnectedServiceAuthForSpawn');
+      vi.mocked(shouldResolveConnectedServiceAuthForSpawn).mockReturnValue(true);
+      return { getOrCreateSession };
+    }
+
+    it('commits the Session with its Team binding before launch material is opened, and launches as an attach to it', async () => {
+      const { getOrCreateSession } = await arrangeCommittedLaunch();
+      const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
+      const { createSessionAttachFile } = await import('../sessionAttachFile');
+      const { routeSpawnModeAndWaitForWebhook } = await import('../spawn/routeSpawnModeAndWaitForWebhook');
+      const { resolveSpawnChildEnvironment } = await import('../spawn/resolveSpawnChildEnvironment');
+      const { resolveConnectedServiceAuthForSpawn } = await import('../connectedServices/resolveConnectedServiceAuthForSpawn');
+      vi.mocked(resolveConnectedServiceAuthForSpawn).mockResolvedValueOnce({
+        env: { OPENAI_API_KEY: 'sk-team-direct' },
+        cleanupOnFailure: null,
+        cleanupOnExit: null,
+        connectedServicesBindings: directTeamOptions.connectedServices,
+        qualifiedPurposeBindingSnapshot: null,
+      });
+      vi.mocked(createSessionAttachFile).mockResolvedValueOnce({
+        filePath: '/tmp/happier-home/attach/session-committed.json',
+        cleanup: vi.fn(async () => undefined),
+      });
+      vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
+        ok: true,
+        cleanupOnFailure: null,
+        cleanupOnExit: null,
+        expandedEnvironmentVariables: {},
+        extraEnvForChild: {},
+      });
+      vi.mocked(routeSpawnModeAndWaitForWebhook).mockResolvedValueOnce({
+        type: 'success',
+        sessionId: 'session-committed',
+        sessionCreationOutcome: {
+          disposition: 'created',
+          organizationPlacement: { folderId: null, tagIds: [] },
+        },
+      });
+
+      const result = await executeSpawnSessionRequest({
+        ...createParams(),
+        api: { getOrCreateSession } as never,
+        options: directTeamOptions,
+      });
+
+      expect(result).toMatchObject({ type: 'success', sessionId: 'session-committed' });
+      expect(getOrCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        teamCredentialBindings: [teamSlotBinding],
+        primaryTeamId: 'team-1',
+      }));
+      // The Session and its Home-accepted Team binding exist before the
+      // daemon opens launch material, which is materialized for that Session.
+      expect(getOrCreateSession.mock.invocationCallOrder[0]!)
+        .toBeLessThan(vi.mocked(resolveConnectedServiceAuthForSpawn).mock.invocationCallOrder[0]!);
+      expect(resolveConnectedServiceAuthForSpawn).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-committed',
+      }));
+      expect(createSessionAttachFile).toHaveBeenCalledWith(expect.objectContaining({
+        happySessionId: 'session-committed',
+      }));
+      const route = vi.mocked(routeSpawnModeAndWaitForWebhook).mock.calls[0]![0];
+      expect(route).toMatchObject({
+        normalizedExistingSessionId: 'session-committed',
+        sessionCreationOutcome: { disposition: 'created' },
+        trackedSpawnOptions: expect.objectContaining({ teamCredentialBindings: [teamSlotBinding] }),
+      });
+      expect(route.initialAccessFilePath).toBeUndefined();
+      expect(route.options).not.toHaveProperty('teamCredentialBindings');
+      expect(route.options).not.toHaveProperty('primaryTeamId');
+      expect(committedSessionNetwork.setSessionArchivedStateById).not.toHaveBeenCalled();
+    });
+
+    it('archives the committed Session when launch material is refused before the runner starts', async () => {
+      const { getOrCreateSession } = await arrangeCommittedLaunch();
+      const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
+      const { routeSpawnModeAndWaitForWebhook } = await import('../spawn/routeSpawnModeAndWaitForWebhook');
+      const { resolveConnectedServiceAuthForSpawn } = await import('../connectedServices/resolveConnectedServiceAuthForSpawn');
+      vi.mocked(resolveConnectedServiceAuthForSpawn).mockRejectedValueOnce(new Error('direct material preparing'));
+
+      const result = await executeSpawnSessionRequest({
+        ...createParams(),
+        api: { getOrCreateSession } as never,
+        options: directTeamOptions,
+      });
+
+      expect(result).toMatchObject({ type: 'error' });
+      expect(routeSpawnModeAndWaitForWebhook).not.toHaveBeenCalled();
+      expect(committedSessionNetwork.setSessionArchivedStateById).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-committed',
+        archived: true,
+      }));
+    });
   });
 
   it('propagates canonicalized connected-service group bindings into the spawn environment and tracked state', async () => {

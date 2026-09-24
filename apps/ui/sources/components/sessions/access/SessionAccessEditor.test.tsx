@@ -174,6 +174,9 @@ describe('SessionAccessEditor', () => {
         );
         await screen.pressByTestIdAsync('session-access-open-collaboration');
         expect(openFullSurface).toHaveBeenCalledTimes(1);
+        // The destination mounts its own controller, so what the person already
+        // typed here is the one thing the handoff has to carry.
+        expect(openFullSurface).toHaveBeenLastCalledWith({ query: 'unrelated search' });
         // The full surface is already the Collaboration destination, so it must
         // never offer to open itself.
         await screen.update(<SessionAccessEditor model={model({ revision: 2 })} actions={intent} presentation="full" />);
@@ -189,6 +192,25 @@ describe('SessionAccessEditor', () => {
         await screen.pressByTestIdAsync('session-access-grant-account:alice');
         expect(screen.findByTestId('session-access-level:account:alice:view')).toBeNull();
         expect(screen.findByTestId('session-access-remove:account:alice')).toBeNull();
+    });
+    it('renders a pending approval where it is decided and holds every other edit until it settles', async () => {
+        const intent = { ...actions(), openPendingApproval: vi.fn() };
+        const screen = await renderScreen(<SessionAccessEditor model={model({
+            pendingApproval: { artifactId: 'approval-1', serverId: 'home-one' },
+        })} actions={intent} presentation="full" />);
+        await screen.pressByTestIdAsync('session-access-approval');
+        expect(intent.openPendingApproval).toHaveBeenCalledTimes(1);
+        await screen.pressByTestIdAsync('session-access-grant-account:alice');
+        expect(screen.findByTestId('session-access-level:account:alice:view')).toBeNull();
+        expect(screen.findByTestId('session-access-remove:account:alice')).toBeNull();
+    });
+    it('offers the owner of a historical Session an explicit update for sharing', async () => {
+        const intent = { ...actions(), updateHistoricalLayout: vi.fn() };
+        const screen = await renderScreen(<SessionAccessEditor model={model({
+            historicalLayout: { updating: false },
+        })} actions={intent} presentation="full" />);
+        await screen.pressByTestIdAsync('session-access-historical-layout-update');
+        expect(intent.updateHistoricalLayout).toHaveBeenCalledTimes(1);
     });
     it('keeps a required primary-Team context non-removable while still showing other Team choices', async () => {
         const intent = actions();
@@ -258,6 +280,7 @@ describe('SessionAccessEditor', () => {
         const intent = actions();
         const screen = await renderScreen(<SessionAccessEditor
             model={model({ encryption: {
+                statusKey: 'needs_attention',
                 summaryLabel: '4 prepared · 2 pending',
                 accessibilityLabel: 'Encrypted access: 4 prepared · 2 pending',
                 actionLabel: 'Prepare now',
@@ -274,10 +297,53 @@ describe('SessionAccessEditor', () => {
         expect(intent.toggleAllRecipients).toHaveBeenCalledTimes(1);
     });
 
+    it('announces the material preparation transitions and stays silent through progress', async () => {
+        const intent = actions();
+        const preparing = (preparedCount: number) => model({ encryption: {
+            statusKey: 'preparing' as const,
+            summaryLabel: 'Preparing encrypted access…',
+            accessibilityLabel: `Preparing encrypted access… ${preparedCount} of 3`,
+            progressLabel: `Preparing encrypted access… ${preparedCount} of 3`,
+            showAllLabel: 'Show all people',
+            recipientsView: 'exceptions' as const,
+        } });
+        const screen = await renderScreen(<SessionAccessEditor
+            model={preparing(1)} actions={intent} presentation="full" />);
+        expect(announceAccessibilityMessage).not.toHaveBeenCalled();
+
+        // Committed-count ticks are not a transition.
+        await screen.update(<SessionAccessEditor model={preparing(2)} actions={intent} presentation="full" />);
+        expect(announceAccessibilityMessage).not.toHaveBeenCalled();
+
+        await screen.update(<SessionAccessEditor model={model({ encryption: {
+            statusKey: 'ready',
+            summaryLabel: 'Encrypted access ready',
+            accessibilityLabel: 'Encrypted access ready',
+            announcement: 'Encrypted access is ready for everyone.',
+            showAllLabel: 'Show all people',
+            recipientsView: 'exceptions',
+        } })} actions={intent} presentation="full" />);
+        expect(announceAccessibilityMessage).toHaveBeenCalledTimes(1);
+        expect(announceAccessibilityMessage).toHaveBeenCalledWith('Encrypted access is ready for everyone.');
+
+        // A later page of the same settled state announces nothing more.
+        await screen.update(<SessionAccessEditor model={model({ encryption: {
+            statusKey: 'ready',
+            summaryLabel: 'Encrypted access ready',
+            accessibilityLabel: 'Encrypted access ready',
+            announcement: 'Encrypted access is ready for everyone.',
+            showAllLabel: 'Hide people',
+            recipientsView: 'all',
+            recipients: { rows: [], hasMore: false, loading: false },
+        } })} actions={intent} presentation="full" />);
+        expect(announceAccessibilityMessage).toHaveBeenCalledTimes(1);
+    });
+
     it('pages the diagnostic and lets a manager reprepare structurally prepared recipients', async () => {
         const intent = actions();
         const screen = await renderScreen(<SessionAccessEditor
             model={model({ encryption: {
+                statusKey: 'needs_attention',
                 summaryLabel: '4 prepared · 2 pending',
                 accessibilityLabel: 'Encrypted access: 4 prepared · 2 pending',
                 showAllLabel: 'Hide people',
@@ -301,7 +367,7 @@ describe('SessionAccessEditor', () => {
             presentation="full"
         />);
         expect(screen.findByTestId('session-access-recipient-account-pending')).toBeTruthy();
-        // The affordance belongs to the rows that need it; a delivered recipient needs nothing.
+        // The row model decides the affordance: this fixture gives the delivered row none.
         await screen.pressByTestIdAsync('session-access-reprepare-account-pending');
         expect(intent.prepareAccess).toHaveBeenCalledWith('account-pending');
         expect(screen.findByTestId('session-access-reprepare-account-ready')).toBeNull();

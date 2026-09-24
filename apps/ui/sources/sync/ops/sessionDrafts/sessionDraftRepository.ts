@@ -6,7 +6,6 @@ import {
     SessionDraftDocumentV1Schema,
     isMeaningfulSessionDraftRecipientValueV1,
     type SessionDraftAddressV2,
-    normalizeSessionDraftDocumentV2,
     type SessionDraftDocumentV1,
     type SessionDraftDocumentV2,
     type SessionDraftExpectedRevisionV1,
@@ -17,7 +16,6 @@ import {
     type SessionDraftReadResponseV2,
     type SessionDraftRecordV2,
     type SessionDraftStoredContentEnvelopeV2,
-    type SupportedPredecessorNewSessionDraftContentV1,
     SessionDiscussionSelectionSourceV1Schema,
     type SessionDiscussionSelectionSourceV1,
     SYNCED_SESSION_AUTHORING_FIELD_IDS_V2,
@@ -42,7 +40,13 @@ export type SessionDraftRepositoryScope = ServerAccountScope;
 type NewSessionDraftDocument = SessionDraftDocumentV2 & {
     target: Extract<SessionDraftDocumentV2['target'], { kind: 'newSession' }>;
 };
-export type SessionDraftStatus = 'clean' | 'pending' | 'offline' | 'conflict' | 'error';
+/**
+ * `unsupported` is the Home answering that it cannot serve this draft address
+ * at all (V2 epoch unavailable). The draft is retained locally exactly like
+ * `offline`, but the cause is permanent for this Home, so it carries its own
+ * truthful copy instead of the generic sync error.
+ */
+export type SessionDraftStatus = 'clean' | 'pending' | 'offline' | 'conflict' | 'error' | 'unsupported';
 export type SessionDraftMaterializationIntent = 'passiveHydration' | 'userEdit' | 'seeded' | 'launchInterrupted';
 
 type DraftFieldMutationV1 = Readonly<{
@@ -215,20 +219,11 @@ export type SessionDraftRepositoryStorage = Readonly<{
 export type SessionDraftRepositoryTransport = Readonly<{
     read(address: SessionDraftAddressV2): Promise<SessionDraftReadResponseV2>;
     list(request: SessionDraftListRequestV2): Promise<SessionDraftListResponseV2>;
-    mutate(
-        request: SessionDraftMutateRequestV2,
-        compatibility?: Readonly<{
-            supportedPredecessorV1Content: SupportedPredecessorNewSessionDraftContentV1;
-        }>,
-    ): Promise<SessionDraftMutateResponseV2>;
+    mutate(request: SessionDraftMutateRequestV2): Promise<SessionDraftMutateResponseV2>;
 }>;
 
 export type SessionDraftRepositoryCipher = Readonly<{
     seal(address: SessionDraftAddressV2, document: SessionDraftDocumentV2): Promise<SessionDraftStoredContentEnvelopeV2>;
-    sealForSupportedPredecessorV1?(
-        address: SessionDraftAddressV2,
-        document: SessionDraftDocumentV2,
-    ): Promise<SupportedPredecessorNewSessionDraftContentV1 | null>;
     open(address: SessionDraftAddressV2, content: SessionDraftStoredContentEnvelopeV2): Promise<SessionDraftDocumentV2 | null>;
 }>;
 
@@ -860,7 +855,7 @@ export class SessionDraftRepository {
     private writeLatestReplicaStatus(
         scope: SessionDraftRepositoryScope,
         address: SessionDraftAddressV2,
-        status: 'offline' | 'error',
+        status: 'offline' | 'error' | 'unsupported',
     ): void {
         const latest = this.readReplica(scope, address);
         if (latest) this.writeReplica(scope, { ...latest, status });
@@ -1388,15 +1383,11 @@ export class SessionDraftRepository {
         let committedTargetRecord = targetRecord;
         if (!targetAlreadyMatches) {
             const sealed = await params.target.cipher.seal(address, source.localRawDocument);
-            const predecessorContent = await params.target.cipher.sealForSupportedPredecessorV1?.(
-                address,
-                source.localRawDocument,
-            );
             const targetWrite = await params.target.transport.mutate({
                 address,
                 expectedRevision: targetRecord?.revision ?? 'absent',
                 content: sealed,
-            }, predecessorContent ? { supportedPredecessorV1Content: predecessorContent } : undefined);
+            });
             if (targetWrite.status !== 'updated') return { status: 'target_conflict' };
             committedTargetRecord = targetWrite.record;
         }
@@ -1530,15 +1521,8 @@ export class SessionDraftRepository {
                     && !hasMeaningfulContent(submittedDocument, params.address)
                     && params.address.kind !== 'newSession');
             let content: SessionDraftStoredContentEnvelopeV2 | null;
-            let supportedPredecessorV1Content: SupportedPredecessorNewSessionDraftContentV1 | null = null;
             try {
                 content = shouldTombstone ? null : await runtime.cipher.seal(params.address, submittedDocument!);
-                supportedPredecessorV1Content = shouldTombstone
-                    ? null
-                    : await runtime.cipher.sealForSupportedPredecessorV1?.(
-                        params.address,
-                        submittedDocument!,
-                    ) ?? null;
             } catch {
                 if (!isCurrent()) return { status: 'pending' };
                 this.writeLatestReplicaStatus(params.scope, params.address, 'error');
@@ -1551,13 +1535,11 @@ export class SessionDraftRepository {
                     address: params.address,
                     expectedRevision: replica.baseRevision,
                     content,
-                }, supportedPredecessorV1Content
-                    ? { supportedPredecessorV1Content }
-                    : undefined);
+                });
             } catch (error) {
                 if (!isCurrent()) return { status: 'pending' };
                 if (isSessionDraftEpochUnavailableError(error)) {
-                    this.writeLatestReplicaStatus(params.scope, params.address, 'error');
+                    this.writeLatestReplicaStatus(params.scope, params.address, 'unsupported');
                     return { status: 'error', code: 'session_draft_epoch_unavailable' };
                 }
                 this.writeLatestReplicaStatus(params.scope, params.address, 'offline');
@@ -1795,6 +1777,7 @@ export class SessionDraftRepository {
                 remoteDocument = await this.openRequiredDocument(params.runtime, response.record);
             } catch (error) {
                 if (!params.isCurrent()) return;
+                if (isSessionDraftContextUnavailableError(error)) throw error;
                 this.writeLatestReplicaStatus(params.scope, params.address, 'error');
                 throw error;
             }

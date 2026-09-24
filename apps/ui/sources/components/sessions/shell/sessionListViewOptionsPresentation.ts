@@ -2,8 +2,8 @@ import { t } from '@/text';
 import type { SettingsWriteDelta } from '@/sync/domains/settings/settings';
 import {
     resolveSessionListLayoutApplicability,
-    resolveSessionListLayoutChoice,
     resolveSessionListLayoutSettingsDelta,
+    type SessionListLayoutChoice,
     type SessionListLayoutSettings,
 } from '@/sync/domains/session/listing/sessionListLayout';
 import {
@@ -73,8 +73,18 @@ const folderDisplayItems = (): ReadonlyArray<SessionListViewOptionDescriptor> =>
     { id: 'folderDisplay:tree', title: t('settingsSession.sessionList.folderTreeView') },
 ];
 
-export function resolveSessionListViewOptionsPresentation(settings: SessionListViewOptionsSettings) {
-    const selectedLayout = resolveSessionListLayoutChoice(settings);
+/**
+ * Builds View options from the layout that is actually rendering.
+ *
+ * `effectiveLayout` comes from the one effective-layout reader
+ * (`useSessionListLayoutChoice`), so the checkmark, the applicability of the
+ * dependent controls and the rows can never disagree.
+ */
+export function resolveSessionListViewOptionsPresentation(
+    settings: SessionListViewOptionsSettings,
+    effectiveLayout: SessionListLayoutChoice,
+) {
+    const selectedLayout = effectiveLayout;
     const applicability = resolveSessionListLayoutApplicability({
         choice: selectedLayout,
         activeGroupingV1: settings.sessionListActiveGroupingV1,

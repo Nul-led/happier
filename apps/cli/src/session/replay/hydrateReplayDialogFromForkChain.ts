@@ -11,6 +11,7 @@ import {
   tryDecryptSessionMetadata,
   tryDecryptSessionOwnerMetadataView,
   type SessionEncryptionContext,
+  type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import { fetchLatestMemorySynopsisSystemRecord } from '@/session/systemRecords/memory/fetchMemorySystemRecords';
 import { readMemorySynopsisPointerV1FromSessionMetadata } from '@/session/memoryArtifacts/memorySynopsisPointerV1';
@@ -106,8 +107,8 @@ async function tryHydrateSynopsisFromMetadataPointer(params: Readonly<{
   rawSession: any;
   sessionId: string;
   maxTextChars?: number;
-  /** Null for a `plain` Session; otherwise the canonical owner's answer. */
-  ctx?: SessionEncryptionContext | null;
+  /** The segment's established mode and, for an e2ee Session, its opened key. */
+  crypto: SessionStoredContentCryptoContext;
 }>): Promise<string | null> {
   const metadata = tryDecryptSessionMetadata({ credentials: params.credentials, rawSession: params.rawSession });
   if (!metadata) return null;
@@ -126,7 +127,7 @@ async function tryHydrateSynopsisFromMetadataPointer(params: Readonly<{
 
   const slice = decryptTranscriptReplaySlice({
     rows: [{ seq: found.seq, createdAt: 0, content: found.content }],
-    ...(params.ctx ?? {}),
+    crypto: params.crypto,
     maxTextChars: params.maxTextChars,
     maxDialogItems: 1,
   });
@@ -393,11 +394,13 @@ export async function hydrateReplayDialogFromForkChain(params: Readonly<{
    * confirmed the source stopped, so that `null` surfaced as
    * `source_stopped` / `context_unavailable`: source stopped, switch failed.
    */
-  const openSegment = (segment: { rawSession: any }): SessionEncryptionContext | null | 'unavailable' => {
-    if ((segment.rawSession as any)?.encryptionMode === 'plain') return null;
+  const openSegment = (segment: { rawSession: any }): SessionStoredContentCryptoContext | 'unavailable' => {
+    if ((segment.rawSession as any)?.encryptionMode === 'plain') return { mode: 'plain', ctx: null };
     const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, segment.rawSession);
     // Token-only credentials: this daemon holds no Account key material at all.
-    return ctx ?? 'unavailable';
+    // The mode stays with the key so no reader below can open a segment's row
+    // under an envelope kind that segment's Session cannot have written.
+    return ctx ? { mode: 'e2ee', ctx } : 'unavailable';
   };
 
   const startingSegment = segments[0]!;
@@ -432,7 +435,7 @@ export async function hydrateReplayDialogFromForkChain(params: Readonly<{
       credentials: params.credentials,
       sessionId: startingSegment.sessionId,
       encryptionMode,
-      ctx: startingCtx,
+      ctx: startingCtx.ctx,
     });
     if (!synopsisText) {
       synopsisText = await tryHydrateSynopsisFromMetadataPointer({
@@ -440,7 +443,7 @@ export async function hydrateReplayDialogFromForkChain(params: Readonly<{
         rawSession: startingSegment.rawSession,
         sessionId: startingSegment.sessionId,
         maxTextChars: params.maxTextChars,
-        ctx: startingCtx,
+        crypto: startingCtx,
       });
     }
   }
@@ -528,7 +531,7 @@ export async function hydrateReplayDialogFromForkChain(params: Readonly<{
 
       const slice = decryptTranscriptReplaySlice({
         rows: withinDepartureBound(page.messages as readonly RawTranscriptRow[]),
-        ...(ctx ?? {}),
+        crypto: ctx,
         maxTextChars: params.maxTextChars,
         maxDialogItems: pageSize,
       });
@@ -644,7 +647,7 @@ export async function hydrateReplayDialogFromForkChain(params: Readonly<{
         // already in that Agent's own conversation, and pinning it as "the
         // latest instruction" would restate an ask it has already served.
         rows: withinDepartureBound(pinnedPage.messages as readonly RawTranscriptRow[]),
-        ...(startingCtx ?? {}),
+        crypto: startingCtx,
         maxTextChars: params.maxTextChars,
         maxDialogItems: 1,
       });

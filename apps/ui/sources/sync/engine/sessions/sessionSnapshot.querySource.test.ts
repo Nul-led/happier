@@ -262,3 +262,99 @@ describe('fetchAndApplySessions query source', () => {
     });
 
 });
+
+describe('fetchAndApplySessions acquisition identity', () => {
+    function buildHydrationEncryption() {
+        return {
+            decryptEncryptionKeys: async (values: readonly string[]) => values.map(() => null),
+            initializeSessions: async () => null,
+            removeSessionEncryption: () => {},
+            getSessionEncryption: () => null,
+        } as unknown as Parameters<typeof fetchAndApplySessions>[0]['encryption'];
+    }
+
+    it('does not cancel an in-flight ordinary read when a different ordinary corpus is read on the same Home', async () => {
+        const encryption = buildHydrationEncryption();
+        let releaseOrdinary!: () => void;
+        const ordinaryReleased = new Promise<void>((resolve) => {
+            releaseOrdinary = resolve;
+        });
+
+        const ordinary = fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption,
+            sessionDataKeys: new Map(),
+            request: async () => {
+                await ordinaryReleased;
+                return jsonResponse({ sessions: [buildSessionRow('ordinary')], nextCursor: null, hasNext: false });
+            },
+            applySessions: vi.fn(),
+            applySessionListRenderables: vi.fn(),
+            log: { log: () => {} },
+        });
+
+        const archived = await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'ordinary', path: '/v2/sessions/archived', allowV1Fallback: true },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption,
+            sessionDataKeys: new Map(),
+            request: async () => jsonResponse({ sessions: [buildSessionRow('archived')], nextCursor: null, hasNext: false }),
+            applySessions: vi.fn(),
+            applySessionListRenderables: vi.fn(),
+            log: { log: () => {} },
+        });
+
+        releaseOrdinary();
+        const ordinaryResult = await ordinary;
+
+        expect(archived.current).toBe(true);
+        expect(ordinaryResult.current).toBe(true);
+        expect(ordinaryResult.sessionIds).toEqual(['ordinary']);
+    });
+
+    it('still supersedes an in-flight read of the same corpus by the same reader', async () => {
+        const encryption = buildHydrationEncryption();
+        let releaseFirst!: () => void;
+        const firstReleased = new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+        });
+
+        const first = fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption,
+            sessionDataKeys: new Map(),
+            request: async () => {
+                await firstReleased;
+                return jsonResponse({ sessions: [buildSessionRow('first')], nextCursor: null, hasNext: false });
+            },
+            applySessions: vi.fn(),
+            applySessionListRenderables: vi.fn(),
+            log: { log: () => {} },
+        });
+
+        await fetchAndApplySessions({
+            serverId: 'home-a',
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            credentials: { token: 'token-a', secret: 'secret-a' } as AuthCredentials,
+            accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
+            encryption,
+            sessionDataKeys: new Map(),
+            request: async () => jsonResponse({ sessions: [buildSessionRow('second')], nextCursor: null, hasNext: false }),
+            applySessions: vi.fn(),
+            applySessionListRenderables: vi.fn(),
+            log: { log: () => {} },
+        });
+
+        releaseFirst();
+
+        expect((await first).current).toBe(false);
+    });
+});

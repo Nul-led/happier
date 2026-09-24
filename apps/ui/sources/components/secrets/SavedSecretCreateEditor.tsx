@@ -39,6 +39,21 @@ export const SavedSecretCreateEditor = React.memo(function SavedSecretCreateEdit
     const currentScopeKey = React.useRef(scopeKey);
     currentScopeKey.current = scopeKey;
 
+    // The draft key is Home + viewer Account (plan 10.09 §14: Home server
+    // identity + Team + resource + viewer Account; a new secret has no Team or
+    // resource yet). A scope change is therefore a different draft: a value
+    // typed for one Home must never be submittable to another, and its
+    // recipients are that Home's identities, so the whole draft clears in the
+    // same render that shows the new scope.
+    const [draftScopeKey, setDraftScopeKey] = React.useState(scopeKey);
+    if (draftScopeKey !== scopeKey) {
+        setDraftScopeKey(scopeKey);
+        setName('');
+        setValue('');
+        setKind('apiKey');
+        setGrants(createEmptySavedSecretGrantDraft);
+    }
+
     React.useEffect(() => {
         operationInFlight.current = false;
         setSubmitting(false);

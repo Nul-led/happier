@@ -25,6 +25,7 @@ import {
   applyModelIntentSessionMetadata,
 } from '@happier-dev/agents/session/state/metadataWriters';
 import { type ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -38,11 +39,14 @@ import {
 } from '@/daemon/connectedServices/materialization/identity';
 import type { StoredCredentials } from '@/persistence';
 import {
+  ConnectedServicesDefaultUnavailableError,
+  createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver,
   resolveSessionSpawnConnectedServicesDefaultsPayload,
 } from '@/session/services/spawnConnectedServicesDefaults';
 import { requestInactiveSessionResume } from '@/session/services/requestInactiveSessionResume';
 import { requestSessionStop } from '@/session/services/requestSessionStop';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
+import { resolveSessionUserMessageRequestedAction } from '@/session/services/resolveSessionUserMessageRequestedAction';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import { waitForSessionIdle } from '@/session/services/waitForSessionIdle';
 import {
@@ -147,6 +151,12 @@ export type SessionAgentTransitionDeps = Readonly<{
    * transition never becomes a second place a Session's binding is decided.
    */
   resolveSpawnConnectedServicesDefaults: typeof resolveSessionSpawnConnectedServicesDefaultsPayload;
+  /**
+   * The Home's recipient Team catalog read the defaulting owner needs to decide
+   * whether a durable Team default still resolves — the same read every other
+   * consumer of that owner supplies. A network boundary, so it rides `deps`.
+   */
+  createTeamCredentialResourceCatalogResolver: typeof createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver;
   nowMs: () => number;
 }>;
 
@@ -179,6 +189,8 @@ function resolveDeps(overrides: Partial<SessionAgentTransitionDeps> | undefined)
     localAgentNativeResumeRecordStore: createLocalAgentNativeResumeRecordStore(),
     readAccountSettings: readAgentNativeReturnAccountSettings,
     resolveSpawnConnectedServicesDefaults: resolveSessionSpawnConnectedServicesDefaultsPayload,
+    createTeamCredentialResourceCatalogResolver:
+      createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver,
     nowMs: () => Date.now(),
     ...overrides,
   };
@@ -319,27 +331,58 @@ function buildTargetCurrentViewProjection(params: Readonly<{
 }
 
 /**
- * Resolves the TARGET Agent's connected-service binding for the cutover.
+ * Resolves the TARGET Agent's connected-service binding for the cutover,
+ * through the one spawn-defaulting owner a new Session uses.
  *
- * Runs after the confirmed stop, so a failure must never fail the transition:
- * settings that cannot be read degrade to native rather than stranding a
- * Session whose source is already gone. The materialized-home identity is
+ * Runs in preflight, before the source is touched: the owner answers native
+ * (`null`) for an Account with no default or unreadable settings, and refuses
+ * typed for a durable Team default that no longer resolves — which must never
+ * become a silent native launch (lane 10 child 02 §11.6), so it surfaces as
+ * `unavailable` while the source still runs. The materialized-home identity is
  * minted here, once, alongside the binding it belongs to.
  */
 async function resolveTargetConnectedServiceBinding(params: Readonly<{
   credentials: StoredCredentials;
   targetAgentId: AgentId;
-  resolveSpawnConnectedServicesDefaults: SessionAgentTransitionDeps['resolveSpawnConnectedServicesDefaults'];
-}>): Promise<Parameters<typeof buildTargetCurrentViewProjection>[0]['connectedServices']> {
-  const resolved = await params.resolveSpawnConnectedServicesDefaults({
-    agentId: params.targetAgentId,
-    credentials: params.credentials,
-  }).catch(() => null);
-  if (!resolved) return null;
+  deps: Pick<
+    SessionAgentTransitionDeps,
+    'resolveSpawnConnectedServicesDefaults' | 'createTeamCredentialResourceCatalogResolver'
+  >;
+}>): Promise<
+  | Readonly<{
+    ok: true;
+    connectedServices: Parameters<typeof buildTargetCurrentViewProjection>[0]['connectedServices'];
+    /**
+     * The Session Team slot bindings the target's Team defaults need, resolved
+     * by the same owner against the same catalog read. The cutover carries them
+     * so the Home writes the witness with the target view.
+     */
+    teamCredentialBindings: SessionTeamCredentialBindingIntentListV1 | undefined;
+  }>
+  | Readonly<{ ok: false }>
+> {
+  let resolved: Awaited<ReturnType<SessionAgentTransitionDeps['resolveSpawnConnectedServicesDefaults']>>;
+  try {
+    const resolveTeamCredentialResourceCatalog =
+      params.deps.createTeamCredentialResourceCatalogResolver(params.credentials);
+    resolved = await params.deps.resolveSpawnConnectedServicesDefaults({
+      agentId: params.targetAgentId,
+      credentials: params.credentials,
+      ...(resolveTeamCredentialResourceCatalog ? { resolveTeamCredentialResourceCatalog } : {}),
+    });
+  } catch (error) {
+    if (error instanceof ConnectedServicesDefaultUnavailableError) return { ok: false };
+    throw error;
+  }
+  if (!resolved) return { ok: true, connectedServices: null, teamCredentialBindings: undefined };
   return {
-    connectedServices: resolved.connectedServices,
-    connectedServicesUpdatedAt: resolved.connectedServicesUpdatedAt,
-    materializationIdentity: generateConnectedServiceMaterializationIdentityV1(),
+    ok: true,
+    connectedServices: {
+      connectedServices: resolved.connectedServices,
+      connectedServicesUpdatedAt: resolved.connectedServicesUpdatedAt,
+      materializationIdentity: generateConnectedServiceMaterializationIdentityV1(),
+    },
+    teamCredentialBindings: resolved.teamCredentialBindings,
   };
 }
 
@@ -447,6 +490,7 @@ async function admitExactInput(params: Readonly<{
     // the target. Opting out keeps one owner per concept and keeps
     // `input_admission_failed` meaning exactly that.
     resumeInactiveSession: false,
+    requestedAction: resolveSessionUserMessageRequestedAction({ deliveryIntent: 'runtime_bootstrap' }),
     timeoutMs: params.timeoutMs,
     ...(params.request.input.meta ? { messageMeta: params.request.input.meta } : {}),
     inputAdmission: buildTrustedHostSessionInputAdmissionV1('ui'),
@@ -748,6 +792,12 @@ export async function runSessionAgentTransition(
   if (!providerPreflight.ok) return effects.rejected('target_unavailable');
   const modelSelectionRef = providerPreflight.ref;
   const sourceAgentId = currentAgentId;
+  const targetConnectedServices = await resolveTargetConnectedServiceBinding({
+    credentials,
+    targetAgentId: target.agentId,
+    deps,
+  });
+  if (!targetConnectedServices.ok) return effects.rejected('target_unavailable');
 
   const idle = await deps.waitForSessionIdle({
     credentials,
@@ -948,19 +998,13 @@ export async function runSessionAgentTransition(
   })).catch((): SessionAgentTransitionActivationBriefV1 => ({ status: 'unavailable' }));
   if (brief.status !== 'available') return stopped.sourceStopped('context_unavailable');
 
-  const targetConnectedServices = await resolveTargetConnectedServiceBinding({
-    credentials,
-    targetAgentId: target.agentId,
-    resolveSpawnConnectedServicesDefaults: deps.resolveSpawnConnectedServicesDefaults,
-  });
-
   const projectTargetView = buildTargetCurrentViewProjection({
     targetAgentId: target.agentId,
     selection: request.selection,
     modelSelectionRef,
     nativeResumeIdentity: nativeReturn?.identity ?? null,
     activationSeed: brief.seed,
-    connectedServices: targetConnectedServices,
+    connectedServices: targetConnectedServices.connectedServices,
     updatedAtMs: deps.nowMs(),
   });
 
@@ -1002,6 +1046,9 @@ export async function runSessionAgentTransition(
       sessionId,
       currentView: sealed.currentView,
       divider,
+      ...(targetConnectedServices.teamCredentialBindings
+        ? { teamCredentialBindings: targetConnectedServices.teamCredentialBindings }
+        : {}),
     });
   };
 

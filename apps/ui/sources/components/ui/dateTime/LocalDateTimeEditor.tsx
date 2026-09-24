@@ -13,6 +13,7 @@ import {
     parseLocalDateTime,
     type LocalDateTimeDraft,
 } from './localDateTimeValue';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * One local date and time, typed or picked.
@@ -67,7 +68,7 @@ export function LocalDateTimeEditor(props: Readonly<{
         width: 40,
         alignItems: 'center' as const,
         justifyContent: 'center' as const,
-        opacity: pressed ? 0.55 : 1,
+        opacity: pressed ? motionTokens.press.opacity : 1,
     });
 
     return (

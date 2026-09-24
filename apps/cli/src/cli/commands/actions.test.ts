@@ -599,6 +599,38 @@ describe('actions root command', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('rejects a duplicated contributed field source instead of silently overwriting the JSON', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const execute = vi.fn(async (actionId: string, _input: unknown, _context: unknown) => actionId === 'action.spec.get'
+      ? { ok: true as const, result: { actionSpec: contributedActionDefinition() } }
+      : { ok: true as const, result: { ok: true } });
+
+    await handleActionsCommand(
+      ['invoke', 'example.plugin/actions/do-work', '--input-json', '{"note":"from-json"}', '--note', 'from-flag'],
+      {
+        readCredentialsFn: async () => credentials('api_token'),
+        createExecutorFn: (() => ({ execute })) as any,
+      },
+    );
+    // Discovery ran; the invocation did not, and neither source silently won.
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(1);
+
+    process.exitCode = undefined;
+    await handleActionsCommand(
+      ['invoke', 'example.plugin/actions/do-work', '--input-json', '{"note":"from-json"}', '--mode', 'safe'],
+      {
+        readCredentialsFn: async () => credentials('api_token'),
+        createExecutorFn: (() => ({ execute })) as any,
+      },
+    );
+    expect(execute.mock.calls[2]?.[0]).toBe('action.invoke');
+    expect(execute.mock.calls[2]?.[1]).toMatchObject({
+      input: { note: 'from-json', mode: 'safe' },
+    });
+  });
+
   it('rejects a mismatched contributed discovery response before invocation', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const execute = vi.fn(async () => ({

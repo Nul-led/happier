@@ -375,3 +375,59 @@ describe('connectedServicesNewSessionBindings', () => {
         ]);
     });
 });
+
+describe('composeConnectedServiceTeamCredentialBindingIntents', () => {
+    it('turns the Agent page Team purpose default into the New Session Team slot binding at the current revision', async () => {
+        const {
+            projectAgentConnectedAccountPurposeDefaultsToSessionBindings,
+            resolveAgentConnectedAccountPurposeDefaults,
+            writeAgentConnectedAccountPurposeDefault,
+        } = await import('@happier-dev/protocol');
+        const { composeConnectedServiceTeamCredentialBindingIntents } = await import('./connectedServicesNewSessionBindings');
+        const consumer = { pluginId: 'happier.agent.claude', localId: 'claude' } as const;
+        const service = { pluginId: 'happier.agent.claude', localId: 'anthropic' } as const;
+        const declarations = [{ purpose: 'primary', service }] as const;
+        const selection = {
+            source: 'team_resource' as const,
+            resourceId: 'resource-acme',
+            deliveryMode: 'direct' as const,
+            disclosedMember: { service, accountId: 'source-member' },
+        };
+        // The Agent page writes through the one default-authentication owner.
+        const settings = writeAgentConnectedAccountPurposeDefault({
+            settings: {},
+            agentId: 'claude',
+            consumer,
+            declarations,
+            purpose: 'primary',
+            target: null,
+            teamResource: { teamId: 'team-acme', selection },
+        });
+        const bindings = projectAgentConnectedAccountPurposeDefaultsToSessionBindings(
+            resolveAgentConnectedAccountPurposeDefaults({ settings, agentId: 'claude', consumer, declarations }),
+        );
+        expect(bindings).not.toBeNull();
+        const resource = {
+            id: 'resource-acme', teamId: 'team-acme', displayName: 'Acme', resourceRevision: 5,
+            readiness: { kind: 'available' as const }, recoveryAction: null,
+            mayBroker: false, mayReceiveDirect: true, directMaterialState: 'current' as const,
+            sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+            connectedServiceSelections: [selection],
+            sourcePresentation: { kind: 'connected_service' as const, service },
+        };
+
+        expect(composeConnectedServiceTeamCredentialBindingIntents({
+            consumer, declarations, bindings: bindings!, resources: [resource],
+        })).toEqual([{
+            v: 1,
+            slot: { kind: 'connected_service_purpose', purpose: { consumer, purpose: 'primary' } },
+            resourceId: 'resource-acme',
+            expectedResourceRevision: 5,
+            deliveryMode: 'direct',
+        }]);
+        // A resource this Home no longer offers composes no binding.
+        expect(composeConnectedServiceTeamCredentialBindingIntents({
+            consumer, declarations, bindings: bindings!, resources: [],
+        })).toEqual([]);
+    });
+});

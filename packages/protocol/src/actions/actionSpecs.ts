@@ -514,8 +514,13 @@ import {
 import { HandoffTargetReplacementApprovalV1Schema } from '../sessions/control/handoff/handoffTargetReplacementApprovalV1.js';
 import {
   WorkspaceSyncConflictResolveActionInputV1Schema,
+  WorkspaceSyncConflictsListActionInputV1Schema,
+  WorkspaceSyncConflictInspectActionInputV1Schema,
+  WorkspaceSyncRelationshipsListActionInputV1Schema,
+  WorkspaceSyncRelationshipCreateActionInputV1Schema,
+  WorkspaceSyncRelationshipCreateResultV1Schema,
   HandoffWorkspaceActionV1Schema,
-  WorkspaceSyncStatusV1Schema,
+  WorkspaceSyncConflictResolutionResultV1Schema,
 } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import { SessionContinueWithReplayRpcParamsSchema } from '../sessions/continueWithReplay.js';
 import { RPC_METHODS, SESSION_RPC_METHODS } from '../rpc/methods.js';
@@ -604,7 +609,7 @@ import {
   MANAGED_GITHUB_APP_ACTION_PATHS_V1,
   type ManagedGitHubAppActionIdV1,
 } from '../identity/githubApps.js';
-import { ActionApprovalSchema, type ActionApproval } from './actionApprovalMetadata.js';
+import { ActionApprovalSchema, resolveActionApprovalFlow, type ActionApproval } from './actionApprovalMetadata.js';
 import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import {
@@ -801,6 +806,16 @@ export const ActionSpecSchema = z.object({
    * that live invocation is lost, the result is intentionally unrecoverable.
    */
   approvalResultCustody: z.literal('live_only').optional(),
+  /**
+   * The input-side sibling of `approvalResultCustody`. Host-private custody rule
+   * for secret-bearing input — credentials, verification bearers, reauthentication
+   * proofs — that must never become durable Approval Artifact state. The admitted
+   * invocation stays the blocking waiter and keeps the raw input; the Artifact
+   * carries only this Action's own `projectObservationInput` projection, so a
+   * replay that no longer has the live invocation fails closed instead of
+   * recovering the secret from durable approval state.
+   */
+  approvalInputCustody: z.literal('live_only').optional(),
   /** Domain-owned disclosure of this exact operation to its Session participants. */
   projectSessionConfirmation: z.custom<(
     input: unknown,
@@ -879,6 +894,22 @@ export const ActionSpecSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: 'live-only approval custody requires a safe observation projection',
         path: ['projectObservationOutput'],
+      });
+    }
+  }
+  if (value.approvalInputCustody === 'live_only') {
+    if (resolveActionApprovalFlow(value.approval) !== 'blocking') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'live-only approval input custody requires a blocking approval flow',
+        path: ['approvalInputCustody'],
+      });
+    }
+    if (!value.projectObservationInput) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'live-only approval input custody requires a safe observation projection',
+        path: ['projectObservationInput'],
       });
     }
   }
@@ -1049,6 +1080,7 @@ export type ActionSpecWithoutApproval = Readonly<{
   projectObservationInput?: ParsedActionSpec['projectObservationInput'];
   projectObservationOutput?: ParsedActionSpec['projectObservationOutput'];
   approvalResultCustody?: ParsedActionSpec['approvalResultCustody'];
+  approvalInputCustody?: ParsedActionSpec['approvalInputCustody'];
   projectSessionConfirmation?: ParsedActionSpec['projectSessionConfirmation'];
   execution?: ParsedActionSpec['execution'];
   sideEffectClass?: ParsedActionSpec['sideEffectClass'];
@@ -2144,6 +2176,7 @@ const SessionSendUserTextInputFieldsSchema = z.object({
   idempotencyKey: PluginSessionUserTextAuthoredFieldSchemasV1.idempotencyKey.optional(),
   source: PluginSessionUserTextAuthoredFieldSchemasV1.source,
   attachments: PluginSessionUserTextAuthoredFieldSchemasV1.attachments,
+  toolAnswerDelivery: PluginSessionUserTextAuthoredFieldSchemasV1.toolAnswerDelivery,
   permissionModeOverride: z.string().trim().min(1).optional(),
   modelOverride: z.union([z.string().trim().min(1), z.null()]).optional(),
   providerConnectionId: ProviderConnectionIdSchema.nullable().optional(),
@@ -2182,7 +2215,7 @@ const SessionSendUserTextInputSchema = SessionSendUserTextInputFieldsSchema
 
 // Public callers author text and routing intent, never plugin source or attachment authority.
 const SessionSendMessagePublicInputSchema = SessionSendUserTextInputFieldsSchema
-  .omit({ idempotencyKey: true, source: true, attachments: true })
+  .omit({ idempotencyKey: true, source: true, attachments: true, toolAnswerDelivery: true })
   .superRefine(requireSessionInputContent)
   .superRefine(validateSessionSendProviderSelection);
 
@@ -2738,6 +2771,9 @@ const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
   'execution.run.wait',
   'session.handoff.prepare_target_result.get',
   'session.handoff.status.get',
+  'workspace.sync.relationships.list',
+  'workspace.sync.conflicts.list',
+  'workspace.sync.conflict.inspect',
   'paths.list_recent',
   'projects.list',
   'prompts.invocations.list',
@@ -3039,6 +3075,10 @@ const RESULT_OPTIONAL_DEFERRED_APPROVAL_ACTION_IDS = [
   'session.handoff.prepare_target.resume',
   'session.handoff.commit',
   'session.handoff.abort',
+  // Linking is ordinarily unapproved: attaching an existing folder destroys
+  // nothing. Its destination preflight raises a deferred approval only for a
+  // replacement or a continuing exact-mirror deletion.
+  'workspace.sync.relationship.create',
   'session.spawn_new',
   'session.message.send',
   // Board mutations carry the ordinary optional/deferred approval artifact; the
@@ -3449,11 +3489,25 @@ function bindPluginPermissionSubject(
 
 /**
  * The single vocabulary for the plugin scaffold's UI mode. Every surface that
- * accepts `--ui` (CLI parser, `plugins.scaffold` action input, scaffold engine)
- * resolves the mode through this schema.
+ * accepts `--ui` (CLI parser, `plugins.scaffold` action input, scaffold engine,
+ * and the Settings Create form) resolves the mode through this schema; no
+ * consumer may enumerate a second mode list.
+ *
+ * `declarative` is first because it is the default a scaffold receives when the
+ * author expresses no preference: a declarative surface is projected from the
+ * manifest, so it needs no bundler, no UI dependency tree and no build step,
+ * and a fresh plugin therefore renders its first surface on every platform
+ * immediately. The executable arms are opt-in.
  */
-export const PluginScaffoldUiModeSchema = z.enum(['hostedWeb', 'reactNative']);
+export const PluginScaffoldUiModeSchema = z.enum(['declarative', 'hostedWeb', 'reactNative']);
 export type PluginScaffoldUiMode = z.infer<typeof PluginScaffoldUiModeSchema>;
+
+/**
+ * The mode a scaffold receives when the author expresses no preference. The
+ * scaffold engine applies it and the Settings Create form preselects it, so the
+ * command line and the app cannot start a plugin from different shapes.
+ */
+export const DEFAULT_PLUGIN_SCAFFOLD_UI_MODE: PluginScaffoldUiMode = 'declarative';
 
 /** Optional first-party starting shape; omission retains the generic scaffold. */
 export const PluginScaffoldTemplateSchema = z.enum(['session-agent']);
@@ -3540,21 +3594,14 @@ const PluginDevLoopActionResultKindSchema = z.enum([
   'plugins_change_status',
 ]);
 
-const PluginDevLoopPendingReviewSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('sourceRootReviewRequired'),
-    pendingChangeId: z.string().trim().min(1),
-    // The daemon/CLI change owner retains the source-review payload contract.
-    // Action consumers receive it only as an opaque, nested projection.
-    review: z.object({}).passthrough(),
-  }).passthrough(),
-  z.object({
-    kind: z.literal('reviewRequired'),
-    pendingChangeId: z.string().trim().min(1),
-    // The daemon/CLI change owner retains the package-review payload contract.
-    review: z.object({}).passthrough(),
-  }).passthrough(),
-]);
+const PluginDevLoopPendingReviewSchema = z.object({
+  kind: z.literal('reviewRequired'),
+  reviewKind: z.enum(['projectTrust', 'installation']),
+  pendingChangeId: z.string().trim().min(1),
+  // The daemon/CLI change owner retains the review payload contract. Action
+  // consumers receive it only as an opaque, nested projection.
+  review: z.object({}).passthrough(),
+}).passthrough();
 
 const PluginDevLoopReviewRequiredActionOutputSchema = z.object({
   ok: z.literal(false),
@@ -4718,6 +4765,16 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
     },
   ] as const).map((spec): PreNormalizedActionSpec => ({
     ...spec,
+    // Enrollment, change and removal carry credential material, one-time
+    // verification bearers and reauthentication proofs. That input may never
+    // become durable Approval Artifact custody: a required confirmation keeps
+    // the admitted present-user invocation as the waiter, and the Artifact
+    // carries only the observation projection below.
+    ...(spec.id === 'account.password.enroll'
+      || spec.id === 'account.password.change'
+      || spec.id === 'account.password.remove'
+      ? { approvalInputCustody: 'live_only' as const }
+      : {}),
     placements: [],
     surfaces: {
       ui: true,
@@ -4762,6 +4819,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
     serverTransport: { method: 'POST', path: ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1 },
     outputSchema: AccountApiTokensCreateActionOutputV1Schema,
     projectObservationOutput: projectAccountApiTokenCreationObservation,
+    // The bearer is shown once and stored only as a digest (L02 PLAN "no ...
+    // compound credential reaches ... approval history"); like the Team external
+    // key, it stays on the admitted invocation and never in a durable Artifact.
+    approvalResultCustody: 'live_only',
     inputSchema: AccountApiTokensCreateActionInputV1Schema,
     inputHints: {
       title: 'Create API token',
@@ -6364,8 +6425,44 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
       presentation: { onStart: 'current' },
     },
     title: 'Resolve workspace conflict',
-    description: 'Keep the selected workspace version by deleting the unchanged losing side and flushing synchronization.',
+    description: 'Apply the exact reviewed workspace entry to the explicitly approved current destinations.',
     safety: 'danger',
+    placements: [],
+    bindings: { mcpToolName: 'workspace_sync_conflict_resolve' },
+    surfaces: {
+      ui: true,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: false,
+      rpc: false,
+    },
+    inputHints: {
+      title: 'Resolve workspace conflict',
+      fields: [
+        { path: 'controllerMachineId', title: 'Controller machine id', widget: 'text', required: true },
+        { path: 'hubWorkspaceRefId', title: 'Hub workspace ref id', widget: 'text', required: true },
+        { path: 'path', title: 'Conflict path', widget: 'text', required: true },
+        { path: 'source', title: 'Reviewed source', widget: 'json', required: true },
+        { path: 'targets', title: 'Approved destinations', widget: 'json', required: true },
+        { path: 'relationshipIds', title: 'Relationship ids', widget: 'json', required: true },
+        { path: 'strategy', title: 'Resolution strategy', widget: 'select', options: [{ value: 'use_source', label: 'Use reviewed source' }, { value: 'keep_both', label: 'Use source and keep alternatives' }], required: true },
+      ],
+    },
+    outputSchema: WorkspaceSyncConflictResolutionResultV1Schema,
+    inputSchema: WorkspaceSyncConflictResolveActionInputV1Schema,
+  },
+  {
+    id: 'workspace.sync.relationship.create',
+    operation: {
+      version: 1,
+      visibility: 'activity',
+      progress: 'reported',
+      presentation: { onStart: 'current' },
+    },
+    title: 'Add machine to workspace',
+    description: 'Link a selected Workspace to a folder on another machine. Attaching an existing folder preserves its contents; creating from this Workspace replaces them.',
+    safety: 'safe',
     placements: [],
     surfaces: {
       ui: true,
@@ -6376,25 +6473,112 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
       rpc: false,
     },
     inputHints: {
-      title: 'Resolve workspace conflict',
+      title: 'Add a machine to this workspace',
+      description: 'Links the selected Workspace to a folder on another machine.',
       fields: [
-        { path: 'controllerMachineId', title: 'Controller machine id', widget: 'text', required: true },
-        { path: 'request.relationshipId', title: 'Relationship id', widget: 'text', required: true },
-        { path: 'request.path', title: 'Conflict path', widget: 'text', required: true },
-        {
-          path: 'request.keep',
-          title: 'Version to keep',
-          widget: 'select',
-          options: [
-            { value: 'alpha', label: 'Alpha' },
-            { value: 'beta', label: 'Beta' },
-          ],
-          required: true,
-        },
+        { path: 'sourceWorkspaceRefId', title: 'Source workspace ref id', widget: 'text', required: true },
+        { path: 'targetMachineId', title: 'Target machine id', widget: 'text', required: true },
+        { path: 'targetPath', title: 'Target folder', widget: 'text', required: true },
+        { path: 'mode', title: 'Sync mode', widget: 'select', options: [
+          { value: 'keep_synced', label: 'Replica' },
+          { value: 'mirror_exactly', label: 'Exact replica' },
+          { value: 'keep_both_in_sync', label: 'Editable copy' },
+        ], required: true },
+        { path: 'destinationIntent', title: 'Destination', widget: 'select', options: [
+          { value: 'use_existing', label: 'Use existing folder' },
+          { value: 'materialize_from_source_workspace', label: 'Create from this Workspace' },
+        ], required: true },
+        { path: 'contentPolicy', title: 'Content policy', widget: 'json', required: true },
       ],
     },
-    outputSchema: WorkspaceSyncStatusV1Schema,
-    inputSchema: WorkspaceSyncConflictResolveActionInputV1Schema,
+    outputSchema: WorkspaceSyncRelationshipCreateResultV1Schema,
+    inputSchema: WorkspaceSyncRelationshipCreateActionInputV1Schema,
+  },
+  {
+    id: 'workspace.sync.relationships.list',
+    title: 'List linked workspace relationships',
+    description: 'List linked workspace relationships and their current sync status on the exact controller. Missing status stays unknown, never zero.',
+    safety: 'safe',
+    placements: [],
+    bindings: { mcpToolName: 'workspace_sync_relationships_list' },
+    examples: {
+      mcp: { argsExample: '{"controllerMachineId":"{{machineId}}"}' },
+    },
+    surfaces: {
+      ui: true,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+    },
+    inputHints: {
+      title: 'List linked workspace relationships',
+      fields: [
+        { path: 'controllerMachineId', title: 'Controller machine id', widget: 'text' },
+        { path: 'workspaceRefId', title: 'Workspace ref id', widget: 'text' },
+      ],
+    },
+    outputSchema: StrictJsonValueSchema,
+    inputSchema: WorkspaceSyncRelationshipsListActionInputV1Schema,
+  },
+  {
+    id: 'workspace.sync.conflicts.list',
+    title: 'List workspace sync conflicts',
+    description: 'Read one bounded conflict page for a linked workspace relationship. Pages keep their cursor; coverage can be partial.',
+    safety: 'safe',
+    placements: [],
+    bindings: { mcpToolName: 'workspace_sync_conflicts_list' },
+    examples: {
+      mcp: { argsExample: '{"controllerMachineId":"{{machineId}}","relationshipId":"{{relationshipId}}","limit":50}' },
+    },
+    surfaces: {
+      ui: true,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+    },
+    inputHints: {
+      title: 'List workspace sync conflicts',
+      fields: [
+        { path: 'controllerMachineId', title: 'Controller machine id', widget: 'text', required: true },
+        { path: 'relationshipId', title: 'Relationship id', widget: 'text', required: true },
+        { path: 'limit', title: 'Limit', widget: 'text' },
+      ],
+    },
+    outputSchema: StrictJsonValueSchema,
+    inputSchema: WorkspaceSyncConflictsListActionInputV1Schema,
+  },
+  {
+    id: 'workspace.sync.conflict.inspect',
+    title: 'Inspect workspace sync conflict',
+    description: 'Inspect the current endpoint versions of a linked workspace path. Reads current bytes, not history; coverage can be partial.',
+    safety: 'safe',
+    placements: [],
+    bindings: { mcpToolName: 'workspace_sync_conflict_inspect' },
+    examples: {
+      mcp: { argsExample: '{"controllerMachineId":"{{machineId}}","workspaceRefId":"{{workspaceRefId}}","path":"src/index.ts"}' },
+    },
+    surfaces: {
+      ui: true,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+    },
+    inputHints: {
+      title: 'Inspect workspace sync conflict',
+      fields: [
+        { path: 'controllerMachineId', title: 'Controller machine id', widget: 'text' },
+        { path: 'workspaceRefId', title: 'Workspace ref id', widget: 'text', required: true },
+        { path: 'path', title: 'Conflict path', widget: 'text', required: true },
+      ],
+    },
+    outputSchema: StrictJsonValueSchema,
+    inputSchema: WorkspaceSyncConflictInspectActionInputV1Schema,
   },
   {
     id: 'session.spawn_new',

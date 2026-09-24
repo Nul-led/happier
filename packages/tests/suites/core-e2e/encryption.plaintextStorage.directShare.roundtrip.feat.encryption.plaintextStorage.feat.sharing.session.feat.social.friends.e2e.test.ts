@@ -93,20 +93,22 @@ describe('core e2e: plaintext direct share roundtrip', () => {
     expect(commit.status).toBe(200);
     expect(commit.data?.didWrite).toBe(true);
 
-    const share = await fetchJson<any>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
+    const share = await fetchJson<any>(`${server.baseUrl}/v2/sessions/access-grants/set`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        userId: recipientId,
+        sessionId,
+        subject: { kind: 'account', accountId: recipientId },
         accessLevel: 'view',
+        canApprovePermissions: false,
       }),
       timeoutMs: 15_000,
     });
     expect(share.status).toBe(200);
-    expect(typeof share.data?.share?.id).toBe('string');
+    expect(share.data?.changed).toBe(true);
 
     const messages = await fetchJson<any>(`${server.baseUrl}/v1/sessions/${sessionId}/messages?limit=10`, {
       headers: { Authorization: `Bearer ${recipient.token}` },

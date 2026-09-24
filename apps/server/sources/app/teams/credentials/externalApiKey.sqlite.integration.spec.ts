@@ -201,6 +201,8 @@ describe("Team credential external API key owner", () => {
             completedAtMs: admittedAt.getTime() + 250,
             outcome: "succeeded" as const,
             measurement: "unavailable" as const,
+            actualModelId: null,
+            tokens: null,
         };
         const terminal = await inTx(tx => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
             authenticatedBrokerAccountId: manager.id,

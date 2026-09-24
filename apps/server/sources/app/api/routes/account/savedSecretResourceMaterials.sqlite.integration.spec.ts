@@ -7,11 +7,16 @@ import {
     FeaturesResponseSchema,
     formatSharedSavedSecretRefV1,
     promotePersonalSavedSecretReference,
+    sealEncryptedDataKeyEnvelopeV1,
+    sealSavedSecretResourceStoredContentV1,
+    signAccountContentKeyBindingV1,
+    verifyAccountContentKeyBindingV1,
     ProviderSettingsV1Schema,
     SavedSecretResourceMaterialsResponseV1Schema,
     SharedSavedSecretListOutputV1Schema,
     VoiceCredentialBindingIdentityV1Schema,
 } from "@happier-dev/protocol";
+import tweetnacl from "tweetnacl";
 import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
 import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
@@ -29,6 +34,49 @@ async function importCliTestModule<T>(specifier: string): Promise<T> {
     // This composition deliberately crosses the server/CLI workspace boundary.
     // Keep server compilation rooted locally while Vitest loads the real consumers.
     return import(specifier) as Promise<T>;
+}
+
+function createE2eeAccountMaterial() {
+    const signing = tweetnacl.sign.keyPair();
+    const content = tweetnacl.box.keyPair();
+    const contentPublicKeySig = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signing.secretKey,
+        contentPublicKey: content.publicKey,
+    });
+    const verified = verifyAccountContentKeyBindingV1({
+        accountSigningPublicKey: signing.publicKey,
+        contentPublicKey: content.publicKey,
+        signature: contentPublicKeySig,
+    });
+    if (!verified) throw new Error("test binding must verify");
+    return {
+        account: {
+            encryptionMode: "e2ee" as const,
+            publicKey: Buffer.from(signing.publicKey).toString("hex"),
+            contentPublicKey: Buffer.from(content.publicKey),
+            contentPublicKeySig: Buffer.from(contentPublicKeySig),
+        },
+        contentPublicKey: content.publicKey,
+        fingerprint: verified.contentPublicKeyFingerprint,
+    };
+}
+
+function sealTestDataKey(recipientPublicKey: Uint8Array): Uint8Array {
+    return sealEncryptedDataKeyEnvelopeV1({
+        dataKey: new Uint8Array(32).fill(7),
+        recipientPublicKey,
+        randomBytes: (length) => new Uint8Array(length).fill(9),
+    });
+}
+
+function sealTestResource(resourceId: string) {
+    return sealSavedSecretResourceStoredContentV1({
+        resourceId,
+        mode: "e2ee",
+        resourceDataKey: new Uint8Array(32).fill(7),
+        content: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+        randomBytes: (length) => new Uint8Array(length).fill(8),
+    });
 }
 
 describe("Saved Secret material route (SQLite integration)", () => {
@@ -190,6 +238,65 @@ describe("Saved Secret material route (SQLite integration)", () => {
             });
             expect(deleteResponse.statusCode).toBe(200);
             expect(await db.savedSecretResource.findUnique({ where: { id: malformedResourceId } })).toBeNull();
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("delivers healthy material beside a row whose stored envelope cannot be parsed", async () => {
+        const ownerMaterial = createE2eeAccountMaterial();
+        const owner = await db.account.create({ data: ownerMaterial.account, select: { id: true } });
+        for (const resourceId of ["resource_route_damaged_envelope", "resource_route_intact_envelope"]) {
+            const created = await inTx((tx) => createSavedSecretResourceInTx(tx, {
+                accountId: owner.id,
+                resourceId,
+                displayName: resourceId,
+                kind: "token",
+                encryptionMode: "e2ee",
+                storedContent: sealTestResource(resourceId),
+                keyEnvelopes: [{
+                    recipientAccountId: owner.id,
+                    encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                    recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+                }],
+            }));
+            expect(created.ok).toBe(true);
+        }
+        await db.savedSecretResourceKeyEnvelope.update({
+            where: {
+                resourceId_recipientAccountId: {
+                    resourceId: "resource_route_damaged_envelope",
+                    recipientAccountId: owner.id,
+                },
+            },
+            data: { encryptedDataKey: Buffer.from([1, 2, 3]) },
+        });
+
+        const app = createAuthenticatedTestApp();
+        registerSavedSecretResourceRoutes(app);
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "GET",
+                url: "/v1/account/saved-secrets/resources/materials",
+                headers: { "x-test-user-id": owner.id },
+            });
+            expect(response.statusCode).toBe(200);
+            const materials = SavedSecretResourceMaterialsResponseV1Schema.parse(response.json());
+            const damaged = materials.resources.find((row) => "resourceId" in row
+                && row.resourceId === "resource_route_damaged_envelope");
+            const intact = materials.resources.find((row) => "resourceId" in row
+                && row.resourceId === "resource_route_intact_envelope");
+            expect(damaged).toEqual(expect.objectContaining({
+                entry: expect.objectContaining({ materialStatus: "update_required" }),
+                recipientEnvelope: null,
+            }));
+            expect(intact).toEqual(expect.objectContaining({
+                entry: expect.objectContaining({ materialStatus: "ready" }),
+                recipientEnvelope: expect.objectContaining({
+                    recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+                }),
+            }));
         } finally {
             await app.close();
         }
@@ -423,7 +530,13 @@ describe("Saved Secret material route (SQLite integration)", () => {
             await expect(connectedSecrets.read(sharedRef)).resolves.toBe("shared-provider-secret");
 
             const { createVoiceCredentialResolver } = await importCliTestModule<{
-                createVoiceCredentialResolver(input: Readonly<{ machineId: string | null }>): Readonly<{
+                createVoiceCredentialResolver(input: Readonly<{
+                    machineId: string | null;
+                    refreshForOperation?: (input: Readonly<{
+                        expectedScopeKey: string;
+                        references?: readonly Readonly<{ ref: string; revision?: number }>[];
+                    }>) => Promise<unknown>;
+                }>): Readonly<{
                     withSecret<T>(input: Readonly<{ identity: unknown; use(secret: string): Promise<T> }>): Promise<T>;
                 }>;
             }>("../../../../../../cli/src/daemon/voice/credentials/resolver");
@@ -432,10 +545,34 @@ describe("Saved Secret material route (SQLite integration)", () => {
                 credentialSlotId: "api_key",
                 purpose: { consumer: voiceContribution, purpose: "voice.client-auth" },
             });
-            await expect(createVoiceCredentialResolver({ machineId: null }).withSecret({
+            // A new Voice operation is admitted against Home-current material
+            // before any plaintext, so this leg performs a real second read of
+            // the live materials route. The daemon reads its stored credential
+            // inside the admission owner; this server-side process holds none,
+            // so the test supplies the same token it hydrated with and the
+            // canonical hydration still does the Home round trip.
+            const admittedReferences: string[] = [];
+            const voiceResolver = createVoiceCredentialResolver({
+                machineId: null,
+                refreshForOperation: async ({ references }) => {
+                    for (const reference of references ?? []) admittedReferences.push(reference.ref);
+                    await runWithServerHttpBaseUrl(`http://127.0.0.1:${address.port}`, async () => {
+                        await hydrateSavedSecretCatalog({
+                            token,
+                            serverFeatures: FeaturesResponseSchema.parse({
+                                features: { teams: { enabled: true } },
+                                capabilities: {},
+                            }),
+                        });
+                    });
+                    return activeSnapshot.getActiveAccountSettingsSnapshot();
+                },
+            });
+            await expect(voiceResolver.withSecret({
                 identity: voiceIdentity,
                 use: async (secret: string) => secret,
             })).resolves.toBe("shared-provider-secret");
+            expect(admittedReferences).toEqual([sharedRef]);
         } finally {
             activeSnapshot.resetActiveAccountSettingsSnapshotForTests();
             await app.close();
@@ -531,6 +668,136 @@ describe("Saved Secret material route (SQLite integration)", () => {
                 body: { error: "forbidden" },
             });
             expect(await db.savedSecretResource.count({ where: { id: "resource_promote_unqualified" } })).toBe(0);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("carries an explicit mode conversion through the strict update route in both directions", async () => {
+        const ownerMaterial = createE2eeAccountMaterial();
+        const owner = await db.account.create({ data: ownerMaterial.account, select: { id: true } });
+        const resourceId = "resource_route_mode_conversion";
+        const ownerEnvelope = {
+            recipientAccountId: owner.id,
+            encryptedDataKey: Buffer.from(sealTestDataKey(ownerMaterial.contentPublicKey)).toString("base64"),
+            recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+        };
+        const created = await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId,
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "e2ee",
+            storedContent: sealTestResource(resourceId),
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+            }],
+        }));
+        expect(created.ok).toBe(true);
+
+        const app = createAuthenticatedTestApp();
+        registerSavedSecretResourceRoutes(app);
+        await app.ready();
+        const url = homeDomainActionPathForMethod("secrets.shared.update", "POST");
+        const readOwnerMaterial = async () => {
+            const response = await app.inject({
+                method: "GET",
+                url: "/v1/account/saved-secrets/resources/materials",
+                headers: { "x-test-user-id": owner.id },
+            });
+            expect(response.statusCode).toBe(200);
+            return SavedSecretResourceMaterialsResponseV1Schema.parse(response.json()).resources[0];
+        };
+        const toPlainPayload = {
+            resourceId,
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        };
+        try {
+            // A Home whose storage policy requires E2EE refuses the conversion
+            // into Plain and keeps the resource exactly as it was.
+            harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "required_e2ee" });
+            const refusedByPolicy = await app.inject({
+                method: "POST",
+                url,
+                headers: { "x-test-user-id": owner.id },
+                payload: toPlainPayload,
+            });
+            expect({ status: refusedByPolicy.statusCode, body: refusedByPolicy.json() }).toEqual({
+                status: 403,
+                body: { error: "forbidden" },
+            });
+            expect(await readOwnerMaterial()).toEqual(expect.objectContaining({
+                entry: expect.objectContaining({ encryptionMode: "e2ee", revision: 1 }),
+            }));
+
+            harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+            const toPlain = await app.inject({
+                method: "POST",
+                url,
+                headers: { "x-test-user-id": owner.id },
+                payload: toPlainPayload,
+            });
+            expect({ status: toPlain.statusCode, body: toPlain.json() }).toEqual({
+                status: 200,
+                body: { resourceId, revision: 2 },
+            });
+            expect(await readOwnerMaterial()).toEqual(expect.objectContaining({
+                resourceId,
+                entry: expect.objectContaining({ encryptionMode: "plain", materialStatus: "ready", revision: 2 }),
+            }));
+
+            const withoutOwnerEnvelope = await app.inject({
+                method: "POST",
+                url,
+                headers: { "x-test-user-id": owner.id },
+                payload: {
+                    resourceId,
+                    expectedRevision: 2,
+                    displayName: "Shared token",
+                    kind: "token",
+                    toMode: "e2ee",
+                    storedContent: sealTestResource(resourceId),
+                },
+            });
+            expect({ status: withoutOwnerEnvelope.statusCode, body: withoutOwnerEnvelope.json() }).toEqual({
+                status: 400,
+                body: { error: "invalid_resource" },
+            });
+
+            const toE2ee = await app.inject({
+                method: "POST",
+                url,
+                headers: { "x-test-user-id": owner.id },
+                payload: {
+                    resourceId,
+                    expectedRevision: 2,
+                    displayName: "Shared token",
+                    kind: "token",
+                    toMode: "e2ee",
+                    storedContent: sealTestResource(resourceId),
+                    keyEnvelopes: [ownerEnvelope],
+                },
+            });
+            expect({ status: toE2ee.statusCode, body: toE2ee.json() }).toEqual({
+                status: 200,
+                body: { resourceId, revision: 3 },
+            });
+            expect(await readOwnerMaterial()).toEqual(expect.objectContaining({
+                resourceId,
+                entry: expect.objectContaining({ encryptionMode: "e2ee", materialStatus: "ready", revision: 3 }),
+                recipientEnvelope: expect.objectContaining({
+                    recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+                }),
+            }));
         } finally {
             await app.close();
         }

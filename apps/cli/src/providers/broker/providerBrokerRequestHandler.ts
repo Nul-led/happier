@@ -10,6 +10,7 @@ import type {
     ProviderBrokerRouteGrantPayloadV1,
     PeerTcpTunnelRelayAuthorizationV2,
     SignedProviderBrokerRouteGrantV1,
+    UsageObservationTokens,
 } from '@happier-dev/protocol';
 import {
     verifyProviderBrokerRouteGrantV1,
@@ -25,6 +26,7 @@ import type {
     TeamCredentialSourceBindingV1,
     TeamCredentialUsageLimitDenialV1,
 } from '@happier-dev/protocol/teams';
+import { createExternalProviderTerminalTokenReader } from './externalProviderTerminalTokens';
 import { isSameTeamCredentialBrokerApplication } from './teamCredentialModelCatalog';
 import { PROVIDER_BROKER_PRIVATE_CLOSE_PATH } from './providerBrokerPrivateProtocol';
 
@@ -95,7 +97,12 @@ export type ProviderBrokerApplicationStreamLifetime = Readonly<{
         modelId: string;
         sourceRevision: string;
     }>): Promise<Readonly<{ access: ManagedProviderEndpointHttpAccess; sourceMemberKey: string }> | null>;
+    /** Releases this stream's joined view. The operation keeps serving its
+     * other streams and the ones it has not opened yet. */
     close(): Promise<void>;
+    /** The authorized explicit close: releases this stream and retires the
+     * whole Session/Run operation's managed Provider custody. */
+    retire(): Promise<void>;
 }>;
 
 /**
@@ -109,6 +116,10 @@ export type ProviderBrokerPrivateAuthenticatedStreamContext = Readonly<{
     authenticatedRemoteEndpointId: string;
     authority: SignedProviderBrokerRouteGrantV1;
     expected: ProviderBrokerRouteGrantExpectedBindingV1;
+    /** True when the stream was admitted after its authority expired. Such a
+     * stream may only retire the exact claim that authority names; every
+     * other request is refused before policy, admission or source custody. */
+    releaseOnly?: boolean;
     streamLifetime?: ProviderBrokerApplicationStreamLifetime;
 }>;
 
@@ -144,19 +155,44 @@ export type ProviderBrokerRequestHandler = (input: Readonly<{
 }>) => Promise<ProviderBrokerRequestHandlerResult>;
 
 type ProviderBrokerExternalTerminalUsage = Readonly<{
-    record(input: Readonly<{ outcome: 'succeeded' | 'failed' | 'cancelled' }>): Promise<void>;
+    record(input: Readonly<{
+        outcome: 'succeeded' | 'failed' | 'cancelled';
+        actualModelId: string | null;
+        tokens: UsageObservationTokens | null;
+    }>): Promise<void>;
 }>;
 
+function readResponseContentType(response: ManagedServiceResponse): string | null {
+    const entry = Object.entries(response.headers).find(([name]) => name.toLowerCase() === 'content-type');
+    return entry ? entry[1] : null;
+}
+
+/**
+ * Observes the admitted external response on the one pass it already makes for
+ * the terminal outcome, so the Provider's own token fact is read without a
+ * second parse of the same bytes and without buffering a response the broker is
+ * only relaying. The caller still receives the Provider's exact bytes.
+ */
 async function observeExternalTerminalResponse(
     response: ManagedServiceResponse,
     terminalUsage: ProviderBrokerExternalTerminalUsage,
     signal: AbortSignal | undefined,
+    routeKind: TeamCredentialRequestProtocolKindV1,
 ): Promise<ManagedServiceResponse> {
+    const tokenReader = createExternalProviderTerminalTokenReader({
+        routeKind,
+        contentType: readResponseContentType(response),
+    });
     let recorded = false;
     const record = async (outcome: 'succeeded' | 'failed' | 'cancelled'): Promise<void> => {
         if (recorded) return;
         recorded = true;
-        await terminalUsage.record({ outcome }).catch(() => undefined);
+        // Only a completed response can carry a truthful terminal token fact;
+        // a failed or cancelled one leaves the request's usage unknown.
+        const observed = outcome === 'succeeded'
+            ? tokenReader.read()
+            : { actualModelId: null, tokens: null };
+        await terminalUsage.record({ outcome, ...observed }).catch(() => undefined);
     };
     if (!response.body) {
         await record(response.ok ? 'succeeded' : 'failed');
@@ -182,6 +218,7 @@ async function observeExternalTerminalResponse(
                         await record(response.ok ? 'succeeded' : 'failed');
                         return;
                     }
+                    tokenReader.push(next.value);
                     controller.enqueue(next.value);
                 } catch (error) {
                     controller.error(error);
@@ -423,12 +460,19 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
                 return {
                     ok: true,
                     response: admitted.terminalUsage
-                        ? await observeExternalTerminalResponse(response, admitted.terminalUsage, evaluated.request.signal)
+                        ? await observeExternalTerminalResponse(
+                            response,
+                            admitted.terminalUsage,
+                            evaluated.request.signal,
+                            evaluated.routeKind,
+                        )
                         : response,
                 };
             } catch (error) {
                 await admitted.terminalUsage?.record({
                     outcome: evaluated.request.signal?.aborted ? 'cancelled' : 'failed',
+                    actualModelId: null,
+                    tokens: null,
                 }).catch(() => undefined);
                 throw error;
             }
@@ -453,7 +497,7 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
             if (!context.streamLifetime) {
                 return { ok: false, reasonCode: 'resource_unavailable' };
             }
-            await context.streamLifetime.close();
+            await context.streamLifetime.retire();
             return {
                 ok: true,
                 response: {
@@ -465,21 +509,26 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
                 },
             };
         }
+        if (context.releaseOnly) return { ok: false, reasonCode: 'grant_expired' };
 
         const policySnapshot = await input.resolveRequestPolicy({
             authority: verification.authority.payload,
             request,
         });
         if (!policySnapshot) return { ok: false, reasonCode: 'resource_unavailable' };
+        // The resource revision is deliberately not compared against the
+        // signed authority: it is a mutable policy fact and this request
+        // already presents the snapshot's current revision to the Home, which
+        // owns that decision. The model is a request fact the policy owner
+        // below evaluates against that same current policy
+        // (`04-private-iroh-broker-transport.md:270`). Source and application
+        // identity are the signed claim and are still enforced here.
         if (
-            policySnapshot.resourceRevision !== verification.authority.payload.expectedResourceRevision
-            || policySnapshot.sourceRevision !== verification.authority.payload.sourceRevision
+            policySnapshot.sourceRevision !== verification.authority.payload.sourceRevision
             || !isSameTeamCredentialBrokerApplication(
                 policySnapshot.application,
                 verification.authority.payload.application,
             )
-            || policySnapshot.modelCatalog.resolveCanonicalModelId(verification.authority.payload.modelId)
-                !== verification.authority.payload.modelId
         ) return { ok: false, reasonCode: 'resource_changed' };
         if (request.method === 'GET' && request.pathAndQuery === '/v1/models') {
             if (!input.authorizeModelCatalog) return { ok: false, reasonCode: 'resource_unavailable' };
@@ -502,9 +551,6 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
             resolveCanonicalModelId: policySnapshot.modelCatalog.resolveCanonicalModelId,
         });
         if (!evaluated.ok) return evaluated;
-        if (evaluated.modelId !== verification.authority.payload.modelId) {
-            return { ok: false, reasonCode: 'model_not_allowed' };
-        }
         if (!routeMatchesApplicationProtocol(evaluated.routeKind, verification.authority.payload.application.protocol)) {
             return { ok: false, reasonCode: 'route_not_allowed' };
         }

@@ -1,11 +1,13 @@
 import { z } from 'zod';
 
 import { AccountDisplayProfileV1Schema } from '../account/accountDisplayProfileV1.js';
+import { AccountEncryptionModeSchema } from '../features/payload/capabilities/encryptionCapabilities.js';
 import {
   FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
   HomeSignInServicePolicyV1Schema,
 } from '../features/payload/featuresResponseSchema.js';
 import { TeamInvitationPreviewV1Schema, TeamInvitationTokenV1Schema } from '../teams/invitation.js';
+import { TeamIdentityProviderKindV1Schema } from '../teams/identity/connection.js';
 import { AuthEntryMethodIdV1Schema } from './methodId.js';
 import { NativeAuthOneTimeBearerV1Schema } from './nativeAuthOneTimeOperation.js';
 
@@ -67,16 +69,60 @@ export const AuthEntryRequestV1Schema = z.union([
 ]);
 export type AuthEntryRequestV1 = z.infer<typeof AuthEntryRequestV1Schema>;
 
+/**
+ * The safe public descriptor of one provider choice (teams-lane-03/01 §10.2).
+ * These are the Home's own projected values: a client renders them and never
+ * recreates or discards them for a dynamic provider. Internal catalog source,
+ * ownership, revisions, secret health and permissions are never carried.
+ */
+export const AuthEntryProviderPresentationV1Schema = z.object({
+  displayName: boundedAuthEntryString(z.string().trim().min(1)),
+  iconHint: boundedAuthEntryString(z.string().trim().min(1)).nullable().optional(),
+  /** Present only for an identity provider from the catalog; native methods have none. */
+  providerKind: TeamIdentityProviderKindV1Schema.optional(),
+  connectButtonColor: boundedAuthEntryString(z.string().trim().min(1)).nullable().optional(),
+  supportsProfileBadge: z.boolean().optional(),
+}).strict();
+export type AuthEntryProviderPresentationV1 = z.infer<typeof AuthEntryProviderPresentationV1Schema>;
+
+/**
+ * Why an accepted provider choice cannot be used right now, said at the level a
+ * public Team page may say it. It never names configuration, secrets or health.
+ */
+export const AuthEntryProviderUnavailableReasonV1Schema = z.enum([
+  /** The administrator turned this sign-in off. */
+  'provider_disabled',
+  /** The administrator has not finished setting this sign-in up. */
+  'provider_setup_incomplete',
+  /** The Home cannot run this sign-in right now. */
+  'provider_unavailable',
+]);
+export type AuthEntryProviderUnavailableReasonV1 = z.infer<typeof AuthEntryProviderUnavailableReasonV1Schema>;
+
+/** An accepted provider choice shown, with its safe reason, but not startable. */
+export const AuthEntryProviderUnavailableActionV1Schema = z.object({
+  kind: z.literal('provider_unavailable'),
+  methodId: AuthEntryMethodIdV1Schema,
+  origin: z.enum(['home', 'team']),
+  presentation: AuthEntryProviderPresentationV1Schema,
+  reason: AuthEntryProviderUnavailableReasonV1Schema,
+}).strict();
+
 export const AuthEntryAuthenticationActionV1Schema = z.object({
   kind: z.literal('authenticate'),
   methodId: AuthEntryMethodIdV1Schema,
   action: z.enum(['login', 'provision', 'connect']),
   mode: z.enum(['keyed', 'keyless', 'either']),
   origin: z.enum(['home', 'team']),
-  presentation: z.object({
-    displayName: boundedAuthEntryString(z.string().trim().min(1)),
-    iconHint: boundedAuthEntryString(z.string().trim().min(1)).nullable().optional(),
-  }).strict(),
+  /**
+   * The Home's own recommendation for a new Account's protection, carried only
+   * on a `provision` action whose `mode` leaves the choice open. It is the
+   * effective-method owner's answer (deployment default narrowed by the Home
+   * governance document), so a chooser seeds from it instead of re-deriving a
+   * default from the permitted set. Absent means the Home states no preference.
+   */
+  recommendedProvisionMode: AccountEncryptionModeSchema.nullable().optional(),
+  presentation: AuthEntryProviderPresentationV1Schema,
 }).strict();
 
 /**
@@ -90,12 +136,14 @@ export const AuthEntryContinueActionV1Schema = z.object({ kind: z.literal('conti
 export const AuthEntryActionV1Schema = z.discriminatedUnion('kind', [
   AuthEntryAuthenticationActionV1Schema,
   AuthEntryContinueActionV1Schema,
+  AuthEntryProviderUnavailableActionV1Schema,
   z.object({ kind: z.literal('switch_account') }).strict(),
 ]);
 export type AuthEntryActionV1 = z.infer<typeof AuthEntryActionV1Schema>;
 
 const InvitationAuthEntryActionV1Schema = z.discriminatedUnion('kind', [
   AuthEntryAuthenticationActionV1Schema,
+  AuthEntryProviderUnavailableActionV1Schema,
   z.object({ kind: z.literal('switch_account') }).strict(),
 ]);
 

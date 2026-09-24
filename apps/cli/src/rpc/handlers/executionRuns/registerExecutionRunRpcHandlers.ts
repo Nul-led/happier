@@ -18,7 +18,6 @@ import type { ExecutionRunTranscriptPublisher } from '@/agent/runtime/bridges/ex
 import type { ExecutionRunSessionStateTarget } from '@/agent/runtime/bridges/executionRun/sessionStateDelivery';
 import {
   buildExecutionRunProfileCatalog,
-  type ExecutionRunProfileContributionCatalogInput,
   type ExecutionRunProfileContributionCatalog,
 } from '@/agent/executionRuns/profiles/intentRegistry';
 import { resolveExecutionRunPolicy } from '@/agent/executionRuns/policy/executionRunPolicy';
@@ -48,7 +47,7 @@ import { registerActionSpecRpcHandlers } from '../registerActionSpecRpcHandlers'
 import {
   createExecutionRunRpcActionExecutor,
   type ExecutionRunRpcApprovalDeps,
-  type PrepareAttachedTeamCredentialSessionBinding,
+  type GrantAttachedRunTeamVisibility,
 } from './dispatchExecutionRunRpcAction';
 import {
   createReviewCommentHostActionMaterializer,
@@ -74,7 +73,7 @@ export type ExecutionRunRpcHandlerContext = Readonly<{
   runtimeAccountId?: string;
   /** Session-owned Run listing dependency, injected by the runtime principal owner. */
   sessionList?: ActionExecutorDeps['sessionList'];
-  prepareAttachedTeamCredentialSessionBinding?: PrepareAttachedTeamCredentialSessionBinding;
+  grantAttachedRunTeamVisibility?: GrantAttachedRunTeamVisibility;
   serverUrl?: string;
   parentProvider: ACPProvider;
   browserControl?: BrowserDaemonControlRoutes | null;
@@ -215,21 +214,7 @@ export function registerExecutionRunRpcHandlers(
               const engineRegistry = await resolveCliEngineRegistry({
                 runtimeRegistry: runtimeRegistryLease.registry,
               });
-              const profileCatalog = buildExecutionRunProfileCatalog(
-                (engineRegistry.contributions.executionRunProfiles ?? []).flatMap<ExecutionRunProfileContributionCatalogInput>((profile) => {
-                  if (!profile.pluginId) return [profile.definition];
-                  const current = runtimeRegistryLease.registry
-                    .pluginFinalPolicyCurrentGenerationsById
-                    ?.get(profile.pluginId) ?? null;
-                  return current?.applied === true
-                    ? [{
-                      pluginId: profile.pluginId,
-                      immutableGenerationId: current.immutableGenerationId,
-                      definition: profile.definition,
-                    }]
-                    : [];
-                }),
-                {
+              const profileCatalog = await engineRegistry.resolveExecutionRunProfileCatalog({
                   resolveAgentIdentity: (agentId) => {
                     const agent = engineRegistry.contributions.agents.find((candidate) => (
                       candidate.id === agentId && candidate.pluginId
@@ -259,8 +244,7 @@ export function registerExecutionRunRpcHandlers(
                       ...(ctx.machineId ? { machineId: ctx.machineId } : {}),
                     });
                   },
-                },
-              );
+                });
               return {
                 profileCatalog,
                 engineRegistry,
@@ -287,8 +271,9 @@ export function registerExecutionRunRpcHandlers(
             return resolveReviewCommentHostPluginAuthority({
               pluginId,
               current: runtimeRegistryLease.registry
-                .pluginFinalPolicyCurrentGenerationsById
+                .pluginFinalPolicyCurrentRuntimesById
                 ?.get(pluginId) ?? null,
+              sourceCustody: runtimeRegistryLease.registry.readPluginSourceCustody?.(pluginId) ?? null,
             });
           } catch {
             return null;

@@ -391,4 +391,172 @@ describe("external Group binding administration", () => {
             where: { binding: { directorySourceId: f.source.id } },
         })).resolves.toBe(0);
     });
+    it("unions two directories' Group contributions onto a natively managed member without taking the Team lifetime", async () => {
+        const owner = await db.account.create({ data: { publicKey: crypto.randomUUID() } });
+        const person = await db.account.create({ data: { publicKey: crypto.randomUUID() } });
+        const team = await db.team.create({ data: { name: `Union ${crypto.randomUUID()}` } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+        // Invited by hand first, the way an administrator seeds a Team before
+        // wiring SCIM. No source owns this lifetime.
+        const nativeMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: person.id, role: "member" },
+        });
+        const group = await db.teamGroup.create({
+            data: { teamId: team.id, name: "Engineering", nameKey: "engineering" },
+        });
+        const bindingIds: string[] = [];
+        for (const index of [1, 2]) {
+            const provider = await db.identityProviderInstance.create({
+                data: {
+                    ownerTeamId: team.id,
+                    kind: "workos_sso",
+                    displayName: `WorkOS ${index}`,
+                    config: { v: 1, kind: "workos_sso" },
+                },
+            });
+            const connection = await db.teamIdentityConnection.create({
+                data: {
+                    teamId: team.id,
+                    providerInstanceId: provider.id,
+                    enabled: true,
+                    externalReference: { v: 1 },
+                    settings: { v: 1 },
+                },
+            });
+            const source = await db.teamDirectorySource.create({
+                data: {
+                    teamId: team.id,
+                    kind: "workos_directory",
+                    state: "active",
+                    displayName: `Directory ${index}`,
+                    externalSourceKey: `workos:${crypto.randomUUID()}`,
+                    bindingConfig: { v: 1, kind: "workos_directory", workosDirectoryId: `directory_${index}` },
+                    teamIdentityConnectionId: connection.id,
+                },
+            });
+            await db.teamProvisionedIdentity.create({
+                data: {
+                    directorySourceId: source.id,
+                    teamId: team.id,
+                    externalUserId: "same_person",
+                    state: "active",
+                    boundAccountId: person.id,
+                },
+            });
+            await db.teamDirectoryGroup.create({
+                data: {
+                    directorySourceId: source.id,
+                    externalGroupId: "engineering",
+                    externalDisplayName: "Engineering",
+                    state: "active",
+                },
+            });
+            await db.teamDirectoryGroupMember.create({
+                data: {
+                    directorySourceId: source.id,
+                    externalGroupId: "engineering",
+                    externalUserId: "same_person",
+                },
+            });
+            const mapped = await setExternalGroupBindingForActor({
+                v: 1,
+                teamId: team.id,
+                owner: { kind: "directory_source", directorySourceId: source.id },
+                externalGroupId: "engineering",
+                target: { kind: "native_target", teamGroupId: group.id },
+                actorAccountId: owner.id,
+            });
+            expect(mapped).toMatchObject({ ok: true });
+            bindingIds.push(mapped.ok ? mapped.value.id : "missing");
+        }
+
+        // One Group row, one contribution per source, and the hand-made
+        // membership is still exactly the row the administrator created.
+        expect(await db.teamGroupMembership.count({ where: { teamGroupId: group.id } })).toBe(1);
+        expect(await db.teamGroupMembershipExternalContribution.count({
+            where: { teamGroupId: group.id, teamMembershipId: nativeMembership.id },
+        })).toBe(2);
+        await expect(db.teamMembership.findUniqueOrThrow({
+            where: { id: nativeMembership.id },
+            select: { provisionedIdentity: { select: { id: true } }, status: true },
+        })).resolves.toEqual({ provisionedIdentity: null, status: "active" });
+
+        const removed = await removeExternalGroupBindingForActor({
+            v: 1,
+            teamId: team.id,
+            bindingId: bindingIds[0]!,
+            actorAccountId: owner.id,
+        });
+        expect(removed).toEqual({ ok: true, value: { v: 1, outcome: "removed" } });
+        expect(await db.teamGroupMembershipExternalContribution.count({
+            where: { teamGroupId: group.id, teamMembershipId: nativeMembership.id },
+        })).toBe(1);
+        await expect(db.teamGroupMembership.findUniqueOrThrow({
+            where: {
+                teamGroupId_teamMembershipId: {
+                    teamGroupId: group.id,
+                    teamMembershipId: nativeMembership.id,
+                },
+            },
+            select: { externalContributions: { select: { externalGroupBindingId: true } } },
+        })).resolves.toEqual({ externalContributions: [{ externalGroupBindingId: bindingIds[1]! }] });
+        await expect(db.teamMembership.count({ where: { id: nativeMembership.id } })).resolves.toBe(1);
+    });
+
+    it("maps a roster in one Team publication and never grants a person the source reports inactive", async () => {
+        const f = await fixture();
+        // Two more natively invited people the directory also lists: one active,
+        // one the provider has deactivated. Native keeps both lifetimes.
+        const activePerson = await db.account.create({ data: { publicKey: crypto.randomUUID() } });
+        const inactivePerson = await db.account.create({ data: { publicKey: crypto.randomUUID() } });
+        for (const [account, externalUserId, state] of [
+            [activePerson, "person_active", "active"],
+            [inactivePerson, "person_inactive", "suspended"],
+        ] as const) {
+            await db.teamMembership.create({ data: { teamId: f.team.id, accountId: account.id, role: "member" } });
+            await db.teamProvisionedIdentity.create({
+                data: {
+                    directorySourceId: f.source.id,
+                    teamId: f.team.id,
+                    externalUserId,
+                    state,
+                    boundAccountId: account.id,
+                },
+            });
+            await db.teamDirectoryGroupMember.create({
+                data: {
+                    directorySourceId: f.source.id,
+                    externalGroupId: f.projectedGroup.externalGroupId,
+                    externalUserId,
+                },
+            });
+        }
+        const target = await db.teamGroup.create({
+            data: { teamId: f.team.id, name: "Mapped roster", nameKey: "mapped roster" },
+        });
+        const readSeq = async () => (await db.account.findUniqueOrThrow({
+            where: { id: f.member.id },
+            select: { seq: true },
+        })).seq;
+        const before = await readSeq();
+
+        const mapped = await setExternalGroupBindingForActor({
+            v: 1,
+            teamId: f.team.id,
+            owner: { kind: "directory_source", directorySourceId: f.source.id },
+            externalGroupId: f.projectedGroup.externalGroupId,
+            target: { kind: "native_target", teamGroupId: target.id },
+            actorAccountId: f.owner.id,
+        });
+        expect(mapped).toMatchObject({ ok: true });
+
+        // child 05 §5: compute the audience once and publish once for the
+        // whole mapping — not once per materialized member plus once more.
+        expect(await readSeq()).toBe(before + 1);
+        const rosterAccountIds = (await db.teamGroupMembership.findMany({
+            where: { teamGroupId: target.id },
+            select: { teamMembership: { select: { accountId: true } } },
+        })).map((row) => row.teamMembership.accountId).sort();
+        expect(rosterAccountIds).toEqual([f.managed.id, activePerson.id].sort());
+    });
 });

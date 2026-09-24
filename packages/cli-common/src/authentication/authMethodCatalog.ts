@@ -1,4 +1,4 @@
-import type { AuthEntryProjectionV1 } from '@happier-dev/protocol';
+import type { AuthEntryProjectionV1, AuthEntryProviderPresentationV1 } from '@happier-dev/protocol';
 
 export type ProjectedAuthenticationAction = Readonly<{
   id: 'login' | 'provision' | 'connect';
@@ -8,10 +8,11 @@ export type ProjectedAuthenticationAction = Readonly<{
 export type ProjectedAuthenticationMethod = Readonly<{
   id: string;
   enabledActions: readonly ProjectedAuthenticationAction[];
-  presentation?: Readonly<{
-    displayName: string;
-    iconHint?: string | null;
-  }>;
+  /**
+   * The Home's projected provider presentation (teams-lane-03/01 §10.2). The
+   * retained `/v1/features` method list carries only its name and icon hint.
+   */
+  presentation?: AuthEntryProviderPresentationV1;
 }>;
 
 export type ProjectedAuthenticationCatalog = Readonly<{

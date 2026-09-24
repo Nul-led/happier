@@ -12,6 +12,7 @@ import {
     SavedSecretResourceEnvelopeRepairOutputV1Schema,
     SharedSavedSecretPromoteOutputV1Schema,
     type SavedSecret,
+    type SavedSecretResourceEnvelopeCensusRecipientV1,
     type SavedSecretResourceMaterialV1,
 } from '@happier-dev/protocol';
 
@@ -62,8 +63,7 @@ export type SavedSecretResourceDeleteResult =
 
 export type SavedSecretPromotionResult =
     | Readonly<{ ok: true; resourceRef: string }>
-    | Exclude<SavedSecretResourceOperationResult, Readonly<{ ok: true }>>
-    | Readonly<{ ok: false; reason: 'update_required' }>;
+    | Exclude<SavedSecretResourceOperationResult, Readonly<{ ok: true }>>;
 
 export type SavedSecretCreationResult =
     | Readonly<{ ok: true; resourceRef: string; revision: number }>
@@ -75,24 +75,40 @@ function operationFailureReason(kind: 'conflict' | 'outcome_unknown' | string): 
     return 'failed';
 }
 
-class SavedSecretProfileActivationHeldError extends Error {
-    constructor() {
-        super('Shared Saved Secret Profile activation requires a compatible predecessor');
-        this.name = 'SavedSecretProfileActivationHeldError';
-    }
+/**
+ * The owner's own envelope for a resource data key this device just sealed.
+ * Creation, promotion and conversion into E2EE each submit exactly this one
+ * envelope with their write; every other recipient is prepared afterwards by
+ * the census repair below.
+ */
+function sealOwnerSavedSecretResourceEnvelope(
+    accountId: string,
+    resourceDataKey: Uint8Array,
+    contentDataKey: Uint8Array,
+): Readonly<{ recipientAccountId: string; encryptedDataKey: string; recipientContentPublicKeyFingerprint: string }> {
+    return {
+        recipientAccountId: accountId,
+        encryptedDataKey: encryptDataKeyForRecipientV0(resourceDataKey, encodeBase64(contentDataKey, 'base64')),
+        recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(contentDataKey),
+    };
 }
 
-async function repairSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+export type SavedSecretResourceRecipientReadiness =
+    | Readonly<{ ok: true; revision: number; recipients: readonly SavedSecretResourceEnvelopeCensusRecipientV1[] }>
+    | Readonly<{ ok: false }>;
+
+/**
+ * The owner's per-recipient view of one E2EE resource: who is authorized, whether
+ * each can hold an envelope at all (Plain Account, encryption not set up, keys
+ * inconsistent) and whether their envelope is prepared. It is the one census
+ * reader; envelope preparation consumes the same answer.
+ */
+export async function readSavedSecretResourceRecipientReadiness(params: Readonly<{
     scope: ServerAccountScope;
     resourceId: string;
-    expectedRevision: number;
-    resourceDataKey: Uint8Array;
-}>): Promise<void> {
-    const keyEnvelopes: Array<{
-        recipientAccountId: string;
-        encryptedDataKey: string;
-        recipientContentPublicKeyFingerprint: string;
-    }> = [];
+}>): Promise<SavedSecretResourceRecipientReadiness> {
+    const recipients: SavedSecretResourceEnvelopeCensusRecipientV1[] = [];
+    let revision: number | null = null;
     let cursor: string | undefined;
     do {
         const census = await requestHomeDomain({
@@ -103,20 +119,35 @@ async function repairSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
             input: { resourceId: params.resourceId, ...(cursor ? { cursor } : {}), limit: 100 },
             schema: SavedSecretResourceEnvelopeCensusResponseV1Schema,
         });
-        if (!census.ok || census.value.revision !== params.expectedRevision) return;
-        for (const recipient of census.value.recipients) {
-            if (recipient.readiness.status !== 'available' || recipient.envelopeStatus === 'prepared') continue;
-            keyEnvelopes.push({
+        // A page from another revision describes a different audience.
+        if (!census.ok || (revision !== null && census.value.revision !== revision)) return { ok: false };
+        revision = census.value.revision;
+        recipients.push(...census.value.recipients);
+        cursor = census.value.nextCursor ?? undefined;
+    } while (cursor);
+    return revision === null ? { ok: false } : { ok: true, revision, recipients };
+}
+
+async function repairSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    expectedRevision: number;
+    resourceDataKey: Uint8Array;
+}>): Promise<void> {
+    const census = await readSavedSecretResourceRecipientReadiness(params);
+    if (!census.ok || census.revision !== params.expectedRevision) return;
+    const keyEnvelopes = census.recipients.flatMap((recipient) => (
+        recipient.readiness.status !== 'available' || recipient.envelopeStatus === 'prepared'
+            ? []
+            : [{
                 recipientAccountId: recipient.account.accountId,
                 encryptedDataKey: encryptDataKeyForRecipientV0(
                     params.resourceDataKey,
                     recipient.readiness.contentPublicKey,
                 ),
                 recipientContentPublicKeyFingerprint: recipient.readiness.contentPublicKeyFingerprint,
-            });
-        }
-        cursor = census.value.nextCursor ?? undefined;
-    } while (cursor);
+            }]
+    ));
     if (keyEnvelopes.length === 0) return;
     await requestHomeDomain({
         scope: params.scope,
@@ -153,7 +184,12 @@ async function repairCatalogedSavedSecretResourceEnvelopesBestEffort(params: Rea
     }
 }
 
-async function repairApprovedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+/**
+ * Prepares every owed recipient envelope of one owned E2EE resource at its
+ * current revision, opening the data key from this owner's own envelope. Used
+ * after an approved write and by the owner's explicit "Finish sharing".
+ */
+export async function repairApprovedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
     scope: ServerAccountScope;
     resourceId: string;
     expectedRevision: number;
@@ -244,16 +280,7 @@ export async function createSavedSecretResource(params: Readonly<{
             })
             : sealSavedSecretResourceStoredContentV1({ resourceId, mode: 'plain', content });
         const keyEnvelopes = encryption && resourceDataKey
-            ? [{
-                recipientAccountId: params.scope.accountId,
-                encryptedDataKey: encryptDataKeyForRecipientV0(
-                    resourceDataKey,
-                    encodeBase64(encryption.contentDataKey, 'base64'),
-                ),
-                recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
-                    encryption.contentDataKey,
-                ),
-            }]
+            ? [sealOwnerSavedSecretResourceEnvelope(params.scope.accountId, resourceDataKey, encryption.contentDataKey)]
             : [];
         const finishApproved = async (value: { resourceId: string; revision: number }) => {
             if (encryption) {
@@ -359,20 +386,22 @@ export async function promotePersonalSavedSecretResource(params: Readonly<{
         const mutation = await sync.mutateAccountSettingsOnce({
             expectedSettingsScope: params.scope,
             expectedSettingsVersion: params.expectedSettingsVersion,
-            mutate: (raw) => {
-                if (listAccountSettingsSavedSecretReferences(raw, params.secret.id)
-                    .some((reference) => reference.owner === 'profile')) {
-                    throw new SavedSecretProfileActivationHeldError();
-                }
-                return {
-                    settings: { ...promotePersonalSavedSecretReference(raw, {
-                        secretId: params.secret.id,
-                        expectedUpdatedAt: params.secret.updatedAt,
-                        sharedSecretRef: resourceRef,
-                    }).settings },
-                    value: { resourceId, resourceRef },
-                };
-            },
+            // Every reference to the personal secret — Profile bindings
+            // included — moves to the shared reference in this one CAS write.
+            // 0.3 Settings readers and writers preserve shared references, and
+            // 0.3 is a one-way upgrade with no 0.2 writer left to prune them.
+            // Every reference to the personal secret — Profile bindings
+            // included — moves to the shared reference in this one CAS write.
+            // 0.3 Settings readers and writers preserve shared references, and
+            // 0.3 is a one-way upgrade with no 0.2 writer left to prune them.
+            mutate: (raw) => ({
+                settings: { ...promotePersonalSavedSecretReference(raw, {
+                    secretId: params.secret.id,
+                    expectedUpdatedAt: params.secret.updatedAt,
+                    sharedSecretRef: resourceRef,
+                }).settings },
+                value: { resourceId, resourceRef },
+            }),
             commitPrepared: async (prepared) => {
                 const encryption = sync.encryption;
                 if (prepared.accountMode === 'e2ee' && !encryption) {
@@ -411,16 +440,11 @@ export async function promotePersonalSavedSecretResource(params: Readonly<{
                     return { status: 'rejected', error: new Error('saved_secret_encryption_unavailable') };
                 }
                 const keyEnvelopes = prepared.accountMode === 'e2ee' && encryption && preparedResourceDataKey
-                    ? [{
-                        recipientAccountId: params.scope.accountId,
-                        encryptedDataKey: encryptDataKeyForRecipientV0(
-                            preparedResourceDataKey,
-                            encodeBase64(encryption.contentDataKey, 'base64'),
-                        ),
-                        recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
-                            encryption.contentDataKey,
-                        ),
-                    }]
+                    ? [sealOwnerSavedSecretResourceEnvelope(
+                        params.scope.accountId,
+                        preparedResourceDataKey,
+                        encryption.contentDataKey,
+                    )]
                     : [];
                 const outcome = await runTeamAction({
                     scope: params.scope,
@@ -496,9 +520,6 @@ export async function promotePersonalSavedSecretResource(params: Readonly<{
         }
         return { ok: false, reason: 'outcome_unknown' };
     } catch (error) {
-        if (error instanceof SavedSecretProfileActivationHeldError) {
-            return { ok: false, reason: 'update_required' };
-        }
         if (isTeamActionApprovalPendingError(error)) throw error;
         return { ok: false, reason: 'failed' };
     } finally {
@@ -581,16 +602,11 @@ export async function updateSavedSecretResource(params: Readonly<{
                 randomBytes: getRandomBytes,
             });
         const keyEnvelopes = convertedResourceDataKey && encryption
-            ? [{
-                recipientAccountId: params.scope.accountId,
-                encryptedDataKey: encryptDataKeyForRecipientV0(
-                    convertedResourceDataKey,
-                    encodeBase64(encryption.contentDataKey, 'base64'),
-                ),
-                recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
-                    encryption.contentDataKey,
-                ),
-            }]
+            ? [sealOwnerSavedSecretResourceEnvelope(
+                params.scope.accountId,
+                convertedResourceDataKey,
+                encryption.contentDataKey,
+            )]
             : [];
         // An approved-later conversion re-derives its data key from the
         // committed resource, since this call's copy is zeroed on return.

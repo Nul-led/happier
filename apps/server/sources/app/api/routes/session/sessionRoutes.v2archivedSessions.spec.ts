@@ -85,7 +85,7 @@ describe("sessionRoutes v2 archived sessions listing", () => {
         expect(accountFindUnique).not.toHaveBeenCalled();
     });
 
-    it("refuses the released layout-zero shared archived-row projection until owner migration", async () => {
+    it("omits the unmigrated layout-zero shared archived row instead of refusing the page", async () => {
         const now = new Date(1_000);
         const row = {
             ...createSessionAccessProjectionRelations(),
@@ -140,11 +140,15 @@ describe("sessionRoutes v2 archived sessions listing", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/archived");
         const { reply, response } = await route.invoke({ query: { limit: 1 } });
 
-        expect(reply.statusCode).toBe(409);
-        expect(response).toEqual({
-            error: "Session metadata privacy upgrade required",
-            code: "metadata_privacy_upgrade_required",
-        });
+        // Per-row degradation: the unreadable historical share is dropped and the
+        // refusal stays visible through the count, never a request-wide 409.
+        expect(reply.statusCode).toBe(200);
+        const payload = response as {
+            sessions: ReadonlyArray<{ id: string }>;
+            metadataUpgradeRequiredCount?: number;
+        };
+        expect(payload.sessions).toEqual([]);
+        expect(payload.metadataUpgradeRequiredCount).toBe(1);
         expect(flattenSessionWhereConjuncts(sessionFindMany.mock.calls[0]?.[0]?.where)).toEqual(expect.arrayContaining([
             { archivedAt: { not: null } },
             { currentStorageState: "hosted", meaningfulActivityAt: { not: null } },

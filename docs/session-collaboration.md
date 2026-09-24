@@ -14,10 +14,10 @@ See also [Team lifecycle, policy, and branding](teams.md),
 [Compatibility](compatibility.md) for the released owner/direct seam.
 
 > **Status (0.3 development source).** Team and Group grants, responsibility, discussions,
-> Follow and the shared read-state owner are implemented behind the `sessions.collaboration`,
+> Follow and the shared read-state owner are implemented behind the `sharing.session`,
 > `sessions.conversations` and `sessions.following` feature ids, which are per-Home capability
-> boundaries enabled by default (see [feature-gating.md](feature-gating.md)). Released direct
-> sharing is independent of all three. Source presence is not release availability.
+> boundaries enabled by default (see [feature-gating.md](feature-gating.md)). Direct shares
+> created by 0.2 stay effective regardless of them. Source presence is not release availability.
 
 ## Canonical owners
 
@@ -82,9 +82,11 @@ absence permits the released `share` translation.
 ## Grants: direct-only `SessionShare`, plus Team and Group grants
 
 `SessionShare` is the **direct** grant table and nothing else. One row is one
-`(Session, recipient Account)` pair carrying `accessLevel` and `canApprovePermissions`; it is the
-shape the released direct-sharing routes still read and write
-(`packages/protocol/src/sessions/access/releasedDirectSessionShareV1.ts`).
+`(Session, recipient Account)` pair carrying `accessLevel` and `canApprovePermissions`. The
+canonical grant service (`/v2/sessions/access-grants/*`) is its only writer; the released
+`/v1/sessions/:id/shares` routes were removed under the one-way 0.3 upgrade because no 0.3
+client calls them. Rows a 0.2 Home created stay effective and readable through the same
+access evaluator.
 
 Team and Group grants are separate tables — `SessionTeamGrant` and `SessionGroupGrant` — and they
 deliberately do not copy membership. The grant row is durable and membership is evaluated live,

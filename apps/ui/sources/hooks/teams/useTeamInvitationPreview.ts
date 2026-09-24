@@ -24,12 +24,19 @@ import { createServerFetchAtEndpoint } from '@/sync/http/client';
  * syntactically valid bearer it will not describe. It is not an error and not
  * proof the invitation never existed, so callers present it as "this link is not
  * usable" rather than inventing a terminal reason.
+ *
+ * `feature_unavailable` is a different answer and stays distinct: the Home is
+ * reachable and current, and has Teams administratively turned off. Collapsing
+ * it into `unavailable` is what made a valid invitation read as "Team not
+ * found", and it is the one state whose recovery is the Home's administrator
+ * rather than a new link.
  */
 export type TeamInvitationPreviewState =
     | Readonly<{ kind: 'idle' }>
     | Readonly<{ kind: 'loading' }>
     | Readonly<{ kind: 'ready'; preview: TeamInvitationPreviewV1 }>
     | Readonly<{ kind: 'unavailable' }>
+    | Readonly<{ kind: 'feature_unavailable' }>
     | Readonly<{ kind: 'update_required' }>
     | Readonly<{ kind: 'failed'; retryable: boolean }>;
 
@@ -96,10 +103,15 @@ export function useTeamInvitationPreview(params: Readonly<{
                     setState({ kind: 'ready', preview: outcome.data.preview });
                     return;
                 }
-                // `feature_unavailable` is a capable Home's operator choice, not an
-                // old binary: child 05 §8 requires it to present as unavailable,
-                // while the 404/405/501 branch above stays the update-required case.
-                setState({ kind: 'unavailable' });
+                // `feature_unavailable` is a capable Home's operator choice, not
+                // an old binary, and not an unusable link: child 05 :437 requires
+                // enabled, operator-disabled, unsupported and unreachable to stay
+                // distinguishable, so the Home's own declared outcome is carried
+                // through instead of being folded into `unavailable`. The
+                // 404/405/501 branch above stays the update-required case.
+                setState({ kind: outcome.data.outcome === 'feature_unavailable'
+                    ? 'feature_unavailable'
+                    : 'unavailable' });
             } catch {
                 // An approval-pending or transport throw is not a description of
                 // the invitation; the surface keeps its own retry.

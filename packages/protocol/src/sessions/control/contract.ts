@@ -534,6 +534,11 @@ export const V2SessionListResponseSchema = z
     hasNext: z.boolean().optional(),
     attentionNextCursor: z.string().nullable().optional(),
     attentionHasNext: z.boolean().optional(),
+    // Rows selected but omitted because their owning Account has not migrated
+    // Session metadata to the current layout. One unmigrated historical share
+    // never refuses the whole page; the refusal stays visible through this
+    // count instead of silently shrinking the page.
+    metadataUpgradeRequiredCount: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 export type V2SessionListResponse = z.infer<typeof V2SessionListResponseSchema>;

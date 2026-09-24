@@ -1,4 +1,4 @@
-import type { SessionEncryptionContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import type { HappierReplayDialogItem } from './types';
 import { decryptTranscriptReplayCore } from './decryptTranscriptReplayCore';
@@ -11,8 +11,7 @@ type RawTranscriptRow = Readonly<{
 
 export function decryptTranscriptTextItems(params: Readonly<{
   rows: readonly RawTranscriptRow[];
-  encryptionKey?: Uint8Array;
-  encryptionVariant?: SessionEncryptionContext['encryptionVariant'];
+  crypto: SessionStoredContentCryptoContext;
   maxTextChars?: number;
   maxDialogItems?: number;
 }>): HappierReplayDialogItem[] {

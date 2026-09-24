@@ -23,9 +23,11 @@ import {
   type QualifiedConnectedAccountPurposeBindingsV1,
   type QualifiedConnectedAccountPurposeBindingV1,
   type QualifiedConnectedAccountPurposeBindingTargetV1,
+  type QualifiedConnectedAccountPurposeTeamResourceSelectionV1,
   type QualifiedConnectedAccountPurposeV1,
   type QualifiedConnectedAccountRequestAuthUseV1,
   type QualifiedConnectedAccountRef,
+  type TeamResourceConnectedServiceSelectionV2,
 } from '@happier-dev/protocol';
 
 import {
@@ -36,7 +38,7 @@ import type {
   AccountSettingsMutationResult,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import {
-  subscribeActiveAccountSettingsSnapshot,
+  subscribeActiveAccountSettingsSnapshotChanges,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type {
   HostCurrentSessionUiServices,
@@ -198,6 +200,13 @@ export type ConnectedAccountPurposeBindingSubject =
       kind: 'operation';
       operationId: string;
       consumer: PluginContributionIdentityV1;
+      /**
+       * The Session this operation materializes launch material for. Its
+       * direct Team material opens only through that Session's Home-admitted
+       * Team binding (lane 10 child 06 §15); without it the operation has no
+       * direct-material consumer.
+       */
+      sessionId?: string;
       isCurrent(): boolean;
     }>;
 
@@ -220,15 +229,43 @@ export type ConnectedAccountSessionPurposeBindingSnapshot = Readonly<{
 }>;
 
 /**
+ * A new Session's launch snapshot read from the durable defaults. A durable
+ * Team resource default appears twice, both derived from its one canonical
+ * selection: `teamResourceSelections` is what the Session must be created
+ * with (its Home-admitted Team binding), and a direct selection's
+ * disclosed-member binding plus `directMaterialOrigins` is how that Session
+ * materializes it.
+ */
+export type ConnectedAccountCurrentSessionPurposeBindingSnapshot =
+  ConnectedAccountSessionPurposeBindingSnapshot & Readonly<{
+    directMaterialOrigins: readonly ConnectedAccountTeamDirectMaterialOrigin[];
+    teamResourceSelections: readonly ConnectedAccountSessionTeamResourceSelection[];
+  }>;
+
+/** One composition input/output: a snapshot plus any direct Team material it launches with. */
+export type ComposableConnectedAccountSessionPurposeBindingSnapshot =
+  ConnectedAccountSessionPurposeBindingSnapshot & Readonly<{
+    directMaterialOrigins?: readonly ConnectedAccountTeamDirectMaterialOrigin[];
+  }>;
+
+/** A durable Team resource default with the purpose's declared services it must serve. */
+export type ConnectedAccountSessionTeamResourceSelection =
+  QualifiedConnectedAccountPurposeTeamResourceSelectionV1 & Readonly<{
+    services: readonly PluginContributionRef[];
+  }>;
+
+/**
  * Canonical composition boundary for a session's complete Agent + managed Provider purpose
  * authority. Any overlap is rejected even when the two snapshots happen to select the same target:
- * two producers must never silently co-own one purpose.
+ * two producers must never silently co-own one purpose. Direct Team material origins pass
+ * through unchanged; session activation validates each against its composed binding.
  */
 export function composeConnectedAccountSessionPurposeBindingSnapshot(
-  snapshots: readonly ConnectedAccountSessionPurposeBindingSnapshot[],
-): ConnectedAccountSessionPurposeBindingSnapshot {
+  snapshots: readonly ComposableConnectedAccountSessionPurposeBindingSnapshot[],
+): ComposableConnectedAccountSessionPurposeBindingSnapshot {
   const purposes: QualifiedConnectedAccountPurposeV1[] = [];
   const bindings: QualifiedConnectedAccountPurposeBindingV1[] = [];
+  const directMaterialOrigins: ConnectedAccountTeamDirectMaterialOrigin[] = [];
   const purposeKeys = new Set<string>();
 
   for (const snapshot of snapshots) {
@@ -265,11 +302,15 @@ export function composeConnectedAccountSessionPurposeBindingSnapshot(
       snapshotBindingKeys.add(key);
       bindings.push(immutableBinding(binding));
     }
+    directMaterialOrigins.push(...(snapshot.directMaterialOrigins ?? []));
   }
 
   return Object.freeze({
     purposes: Object.freeze(purposes),
     bindings: Object.freeze(bindings),
+    ...(directMaterialOrigins.length > 0
+      ? { directMaterialOrigins: Object.freeze(directMaterialOrigins) }
+      : {}),
   });
 }
 
@@ -410,7 +451,7 @@ export type ConnectedAccountPurposeBindingOwner =
     resolveCurrentSessionPurposeBindingSnapshot(input: Readonly<{
       authorizedPurposes: readonly ConnectedAccountPurposeAuthorizationScope[];
       signal: AbortSignal;
-    }>): Promise<ConnectedAccountSessionPurposeBindingSnapshot>;
+    }>): Promise<ConnectedAccountCurrentSessionPurposeBindingSnapshot>;
     /**
      * Host-private broker bridge. It reads only one active exact session binding through this
      * owner, then fences it to the current credential revision without exposing either to a
@@ -466,6 +507,58 @@ function resourceNotSelected(purpose: QualifiedConnectedAccountPurposeV1): Plugi
   return new PluginError({
     code: 'plugin_host_access_resource_not_selected',
     message: `Connected Accounts purpose '${purpose.purpose}' is not selected`,
+  });
+}
+
+/**
+ * Typed refusal for a purpose whose durable default is a Team resource
+ * selection, used outside a Session: no Home admits a Team binding for it.
+ * The default is the user's standing intent and is never erased here (lane 10
+ * child 02 §11.6 "no silent native fallback").
+ */
+function teamResourceUnavailable(): PluginError {
+  return new PluginError({
+    code: 'plugin_connected_account_team_resource_unavailable',
+    message: 'A Team credential is used only inside a Session whose Team binding the Home admitted',
+    details: { reason: 'session_required' },
+  });
+}
+
+/**
+ * A Team resource selection as a Session/Execution Run purpose binding: the
+ * purpose target stays `account | group` (lane 10 child 02 :271, child 06
+ * :506). A direct selection binds its disclosed source member and carries the
+ * materialization origin that opens it only through the Home-admitted Team
+ * binding; it is never resolved against the viewer's own inventory. A
+ * brokered selection is served by its broker and has no purpose binding here.
+ */
+export function projectTeamResourceSelectionToSessionPurposeBinding(input: Readonly<{
+  purpose: QualifiedConnectedAccountPurposeV1;
+  service: PluginContributionIdentityV1;
+  selection: TeamResourceConnectedServiceSelectionV2;
+}>): Readonly<{
+  binding: QualifiedConnectedAccountPurposeBindingV1;
+  origin: ConnectedAccountTeamDirectMaterialOrigin;
+}> | null {
+  const selection = input.selection;
+  if (
+    selection.deliveryMode !== 'direct'
+    || contributionKey(selection.disclosedMember.service) !== contributionKey(input.service)
+  ) return null;
+  const purpose = Object.freeze({
+    consumer: Object.freeze({ ...input.purpose.consumer }),
+    purpose: input.purpose.purpose,
+  });
+  const disclosedMember = Object.freeze({
+    service: Object.freeze({ ...selection.disclosedMember.service }),
+    accountId: selection.disclosedMember.accountId,
+  });
+  return Object.freeze({
+    binding: Object.freeze({
+      purpose,
+      target: Object.freeze({ kind: 'account' as const, account: disclosedMember }),
+    }),
+    origin: Object.freeze({ purpose, resourceId: selection.resourceId, disclosedMember }),
   });
 }
 
@@ -551,13 +644,30 @@ function replacePurposeBinding(
 ): QualifiedConnectedAccountPurposeBindingsV1 {
   const collection = QualifiedConnectedAccountPurposeBindingsV1Schema.parse(collectionLike);
   const key = qualifiedPurposeKey(purpose);
+  // Agent Team resource defaults share this document. They are kept, except
+  // that an explicit personal choice for the same purpose replaces its Team
+  // default: one purpose has one default.
+  const teamResourceSelections = (collection.teamResourceSelections ?? []).filter((entry) => (
+    !target || qualifiedPurposeKey(entry.purpose) !== key
+  ));
   return QualifiedConnectedAccountPurposeBindingsV1Schema.parse({
     v: 1,
     bindings: [
       ...collection.bindings.filter((binding) => qualifiedPurposeKey(binding.purpose) !== key),
       ...(target ? [{ purpose, target }] : []),
     ].sort((left, right) => qualifiedPurposeKey(left.purpose).localeCompare(qualifiedPurposeKey(right.purpose))),
+    ...(teamResourceSelections.length > 0 ? { teamResourceSelections } : {}),
   });
+}
+
+function readPurposeTeamResourceSelection(
+  collectionLike: QualifiedConnectedAccountPurposeBindingsV1,
+  purpose: QualifiedConnectedAccountPurposeV1,
+): QualifiedConnectedAccountPurposeTeamResourceSelectionV1 | null {
+  const key = qualifiedPurposeKey(purpose);
+  return QualifiedConnectedAccountPurposeBindingsV1Schema.parse(collectionLike)
+    .teamResourceSelections
+    ?.find((entry) => qualifiedPurposeKey(entry.purpose) === key) ?? null;
 }
 
 function readPurposeBinding(
@@ -829,6 +939,7 @@ export function createConnectedAccountPurposeBindingOwner(
             'connected_account_operation_binding_operation_id_required',
           );
         }
+        const launchSessionId = subject.sessionId?.trim() ?? '';
         return {
           subjectKey: JSON.stringify(['operation', operationId]),
           subjectId:
@@ -837,7 +948,9 @@ export function createConnectedAccountPurposeBindingOwner(
           sessionId: null,
           errorPrefix: 'connected_account_operation_binding',
           expectedConsumer: Object.freeze({ ...consumer }),
-          directMaterialConsumer: null,
+          directMaterialConsumer: launchSessionId
+            ? { kind: 'session' as const, sessionId: launchSessionId }
+            : null,
         };
       }
       const operationId = subject.operationId.trim();
@@ -917,6 +1030,11 @@ export function createConnectedAccountPurposeBindingOwner(
       string,
       ActiveConnectedAccountTeamDirectMaterialOrigin
     >();
+    // The materialization origin (lane 10 child 06 :506-508) is the one
+    // carrier of direct Team material: it names the Team resource behind an
+    // exact disclosed-member binding, and the Session/Execution Run consumer
+    // opens it only through the Home's Team-binding admission. A subject
+    // without such a consumer can never serve one.
     for (const origin of input.directMaterialOrigins ?? []) {
       if (!normalized.directMaterialConsumer) {
         throw new Error(`${normalized.errorPrefix}_direct_material_consumer_unsupported`);
@@ -1065,9 +1183,16 @@ export function createConnectedAccountPurposeBindingOwner(
       assertResolvedTargetMatchesIntent(target, resolved);
       return { target, resolved, directMaterialOrigin: null };
     }
-    const target = readPurposeBinding(await dependencies.store.read(input.signal), purpose);
+    const durable = await dependencies.store.read(input.signal);
     input.signal.throwIfAborted();
-    if (!target) return null;
+    const target = readPurposeBinding(durable, purpose);
+    if (!target) {
+      // A durable Team resource default is the user's standing intent and the
+      // Home is its currentness authority: outside a Session it is refused
+      // with a type, never resolved against the personal inventory or erased.
+      if (readPurposeTeamResourceSelection(durable, purpose)) throw teamResourceUnavailable();
+      return null;
+    }
     try {
       assertTargetAuthorized(target, input.serviceRefs);
     } catch {
@@ -1129,7 +1254,7 @@ export function createConnectedAccountPurposeBindingOwner(
   const resolveCurrentSessionPurposeBindingSnapshot = async (input: Readonly<{
     authorizedPurposes: readonly ConnectedAccountPurposeAuthorizationScope[];
     signal: AbortSignal;
-  }>): Promise<ConnectedAccountSessionPurposeBindingSnapshot> => {
+  }>): Promise<ConnectedAccountCurrentSessionPurposeBindingSnapshot> => {
     input.signal.throwIfAborted();
     const scopeByPurposeKey = new Map<string, ConnectedAccountPurposeAuthorizationScope>();
     for (const scopeLike of input.authorizedPurposes) {
@@ -1152,7 +1277,37 @@ export function createConnectedAccountPurposeBindingOwner(
       scopes.map((scope) => contributionKey(scope.purpose.consumer)),
       async () => {
         const bindings: QualifiedConnectedAccountPurposeBindingV1[] = [];
+        const directMaterialOrigins: ConnectedAccountTeamDirectMaterialOrigin[] = [];
+        const teamResourceSelections: ConnectedAccountSessionTeamResourceSelection[] = [];
+        const current = await dependencies.store.read(input.signal);
+        input.signal.throwIfAborted();
         for (const scope of scopes) {
+          const teamSelection = readPurposeTeamResourceSelection(current, scope.purpose);
+          if (teamSelection) {
+            const selection = teamSelection.selection;
+            if (selection.deliveryMode === 'direct') {
+              const service = scope.serviceRefs.find((candidate) => (
+                contributionKey(candidate) === contributionKey(selection.disclosedMember.service)
+              ));
+              const projected = service
+                ? projectTeamResourceSelectionToSessionPurposeBinding({
+                    purpose: scope.purpose,
+                    service,
+                    selection,
+                  })
+                : null;
+              if (!projected) continue;
+              bindings.push(projected.binding);
+              directMaterialOrigins.push(projected.origin);
+            }
+            teamResourceSelections.push(Object.freeze({
+              purpose: scope.purpose,
+              teamId: teamSelection.teamId,
+              selection,
+              services: scope.serviceRefs,
+            }));
+            continue;
+          }
           const resolved = await readAuthorizedResolvedLocked({
             purpose: scope.purpose,
             serviceRefs: scope.serviceRefs,
@@ -1168,6 +1323,8 @@ export function createConnectedAccountPurposeBindingOwner(
         return Object.freeze({
           purposes: Object.freeze(scopes.map((scope) => scope.purpose)),
           bindings: Object.freeze(bindings),
+          directMaterialOrigins: Object.freeze(directMaterialOrigins),
+          teamResourceSelections: Object.freeze(teamResourceSelections),
         });
       },
     );
@@ -1606,7 +1763,7 @@ export function createConnectedAccountPurposeBindingOwner(
         await dependencies.store.update((currentLike) => {
             const current = QualifiedConnectedAccountPurposeBindingsV1Schema.parse(currentLike);
             return QualifiedConnectedAccountPurposeBindingsV1Schema.parse({
-              v: 1,
+              ...current,
               bindings: current.bindings.filter((binding) => {
                 const authorizedServiceKeysByPurposeKey =
                   authorizedByConsumerKey.get(
@@ -1777,7 +1934,10 @@ export function createActiveAccountSettingsConnectedAccountPurposeBindingStore()
       );
     },
     subscribe(listener) {
-      const unsubscribe = subscribeActiveAccountSettingsSnapshot(() => listener());
+      // Bindings, service configuration and the Saved Secrets they reference
+      // live in the Account snapshot. The Connected Services projection reaches
+      // purpose watches through the runtime's own invalidation instead.
+      const unsubscribe = subscribeActiveAccountSettingsSnapshotChanges(() => listener());
       return Object.freeze({ dispose: unsubscribe });
     },
   });

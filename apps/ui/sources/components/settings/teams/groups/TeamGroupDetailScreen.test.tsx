@@ -21,6 +21,7 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const groupRouterPush = vi.hoisted(() => vi.fn());
+const modalConfirm = vi.hoisted(() => ({ spy: null as null | { mock: { calls: unknown[][] } } }));
 
 const GROUP_DETAIL_RENDERED_ROW_WINDOW = 20;
 const groupDetailLegendListState = vi.hoisted(() => ({
@@ -71,8 +72,11 @@ installSettingsViewCommonModuleMocks({
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         // Every destructive Group action is confirmed; these cases are about
-        // what happens after the manager says yes.
-        return createModalModuleMock({ confirmResult: true }).module;
+        // what happens after the manager says yes — and, for the removal
+        // dialog, about what they were actually asked.
+        const mock = createModalModuleMock({ confirmResult: true });
+        modalConfirm.spy = mock.spies.confirm;
+        return mock.module;
     },
 });
 
@@ -526,6 +530,160 @@ describe('TeamGroupDetailScreen', () => {
             accountId: 'account-ada',
         });
         expect(harness.requestsFor(ARTIFACT_CREATE_PATH)).toHaveLength(0);
+    });
+
+    it('asks about removing this person from this Group, not about archiving the Group', async () => {
+        // The confirmed operation is `teams.groups.members.remove` for one
+        // Account. The archive copy promises retained membership and a
+        // restoration that this operation does not have, and it names neither
+        // the person nor the Group.
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ name: 'Developers', capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, {
+            body: { items: [teamGroupMemberFixture()], nextCursor: null },
+        });
+        harness.answer(serverId, GROUP_MEMBER_REMOVE_PATH, {
+            body: {
+                status: 'removed',
+                member: teamGroupMemberFixture({ contributions: { native: false, external: [] } }),
+            },
+        });
+
+        const screen = await renderGroupDetail(serverId);
+        await waitForTestId(screen, 'team-group-member:account-ada');
+        await screen.pressByTestIdAsync('team-group-member:account-ada');
+
+        await vi.waitFor(() => {
+            expect(harness.requestsFor(GROUP_MEMBER_REMOVE_PATH)).toHaveLength(1);
+        });
+        const confirmCall = modalConfirm.spy?.mock.calls.at(-1) ?? [];
+        const title = String(confirmCall[0] ?? '');
+        const body = String(confirmCall[1] ?? '');
+        expect(title).toContain('removeMemberTitle');
+        expect(body).toContain('removeMemberBody');
+        expect(body).not.toContain('archiveBody');
+        // The person and the Group are both named in what was confirmed.
+        expect(`${title} ${body}`).toContain('Ada');
+        expect(`${title} ${body}`).toContain('Developers');
+    });
+
+    it('keeps an unfinished Group description while a remote rename lands, and reconciles deliberately', async () => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ name: 'Before', capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, {
+            body: { items: [teamGroupMemberFixture()], nextCursor: null },
+        });
+
+        const screen = await renderGroupDetail(serverId);
+        await waitForTestId(screen, 'team-group-description');
+        act(() => screen.changeTextByTestId('team-group-description', 'Owns the build'));
+
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ name: 'After', capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } = await import('@happier-dev/protocol');
+        await act(async () => {
+            publishHomeAccountChange(serverId, [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        });
+
+        // The Home's rename arrived; the unfinished draft is still the person's.
+        await waitForTestId(screen, 'team-group-identity-conflict');
+        expect(screen.findByTestId('team-group-description')?.props.value).toBe('Owns the build');
+        expect(screen.findByTestId('team-group-save')?.props.disabled).toBe(true);
+
+        await screen.pressByTestIdAsync('team-group-identity-conflict');
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-identity-conflict');
+        });
+        expect(screen.findByTestId('team-group-description')?.props.value).toBe('Owns the build');
+    });
+
+    it('adopts the published Group values into a pristine editor', async () => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ name: 'Before', capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, {
+            body: { items: [teamGroupMemberFixture()], nextCursor: null },
+        });
+
+        const screen = await renderGroupDetail(serverId);
+        await waitForTestId(screen, 'team-group-name');
+        expect(screen.findByTestId('team-group-name')?.props.value).toBe('Before');
+
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ name: 'After', capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } = await import('@happier-dev/protocol');
+        await act(async () => {
+            publishHomeAccountChange(serverId, [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        });
+
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('team-group-name')?.props.value).toBe('After');
+        });
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-identity-conflict');
+    });
+
+    it('names a failed Group refresh with its own retry and withholds Group writes until it answers', async () => {
+        // The Team read succeeded; this Group's own point read did not. The
+        // retained Group stays on screen, but presenting last-known
+        // capabilities as current is what lets a manager act on them.
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, {
+            body: { items: [teamGroupMemberFixture()], nextCursor: null },
+        });
+
+        const screen = await renderGroupDetail(serverId);
+        await waitForTestId(screen, 'team-group-member:account-ada');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-stale');
+        // While the Group is current the roster row is activatable; this is the
+        // control that makes the withheld assertion below discriminating.
+        expect(screen.findAllByTestId('team-group-member:account-ada')
+            .find((node) => typeof node.props?.onPress === 'function')).toBeDefined();
+
+        harness.answer(serverId, GROUP_GET_PATH, { status: 503, body: { error: 'unavailable' } });
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } = await import('@happier-dev/protocol');
+        await act(async () => {
+            publishHomeAccountChange(serverId, [TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1]);
+        });
+
+        await waitForTestId(screen, 'team-group-stale-retry');
+        // Retained, not discarded.
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-group-member:account-ada');
+        expect(screen.findByTestId('team-group-archive')?.props.disabled).toBe(true);
+        // The roster row carries its right-hand actions outside its pressable,
+        // so the row's own testID node is not the one holding `disabled`. What
+        // matters is that the row cannot be activated at all: no node under
+        // that id exposes a press handler while the Group is not current.
+        expect(screen.findAllByTestId('team-group-member:account-ada')
+            .find((node) => typeof node.props?.onPress === 'function')).toBeUndefined();
+
+        harness.answer(serverId, GROUP_GET_PATH, {
+            body: teamGroupFixture({ capabilities: MANAGED_GROUP_CAPABILITIES }),
+        });
+        await screen.pressByTestIdAsync('team-group-stale-retry');
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-stale-retry');
+        });
+        // The Group answered again, so its own writes come back. The point
+        // read has to land first, so this waits for the Group's own answer
+        // rather than for one render tick.
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-group-archive');
+            expect(screen.findAllByTestId('team-group-archive')
+                .find((node) => typeof node.props?.onPress === 'function')).toBeDefined();
+        }, { timeout: 10_000 });
     });
 
     it('routes an externally supplied member native contribution through approval', async () => {

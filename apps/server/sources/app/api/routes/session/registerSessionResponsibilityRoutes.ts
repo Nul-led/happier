@@ -39,7 +39,7 @@ const InvalidCursorSchema = z.object({
  * current value again is a true no-op, so a retry after a lost response is safe.
  */
 export function registerSessionResponsibilityRoutes(app: Fastify) {
-    const collaborationApp = createServerFeatureGatedRouteApp(app, "sessions.collaboration");
+    const collaborationApp = createServerFeatureGatedRouteApp(app, "sharing.session");
     collaborationApp.post("/v2/sessions/responsibility/set", {
         preHandler: app.authenticate,
         schema: {

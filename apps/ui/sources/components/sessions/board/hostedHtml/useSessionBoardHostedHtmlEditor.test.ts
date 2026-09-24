@@ -109,7 +109,8 @@ describe('useSessionBoardHostedHtmlEditor', () => {
             placement: { tabId: 'overview' },
             item: { source: { kind: 'hostedHtml', source: { html: '<main>final!</main>' } } },
         });
-        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-1');
+        // The third operand is the settlement fact: nothing newer was typed while the save ran.
+        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-1', true);
     });
 
     it('edits the existing hosted HTML record with its exact revision and preserves presentation fields', async () => {

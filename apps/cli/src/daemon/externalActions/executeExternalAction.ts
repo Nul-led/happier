@@ -104,6 +104,13 @@ export async function executeExternalAction(input: Readonly<{
   envelope: unknown;
   principal: ExternalActionPrincipal;
   currentMachineId: string;
+  /**
+   * The exact Session this receiver executes inside, when it has exactly one —
+   * a restricted Runner. It makes the Session arm of the pre-open target guard
+   * decidable here, symmetric to `currentMachineId`. An ordinary daemon hosts
+   * many Sessions, supplies none, and keeps deciding at `resolveTarget`.
+   */
+  currentSessionId?: string;
   /** Daemon-owned local profile id used for routing; never accepted from the envelope. */
   currentServerId?: string;
   resolveEncryption?: ResolveExternalActionEncryption;
@@ -212,8 +219,19 @@ export async function executeExternalAction(input: Readonly<{
       credentialId: input.principal.credentialId, actionId: actionId.data,
       requestId: request.requestId, target: request.target,
     };
+    // A target this receiver cannot be is refused before anything is opened.
+    // Both arms are the same question — is this envelope addressed to me — and
+    // a receiver bound to one Session can answer the Session arm here, so a
+    // Home-authored Session-to-Runner correspondence cannot redirect a request
+    // into another Runner's plaintext.
+    const foreignTarget = request.target.kind === 'machine'
+      ? request.target.machineId !== input.currentMachineId
+      : input.currentSessionId !== undefined && request.target.sessionId !== input.currentSessionId;
+    if (foreignTarget) {
+      return { kind: 'invalid_request', errorCode: 'invalid_encrypted_envelope', requestId: request.requestId };
+    }
     const opened = openExternalActionRequestV2({ envelope: request, binding, material: encryption.material });
-    if (!opened || (request.target.kind === 'machine' && request.target.machineId !== input.currentMachineId)) {
+    if (!opened) {
       return { kind: 'invalid_request', errorCode: 'invalid_encrypted_envelope', requestId: request.requestId };
     }
     decodedInput = opened.input;

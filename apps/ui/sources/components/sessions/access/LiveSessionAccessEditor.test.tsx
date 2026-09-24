@@ -7,7 +7,7 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 import { storage } from '@/sync/domains/state/storage';
 import { LiveSessionAccessEditor } from './LiveSessionAccessEditor';
 
-const credentials = vi.hoisted(() => ({ serverId: '', accountId: 'collaboration-account' }));
+const credentials = vi.hoisted(() => ({ serverId: '', accountId: 'collaboration-account', deviceStorageFails: false }));
 const credentialMutations = vi.hoisted(() => ({
     listener: null as null | ((event: Readonly<{ kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }>) => void),
 }));
@@ -22,7 +22,9 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: {
-            getCredentialsForServerUrl: async (_url, options) => options?.serverId === credentials.serverId ? {
+            getCredentialsForServerUrl: async (_url, options) => credentials.deviceStorageFails
+                ? Promise.reject(new Error('device secure storage unavailable'))
+                : options?.serverId === credentials.serverId ? {
                 token: `header.${Buffer.from(JSON.stringify({ sub: credentials.accountId })).toString('base64')}.signature`,
                 secret: 'test-secret',
             } : null,
@@ -66,6 +68,7 @@ afterEach(() => {
     standardCleanup();
     storage.setState(storage.getInitialState(), true);
     credentialMutations.listener = null;
+    credentials.deviceStorageFails = false;
     editorLifecycle.mounts = 0;
     editorLifecycle.unmounts = 0;
     editorProps.last = null;
@@ -103,6 +106,36 @@ describe('LiveSessionAccessEditor', () => {
         editorProps.last?.onOpenFullSurface?.();
         expect(onRequestClose).toHaveBeenCalledTimes(1);
         expect(onOpenFullSurface).toHaveBeenCalledTimes(1);
+    });
+
+    it('states an unknown Home instead of holding the compact host on Loading forever', async () => {
+        credentials.serverId = '';
+        const screen = await renderScreen(<LiveSessionAccessEditor target={{ serverId: 'home-this-device-does-not-address', sessionId: 'scope' }} presentation="compact" testID="session-access-editor" />);
+        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor-unknown-home')).not.toBeNull());
+        // The editor body — and therefore every privileged detail request it
+        // owns — never mounts for a settled non-bound Home. `findByTestId` is
+        // not the check: the host element itself carries `testID` as a prop, so
+        // it matches whatever this host renders.
+        expect(editorLifecycle.mounts).toBe(0);
+        expect(screen.findByTestId('session-access-editor-signed-out')).toBeNull();
+    });
+
+    it('states a signed-out Home rather than a spinner', async () => {
+        const profile = await upsertServerProfile({ name: 'Signed out Home', serverUrl: 'https://access-signed-out.example.test' });
+        credentials.serverId = 'a-different-home';
+        const screen = await renderScreen(<LiveSessionAccessEditor target={{ serverId: profile.id, sessionId: 'scope' }} presentation="compact" testID="session-access-editor" />);
+        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor-signed-out')).not.toBeNull());
+        expect(editorLifecycle.mounts).toBe(0);
+    });
+
+    it('does not tell a device whose secure storage failed that it signed out', async () => {
+        const profile = await upsertServerProfile({ name: 'Unreadable credential Home', serverUrl: 'https://access-unavailable.example.test' });
+        credentials.serverId = profile.id;
+        credentials.deviceStorageFails = true;
+        const screen = await renderScreen(<LiveSessionAccessEditor target={{ serverId: profile.id, sessionId: 'scope' }} presentation="compact" testID="session-access-editor" />);
+        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor-home-unavailable')).not.toBeNull());
+        expect(screen.findByTestId('session-access-editor-signed-out')).toBeNull();
+        expect(editorLifecycle.mounts).toBe(0);
     });
 
     it('remounts its Account-scoped controller when delimiter-bearing Account and Session identities change', async () => {

@@ -205,6 +205,7 @@ export async function listTeamCredentialUsageLimitsInTx(
         memberGrants: await tx.teamCredentialMemberGrant.findMany({
             where: { resourceId: auth.resource.id }, select: { deliveryMode: true },
         }),
+        sessionUsePolicy: auth.resource.sessionUsePolicy,
     });
     if (parsedRows.some((row) => row.metric === 'total_tokens')
         && usageCapabilities.totalTokens !== 'available') {
@@ -250,6 +251,7 @@ export async function upsertTeamCredentialUsageLimitInTx(
             memberGrants: await tx.teamCredentialMemberGrant.findMany({
                 where: { resourceId: auth.resource.id }, select: { deliveryMode: true },
             }),
+            sessionUsePolicy: auth.resource.sessionUsePolicy,
         }),
     });
     if (!validated.ok) return validated;

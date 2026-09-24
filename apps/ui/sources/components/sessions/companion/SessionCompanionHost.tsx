@@ -200,6 +200,10 @@ export const SessionCompanionHost = React.memo(function SessionCompanionHost(
                     {...(props.resolveSourceAvailability
                         ? { resolveSourceAvailability: props.resolveSourceAvailability }
                         : {})}
+                    // The live rail's Summary inputs, so the measured card has the live
+                    // card's shape; Content makes every handler inert while measuring.
+                    {...(props.summaryDestinations ? { summaryDestinations: props.summaryDestinations } : {})}
+                    onOpenFullSurface={props.openFullSurface}
                     presentation="rail"
                     measurementOnly
                     testID="session-companion-measurement-content"

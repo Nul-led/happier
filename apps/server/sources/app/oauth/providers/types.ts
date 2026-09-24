@@ -21,6 +21,17 @@ export type OAuthFlowProvider = Readonly<{
      * The persisted attempt still carries the exact provider instance ID.
      */
     callbackProviderId?: string;
+    /**
+     * Declared custody of the access token this provider exchanges.
+     *
+     * `identity_proof_only` means the token's whole purpose was the callback's own profile
+     * read: the identity binder stores no token for it (`githubManagedIdentityProvider`
+     * links with `token: null`), so the short-lived OAuth continuation row must not retain
+     * one either. Providers that omit this keep the token in the continuation because a
+     * later eligibility or profile read decrypts it (`github/githubConnect`,
+     * `github/loginEligibility`).
+     */
+    accessTokenCustody?: "identity_proof_only";
     resolveStatus: (env: NodeJS.ProcessEnv) => OAuthProviderStatus;
     isConfigured: (env: NodeJS.ProcessEnv) => boolean;
     resolveRedirectUrl: (env: NodeJS.ProcessEnv) => string | null;

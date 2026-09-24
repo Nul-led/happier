@@ -106,6 +106,9 @@ function session(capabilities: Readonly<{ managePublicLink: boolean }>): Session
     return {
         id: 'session-1',
         metadata: null,
+        // A Session a current Home created: the canonical reader always names its
+        // persisted layout, and an unmarked row is a historical (layout-0) one.
+        metadataLayoutVersion: 1,
         currentStorageState: 'hosted',
         transcriptShareable: true,
         access: { capabilities },
@@ -550,4 +553,7 @@ describe('SessionPublicLinkSection', () => {
         await vi.waitFor(() => expect(screen.findByTestId('session-public-link-status')?.props.children).toBe('Off'));
         expect(publication.getPublicLink).toHaveBeenCalledTimes(5);
     });
+
+    // The approval-routed publication journey runs on the real approval
+    // lifecycle in `SessionPublicLinkSection.approval.test.tsx`.
 });

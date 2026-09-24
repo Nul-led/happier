@@ -55,6 +55,7 @@ export type SessionSpawnNewResultFailureMessageKey =
     | 'session.access.preparationKeyUnavailable'
     | 'teams.policy.externalSharingDisabled'
     | 'teams.policy.externalSharingAdmins'
+    | 'session.collaboration.accessUnavailableReason'
     | 'newSession.failedToStart';
 
 /**
@@ -105,6 +106,9 @@ export function resolveSessionSpawnNewResultFailureMessageKey(
     }
     if (result.code === 'session_access_external_sharing_requires_team_admin') {
         return 'teams.policy.externalSharingAdmins';
+    }
+    if (result.code === 'session_access_sharing_unavailable') {
+        return 'session.collaboration.accessUnavailableReason';
     }
     return result.code === 'machine_offline'
         ? 'newSession.daemonRpcUnavailableBody'

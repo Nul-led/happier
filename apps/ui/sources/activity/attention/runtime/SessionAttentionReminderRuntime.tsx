@@ -20,18 +20,49 @@ import { storage } from '@/sync/domains/state/storage';
 import { fetchAndApplySessionOrganizationSnapshot } from '@/sync/ops/sessionOrganization';
 import { sync } from '@/sync/sync';
 import { useSessionOrganizationProjections, useSocketStatus } from '@/sync/store/hooks';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { runWithServerAccountScopeRequestGuard } from '@/sync/runtime/orchestration/serverScopedRpc/serverAccountScopeRequestGuard';
+import { parseToken } from '@/utils/auth/parseToken';
 
+function readCredentialAccountId(token: string): string | null {
+    try {
+        return parseToken(token);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Refreshes one exact Home's private organization inventory for the reminder clock.
+ *
+ * The inventory belongs to the Account whose credential sent the request, so the
+ * exact Home/Account request guard fences it: a credential replacement on that
+ * Home (Account A → B, including an offscreen Home) or a retired Account lifetime
+ * discards A's response before it can reach B's Home-scoped organization state.
+ * A superseded refresh rejects so the scheduler does not record it as loaded.
+ */
 export async function refreshSessionAttentionReminderInventory(params: Readonly<{
     serverId: string;
     serverUrl: string;
 }>): Promise<void> {
     const credentials = await TokenStorage.getCredentialsForServerUrl(params.serverUrl, { serverId: params.serverId });
     if (!credentials) return;
-    await fetchAndApplySessionOrganizationSnapshot({
-        credentials,
-        serverId: params.serverId,
-        serverUrl: params.serverUrl,
-        request: createSessionListOrganizationSnapshotRequest(),
+    const scope = createServerAccountScope(params.serverId, readCredentialAccountId(credentials.token));
+    if (!scope) return;
+    const staleError = () => new Error('Reminder inventory Account is no longer current for this Home');
+    await runWithServerAccountScopeRequestGuard({ scope, staleError }, async ({ check, isCurrent }) => {
+        // The guard subscribes after the first read; re-read so a replacement that
+        // landed in between cannot be answered with the captured credential.
+        const current = await TokenStorage.getCredentialsForServerUrl(params.serverUrl, { serverId: params.serverId });
+        if (current?.token !== credentials.token) throw staleError();
+        await fetchAndApplySessionOrganizationSnapshot({
+            credentials,
+            serverId: params.serverId,
+            serverUrl: params.serverUrl,
+            request: createSessionListOrganizationSnapshotRequest(),
+            shouldContinue: isCurrent,
+        });
+        check();
     });
 }
 

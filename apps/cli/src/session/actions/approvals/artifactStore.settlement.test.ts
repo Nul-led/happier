@@ -1,0 +1,415 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  ApprovalRequestV2Schema,
+  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+  ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
+  createActionExecutor,
+  createBlockingApprovalCoordinator,
+  decodePlainArtifactStoredContent,
+  type ActionExecutorDeps,
+  type ApprovalRequest,
+} from '@happier-dev/protocol';
+
+import { createCliApprovalsArtifactStore } from './artifactStore';
+
+// Only the Account server's HTTP boundary is replaced. The real Action executor,
+// the real approval Artifact store and its codecs, and the server's versioned
+// Artifact CAS contract (expected header/body versions) run over in-memory rows.
+const http = vi.hoisted(() => ({
+  get: vi.fn(),
+  post: vi.fn(),
+  beforeUpdate: null as null | ((id: string) => void),
+  failNextUpdateWith: null as null | Error,
+}));
+vi.mock('axios', () => ({ default: { get: http.get, post: http.post } }));
+vi.mock('@/configuration', () => ({ configuration: { apiServerUrl: 'http://approval-settlement.invalid' } }));
+
+const rows = new Map<string, Record<string, unknown>>();
+
+beforeEach(() => {
+  rows.clear();
+  http.beforeUpdate = null;
+  http.failNextUpdateWith = null;
+  http.get.mockReset();
+  http.post.mockReset();
+  http.get.mockImplementation(async (url: string) => {
+    const id = url.split('/').at(-1)!;
+    return { status: rows.has(id) ? 200 : 404, data: rows.get(id) };
+  });
+  http.post.mockImplementation(async (url: string, body: Record<string, unknown>) => {
+    if (url.endsWith('/v1/artifacts')) {
+      rows.set(String(body.id), { ...body, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
+      return { status: 200, data: { id: body.id } };
+    }
+    const id = url.split('/').at(-1)!;
+    http.beforeUpdate?.(id);
+    if (http.failNextUpdateWith) {
+      const error = http.failNextUpdateWith;
+      http.failNextUpdateWith = null;
+      throw error;
+    }
+    const existing = rows.get(id)!;
+    const headerMatches = body.expectedHeaderVersion === undefined || body.expectedHeaderVersion === existing.headerVersion;
+    const bodyMatches = body.expectedBodyVersion === undefined || body.expectedBodyVersion === existing.bodyVersion;
+    if (!headerMatches || !bodyMatches) {
+      return { status: 200, data: { success: false, error: 'version-mismatch' } };
+    }
+    const headerVersion = Number(existing.headerVersion) + (body.header === undefined ? 0 : 1);
+    const bodyVersion = Number(existing.bodyVersion) + (body.body === undefined ? 0 : 1);
+    rows.set(id, {
+      ...existing,
+      ...(body.header === undefined ? {} : { header: body.header }),
+      ...(body.body === undefined ? {} : { body: body.body }),
+      headerVersion,
+      bodyVersion,
+    });
+    return { status: 200, data: { success: true, headerVersion, bodyVersion } };
+  });
+});
+
+function createStore() {
+  return createCliApprovalsArtifactStore({
+    credentials: { token: 'synthetic-token', encryption: null } as never,
+    getAccountEncryptionMode: async () => 'plain',
+    getServerFeaturesSnapshot: async () => ({
+      status: 'ready',
+      features: {
+        capabilities: {
+          accountStoredContentCompatibility: {
+            v: 1,
+            minimumProtocolVersion: 2,
+            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            declarationTransport: 'http-header-and-socket-auth-v1',
+          },
+        },
+      },
+    }) as never,
+  });
+}
+
+const PROVIDER_SECRET = 'synthetic-provider-client-secret';
+const providerSecretInput = {
+  owner: { kind: 'home' as const },
+  id: 'provider-1',
+  expectedRevision: 3,
+  clientSecret: PROVIDER_SECRET,
+};
+
+const SAVED_SECRET_CIPHERTEXT = Buffer.alloc(40, 7).toString('base64');
+const savedSecretInput = {
+  resourceId: 'secret-1',
+  displayName: 'Synthetic token',
+  kind: 'token',
+  encryptionMode: 'e2ee',
+  storedContent: { t: 'encrypted', c: SAVED_SECRET_CIPHERTEXT },
+  accountGrants: ['account-2'],
+  teamGrants: [],
+  groupGrants: [],
+  keyEnvelopes: [{
+    recipientAccountId: 'account-2',
+    encryptedDataKey: Buffer.alloc(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES, 3).toString('base64'),
+    recipientContentPublicKeyFingerprint: 'content-key:v1:account-2',
+  }],
+};
+
+const uiContext = {
+  surface: 'ui' as const,
+  authority: 'present_user' as const,
+  serverId: 'home-1',
+  runtimeAccountId: 'account-1',
+  actionRequestId: 'settlement-1',
+  actionCaller: { kind: 'host' as const },
+};
+
+function createExecutor(
+  store: ReturnType<typeof createStore>,
+  overrides: Partial<ActionExecutorDeps> = {},
+) {
+  return createActionExecutor({
+    ...store,
+    isApprovalExecutionOriginCurrent: async () => true,
+    isActionApprovalRequired: (id) => id === 'identity.providers.secret.replace' || id === 'secrets.shared.create',
+    ...overrides,
+  } as ActionExecutorDeps);
+}
+
+async function createDeferred(
+  executor: ReturnType<typeof createExecutor>,
+  actionId: 'identity.providers.secret.replace' | 'secrets.shared.create',
+  input: unknown,
+): Promise<string> {
+  const created = await executor.execute(actionId, input, uiContext);
+  expect(created).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+  const artifactId = String((created as { result: { artifactId: string } }).result.artifactId);
+  // Deferred replay still needs the admitted operands while the request is pending.
+  expect(storedBody(artifactId)).toContain(
+    actionId === 'secrets.shared.create' ? SAVED_SECRET_CIPHERTEXT : PROVIDER_SECRET,
+  );
+  return artifactId;
+}
+
+/** Everything the Account server durably holds for this Artifact, decoded. */
+function storedBody(artifactId: string): string {
+  const row = rows.get(artifactId);
+  if (!row) throw new Error(`missing artifact row ${artifactId}`);
+  const decode = (value: unknown) => typeof value === 'string' ? decodePlainArtifactStoredContent(value) : null;
+  const decoded = { header: decode(row.header), body: decode(row.body) };
+  if (decoded.header === null || decoded.body === null) throw new Error('undecodable plain artifact row');
+  return JSON.stringify(decoded);
+}
+
+describe('approval settlement through the real CLI Artifact store', () => {
+  it('durably rejects a deferred approval and keeps only the declared input projection', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({}));
+    const executor = createExecutor(store, { homeDomainAction: effect });
+    const artifactId = await createDeferred(executor, 'identity.providers.secret.replace', providerSecretInput);
+
+    const decided = await executor.execute('approval.request.decide', { artifactId, decision: 'reject' }, uiContext);
+
+    expect(decided).toMatchObject({ ok: true, result: { status: 'rejected' } });
+    const persisted = await store.approvalsGet({ artifactId, serverId: null });
+    expect(persisted).toMatchObject({
+      status: 'rejected',
+      actionArgs: { owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 3 },
+    });
+    expect(storedBody(artifactId)).not.toContain(PROVIDER_SECRET);
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('durably cancels a blocking approval and keeps only the declared input projection', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({}));
+    let artifactId = '';
+    const executor = createExecutor(store, {
+      homeDomainAction: effect,
+      approvalsWaitForDecision: async ({ artifactId: waitedArtifactId, request }) => {
+        artifactId = waitedArtifactId;
+        expect(storedBody(waitedArtifactId)).toContain(PROVIDER_SECRET);
+        return { decision: 'canceled' as const, request };
+      },
+    });
+
+    const result = await executor.execute('identity.providers.secret.replace', providerSecretInput, {
+      ...uiContext,
+      surface: 'cli',
+    });
+
+    expect(result).toMatchObject({ ok: false, errorCode: 'approval_canceled' });
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({ status: 'canceled' });
+    expect(storedBody(artifactId)).not.toContain(PROVIDER_SECRET);
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('settles a successful effect exactly once as executed with the declared input projection', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({ resourceId: 'secret-1', revision: 1 }));
+    const executor = createExecutor(store, { homeDomainAction: effect });
+    const artifactId = await createDeferred(executor, 'secrets.shared.create', savedSecretInput);
+
+    const decided = await executor.execute('approval.request.decide', { artifactId, decision: 'approve' }, uiContext);
+    const repeated = await executor.replayApprovedApprovalRequest({ artifactId });
+
+    expect(decided).toMatchObject({ ok: true, result: { status: 'executed' } });
+    expect(repeated).toMatchObject({ ok: true, result: { status: 'executed' } });
+    expect(effect).toHaveBeenCalledOnce();
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({
+      status: 'executed',
+      execution: { ok: true },
+    });
+    expect(storedBody(artifactId)).not.toContain(SAVED_SECRET_CIPHERTEXT);
+  });
+
+  it('settles a failed effect as failed with the declared input projection', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({ ok: false as const, errorCode: 'provider_conflict', error: 'provider_conflict' }));
+    const executor = createExecutor(store, { homeDomainAction: effect });
+    const artifactId = await createDeferred(executor, 'identity.providers.secret.replace', providerSecretInput);
+
+    await executor.execute('approval.request.decide', { artifactId, decision: 'approve' }, uiContext);
+
+    expect(effect).toHaveBeenCalledOnce();
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'provider_conflict' },
+    });
+    expect(storedBody(artifactId)).not.toContain(PROVIDER_SECRET);
+  });
+
+  it('settles a pre-execution currentness failure without an effect and without the secret', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({}));
+    const creator = createExecutor(store, { homeDomainAction: effect });
+    const artifactId = await createDeferred(creator, 'identity.providers.secret.replace', providerSecretInput);
+    const revokedOrigin = createExecutor(store, {
+      homeDomainAction: effect,
+      isApprovalExecutionOriginCurrent: async () => false,
+    });
+
+    const decided = await revokedOrigin.execute('approval.request.decide', { artifactId, decision: 'approve' }, uiContext);
+
+    expect(decided).toMatchObject({ ok: true, result: { status: 'failed' } });
+    expect(effect).not.toHaveBeenCalled();
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({
+      status: 'failed',
+      execution: { ok: false, errorCode: 'approval_stale' },
+    });
+    expect(storedBody(artifactId)).not.toContain(PROVIDER_SECRET);
+  });
+
+  it('refuses original-subject mutation and caller-authored terminal input at the store', async () => {
+    const store = createStore();
+    const executor = createExecutor(store, { homeDomainAction: async () => ({}) });
+    const artifactId = await createDeferred(executor, 'identity.providers.secret.replace', providerSecretInput);
+    const open = ApprovalRequestV2Schema.parse(await store.approvalsGet({ artifactId, serverId: null }));
+    const decided = { kind: 'approve' as const, decidedAtMs: open.updatedAtMs + 1 };
+
+    // Approval changes only the decision: the operands stay the admitted ones.
+    await expect(store.approvalsUpdate({
+      artifactId,
+      serverId: null,
+      request: { ...open, status: 'approved', updatedAtMs: open.updatedAtMs + 1, decision: decided,
+        actionArgs: { ...providerSecretInput, id: 'provider-2' } },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'subject_mismatch' });
+    // A terminal write may replace input only with the Action's declared projection.
+    await expect(store.approvalsUpdate({
+      artifactId,
+      serverId: null,
+      request: { ...open, status: 'rejected', updatedAtMs: open.updatedAtMs + 1,
+        decision: { kind: 'reject', decidedAtMs: open.updatedAtMs + 1 },
+        actionArgs: { owner: { kind: 'home' }, id: 'provider-2', expectedRevision: 3 } },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'subject_mismatch' });
+    // Keeping the raw secret on a terminal write is not the declared projection either.
+    await expect(store.approvalsUpdate({
+      artifactId,
+      serverId: null,
+      request: { ...open, status: 'rejected', updatedAtMs: open.updatedAtMs + 1,
+        decision: { kind: 'reject', decidedAtMs: open.updatedAtMs + 1 } },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'subject_mismatch' });
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({ status: 'open' });
+  });
+
+  it('refuses a transition written against a stale revision', async () => {
+    const store = createStore();
+    const executor = createExecutor(store, { homeDomainAction: async () => ({}) });
+    const artifactId = await createDeferred(executor, 'identity.providers.secret.replace', providerSecretInput);
+    const open = ApprovalRequestV2Schema.parse(await store.approvalsGet({ artifactId, serverId: null }));
+    const approve: ApprovalRequest = {
+      ...open,
+      status: 'approved',
+      updatedAtMs: open.updatedAtMs + 1,
+      decision: { kind: 'approve', decidedAtMs: open.updatedAtMs + 1 },
+    };
+    // Another device commits a write between this writer's read and its CAS write.
+    http.beforeUpdate = (id) => {
+      http.beforeUpdate = null;
+      const row = rows.get(id)!;
+      rows.set(id, { ...row, headerVersion: Number(row.headerVersion) + 1, bodyVersion: Number(row.bodyVersion) + 1 });
+    };
+
+    await expect(store.approvalsUpdate({ artifactId, serverId: null, request: approve }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'version_mismatch' });
+  });
+
+  it('lets exactly one of two executors claim and perform an approved effect', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({ resourceId: 'secret-1', revision: 1 }));
+    const creator = createExecutor(store, { homeDomainAction: effect });
+    const artifactId = await createDeferred(creator, 'secrets.shared.create', savedSecretInput);
+    const open = ApprovalRequestV2Schema.parse(await store.approvalsGet({ artifactId, serverId: null }));
+    await expect(store.approvalsUpdate({ artifactId, serverId: null, request: {
+      ...open,
+      status: 'approved',
+      updatedAtMs: open.updatedAtMs + 1,
+      decision: { kind: 'approve', decidedAtMs: open.updatedAtMs + 1 },
+    } })).resolves.toEqual({ ok: true });
+
+    const first = createExecutor(createStore(), { homeDomainAction: effect });
+    const second = createExecutor(createStore(), { homeDomainAction: effect });
+    const results = await Promise.all([
+      first.replayApprovedApprovalRequest({ artifactId }),
+      second.replayApprovedApprovalRequest({ artifactId }),
+    ]);
+
+    expect(effect).toHaveBeenCalledOnce();
+    expect(results.filter((result) => result.ok)).not.toHaveLength(0);
+    for (const result of results) {
+      if (!result.ok) expect(result.errorCode).toBe('approval_execution_outcome_unknown');
+    }
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({ status: 'executed' });
+    expect(storedBody(artifactId)).not.toContain(SAVED_SECRET_CIPHERTEXT);
+  });
+
+  it('never repeats an effect whose terminal write failed', async () => {
+    const store = createStore();
+    const effect = vi.fn(async () => ({ resourceId: 'secret-1', revision: 1 }));
+    const executor = createExecutor(store, {
+      homeDomainAction: async () => {
+        const result = await effect();
+        http.failNextUpdateWith = new Error('socket hang up');
+        return result;
+      },
+    });
+    const artifactId = await createDeferred(executor, 'secrets.shared.create', savedSecretInput);
+
+    const decided = await executor.execute('approval.request.decide', { artifactId, decision: 'approve' }, uiContext);
+    const repeated = await executor.replayApprovedApprovalRequest({ artifactId });
+
+    expect(decided).toMatchObject({ ok: false, errorCode: 'approval_execution_outcome_unknown' });
+    expect(repeated).toMatchObject({ ok: false, errorCode: 'approval_execution_outcome_unknown' });
+    expect(effect).toHaveBeenCalledOnce();
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({ status: 'executing' });
+  });
+
+  it('returns a show-once API token only to its live invocation and never to the Artifact', async () => {
+    const store = createStore();
+    const tokenId = 'dd03e74b-4aae-4a0a-81ee-1c23ddc4525d';
+    const bearerSecret = 'S'.repeat(43);
+    const created = {
+      token: `hap_v1_${tokenId}_${bearerSecret}`,
+      apiToken: {
+        tokenId,
+        label: 'CI deploy',
+        displayPrefix: 'hap_v1_dd03e74b',
+        createdAt: '2026-08-22T12:00:00.000Z',
+        lastUsedAt: null,
+        expiresAt: null,
+        hasEncryptionAccess: false,
+        hasUnattendedTeamAccess: false,
+      },
+    };
+    const effect = vi.fn(async () => created);
+    // The UI host composition: one process-local decision coordinator shared by
+    // the waiting invocation and the Approval Detail decision in that process.
+    const coordinator = createBlockingApprovalCoordinator();
+    let waitingArtifactId: string | null = null;
+    const executor = createExecutor(store, {
+      accountApiTokensCreateAction: effect,
+      isActionApprovalRequired: (id) => id === 'account.apiTokens.create',
+      approvalsWaitForDecision: async (args) => {
+        waitingArtifactId = args.artifactId;
+        return await coordinator.waitForDecision({
+          artifactId: args.artifactId,
+          request: args.request,
+          ...(args.signal ? { signal: args.signal } : {}),
+        }) as Awaited<ReturnType<NonNullable<ActionExecutorDeps['approvalsWaitForDecision']>>>;
+      },
+      approvalsResolveBlockingDecision: async (args) => await coordinator.resolveBlockingDecision(args),
+    });
+
+    const invocation = executor.execute('account.apiTokens.create', { tokenId, label: 'CI deploy' }, uiContext);
+    await vi.waitFor(() => expect(waitingArtifactId).not.toBeNull());
+    const artifactId = waitingArtifactId!;
+    const decided = await executor.execute('approval.request.decide', { artifactId, decision: 'approve' }, uiContext);
+
+    expect(decided).toMatchObject({ ok: true });
+    await expect(invocation).resolves.toEqual({ ok: true, result: created });
+    expect(effect).toHaveBeenCalledOnce();
+    expect(await store.approvalsGet({ artifactId, serverId: null })).toMatchObject({
+      status: 'executed',
+      execution: { ok: true },
+    });
+    expect(storedBody(artifactId)).not.toContain(bearerSecret);
+  });
+});

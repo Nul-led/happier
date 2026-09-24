@@ -180,16 +180,22 @@ function createProviderBrokerCarrierDispatch(input: Readonly<{
         await relay.stream.endWrite();
         const iterator = relay.stream.read()[Symbol.asyncIterator]();
         let buffered = Buffer.alloc(0);
-        while (buffered.indexOf('\r\n\r\n') < 0) {
-            const next = await iterator.next();
-            if (next.done) { cleanup(); return { ok: false, error: 'upstream_unavailable' }; }
-            buffered = Buffer.concat([buffered, Buffer.from(next.value)]);
+        let boundary = buffered.indexOf('\r\n\r\n');
+        while (boundary < 0) {
+            // The header budget bounds the header segment, which is exactly the
+            // delimiter-less prefix. A response whose headers and a legal body
+            // arrive coalesced in one relay chunk is not an oversized header,
+            // so the budget is checked before reading more rather than against
+            // whatever the transport happened to coalesce.
             if (buffered.byteLength > config.serverRoutedMaxBinaryHeaderBytes) {
                 cleanup();
                 return { ok: false, error: 'upstream_unavailable' };
             }
+            const next = await iterator.next();
+            if (next.done) { cleanup(); return { ok: false, error: 'upstream_unavailable' }; }
+            buffered = Buffer.concat([buffered, Buffer.from(next.value)]);
+            boundary = buffered.indexOf('\r\n\r\n');
         }
-        const boundary = buffered.indexOf('\r\n\r\n');
         const headerText = buffered.subarray(0, boundary).toString('latin1');
         const lines = headerText.split('\r\n');
         const status = /^HTTP\/1\.1 (\d{3})/u.exec(lines.shift() ?? '');

@@ -81,14 +81,28 @@ export type SessionBoardDetailsDestination = Readonly<{
 }>;
 
 /**
+ * What the mounted Board controller knows about one item's place in the Board the
+ * viewer is looking at. The generic Board hosts (the Details grid, the compact
+ * sidebar, the mobile Board) all draw the controller's ONE selected view plus its
+ * unplaced recovery items, so an item outside that set is drawn by none of them.
+ */
+export type SessionBoardItemBoardViewFacts = Readonly<{
+    drawnBySelectedBoardView: boolean;
+}>;
+
+/**
  * The resolver the mounted Session shell hands to every Board placement.
  *
  * Details placements also say WHICH destination is asking, because two of them can
- * be visible at once and both are the `details` host.
+ * be visible at once and both are the `details` host. The mounted Board controller
+ * adds whether its selected view draws the item at all (see
+ * {@link SessionBoardItemBoardViewFacts}); a caller that omits it is a Board
+ * placement asking about an item it is drawing.
  */
 export type SessionBoardPlacementPrimaryMountResolver = (
     itemId: string,
     destination?: SessionBoardDetailsDestination,
+    boardView?: SessionBoardItemBoardViewFacts,
 ) => SessionBoardMountHost | null;
 
 
@@ -167,18 +181,24 @@ export function resolveSessionBoardItemPrimaryMountHost(input: Readonly<{
      * host answer as it was.
      */
     detailsDestination?: SessionBoardDetailsDestination;
+    /** Omitted means the asking Board placement draws the item itself. */
+    boardView?: SessionBoardItemBoardViewFacts;
 }>): SessionBoardMountHost | null {
+    // The generic Board hosts draw only the selected view (plus unplaced recovery
+    // items). An item placed only in another view is drawn by none of them, so none
+    // of them can be its live copy — electing one left a visible Companion item inert.
+    const genericBoardDrawsItem = input.boardView?.drawnBySelectedBoardView ?? true;
     // Details is a candidate for THIS item only when a destination that actually draws
     // it is on screen: the generic Board grid, or the item's own expanded tab. A
     // Details pane presenting only `board:item-a` renders nothing for item B, so
     // electing it there left B an inert preview with no live copy anywhere.
     const detailsDrawsItem = input.itemId === undefined
-        || input.visibility.detailsShowsGenericBoard
+        || (input.visibility.detailsShowsGenericBoard && genericBoardDrawsItem)
         || input.visibility.detailsExpandedItemIds.includes(input.itemId);
     const visibleHosts = input.visibility.visibleHosts.filter((host) => {
         if (host === 'companion') return input.itemVisibleInCompanion;
         if (host === 'details' || host === 'focusedDetails') return detailsDrawsItem;
-        return true;
+        return genericBoardDrawsItem;
     });
     const focusedHost = input.visibility.focusedHost !== null
         && visibleHosts.includes(input.visibility.focusedHost)

@@ -1,4 +1,5 @@
 import {
+    ActionApprovalRequestCreatedResultSchema,
     bindSessionAccessActionHttpRequestV1,
     getActionSpec,
     isSessionAccessActionIdV1,
@@ -16,7 +17,9 @@ import {
     type PrincipalRefV1,
     type SessionGrantIntentV1,
     type SessionGrantMutationV1,
+    type SessionAccessAccountSummaryV1,
 } from '@happier-dev/protocol';
+import { randomUUID } from '@/platform/randomUUID';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import { runWithServerRequestAuthorityForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
@@ -28,12 +31,35 @@ import { encryptDataKeyForPublicShare } from '@/sync/encryption/publicShareEncry
 import { generateSessionPublicLinkBearer } from '@/sync/domains/social/sessionPublicLinkPublication';
 import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { captureEncryptionGenerationCurrentness } from '@/sync/encryption/encryption';
+import { searchUsersPageByUsername } from '@/sync/api/social/apiFriends';
 import { readSessionAccessHttpFailureCode } from './sessionAccessHttpFailure';
 
 export class SessionAccessApiError extends Error {
     constructor(readonly code: string, readonly status?: number) {
         super(code);
         this.name = 'SessionAccessApiError';
+    }
+}
+
+/**
+ * The Session-access family Action was routed to an approval Artifact instead of
+ * being executed, so nothing has committed yet.
+ *
+ * Every leaf of this family (`session.access.grant.set/remove`,
+ * `session.access.context.set`, `session.public_link.create/remove`,
+ * `session.responsibility.set`) is a deferred-approval Action, and each one used
+ * to hand the custody result straight to its own output schema — a `ZodError`
+ * that every caller then read as an unknown transport failure while an approval
+ * was open. The family answers this once here instead, carrying the Artifact
+ * identity so the mounted host can hand it to the shared approval continuation
+ * owner (`components/approvals/useActionApprovalContinuation`) rather than
+ * inventing a second pending store.
+ */
+export class SessionAccessApprovalPendingError extends Error {
+    constructor(readonly artifactId: string, readonly actionId: string) {
+        super('session_access_approval_pending');
+        this.name = 'SessionAccessApprovalPendingError';
+        Object.setPrototypeOf(this, SessionAccessApprovalPendingError.prototype);
     }
 }
 
@@ -207,8 +233,7 @@ async function materializePublicLinkCreateMaterial(params: Readonly<{
 
 /**
  * Public links are an independently released publication boundary with their
- * own feature decision, so the gated Team/Group collaboration availability
- * must not withdraw them.
+ * own feature decision, so Session-sharing availability must not withdraw them.
  */
 function isSessionPublicLinkActionId(actionId: ActionId): boolean {
     return actionId === 'session.public_link.get'
@@ -216,22 +241,14 @@ function isSessionPublicLinkActionId(actionId: ActionId): boolean {
         || actionId === 'session.public_link.remove';
 }
 
-function isReleasedDirectSessionAccessActionId(actionId: ActionId): boolean {
-    return actionId === 'session.access.grants.list'
-        || actionId === 'session.access.grant.set'
-        || actionId === 'session.access.grant.remove';
-}
-
 function isSessionAccessActionAvailable(
     availability: SessionCollaborationAvailability,
     actionId: ActionId,
 ): boolean {
-    if (isSessionPublicLinkActionId(actionId)) return true;
-    if (availability === 'full_collaboration') return true;
-    return availability === 'direct_only' && isReleasedDirectSessionAccessActionId(actionId);
+    return isSessionPublicLinkActionId(actionId) || availability === 'available';
 }
 
-/** Descriptor-owned current transport; released direct sharing is selected only by availability. */
+/** Descriptor-owned transport for every Session-access and publication intent. */
 export async function executeSessionAccessHttpAction(params: SessionAccessRequestOptions & Readonly<{
     actionId: ActionId;
     input: unknown;
@@ -240,20 +257,12 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
     // the request closures, which cannot re-narrow a property of `params`.
     const actionId = params.actionId;
     if (!isSessionAccessActionAvailable(params.availability, actionId)) {
-        throw new SessionAccessApiError('unsupported_action');
+        throw new SessionAccessApiError('session_access_sharing_unavailable');
     }
     const spec = getActionSpec(actionId);
     if (!spec.serverTransport || !spec.outputSchema) throw new SessionAccessApiError('unsupported_action');
     if (!isSessionAccessActionIdV1(actionId)) throw new SessionAccessApiError('unsupported_action');
     const publicInput = spec.inputSchema.parse(params.input);
-    if (params.availability === 'direct_only'
-        && (actionId === 'session.access.grant.set' || actionId === 'session.access.grant.remove')
-        && (publicInput as { subject: PrincipalRefV1 }).subject.kind !== 'account') {
-        // The released compatibility transport owns direct Account shares only.
-        // Reject current Team/Group subjects before resolving credentials or
-        // reading the Session so a gated capability cannot leak into that path.
-        throw new SessionAccessApiError('unsupported_action');
-    }
     const mutation = spec.sideEffectClass !== 'none' && spec.sideEffectClass !== 'read';
     // An already-aborted request proves this host never handed bytes to the
     // transport. After dispatch, cancellation can no longer prove that.
@@ -272,12 +281,6 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
             activeRequest: async () => { throw new SessionAccessApiError('session_access_stale_scope'); },
         }, async authority => {
             check();
-            if (params.availability === 'direct_only' && actionId.startsWith('session.access.')) {
-                const { executeLegacySessionAccessAction } = await import('./sessionAccessLegacyAdapter');
-                const value = await executeLegacySessionAccessAction({ authority, actionId, input: publicInput, check, signal });
-                check();
-                return spec.outputSchema!.parse(value);
-            }
             const publicBound = bindSessionAccessActionHttpRequestV1(actionId, publicInput);
             let physicalMutation: SessionGrantMutationV1 | null = null;
             let publicLinkMaterial: Readonly<{ token: string; encryptedDataKey?: string }> | null = null;
@@ -425,10 +428,23 @@ export function createSessionAccessClient(options: SessionAccessRequestOptions &
             authority: 'present_user',
             serverId: options.scope.serverId,
             defaultSessionId: options.sessionId,
+            // The approval origin this family persists requires the invocation's
+            // own identity (`ApprovalRequestV1.requestId`), exactly as the Home
+            // Team client supplies it. Without it an approval-routed Action of
+            // this family cannot even be recorded: it answers
+            // `approval_origin_unavailable` instead of creating the Artifact.
+            actionRequestId: randomUUID(),
         });
         if (!result.ok) {
             if (requestError) throw requestError;
             throw new SessionAccessApiError(result.errorCode ?? 'session_access_request_failed');
+        }
+        // An approval-routed Action answers with the custody result, never with
+        // the leaf's own output. Report it as the one typed family outcome so no
+        // caller parses approval custody as a committed change.
+        const approval = ActionApprovalRequestCreatedResultSchema.safeParse(result.result);
+        if (approval.success) {
+            throw new SessionAccessApprovalPendingError(approval.data.artifactId, approval.data.actionId);
         }
         return result.result;
     }
@@ -453,4 +469,47 @@ export function createSessionAccessClient(options: SessionAccessRequestOptions &
             await execute('session.public_link.remove', { sessionId: options.sessionId }),
         ),
     };
+}
+
+/**
+ * Home-scoped Account discovery for the access editor.
+ *
+ * The collaboration directory request is bound to the exact Account scope, so
+ * the New Session draft — which has no Session yet — uses the same owner.
+ */
+export async function searchSessionAccessAccountPage(options: SessionAccessRequestOptions & Readonly<{
+    query: string;
+    cursor?: string | null;
+}>) {
+    const assertCurrent = () => {
+        if (options.signal?.aborted || options.isCurrent?.() === false) throw new SessionAccessApiError('session_access_stale_scope');
+    };
+    return await runWithServerRequestAuthorityForServerAccountScope({ scope: options.scope,
+        activeRequest: async () => { throw new SessionAccessApiError('session_access_stale_scope'); },
+    }, async authority => {
+        const credentials = authority.context.credentials;
+        if (!credentials) throw new SessionAccessApiError('session_access_stale_scope');
+        assertCurrent();
+        const page = await searchUsersPageByUsername(credentials, options.query, {
+            request: async (path, init) => {
+                assertCurrent();
+                return await authority.request(path, { ...init, ...(options.signal ? { signal: options.signal } : {}) });
+            },
+            retry: 'none',
+            purpose: 'collaboration',
+            ...(options.cursor ? { cursor: options.cursor } : {}),
+        });
+        assertCurrent();
+        return {
+            rows: page.users.map((profile): SessionAccessAccountSummaryV1 => ({
+                kind: 'account',
+                accountId: profile.id,
+                username: profile.username,
+                firstName: profile.firstName,
+                lastName: profile.lastName,
+                avatarUrl: profile.avatar?.url ?? null,
+            })),
+            nextCursor: page.nextCursor,
+        };
+    });
 }

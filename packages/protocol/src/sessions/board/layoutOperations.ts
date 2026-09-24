@@ -283,6 +283,53 @@ export function applySessionBoardItemPlacementV1(
   return seal(tabs);
 }
 
+/**
+ * What {@link applySessionBoardItemPlacementV1} guarantees about the layout it produced, stated once
+ * beside the operation that owns placement meaning so no validator re-derives it. An omitted width
+ * preserves whatever the entry already carried (the default applies only to a brand-new entry), and
+ * `tabTitle` is consumed only when a missing view is created, so neither is comparable from the result.
+ */
+export function sessionBoardItemPlacementOperandsRetainedV1(
+  layout: SessionBoardLayoutV1,
+  args: Readonly<{ itemId: string; placement: SessionBoardItemPlacementV1 }>,
+): boolean {
+  const destination = resolveSessionBoardItemPlacementDestinationV1(layout, args);
+  if (!destination) return false;
+  return sessionBoardPlacedWidthRetainsPlacementV1(destination.width, args.placement);
+}
+
+/**
+ * The view and width a placement actually targeted in the layout
+ * {@link applySessionBoardItemPlacementV1} produced. An item may be placed in several views, so the
+ * committed destination is the requested (or default first) view, never whichever view happens to
+ * list the item first.
+ */
+export function resolveSessionBoardItemPlacementDestinationV1(
+  layout: SessionBoardLayoutV1,
+  args: Readonly<{ itemId: string; placement: SessionBoardItemPlacementV1 }>,
+): Readonly<{ tabId: string; width: SessionBoardItemWidth }> | null {
+  const { placement } = args;
+  const tab = placement.tabId === undefined
+    ? layout.tabs[0]
+    : layout.tabs.find((candidate) => candidate.id === placement.tabId);
+  const placed = tab?.items.find((entry) => entry.itemId === args.itemId);
+  return tab && placed ? { tabId: tab.id, width: placed.width } : null;
+}
+
+/**
+ * The width half of {@link sessionBoardItemPlacementOperandsRetainedV1}, for the readers that observe
+ * a projected destination rather than the layout itself. Only an explicitly invoked width is a fact
+ * about the request; an omitted one leaves whatever the entry already carried, so comparing it against
+ * {@link SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1} would reject a valid move of a non-default placement.
+ */
+export function sessionBoardPlacedWidthRetainsPlacementV1(
+  placedWidth: SessionBoardItemWidth | undefined,
+  placement: Readonly<{ width?: SessionBoardItemWidth }>,
+): boolean {
+  if (placement.width === undefined) return placedWidth !== undefined;
+  return placedWidth === placement.width;
+}
+
 /** Item removal deletes the shared record, so every Board view loses its placement. */
 export function removeSessionBoardItemPlacementsV1(
   layout: SessionBoardLayoutV1,

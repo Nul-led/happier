@@ -35,10 +35,10 @@ import {
 import {
     fetchSessionListQueryPageForHome,
     getSessionListQueryHomeAvailability,
-    isSyncOwnedOrdinarySessionListHome,
-    loadNextSyncOrdinarySessionListPage,
-    readSyncOrdinarySessionListHomeState,
-    refreshSyncOrdinarySessionList,
+    loadNextOrdinarySessionListPage,
+    readOrdinarySessionListHomeState,
+    refreshOrdinarySessionList,
+    resolveOrdinarySessionListHomeOwner,
     retrySessionListQueryHome,
 } from './sessionListQueryRuntime';
 import { buildSessionListQueryKey } from './sessionListQueryKey';
@@ -292,22 +292,23 @@ export function useSessionListQuerySourceState(input: Readonly<{
     const socketStatus = useSocketStatus();
     const settings = useSettings();
     const accountScopesByServerId = useServerCredentialAccountScopes(homeServerIds);
-    // Homes whose ordinary corpus Sync already owns. Sync's bootstrap/reconnect
-    // replace, append continuation and cursors are the only ones for `/v2/sessions`
-    // on the applied Home, so the filter reads that frontier here instead of
-    // mounting a controller that would paginate the same corpus behind a shared
-    // abort key — two owners that could orphan each other's pages.
-    const syncOwnedOrdinaryHomeKey = homes
+    // Homes whose ordinary corpus an incumbent runtime already owns — Sync for the
+    // applied Home, the concurrent cache for every other managed Home. Their
+    // bootstrap/reconnect replace, append continuation and cursors are the only
+    // ones for `/v2/sessions` on that Home, so the filter reads that frontier here
+    // instead of mounting a controller that would paginate and replace the same
+    // membership — two owners that could orphan each other's pages.
+    const managedOrdinaryHomeKey = homes
         .filter((home) => (
             home.ordinaryAdapter?.membership === 'ordinary'
             && supportByServerId[home.serverId] === false
-            && isSyncOwnedOrdinarySessionListHome(home.serverId)
+            && resolveOrdinarySessionListHomeOwner(home.serverId) !== null
         ))
         .map((home) => home.serverId)
         .join('\u0000');
-    const syncOwnedOrdinaryHomes = React.useMemo(
-        () => new Set(syncOwnedOrdinaryHomeKey ? syncOwnedOrdinaryHomeKey.split('\u0000') : []),
-        [syncOwnedOrdinaryHomeKey],
+    const managedOrdinaryHomes = React.useMemo(
+        () => new Set(managedOrdinaryHomeKey ? managedOrdinaryHomeKey.split('\u0000') : []),
+        [managedOrdinaryHomeKey],
     );
     const controllersRef = React.useRef(new Map<string, SessionListQueryHomeController>());
     const controllerAccountScopesRef = React.useRef(new Map<string, ServerCredentialAccountScopeBinding>());
@@ -334,7 +335,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         // React may abandon a concurrent render after it has observed different
         // Homes, and that render must not dispose the still-committed controllers.
         const selectedServerIds = new Set(homes.flatMap((home) => {
-            if (syncOwnedOrdinaryHomes.has(home.serverId)) return [];
+            if (managedOrdinaryHomes.has(home.serverId)) return [];
             const binding = accountScopesByServerId.get(home.serverId);
             return binding?.isCurrent() === true ? [home.serverId] : [];
         }));
@@ -350,7 +351,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         }
         const selectedControllers: SessionListQueryHomeController[] = [];
         for (const home of homes) {
-            if (syncOwnedOrdinaryHomes.has(home.serverId)) continue;
+            if (managedOrdinaryHomes.has(home.serverId)) continue;
             const binding = accountScopesByServerId.get(home.serverId);
             if (!binding?.isCurrent()) continue;
             let controller = controllersRef.current.get(home.serverId);
@@ -379,7 +380,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         return () => {
             for (const unsubscribe of unsubscribes) unsubscribe();
         };
-    }, [accountScopesByServerId, disposeController, homes, syncOwnedOrdinaryHomes]);
+    }, [accountScopesByServerId, disposeController, homes, managedOrdinaryHomes]);
 
     React.useEffect(() => (
         subscribeSessionListQueryHomeInvalidation(() => controllersRef.current)
@@ -413,23 +414,23 @@ export function useSessionListQuerySourceState(input: Readonly<{
     }, [disposeController]);
 
     const readHomeState = React.useCallback((home: NormalizedQueryHome): SessionListQueryHomeState | undefined => {
-        if (!syncOwnedOrdinaryHomes.has(home.serverId)) {
+        if (!managedOrdinaryHomes.has(home.serverId)) {
             return controllersRef.current.get(home.serverId)?.getSnapshot();
         }
         const availability = getSessionListQueryHomeAvailability(home.serverId);
-        return readSyncOrdinarySessionListHomeState({
+        return readOrdinarySessionListHomeState({
             serverId: home.serverId,
             requestedQueryKey: home.queryKey,
             online: availability === 'pending' ? null : availability === 'online',
         });
-    }, [syncOwnedOrdinaryHomes]);
+    }, [managedOrdinaryHomes]);
     const loadNext = React.useCallback(async () => {
         await Promise.all(homes.map((home) => (
-            syncOwnedOrdinaryHomes.has(home.serverId)
-                ? loadNextSyncOrdinarySessionListPage()
+            managedOrdinaryHomes.has(home.serverId)
+                ? loadNextOrdinarySessionListPage(home.serverId)
                 : controllersRef.current.get(home.serverId)?.loadNext()
         )));
-    }, [homes, syncOwnedOrdinaryHomes]);
+    }, [homes, managedOrdinaryHomes]);
     const refresh = React.useCallback(async () => {
         const retryableHomes = homes.filter((home) => {
             const state = readHomeState(home);
@@ -444,11 +445,11 @@ export function useSessionListQuerySourceState(input: Readonly<{
             retrySessionListQueryHome(home.serverId)
         )));
         await Promise.all(homes.map((home) => (
-            syncOwnedOrdinaryHomes.has(home.serverId)
-                ? refreshSyncOrdinarySessionList()
+            managedOrdinaryHomes.has(home.serverId)
+                ? refreshOrdinarySessionList(home.serverId)
                 : controllersRef.current.get(home.serverId)?.refresh()
         )));
-    }, [homes, readHomeState, syncOwnedOrdinaryHomes]);
+    }, [homes, readHomeState, managedOrdinaryHomes]);
 
     return React.useMemo(() => {
         const statesByServerId: Record<string, SessionListQueryHomeState | undefined> = {};

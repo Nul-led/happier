@@ -253,6 +253,49 @@ describe('useSessionDiscussionDraft', () => {
         await rendered.unmount();
     });
 
+    it.each([
+        ['create', newAddress] as const,
+        ['post', existingAddress] as const,
+    ])('retires the %s mutation attempt after observed success even when every captured field moved on', async (kind, address) => {
+        writeDiscussionSessionDraft({
+            scope,
+            address,
+            patch: { ...(kind === 'create' ? { title: 'Captured title' } : {}), text: 'Captured text', mentions: [] },
+        });
+        const rendered = await renderHook(() => useSessionDiscussionDraft({ scope, address }));
+        let submitted: SessionDiscussionDraftSubmission | null = null;
+        act(() => {
+            submitted = rendered.getCurrent().captureSubmittedCurrentness(
+                kind === 'create'
+                    ? { kind: 'create', creationLocalId: 'create-local-stable', messageLocalId: 'create-message-stable' }
+                    : { kind: 'post', discussionId: existingAddress.discussionId, localId: 'post-local-stable' },
+            );
+        });
+        expect(rendered.getCurrent().pendingMutationAttempt).not.toBeNull();
+
+        // Every captured field moves on while the mutation is in flight.
+        act(() => {
+            if (kind === 'create') rendered.getCurrent().setTitle('Newer title');
+            rendered.getCurrent().setComposer({
+                text: 'Newer @Alex text',
+                mentions: [{ start: 6, end: 11, accountId: 'account-alex' }],
+            });
+        });
+        await act(async () => {
+            await rendered.getCurrent().clearAfterObservedSuccess(submitted!);
+        });
+
+        expect(rendered.getCurrent().pendingMutationAttempt).toBeNull();
+        await rendered.unmount();
+
+        const remounted = await renderHook(() => useSessionDiscussionDraft({ scope, address }));
+        expect(remounted.getCurrent().pendingMutationAttempt).toBeNull();
+        expect(remounted.getCurrent().text).toBe('Newer @Alex text');
+        expect(remounted.getCurrent().mentions).toEqual([{ start: 6, end: 11, accountId: 'account-alex' }]);
+        if (kind === 'create') expect(remounted.getCurrent().title).toBe('Newer title');
+        await remounted.unmount();
+    });
+
     it('purges the local decrypted presentation when access is explicitly lost', async () => {
         writeDiscussionSessionDraft({
             scope,

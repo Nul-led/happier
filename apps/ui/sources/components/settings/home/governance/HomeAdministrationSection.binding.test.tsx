@@ -3,52 +3,55 @@ import { act } from 'react-test-renderer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Keep this shell test independent from unrelated generated plugin artifacts.
-// These are the same canonical testkit owners re-exported by `@/dev/testkit`.
+// These are the same canonical testkit owners re-exported by `@/dev/testkit`,
+// imported from their owning modules because the Home boundaries are installed
+// with `vi.doMock` (see `installHomeGovernanceBoundaries`).
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
-import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGovernanceFixtures';
+import {
+    homeAccountRowFixture,
+    homeGovernanceProjectionFixture,
+} from '@/dev/testkit/fixtures/homeGovernanceFixtures';
+import { createUiApprovalRequest, decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
 // The wait budget the rest of this family already inherits from the runner
 // instead of `vi.waitFor`'s 1 s default, which is a shorter competing cutoff
 // inside a case the runner already bounds.
-import { waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
+import {
+    createHomeGovernanceHarness,
+    installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
+} from '@/dev/testkit/harness/homeGovernanceHarness';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { HomeAdministrationBinding } from '@/hooks/home/useHomeAdministration';
-import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 import type { HomeAdministrationContext } from './homeAdministrationContext';
 
+/**
+ * The approval shell of Home administration, over the real approval lifecycle.
+ *
+ * The governance projection hook and its refresh are the stand-ins: they let a
+ * case switch the bound Account and observe the refresh. The approval itself is
+ * real end to end — a present-user Home mutation creates it through the shared
+ * Action front door, the Inbox decides it through the generic executor, and the
+ * section reads the outcome through the real `useApprovalArtifact` over the
+ * Home's stateful Artifact store. No terminal record is written by hand.
+ */
 const useHomeAdministration = vi.hoisted(() => vi.fn());
 const refreshHomeGovernanceSnapshot = vi.hoisted(() => vi.fn());
-type ApprovalArtifactHookResult = Readonly<{
-    artifact: DecryptedArtifact | null;
-    isLoading: boolean;
-    error: boolean | null;
-    invalidArtifact: boolean;
-}>;
-const useApprovalArtifact = vi.hoisted(() => vi.fn<() => ApprovalArtifactHookResult>(() => ({
-    artifact: null,
-    isLoading: false,
-    error: null,
-    invalidArtifact: false,
-})));
 
 vi.mock('@/hooks/home/useHomeAdministration', () => ({ useHomeAdministration }));
-vi.mock('@/components/approvals/useApprovalArtifact', () => ({ useApprovalArtifact }));
 vi.mock('@/sync/engine/home/governance/homeGovernanceEngine', () => ({ refreshHomeGovernanceSnapshot }));
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
-    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
-}));
+
 // App-bundled plugin bytes are a generated build boundary and unrelated to this shell.
 // The synchronized test target intentionally has no generated inventory.
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -67,10 +70,43 @@ installSettingsViewCommonModuleMocks({
         useRouter: () => ({ push: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
     }),
+    // The real client store: the approval writer publishes the settled
+    // Artifact into it and the mounted approval reader observes it there.
+    storage: async (importOriginal) => {
+        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleMock({ importOriginal, overrides: {} });
+    },
 });
 
-function readyBinding(accountId: string): Extract<HomeAdministrationBinding, { kind: 'bound' }> {
-    const scope = { serverId: 'home-1', accountId };
+const harness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(harness);
+
+const ACCOUNT_ID = 'account-a';
+const DISABLE_PATH = '/v1/home/accounts/disable';
+
+/** One Home whose Account requires approval for disabling another Account. */
+async function addAdministeredHome(): Promise<string> {
+    const serverId = await harness.addHome({
+        name: 'Home One',
+        serverUrl: 'https://home-administration.example',
+        accountId: ACCOUNT_ID,
+    });
+    await harness.requireUiApproval(serverId, 'home.accounts.disable');
+    return serverId;
+}
+
+/** The open approval a present-user Account hold leaves on its Home. */
+async function openDisableApproval(serverId: string, requestId: string): Promise<string> {
+    return await createUiApprovalRequest({
+        serverId,
+        actionId: 'home.accounts.disable',
+        actionInput: { accountId: 'account-grace' },
+        actionRequestId: requestId,
+    });
+}
+
+function readyBinding(serverId: string, accountId: string): Extract<HomeAdministrationBinding, { kind: 'bound' }> {
+    const scope = { serverId, accountId };
     return {
         kind: 'bound',
         scope,
@@ -85,24 +121,6 @@ function readyBinding(accountId: string): Extract<HomeAdministrationBinding, { k
             mutationsAvailable: true,
             error: null,
         },
-    };
-}
-
-function approvalArtifact(
-    id: string,
-    status: 'executed' | 'rejected' | 'failed' | 'canceled',
-): DecryptedArtifact {
-    return {
-        id,
-        title: null,
-        header: { title: null, approvalStatus: status },
-        body: '{}',
-        headerVersion: 1,
-        bodyVersion: 1,
-        seq: 1,
-        createdAt: 1,
-        updatedAt: 2,
-        isDecrypted: true,
     };
 }
 
@@ -129,11 +147,10 @@ describe('HomeAdministrationSection Account binding', () => {
         standardCleanup();
     });
 
-    beforeEach(() => {
+    beforeEach(async () => {
         standardCleanup();
+        await harness.reset();
         useHomeAdministration.mockReset();
-        useApprovalArtifact.mockReset();
-        useApprovalArtifact.mockReturnValue({ artifact: null, isLoading: false, error: null, invalidArtifact: false });
         refreshHomeGovernanceSnapshot.mockReset();
         renderedContexts.length = 0;
         nextMountId = 0;
@@ -142,9 +159,11 @@ describe('HomeAdministrationSection Account binding', () => {
     afterEach(() => standardCleanup());
 
     it('remounts section-local state and rejects a stale approval registration after the bound Account changes', async () => {
-        useHomeAdministration.mockReturnValue(readyBinding('account-a'));
+        const serverId = await addAdministeredHome();
+        const staleArtifactId = await openDisableApproval(serverId, 'disable-stale');
+        useHomeAdministration.mockReturnValue(readyBinding(serverId, ACCOUNT_ID));
         const renderSection = (title: string) => (
-            <HomeAdministrationSection serverId="home-1" title={title}>
+            <HomeAdministrationSection serverId={serverId} title={title}>
                 {(context) => <ChildProbe context={context} />}
             </HomeAdministrationSection>
         );
@@ -152,7 +171,7 @@ describe('HomeAdministrationSection Account binding', () => {
         const firstMountId = screen.findByTestId('home-admin-child-probe')?.props.mountId;
         const staleRequestApproval = renderedContexts.at(-1)!.requestApproval!;
 
-        useHomeAdministration.mockReturnValue(readyBinding('account-b'));
+        useHomeAdministration.mockReturnValue(readyBinding(serverId, 'account-b'));
         await act(async () => {
             screen.tree.update(renderSection('Home B'));
         });
@@ -160,26 +179,40 @@ describe('HomeAdministrationSection Account binding', () => {
         expect(screen.findByTestId('home-admin-child-probe')?.props.accountId).toBe('account-b');
         expect(screen.findByTestId('home-admin-child-probe')?.props.mountId).not.toBe(firstMountId);
 
-        // A mutation begun as the previous Account must not hand its approval to
-        // the Account now bound to this Home.
-        await act(async () => staleRequestApproval('approval-from-account-a'));
+        // A genuinely open approval begun as the previous Account must not be
+        // handed to the Account now bound to this Home.
+        await act(async () => staleRequestApproval(staleArtifactId));
         expect(screen.findByTestId('home-admin-approval')).toBeNull();
     });
 
-    it.each(['rejected', 'failed', 'canceled'] as const)(
-        'releases a %s approval so Home administration restores mutation availability without refreshing',
-        async (status) => {
-            useHomeAdministration.mockReturnValue(readyBinding('account-a'));
-            const renderSection = () => (
-                <HomeAdministrationSection serverId="home-1" title="Home A">
+    it.each([
+        {
+            status: 'rejected' as const,
+            decision: 'reject' as const,
+            homeAnswer: null,
+        },
+        {
+            // The Home refuses the replayed hold, so execution settles failed.
+            status: 'failed' as const,
+            decision: 'approve' as const,
+            homeAnswer: { status: 409, body: { error: 'account_not_found' } },
+        },
+    ])(
+        'releases a $status approval so Home administration restores mutation availability without refreshing',
+        async ({ status, decision, homeAnswer }) => {
+            const serverId = await addAdministeredHome();
+            if (homeAnswer) harness.answer(serverId, DISABLE_PATH, homeAnswer);
+            const artifactId = await openDisableApproval(serverId, `disable-${status}`);
+            useHomeAdministration.mockReturnValue(readyBinding(serverId, ACCOUNT_ID));
+            const screen = await renderScreen(
+                <HomeAdministrationSection serverId={serverId} title="Home A">
                     {(context) => <ChildProbe context={context} />}
-                </HomeAdministrationSection>
+                </HomeAdministrationSection>,
             );
-            const screen = await renderScreen(renderSection());
             const onTerminal = vi.fn();
 
             await act(async () => renderedContexts.at(-1)!.requestApproval!({
-                artifactId: 'approval-home-1',
+                artifactId,
                 onExecuted: vi.fn(async () => 'consumed' as const),
                 onTerminal,
             }));
@@ -188,29 +221,27 @@ describe('HomeAdministrationSection Account binding', () => {
 
             // The approval is decided in the Inbox rather than here, so the shell
             // observes it through the shared artifact reader.
-            useApprovalArtifact.mockReturnValue({
-                artifact: approvalArtifact('approval-home-1', status),
-                isLoading: false,
-                error: null,
-                invalidArtifact: false,
-            });
-            await act(async () => {
-                screen.tree.update(renderSection());
-            });
+            await expect(decideApprovalAsInbox(serverId, artifactId, decision)).resolves.toMatchObject({ ok: true });
 
             await waitForHomeGovernance(() => expect(screen.findByTestId('home-admin-approval')).toBeNull());
             expect(onTerminal).toHaveBeenCalledOnce();
-            expect(onTerminal).toHaveBeenCalledWith(status, expect.objectContaining({ id: 'approval-home-1' }));
+            expect(onTerminal).toHaveBeenCalledWith(status, expect.objectContaining({ id: artifactId }));
             expect(renderedContexts.at(-1)!.approvalPending).toBe(false);
             expect(renderedContexts.at(-1)!.mutationsAvailable).toBe(true);
             expect(refreshHomeGovernanceSnapshot).not.toHaveBeenCalled();
+            expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(decision === 'approve' ? 1 : 0);
         },
     );
 
     it('delivers one executed Artifact to the exact process-local continuation and never redelivers it', async () => {
-        useHomeAdministration.mockReturnValue(readyBinding('account-a'));
+        const serverId = await addAdministeredHome();
+        harness.answer(serverId, DISABLE_PATH, {
+            body: homeAccountRowFixture('account-grace', { status: 'disabled' }),
+        });
+        const artifactId = await openDisableApproval(serverId, 'disable-executed');
+        useHomeAdministration.mockReturnValue(readyBinding(serverId, ACCOUNT_ID));
         const renderSection = () => (
-            <HomeAdministrationSection serverId="home-1" title="Home A">
+            <HomeAdministrationSection serverId={serverId} title="Home A">
                 {(context) => <ChildProbe context={context} />}
             </HomeAdministrationSection>
         );
@@ -218,25 +249,20 @@ describe('HomeAdministrationSection Account binding', () => {
         const onExecuted = vi.fn(async () => 'consumed' as const);
 
         await act(async () => renderedContexts.at(-1)!.requestApproval!({
-            artifactId: 'approval-home-result',
+            artifactId,
             onExecuted,
         }));
         await waitForHomeGovernance(() => expect(screen.findByTestId('home-admin-approval')).not.toBeNull());
         expect(renderedContexts.at(-1)!.mutationsAvailable).toBe(false);
 
-        useApprovalArtifact.mockReturnValue({
-            artifact: approvalArtifact('approval-home-result', 'executed'),
-            isLoading: false,
-            error: null,
-            invalidArtifact: false,
-        });
-        await act(async () => {
-            screen.tree.update(renderSection());
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
         });
 
         await waitForHomeGovernance(() => expect(onExecuted).toHaveBeenCalledTimes(1));
+        expect(onExecuted).toHaveBeenCalledWith(expect.objectContaining({ id: artifactId }));
         expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledOnce();
-        expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledWith({ serverId: 'home-1', accountId: 'account-a' });
+        expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledWith({ serverId, accountId: ACCOUNT_ID });
         expect(screen.findByTestId('home-admin-approval')).toBeNull();
         expect(renderedContexts.at(-1)!.approvalPending).toBe(false);
         expect(renderedContexts.at(-1)!.mutationsAvailable).toBe(true);
@@ -246,5 +272,6 @@ describe('HomeAdministrationSection Account binding', () => {
         });
         expect(onExecuted).toHaveBeenCalledTimes(1);
         expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledTimes(1);
+        expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
     });
 });

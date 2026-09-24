@@ -3,7 +3,6 @@ import type { SessionDraftDocumentV1, StrictJsonValue } from '@happier-dev/proto
 import {
     NewSessionDraftDocumentV2Schema,
     SessionDraftStoredContentEnvelopeV1Schema,
-    restoreSupportedPredecessorNewSessionDraftPayloadV2,
 } from '@happier-dev/protocol';
 
 import { createSessionDraftCipher } from './sessionDraftEncryption';
@@ -62,31 +61,9 @@ describe('sessionDraftEncryption', () => {
             },
         });
 
-        const predecessor = await cipher.sealForSupportedPredecessorV1?.(newAddress, successor);
-        expect(predecessor).not.toBeNull();
-        expect(predecessor).not.toHaveProperty('v', 2);
-        const readableContent = predecessor!.t === 'plain'
-            ? { t: 'plain' as const, v: restoreSupportedPredecessorNewSessionDraftPayloadV2(predecessor!.v)! }
-            : predecessor!;
-        await expect(cipher.open(newAddress, readableContent)).resolves.toEqual(successor);
-    });
-
-    it('does not produce predecessor bytes for non-representable newSession content', async () => {
-        const cipher = createSessionDraftCipher({
-            accountMode: 'plain', accountCryptoMaterial: null, getSessionContext: () => null,
-            randomBytes: (length) => new Uint8Array(length),
-        });
-        const successor = NewSessionDraftDocumentV2Schema.parse({
-            ...document('newSession'),
-            v: 2,
-            target: {
-                kind: 'newSession',
-                authoring: {
-                    temporaryComputerActivationRef: { mutationId: '00000000-0000-4000-8000-000000000021', value: null },
-                },
-            },
-        });
-        await expect(cipher.sealForSupportedPredecessorV1?.(newAddress, successor)).resolves.toBeNull();
+        // A newSession draft is written only as the canonical V2 document; the
+        // predecessor write bridge is gone, so the round trip is through `seal`.
+        await expect(cipher.open(newAddress, await cipher.seal(newAddress, successor))).resolves.toEqual(successor);
     });
 
     it.each(['plain', 'e2ee'] as const)('round-trips Temporary computer and its public reference through the Account cipher (%s)', async (accountMode) => {

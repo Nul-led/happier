@@ -16,12 +16,24 @@ vi.mock('@/agent/catalog/registry', () => ({
       ? ['happier.agent.codex/openai-codex']
       : [],
 }));
+import { resolveQualifiedPurposeDeclarationSnapshotForAgentSpawn } from '@/daemon/connectedServices/requestAuth/prepareConnectedAccountRequestAuthForSpawn';
+import { readCurrentContributionRegistry } from '@/agent/catalog/snapshot';
 import {
   createSpawnConnectedServicesTeamResourceCatalogResolver,
+  mergeSessionTeamCredentialBindingIntents,
+  resolvePurposeTeamCredentialBindingIntents,
   resolveSessionSpawnConnectedServicesDefaultsPayload,
   resolveSpawnConnectedServicesDefaultDisposition,
   resolveSpawnConnectedServicesDefaults,
 } from './spawnConnectedServicesDefaults';
+
+// Codex's real declared purpose, read from the bundled contribution projection.
+const CODEX_SCOPE = resolveQualifiedPurposeDeclarationSnapshotForAgentSpawn({
+  agentId: 'codex',
+  contributions: readCurrentContributionRegistry(),
+})?.authorizedPurposes.find((scope) => scope.serviceRefs[0]?.localId === 'openai-codex');
+const CODEX_CONSUMER = CODEX_SCOPE?.purpose.consumer ?? { pluginId: 'missing', localId: 'missing' };
+const CODEX_PURPOSE = CODEX_SCOPE?.purpose.purpose ?? 'missing';
 
 describe('resolveSpawnConnectedServicesDefaults', () => {
   beforeEach(() => {
@@ -229,12 +241,23 @@ describe('resolveSpawnConnectedServicesDefaults', () => {
       },
     });
 
+    // A default is a reference, not an entitlement (lane 10 child 02 §11.6):
+    // a harmless resource edit does not strand it. The Session's own binding
+    // intent carries the current revision to the Home.
     expect(resolveSpawnConnectedServicesDefaultDisposition({
       agentId: 'codex',
       accountSettings: settings,
       teamCredentialResourceCatalog: {
         ...catalog,
         resources: [{ ...catalog.resources[0]!, resourceRevision: 8 }],
+      },
+    })).toMatchObject({ kind: 'connected' });
+    expect(resolveSpawnConnectedServicesDefaultDisposition({
+      agentId: 'codex',
+      accountSettings: settings,
+      teamCredentialResourceCatalog: {
+        ...catalog,
+        resources: [{ ...catalog.resources[0]!, teamId: 'team-other' }],
       },
     })).toEqual({
       kind: 'unavailable',
@@ -252,6 +275,112 @@ describe('resolveSpawnConnectedServicesDefaults', () => {
       kind: 'unavailable',
       reason: 'connected_services_team_default_requires_current_resource',
     });
+  });
+
+  const agentPageTeamSelection = { source: 'team_resource' as const, resourceId: 'resource-a', deliveryMode: 'brokered' as const };
+  it.each([
+    {
+      // What the Agent page chooser persists now: the canonical Team selection.
+      label: 'the canonical Team selection',
+      purposeBindings: {
+        v: 1,
+        bindings: [],
+        teamResourceSelections: [{
+          purpose: { consumer: CODEX_CONSUMER, purpose: CODEX_PURPOSE },
+          teamId: 'team-a',
+          selection: agentPageTeamSelection,
+        }],
+      },
+    },
+    {
+      // What an earlier 0.3 build persisted, read forward.
+      label: 'an earlier 0.3 Team purpose target',
+      purposeBindings: {
+        v: 1,
+        bindings: [{
+          purpose: { consumer: CODEX_CONSUMER, purpose: CODEX_PURPOSE },
+          target: {
+            kind: 'team_resource',
+            service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+            teamId: 'team-a',
+            selection: agentPageTeamSelection,
+          },
+        }],
+      },
+    },
+  ])('spawns with the Team default chosen on the Agent page, stored as $label', ({ purposeBindings }) => {
+    const selection = agentPageTeamSelection;
+    const agentPageSettings = { connectedAccountPurposeBindingsV1: purposeBindings };
+    const catalog = {
+      serverId: 'home-a',
+      accountId: 'recipient-account',
+      resources: [{
+        id: 'resource-a', teamId: 'team-a', displayName: 'Shared Codex account',
+        resourceRevision: 7, readiness: { kind: 'available' as const }, recoveryAction: null,
+        mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered' as const,
+        sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+        connectedServiceSelections: [selection],
+        sourcePresentation: {
+          kind: 'connected_service' as const,
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+        },
+      }],
+    };
+
+    expect(resolveSpawnConnectedServicesDefaultDisposition({
+      agentId: 'codex', accountSettings: agentPageSettings, teamCredentialResourceCatalog: catalog,
+    })).toEqual({
+      kind: 'connected',
+      bindings: { v: 2, bindingsByServiceId: { 'happier.agent.codex/openai-codex': selection } },
+    });
+  });
+
+  it('turns a durable Team default into the Session slot binding, and an explicit slot choice wins', () => {
+    const selection = { source: 'team_resource' as const, resourceId: 'resource-a', deliveryMode: 'brokered' as const };
+    const purpose = { consumer: CODEX_CONSUMER, purpose: CODEX_PURPOSE };
+    const teamResourceSelections = [{
+      purpose,
+      teamId: 'team-a',
+      selection,
+      services: [{ pluginId: 'happier.agent.codex', localId: 'openai-codex' }],
+    }];
+    const catalog = {
+      serverId: 'home-a',
+      accountId: 'recipient-account',
+      resources: [{
+        id: 'resource-a', teamId: 'team-a', displayName: 'Shared Codex account',
+        resourceRevision: 9, readiness: { kind: 'available' as const }, recoveryAction: null,
+        mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered' as const,
+        sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+        connectedServiceSelections: [selection],
+        sourcePresentation: {
+          kind: 'connected_service' as const,
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+        },
+      }],
+    };
+    const admitted = resolvePurposeTeamCredentialBindingIntents({ teamResourceSelections, teamCredentialResourceCatalog: catalog });
+    expect(admitted).toEqual([{
+      v: 1,
+      slot: { kind: 'connected_service_purpose', purpose },
+      resourceId: 'resource-a',
+      expectedResourceRevision: 9,
+      deliveryMode: 'brokered',
+      teamId: 'team-a',
+    }]);
+    expect(() => resolvePurposeTeamCredentialBindingIntents({
+      teamResourceSelections,
+      teamCredentialResourceCatalog: { ...catalog, resources: [] },
+    })).toThrow('connected_services_team_default_requires_current_resource');
+
+    const explicit = [{
+      v: 1 as const,
+      slot: { kind: 'connected_service_purpose' as const, purpose },
+      resourceId: null,
+    }];
+    expect(mergeSessionTeamCredentialBindingIntents({ explicit, admitted })).toEqual(explicit);
+    expect(mergeSessionTeamCredentialBindingIntents({ explicit: undefined, admitted })).toEqual(admitted);
+    expect(mergeSessionTeamCredentialBindingIntents({ explicit: undefined, admitted: null })).toBeUndefined();
   });
 
   it('requires the exact disclosed member for a direct Team resource default', () => {

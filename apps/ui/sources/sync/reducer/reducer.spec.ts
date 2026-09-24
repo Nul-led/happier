@@ -47,6 +47,75 @@ describe('reducer', () => {
         expect(reducer(state, [refreshed]).messages).toEqual([]);
     });
 
+    it('does not rescan the loaded transcript when a page repeats actors it already applied', () => {
+        // A current server stamps `accountActor` on every row of every page, so
+        // "the field is present" made the unchanged-row reconciliation run over
+        // the whole loaded transcript on every ordinary refresh.
+        const state = createReducer();
+        const actor = { v: 1 as const, accountId: 'alice', serverId: 'home-a', profile: null };
+        // History the refreshed page does not name at all.
+        const olderHistory: NormalizedMessage[] = Array.from({ length: 3 }, (_unused, index) => ({
+            id: `actor-scan-older-${index}`, localId: `actor-scan-older-local-${index}`, createdAt: 100 + index, seq: index + 1,
+            role: 'user', content: { type: 'text', text: `older ${index}` }, isSidechain: false,
+            accountActor: actor,
+        }));
+        expect(reducer(state, olderHistory).messages).toHaveLength(3);
+        const page: NormalizedMessage[] = Array.from({ length: 6 }, (_unused, index) => ({
+            id: `actor-scan-${index}`, localId: `actor-scan-local-${index}`, createdAt: 1000 + index, seq: index + 4,
+            role: 'user', content: { type: 'text', text: `row ${index}` }, isSidechain: false,
+            accountActor: actor,
+        }));
+        expect(reducer(state, page).messages).toHaveLength(6);
+
+        // Only the unchanged-row reconciliation pass reads `realID` on a loaded
+        // row this batch does not name, so counting those reads counts exactly
+        // the work the actor-presence bypass used to force on every refresh.
+        let untouchedHistoryReads = 0;
+        for (const older of olderHistory) {
+            const rowId = state.messageIds.get(older.id)!;
+            const row = state.messages.get(rowId)!;
+            const realID = row.realID;
+            Object.defineProperty(row, 'realID', {
+                configurable: true,
+                get: () => { untouchedHistoryReads += 1; return realID; },
+            });
+        }
+
+        const readsFor = (batch: readonly NormalizedMessage[]) => {
+            untouchedHistoryReads = 0;
+            const applied = reducer(state, batch as NormalizedMessage[]).messages;
+            return { reads: untouchedHistoryReads, applied };
+        };
+
+        const unchanged = readsFor(page);
+        expect(unchanged.applied).toEqual([]);
+        // A page that repeats actors already applied reconciles nothing.
+        expect(unchanged.reads).toBe(0);
+
+        const renamedRow = {
+            ...page[2],
+            accountActor: {
+                ...page[2].accountActor!,
+                profile: { firstName: 'Alice', lastName: null, username: null, avatarUrl: null },
+            },
+        };
+        const renamed = readsFor([...page.slice(0, 2), renamedRow, ...page.slice(3)]);
+
+        // The actor refresh still reaches exactly the row whose actor moved…
+        expect(renamed.applied).toEqual([
+            expect.objectContaining({ realID: page[2].id, accountActor: renamedRow.accountActor }),
+        ]);
+        // …and a batch that really does move an actor still reconciles the rows
+        // it does not name, because a reference can move under unchanged text.
+        expect(renamed.reads).toBeGreaterThan(0);
+
+        // An explicit retraction is still a change, so it still reconciles.
+        const retractedRow = { ...page[2], accountActor: null };
+        expect(reducer(state, [...page.slice(0, 2), retractedRow, ...page.slice(3)]).messages).toEqual([
+            expect.objectContaining({ realID: page[2].id, accountActor: null }),
+        ]);
+    });
+
     // it('should process golden cases', () => {
     //     for (let i = 0; i <= 3; i++) {
 

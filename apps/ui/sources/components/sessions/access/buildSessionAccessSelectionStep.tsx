@@ -6,6 +6,7 @@ import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import type { SelectionListOption, SelectionListSectionDescriptor, SelectionListStep } from '@/components/ui/selectionList';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
+import type { SessionCollaborationHandoff } from '@/components/sessions/collaboration/sessionCollaborationIntent';
 import { SessionAccessGrantRow, SessionAccessLevelControl, SessionAccessRowAction } from './SessionAccessGrantRow';
 import type {
     SessionAccessCandidateRowModel, SessionAccessDirectoryKind, SessionAccessDirectorySectionModel,
@@ -131,13 +132,15 @@ export function buildSessionAccessSelectionStep(input: Readonly<{
     testID?: string;
     directoryKind?: SessionAccessDirectoryKind;
     /** Supplied only by an anchored composer editor, never by the full surface. */
-    onOpenFullSurface?: () => void;
+    onOpenFullSurface?: (handoff: SessionCollaborationHandoff) => void;
 }>): SelectionListStep {
     const { model, actions } = input;
     const idPrefix = input.testID && input.testID !== 'session-access-editor' ? `${input.testID}:` : '';
     const excluded = new Set(model.grants.map((row) => row.principal.key));
     if (model.owner) excluded.add(model.owner.principal.key);
-    const editable = model.accessMode === 'editable' && model.content.hasLastAcknowledgedSnapshot;
+    // A change awaiting its approval holds every other edit until it settles.
+    const editable = model.accessMode === 'editable' && model.content.hasLastAcknowledgedSnapshot
+        && !model.pendingApproval;
     const current: SelectionListOption[] = [];
     if (model.owner) current.push({ id: model.owner.principal.key, label: model.owner.principal.displayName,
         subtitle: principalSubtitle(model.owner.principal), accessibilityLabel: model.owner.principal.accessibilityLabel,
@@ -258,6 +261,21 @@ export function buildSessionAccessSelectionStep(input: Readonly<{
     }
     if (!input.directoryKind) {
         const notices: SelectionListOption[] = [];
+        if (model.pendingApproval) notices.push({ id: 'approval-pending', testID: `${idPrefix}session-access-approval`,
+            label: t('approvals.title'), subtitle: t('approvals.status.open'),
+            onSelect: actions.openPendingApproval, disabled: !actions.openPendingApproval });
+        if (model.historicalLayout && actions.updateHistoricalLayout) {
+            const historical = model.historicalLayout;
+            const update = actions.updateHistoricalLayout;
+            notices.push({ id: 'historical-layout', testID: `${idPrefix}session-access-historical-layout`,
+                label: t('session.access.historicalLayoutNotice'),
+                ...(historical.error ? { subtitle: historical.error.message } : {}),
+                loading: historical.updating,
+                rightAccessoryOutsidePressable: true,
+                rightAccessory: () => <SessionAccessRowAction label={t('session.access.historicalLayoutUpdate')}
+                    testID={`${idPrefix}session-access-historical-layout-update`}
+                    disabled={historical.updating || !editable} onPress={update} /> });
+        }
         if (model.content.phase === 'initial' || model.content.phase === 'refreshing') notices.push({ id: 'loading', label: t('common.loading'), loading: true, disabled: true });
         if (model.content.issue) notices.push({ id: 'issue', label: model.content.issue.message, onSelect: model.content.issue.retryable ? actions.retryContent : undefined,
             rightAccessory: model.content.issue.retryable ? () => <Text>{t('common.retry')}</Text> : undefined });
@@ -281,7 +299,9 @@ export function buildSessionAccessSelectionStep(input: Readonly<{
             id: 'open-collaboration',
             testID: `${idPrefix}session-access-open-collaboration`,
             label: t('session.access.openCollaboration'),
-            onSelect: openFullSurface,
+            // The destination mounts its own controller and reloads the roster
+            // itself; what it cannot rebuild is what the person already typed.
+            onSelect: () => openFullSurface({ query: model.directory.query }),
         }] });
     }
     return { id: input.directoryKind ? `session-access-directory:${input.directoryKind}` : 'session-access',

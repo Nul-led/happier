@@ -276,7 +276,7 @@ describe('Team credential external Provider API v1', () => {
     }
   });
 
-  it('accepts only an unavailable external terminal fact from the broker runtime', () => {
+  it('binds the external terminal token fact to its measurement', () => {
     const terminal = {
       v: 1 as const,
       admissionUsageEventId: 'usage-1',
@@ -285,15 +285,34 @@ describe('Team credential external Provider API v1', () => {
       completedAtMs: 1_789_000_000_000,
       outcome: 'cancelled' as const,
       measurement: 'unavailable' as const,
+      actualModelId: null,
+      tokens: null,
     };
     expect(TeamCredentialExternalProviderTerminalUsageV1Schema.parse(terminal)).toEqual(terminal);
-    expect(TeamCredentialExternalProviderTerminalUsageV1Schema.safeParse({
+    const reported = {
       ...terminal,
-      tokens: { input: 1, output: 1, total: 2 },
+      outcome: 'succeeded' as const,
+      measurement: 'reported' as const,
+      actualModelId: 'claude-sonnet-4-5',
+      tokens: { input: 11, output: 7, reasoning: 0, cacheRead: 3, cacheWrite: 2, total: 23 },
+    };
+    expect(TeamCredentialExternalProviderTerminalUsageV1Schema.parse(reported)).toEqual(reported);
+    // A measurement is the claim; the tokens are its evidence. Neither half may
+    // travel without the other, so analytics can never read a reported ceiling
+    // contribution that carries no numbers or an unavailable one that does.
+    expect(TeamCredentialExternalProviderTerminalUsageV1Schema.safeParse({
+      ...reported,
+      tokens: null,
     }).success).toBe(false);
     expect(TeamCredentialExternalProviderTerminalUsageV1Schema.safeParse({
       ...terminal,
-      measurement: 'reported',
+      tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 2 },
+    }).success).toBe(false);
+    // Cost is never carried: no canonical Provider price exists for these
+    // routes, and an absent field cannot be mistaken for a zero-cost request.
+    expect(TeamCredentialExternalProviderTerminalUsageV1Schema.safeParse({
+      ...reported,
+      cost: { reportedUsd: 0, estimatedUsd: 0, currency: 'USD' },
     }).success).toBe(false);
   });
 

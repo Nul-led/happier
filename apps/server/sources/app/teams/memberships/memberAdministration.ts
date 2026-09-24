@@ -19,7 +19,6 @@ import { getDbProviderFromEnv } from "@/storage/prisma";
 import type { Tx } from "@/storage/inTx";
 import { withTeamSessionAccessEffectsInTx } from "./sessionAccessEffects";
 import {
-    AccountStatus,
     TeamMembershipStatus,
     TeamRole,
     type SessionHistoryAccess,
@@ -32,7 +31,13 @@ import {
     type TeamActorContext,
     type TeamOperationAuthenticationContext,
 } from "../actorContext";
-import { isStructurallyActiveOwner, type TeamMemberActorFacts } from "./capabilities";
+import {
+    admitsNewTeamOwner,
+    isHomeOwnerRecoveryPromotion,
+    isStructurallyActiveOwner,
+    type TeamMemberActorFacts,
+} from "./capabilities";
+import { resolveTeamMembershipCapabilitiesV1 } from "../capabilities";
 import { admitTeamMemberInTx, setTeamMembershipStatusInTx } from "./membershipService";
 import {
     isExternallyManagedMembership,
@@ -132,6 +137,43 @@ async function qualifyTeamViewerInTx(
     return qualified.ok
         ? { ok: true, value: input.context }
         : denied(qualified.error);
+}
+
+/**
+ * Roster read admission.
+ *
+ * A reader's Team membership is Team-derived authority, so a restricted Team
+ * requires the Team credential for it. The Home administrator's owner-required
+ * recovery is not Team-derived: it is independent of whether that administrator
+ * also happens to be a member. So an unqualified member who holds it still
+ * reaches the roster — through exactly the recovery projection (its Team
+ * capabilities withheld), never the Team authority it did not qualify for. An
+ * outsider holds no Team-derived authority to qualify at all.
+ */
+async function qualifyTeamRosterReaderInTx(
+    tx: Tx,
+    input: Readonly<{ context: TeamActorContext; authentication?: TeamOperationAuthenticationContext }>,
+): Promise<TeamMemberServiceResult<TeamActorContext>> {
+    const { context } = input;
+    const recovers = context.ownerRequired && context.homeAuthority.manageAllTeams;
+    if (context.teamCapabilities.viewTeam) {
+        const qualified = await qualifyTeamOperationAuthenticationInTx(tx, { context, ...input.authentication });
+        if (qualified.ok) return { ok: true, value: context };
+        if (!recovers) return denied(qualified.error);
+    } else if (!recovers) {
+        return denied("team_not_found");
+    }
+    return {
+        ok: true,
+        value: {
+            ...context,
+            teamCapabilities: resolveTeamMembershipCapabilitiesV1({
+                accountStatus: context.accountStatus,
+                membership: null,
+                teamArchivedAt: context.team.archivedAt,
+            }),
+        },
+    };
 }
 
 async function readMembershipRowInTx(
@@ -302,12 +344,9 @@ export async function listTeamMembersForActorInTx(
 ): Promise<TeamMemberServiceResult<TeamMembersPageV1>> {
     const visible = await resolveTeamViewerContextInTx(tx, input);
     if (!visible.ok) return visible;
-    const authorized = await qualifyTeamViewerInTx(tx, {
+    const authorized = await qualifyTeamRosterReaderInTx(tx, {
         context: visible.value,
         authentication: input.authentication,
-        // A reader admitted only through Home recovery holds no Team-derived
-        // authority to qualify, exactly as the recovery promotion itself.
-        allowHomeRecovery: !visible.value.teamCapabilities.viewTeam,
     });
     if (!authorized.ok) return authorized;
     const context = authorized.value;
@@ -384,10 +423,9 @@ export async function getTeamMemberForActorInTx(
 ): Promise<TeamMemberServiceResult<TeamMembershipV1>> {
     const visible = await resolveTeamViewerContextInTx(tx, input);
     if (!visible.ok) return visible;
-    const authorized = await qualifyTeamViewerInTx(tx, {
+    const authorized = await qualifyTeamRosterReaderInTx(tx, {
         context: visible.value,
         authentication: input.authentication,
-        allowHomeRecovery: !visible.value.teamCapabilities.viewTeam,
     });
     if (!authorized.ok) return authorized;
 
@@ -480,22 +518,34 @@ export async function setTeamMemberRoleForActorInTx(
     if (context.team.archivedAt !== null) return denied("team_archived");
 
     const activeOwnerCount = await countActiveTeamOwnersInTx(tx, { teamId: input.teamId });
-    const ordinary = context.teamCapabilities.manageMembers;
+    // The two authorities compose. A Home owner who is also a Team admin holds
+    // the same owner-required recovery as a Home owner who is a plain member of
+    // the ownerless Team; ordinary administration's `manageOwners` rule cannot
+    // cancel it, because the Home authority never came from the membership.
+    const recovering = input.role === TeamRole.owner && isHomeOwnerRecoveryPromotion({
+        actor: {
+            accountId: context.actorAccountId,
+            homeManagesAllTeams: context.homeAuthority.manageAllTeams,
+        },
+        target: {
+            accountId: target.accountId,
+            role: target.role,
+            status: target.status,
+            accountStatus: target.account.status,
+        },
+        activeOwnerCount,
+    });
 
     let usesHomeRecovery = false;
-    if (!ordinary) {
-        const recovering = context.homeAuthority.manageAllTeams
-            && activeOwnerCount === 0
-            && input.role === TeamRole.owner
-            && target.accountId !== context.actorAccountId
-            && target.role !== TeamRole.guest
-            && target.status === TeamMembershipStatus.active
-            && target.account.status === AccountStatus.active;
+    if (!context.teamCapabilities.manageMembers) {
         if (!recovering) return denied("team_forbidden");
         usesHomeRecovery = true;
     } else {
         const touchesOwner = target.role === TeamRole.owner || input.role === TeamRole.owner;
-        if (touchesOwner && !context.teamCapabilities.manageOwners) return denied("team_forbidden");
+        if (touchesOwner && !context.teamCapabilities.manageOwners) {
+            if (!recovering) return denied("team_forbidden");
+            usesHomeRecovery = true;
+        }
         if (input.role !== TeamRole.owner && await wouldStrandTeamInTx(tx, { target })) {
             return denied("team_owner_transfer_required");
         }
@@ -506,6 +556,11 @@ export async function setTeamMemberRoleForActorInTx(
         allowHomeRecovery: usesHomeRecovery,
     });
     if (!qualified.ok) return qualified;
+    // A retry that leaves an existing owner an owner is not a new assignment.
+    if (input.role === TeamRole.owner && target.role !== TeamRole.owner
+        && !admitsNewTeamOwner({ accountStatus: target.account.status })) {
+        return denied("account_ineligible");
+    }
 
     if (target.role !== input.role) {
         await withTeamSessionAccessEffectsInTx(tx, {

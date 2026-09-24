@@ -1,0 +1,186 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+    ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+    buildApprovalRequestArtifactHeaderV1,
+    encodePlainArtifactStoredContent,
+    type ApprovalRequestV2,
+} from '@happier-dev/protocol';
+
+import type { ArtifactHeader, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+
+// Only the Account server's HTTP boundary (and its feature snapshot) is
+// replaced. The Home's Artifact routes are the testkit's stateful store with
+// the Home's versioned compare-and-set; the real Artifact API adapter and
+// codec, the real CAS writer (`updateArtifactWithHeaderViaApi`) and the real
+// Protocol approval subject/transition owner all run above it.
+const home = await vi.hoisted(async () => {
+    const { createArtifactStoreBoundary } = await import('@/dev/testkit/harness/artifactStoreBoundary');
+    return { artifacts: createArtifactStoreBoundary() };
+});
+
+vi.mock('@/sync/http/client', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/http/client')>(),
+    serverFetch: async (path: string, init?: RequestInit) => await home.artifacts.handle(path, init)
+        ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404 }),
+}));
+
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    getServerFeaturesSnapshot: vi.fn(async () => ({
+        status: 'ready',
+        features: {
+            capabilities: {
+                accountStoredContentCompatibility: {
+                    v: 1,
+                    minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                    currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                    declarationTransport: 'http-header-and-socket-auth-v1',
+                },
+            },
+        },
+    })),
+}));
+
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+    fetchAccountEncryptionMode: vi.fn(async () => ({ mode: 'plain', updatedAt: 0 })),
+}));
+
+import { fetchArtifactWithBodyFromApi, updateArtifactWithHeaderViaApi } from '@/sync/engine/artifacts/syncArtifacts';
+import { writeApprovalRequestArtifact } from './approvalArtifactWriter';
+
+const ARTIFACT_ID = 'approval-1';
+const CLIENT_SECRET = 'synthetic-provider-client-secret';
+
+function openRequest(): ApprovalRequestV2 {
+    return {
+        v: 2,
+        status: 'open',
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        createdBy: { surface: 'system' },
+        requestedSurface: 'ui',
+        executionOriginV1: {
+            v: 1,
+            authority: 'present_user',
+            surface: 'ui',
+            caller: { kind: 'host' },
+            serverId: 'home-1',
+            accountId: 'account-1',
+            actionId: 'identity.providers.secret.replace',
+            requestId: 'request-1',
+        },
+        actionId: 'identity.providers.secret.replace',
+        actionArgs: { owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 3, clientSecret: CLIENT_SECRET },
+        summary: 'Replace the provider secret',
+    };
+}
+
+/** Creates the approval Artifact through the Home's own create route. */
+async function seed(request: ApprovalRequestV2): Promise<void> {
+    const created = await home.artifacts.handle('/v1/artifacts', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: ARTIFACT_ID,
+            header: encodePlainArtifactStoredContent(buildApprovalRequestArtifactHeaderV1(request)),
+            body: encodePlainArtifactStoredContent({ body: JSON.stringify(request) }),
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        }),
+    });
+    expect(created?.status).toBe(200);
+}
+
+/** The decoded request body the Home keeps — what a privacy assertion must inspect. */
+function storedJson(): string {
+    const body = home.artifacts.readPlainBody(ARTIFACT_ID);
+    if (body === null) throw new Error('approval_artifact_missing');
+    return body;
+}
+
+function stored(): ApprovalRequestV2 {
+    return JSON.parse(storedJson());
+}
+
+const params = { credentials: { token: 'synthetic' }, encryption: null, artifactDataKeys: new Map() } as const;
+
+/** One UI client: the real read and the real CAS writer against the validated read. */
+function uiWriter() {
+    return async (request: ApprovalRequestV2) => await writeApprovalRequestArtifact({
+        artifactId: ARTIFACT_ID,
+        request,
+        read: async (artifactId) => await fetchArtifactWithBodyFromApi({ ...params, artifactId }),
+        write: async (basis: DecryptedArtifact, header: ArtifactHeader, body: string) => {
+            await updateArtifactWithHeaderViaApi({
+                ...params, artifactId: ARTIFACT_ID, header, body,
+                getArtifact: () => basis,
+                updateArtifact: () => {},
+            });
+        },
+    });
+}
+
+const approve = (request: ApprovalRequestV2): ApprovalRequestV2 => ({
+    ...request, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 },
+});
+const claim = (request: ApprovalRequestV2): ApprovalRequestV2 => ({ ...request, status: 'executing', updatedAtMs: 3 });
+
+describe('UI approval Artifact writer', () => {
+    beforeEach(() => {
+        home.artifacts.clear();
+    });
+
+    it('lets exactly one of two clients claim approved -> executing', async () => {
+        await seed(approve(openRequest()));
+        const approved = stored();
+        const first = uiWriter();
+        const second = uiWriter();
+
+        // Both clients read the approved row; the first commits its claim
+        // between the second's validated read and its write.
+        home.artifacts.beforeNextUpdate(async () => {
+            await expect(first(claim(approved))).resolves.toEqual({ ok: true });
+        });
+        await expect(second(claim(approved))).resolves.toMatchObject({ ok: false, errorCode: 'version_mismatch' });
+        // A client that reads the winner's claim cannot re-claim it either.
+        await expect(second(claim(approved))).resolves.toMatchObject({ ok: false, errorCode: 'invalid_transition' });
+        expect(stored()).toMatchObject({ status: 'executing' });
+    });
+
+    it('does not let an approval built from an open read overwrite a committed rejection', async () => {
+        const open = openRequest();
+        await seed(open);
+        const approver = uiWriter();
+        const rejecter = uiWriter();
+        home.artifacts.beforeNextUpdate(async () => {
+            await expect(rejecter({
+                ...open, status: 'rejected', updatedAtMs: 2, decision: { kind: 'reject', decidedAtMs: 2 },
+                actionArgs: { owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 3 },
+            })).resolves.toEqual({ ok: true });
+        });
+
+        await expect(approver(approve(open))).resolves.toMatchObject({ ok: false });
+        expect(stored()).toMatchObject({ status: 'rejected', decision: { kind: 'reject' } });
+        expect(storedJson()).not.toContain(CLIENT_SECRET);
+    });
+
+    it('settles only with the declared input projection and keeps operands immutable before settlement', async () => {
+        const open = openRequest();
+        await seed(open);
+        const write = uiWriter();
+
+        await expect(write({ ...approve(open), actionArgs: { ...open.actionArgs as object, id: 'provider-2' } }))
+            .resolves.toMatchObject({ ok: false, errorCode: 'subject_mismatch' });
+        await expect(write(approve(open))).resolves.toEqual({ ok: true });
+        const executing = claim(stored());
+        await expect(write(executing)).resolves.toEqual({ ok: true });
+        // Keeping the raw secret on the terminal write is not the declared projection.
+        await expect(write({ ...executing, status: 'executed', updatedAtMs: 4, execution: { executedAtMs: 4, ok: true, result: {} } }))
+            .resolves.toMatchObject({ ok: false, errorCode: 'subject_mismatch' });
+        await expect(write({
+            ...executing, status: 'executed', updatedAtMs: 4, execution: { executedAtMs: 4, ok: true, result: {} },
+            actionArgs: { owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 3 },
+        })).resolves.toEqual({ ok: true });
+        expect(stored()).toMatchObject({ status: 'executed' });
+        expect(storedJson()).not.toContain(CLIENT_SECRET);
+    });
+});

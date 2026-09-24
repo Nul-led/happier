@@ -6,6 +6,7 @@ import { ExecutionRunActionRequestSchema } from '@happier-dev/protocol';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { readCommandPositionals, readFlagValue } from '@/cli/commands/shared/argvFlags';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
+import { assertSessionCommandArguments } from '@/cli/commands/session/shared/assertSessionCommandArguments';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
   normalizeActionExecuteResult,
@@ -16,6 +17,16 @@ export async function cmdSessionRunAction(
   argv: string[],
   deps: Readonly<{ readCredentialsFn: () => Promise<StoredCredentials | null> }>,
 ): Promise<void> {
+  // The whole argv — the fixed outer Action's three positionals and its one
+  // structured inner-input field — is validated before any credential read, so
+  // an unknown flag or surplus argument can never reach execution silently.
+  assertSessionCommandArguments(argv, {
+    usage: `Usage: ${SESSION_HELP_LINES.runAction}`,
+    startIndex: 2,
+    booleanFlags: ['--json'],
+    valueFlags: ['--input-json'],
+    maxPositionals: 3,
+  });
   const json = wantsJson(argv);
   const [idOrPrefix = '', runId = '', actionId = ''] = readCommandPositionals(argv, {
     startIndex: 2,
@@ -46,6 +57,18 @@ export async function cmdSessionRunAction(
     throw new Error('Invalid --input-json');
   }
 
+  // The fixed outer Action's own schema decides the request before any
+  // credential is read, so a malformed request never reaches execution.
+  const parsedRequest = ExecutionRunActionRequestSchema.safeParse({ runId, actionId, input });
+  if (!parsedRequest.success) {
+    if (json) {
+      await printJsonEnvelope({ ok: false, kind: 'session_run_action', error: { code: 'execution_run_invalid_action_input' } });
+      return;
+    }
+    throw new Error(`Usage: ${SESSION_HELP_LINES.runAction}`);
+  }
+  const request = parsedRequest.data;
+
   const credentials = await deps.readCredentialsFn();
   if (!credentials) {
     if (json) {
@@ -56,7 +79,6 @@ export async function cmdSessionRunAction(
     process.exit(1);
   }
 
-  const request = ExecutionRunActionRequestSchema.parse({ runId, actionId, input });
   const executor = createCliActionExecutorFromCredentials({ credentials });
   const sessionTarget = await executor.resolveSessionTarget(idOrPrefix);
   if (!sessionTarget.ok) {

@@ -122,7 +122,9 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
             allowedNavigation: {
                 changeHome: props.canChangeHome !== false,
                 selectService: props.onChooseAccountService != null,
-                scanOrPasteHome: props.canScanQr === true,
+                // Camera support controls how the restore surface starts, not
+                // whether it exists: every client can paste a Home link.
+                scanOrPasteHome: true,
                 createPersonalHome: props.canCreatePersonalHome === true && props.onCreatePersonalHome != null,
             },
             serviceCatalogState,
@@ -131,7 +133,17 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
         const renderAction = (row: WelcomeEntryModelAction, index: number) => {
             const action = row.action;
             if (action.kind === 'scan_or_paste_home') {
-                return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-scan-existing-home" primary={row.emphasis === 'primary'} title={t('connect.scanExistingHomeQrTitle')} subtitle={t('welcome.welcomeSecondarySubtitle')} iconName="qr-code" onPress={handleLogin} />;
+                const canScanQr = props.canScanQr === true;
+                return <WelcomeActionCard
+                    key={row.id}
+                    actionId={row.id}
+                    testID="welcome-scan-existing-home"
+                    primary={row.emphasis === 'primary'}
+                    title={t(canScanQr ? 'connect.scanExistingHomeQrTitle' : 'connect.enterUrlManually')}
+                    subtitle={t(canScanQr ? 'welcome.welcomeSecondarySubtitle' : 'connect.pairingLinkRequired')}
+                    iconName={canScanQr ? 'qr-code' : 'link'}
+                    onPress={handleLogin}
+                />;
             }
             if (action.kind === 'choose_home') {
                 return <WelcomeActionCard key={row.id} actionId={row.id} testID="welcome-use-different-home" primary={row.emphasis === 'primary'} title={t('welcome.useDifferentHome')} subtitle={options.homeLabel ?? options.serverUrlForCopy} iconName="house" onPress={props.onChangeRelay} />;
@@ -177,7 +189,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                 }
                 return props.onContinueWithHomeAuthentication?.(request);
             };
-            return <WelcomeActionCard key={row.id} actionId={row.id} testID={testID} primary={row.emphasis === 'primary'} title={title} subtitle={subtitle} iconName={presentation.iconName} onPress={invoke} />;
+            return <WelcomeActionCard key={row.id} actionId={row.id} testID={testID} primary={row.emphasis === 'primary'} title={title} subtitle={subtitle} iconName={presentation.iconName} accentColor={request.method.presentation?.connectButtonColor} onPress={invoke} />;
         };
         return (
             <View style={styles.actionStack}>
@@ -213,7 +225,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                             {model.notice.kind === 'service_loading'
                                 ? `${t('common.loading')}${model.notice.serviceName ? ` · ${model.notice.serviceName}` : ''}`
                                 : model.notice.kind === 'service_unavailable'
-                                    ? t('welcome.signInServiceUnavailableTitle')
+                                    ? `${t('welcome.signInServiceUnavailableTitle')}${model.notice.serviceName ? ` · ${model.notice.serviceName}` : ''}`
                                     : model.notice.kind === 'service_methodless'
                                         ? t('welcome.signInServiceMethodlessTitle')
                                         : t('welcome.signInServiceUnsupportedTitle')}
@@ -221,9 +233,11 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                         {model.notice.kind === 'service_loading' ? null : (
                             <Text style={styles.statusText}>
                                 {model.notice.kind === 'service_unavailable'
-                                    ? t('welcome.signInServiceUnavailableBody', {
-                                        serverUrl: model.notice.serviceName ?? accountServiceEntry?.endpoint?.url ?? '',
-                                    })
+                                    ? model.notice.hasUsableHomeMethods
+                                        ? t('welcome.signInServiceUnavailableHomeBody')
+                                        : t('welcome.signInServiceUnavailableBody', {
+                                            service: model.notice.serviceName ?? t('welcome.yourSignInService'),
+                                        })
                                     : model.notice.kind === 'service_methodless'
                                         ? t('welcome.signInServiceMethodlessBody')
                                         : t('welcome.signInServiceUnsupportedBody')}
@@ -262,7 +276,9 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
             </View>
             {options.showAuthActions && options.primaryAction === null ? (
                 <Text testID="welcome-signup-disabled" style={[styles.statusText, styles.signupDisabledNotice]}>
-                    {t('errors.signupDisabled')}
+                    {options.isPersonalHome === true
+                        ? t('personalHome.auth.signupClosed')
+                        : t('errors.signupDisabled')}
                 </Text>
             ) : null}
             <WelcomeActionList admission={actionAdmission}>

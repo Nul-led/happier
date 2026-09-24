@@ -262,6 +262,13 @@ export const TeamCredentialDirectMaterialPreparationRecipientV1Schema = z.object
   recipientContentPublicKeyFingerprint: SourceVersionSchema.nullable(),
   recipientContentPublicKey: RecipientContentPublicKeySchema.nullable(),
   expectedStoredSourceVersion: SourceVersionSchema.nullable(),
+  /**
+   * The Home's census answer for the stored tuple: bound to the published
+   * source version and to the recipient's current encryption binding. The
+   * source adapter alone knows whether its own version moved on, so it
+   * prepares a recipient only when this is false or the version changed.
+   */
+  storedTupleCurrent: z.boolean(),
 }).strict();
 
 export const TeamCredentialDirectMaterialPreparationResponseV1Schema = z.object({
@@ -430,7 +437,16 @@ export function computeTeamCredentialProviderCredentialSlotSourceVersionV1(input
 
 function expectedMatches(payload: TeamCredentialDirectMaterialPayloadV1, expected: TeamCredentialDirectMaterialExpected): boolean {
   if (!expected || typeof expected !== 'object') return false;
-  for (const key of ['homeServerIdentityId', 'teamId', 'resourceId', 'resourceRevision', 'recipientAccountId', 'sourceVersion'] as const) {
+  // What makes prepared material current is the identity of what it carries:
+  // the Home, the Team, the resource, the recipient and the exact source
+  // member and version it was produced from. `resourceRevision` is the
+  // resource's whole authority revision, which a policy-only edit advances
+  // without invalidating any material — the Home keeps the rows and its
+  // readiness census keeps reporting them ready, so requiring equality here
+  // would make an opener the only party that disagrees. It stays in the
+  // payload and the expectation as the preparation's provenance, and the
+  // upload CAS still uses it.
+  for (const key of ['homeServerIdentityId', 'teamId', 'resourceId', 'recipientAccountId', 'sourceVersion'] as const) {
     if (payload[key] !== expected[key]) return false;
   }
   return computeTeamCredentialSourceMemberKeyV1(payload.sourceMember) === expected.sourceMemberKey;

@@ -794,7 +794,24 @@ export function machinesRoutes(app: Fastify) {
             orderBy: { lastActiveAt: 'desc' }
         });
         if (isApiTokenCaller) {
-            return machines.map(serializeExternalActionMachineBootstrapRow);
+            // A Runner is also selectable by the exact Session it was activated
+            // for. That correspondence travels as the activation's persisted,
+            // activation-signed claim — never as a Home-authored Session id — so
+            // the SDK can verify it before sealing. Persistent Machines have none.
+            const runnerIds = machines
+                .filter((machine) => machine.kind === "ephemeral_session_runner")
+                .map((machine) => machine.id);
+            const activations = runnerIds.length === 0 ? [] : await db.ephemeralRunnerActivation.findMany({
+                where: { creatorAccountId: userId, machineId: { in: runnerIds } },
+                select: { machineId: true, claim: true },
+            });
+            const claimByMachineId = new Map(
+                activations.map((activation) => [activation.machineId, activation.claim]),
+            );
+            return machines.map((machine) => serializeExternalActionMachineBootstrapRow({
+                ...machine,
+                activationClaim: claimByMachineId.get(machine.id) ?? null,
+            }));
         }
         if (
             machines.some((machine) =>

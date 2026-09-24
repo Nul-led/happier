@@ -6,9 +6,6 @@ import { Modal } from '@/modal';
 import { sync } from '@/sync/sync';
 import { actionOperationPresentationCoordinator } from '@/components/inbox/actionOperations/actionOperationPresentationRuntime';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
-import {
-    isAutomationTemplateEncryptionMaterialUnavailableError,
-} from '@/sync/domains/automations/automationTemplateAvailability';
 import { useApplySettings } from '@/sync/store/settingsWriters';
 import { storage } from '@/sync/domains/state/storage';
 import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
@@ -39,7 +36,6 @@ import { getMachineCapabilitiesSnapshot } from '@/hooks/server/useMachineCapabil
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import { getModelOptionsForAgentType, type PreflightModelList } from '@/sync/domains/models/modelOptions';
 import {
-    mentionRefV1SurvivesRenderedTokenAlone,
     type BackendTargetRefV2,
     type BackendTargetRefV2Input,
     type PersistedBackendTargetRefV2,
@@ -47,17 +43,12 @@ import {
     type SecretReferenceOverlayV1,
     type WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
-import type { AcpConfigOptionOverridesV1, ComposerSnapshotV1, MentionRefV1 } from '@happier-dev/protocol';
+import type { AcpConfigOptionOverridesV1, ComposerSnapshotV1 } from '@happier-dev/protocol';
 import type { AttachmentDraft } from '@/components/sessions/attachments/attachmentDraftModel';
 import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import { nowServerMs } from '@/sync/runtime/time';
-import { buildAutomationRecipeFromSessionAuthoring } from '@/sync/domains/automations/automationRecipeAuthoring';
-import { materializeNewSessionAutomationEditorDraft, replaceExactTurnAutomationRowsWithCurrentTurns } from '@/sync/domains/automations/automationDraft';
-import { captureSessionAutomationAuthority } from '@/sync/domains/automations/sessionAutomationAuthority';
-import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
-import { readExactActiveParentTurn } from '@/components/automations/sessionLifecycle/exactTurnAutomationPrefill';
 import { resolveSessionComposerSend } from '@/sync/domains/input/slashCommands/resolveSessionComposerSend';
 import { executeSessionComposerResolution } from '@/sync/domains/input/slashCommands/executeSessionComposerResolution';
 import { expandPromptTemplateInvocation } from '@/sync/domains/input/slashCommands/expandPromptTemplateInvocation';
@@ -96,7 +87,6 @@ import {
     buildSessionSpawnNewInputV2FromAuthoringDraft,
 } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 import type { SessionAuthoringDraft } from '@/components/sessions/authoring/draft/sessionAuthoringDraft';
-import { isAutomationApiErrorCode } from '@/sync/api/automations/apiAutomations';
 import {
     adoptNewSessionLaunchAttemptCustody,
     createNewSessionLaunchAttempt,
@@ -150,10 +140,9 @@ export type CreatedSessionFollowUpContext = Readonly<{
 
 export type NewSessionAfterCreatedSettlement =
     /**
-     * `sessionId` is null exactly when the accepted writer created no Session:
-     * every Automation arm persists a definition and navigates to it. Reporting
-     * a fabricated id, or reporting `rejected` for a save that succeeded, would
-     * tell the Composer document owner its submitted snapshot never landed.
+     * Reporting a fabricated id, or reporting `rejected` for a submission that
+     * was accepted, would tell the Composer document owner its submitted
+     * snapshot never landed.
      */
     | Readonly<{ status: 'accepted'; sessionId: string | null }>
     | Readonly<{ status: 'rejected' }>;
@@ -184,25 +173,6 @@ export type HandleCreateSessionOptions = Readonly<{
      * document revision remains persistable.
      */
     deferAcceptedDraftClearToDocument?: boolean;
-    /**
-     * This detached semantic submission includes generic Composer attachments.
-     * Automation authoring has no attachment owner, so its writer branches
-     * reject this attempt before they can clear the New Session document.
-     */
-    hasComposerAttachments?: boolean;
-    /**
-     * The structured Composer references this detached semantic submission
-     * carries, already reduced to the canonical positionless identity shape by
-     * the one structured-input envelope builder. The strict V3 execution recipe
-     * persists them verbatim, so an Event Automation keeps what the user
-     * picked. The legacy V2 template stores the rendered prompt program alone
-     * and therefore refuses exactly the references that program cannot express;
-     * a reference the token DOES carry — a `@docs/README.md` file mention — is
-     * passed through everywhere, because refusing it would remove a flow that
-     * works today. `mentionRefV1SurvivesRenderedTokenAlone` owns the per-kind
-     * split next to the kinds themselves.
-     */
-    composerReferences?: readonly MentionRefV1[];
     /**
      * D2: relaunch under the newly-selected connected-service account WITHOUT resume continuity, after
      * the "switch unavailable" dialog offered "start fresh". Drops the vendor resume reference so the
@@ -352,8 +322,6 @@ export function useCreateNewSession(params: Readonly<{
     resumeSessionId: string;
     agentNewSessionOptions?: Record<string, unknown> | null;
     authoringDraft?: SessionAuthoringDraft | null;
-    automationsEnabled?: boolean;
-    onAutomationDraftChange?: (next: NonNullable<SessionAuthoringDraft['automation']>) => void;
     authoringCommitPending?: boolean;
     mcpSelection?: SessionMcpSelectionV1 | null;
     windowsRemoteSessionLaunchModeOverride?: WindowsRemoteSessionLaunchMode | null;
@@ -481,7 +449,7 @@ export function useCreateNewSession(params: Readonly<{
         }
         const current = latestParamsRef.current;
         if (!canCreateSessionWithInitialAccess(current.authoringDraft?.access, collaborationAvailabilityRef.current)) {
-            Modal.alert(t('common.error'), t('session.access.updateRequired'));
+            Modal.alert(t('common.error'), t('session.collaboration.accessUnavailableReason'));
             reportAfterCreatedSettlement({ status: 'rejected' });
             return;
         }
@@ -713,48 +681,6 @@ export function useCreateNewSession(params: Readonly<{
             const isLaunchScopeStillActive = (): boolean => (
                 mountedRef.current && isLaunchScopeStillCurrent()
             );
-            const captureExactTurnCurrentness = (
-                automation: NonNullable<SessionAuthoringDraft['automation']>,
-            ): (() => boolean) | null => {
-                const accountLifetime = captureActiveServerAccountScopeLifetime();
-                const exactDefinitions = automation.triggers.flatMap((trigger) => (
-                    trigger.definition.kind === 'sessionLifecycle'
-                    && trigger.definition.policy.kind === 'currentTurn'
-                        ? [{
-                            definition: trigger.definition,
-                            sourceTurnId: trigger.definition.policy.sourceTurnId,
-                        }]
-                        : []
-                ));
-                const authorities = exactDefinitions.flatMap(({ definition, sourceTurnId }) => {
-                    const sourceSessionId = definition.sourceSessionId;
-                    const authority = captureSessionAutomationAuthority({
-                        session: storage.getState().sessions[sourceSessionId] ?? null,
-                        routeSessionId: sourceSessionId,
-                        routeServerId: resolvedTargetServerId,
-                        activeServerId: getActiveServerSnapshot().serverId,
-                        automationsEnabled: current.automationsEnabled === true,
-                        accountSettings: storage.getState().settings,
-                        accountLifetime,
-                        readCurrent: () => ({
-                            session: storage.getState().sessions[sourceSessionId] ?? null,
-                            routeSessionId: sourceSessionId,
-                            routeServerId: resolvedTargetServerId,
-                            activeServerId: getActiveServerSnapshot().serverId,
-                            automationsEnabled: latestParamsRef.current.automationsEnabled === true,
-                            accountSettings: storage.getState().settings,
-                        }),
-                    });
-                    return authority ? [{ authority, sourceSessionId, sourceTurnId }] : [];
-                });
-                if (authorities.length !== exactDefinitions.length) return null;
-                return () => isLaunchScopeStillActive() && authorities.every((entry) => (
-                    entry.authority.isCurrent()
-                    && readExactActiveParentTurn(storage.getState().sessions[entry.sourceSessionId])?.sourceTurnId
-                        === entry.sourceTurnId
-                ));
-            };
-
             const sessionPrompt = opts?.inputTextOverride ?? current.promptStore.getPrompt();
             const shouldSendInitialMessage = (opts?.initialMessage ?? 'send') !== 'skip';
             const shouldPrepareInitialMessage = shouldSendInitialMessage && sessionPrompt.trim();
@@ -781,33 +707,6 @@ export function useCreateNewSession(params: Readonly<{
                 current.setIsCreating(false);
                 return;
             }
-
-            /**
-             * The one place an Automation writer refuses a Composer submission
-             * whose semantics it cannot persist. Attachments have no Automation
-             * owner at all.
-             *
-             * The plural New Session recipe target takes a rendered instruction
-             * string. A reference whose identity cannot survive that string must
-             * fail closed; ordinary file mentions remain representable text.
-             */
-            const unpersistableComposerReferenceForRenderedPromptOnly = opts?.composerReferences
-                ?.find((reference) => !mentionRefV1SurvivesRenderedTokenAlone(reference))
-                ?? null;
-            const rejectUnsupportedComposerSemanticsForAutomation = (): boolean => {
-                const unpersistableComposerReference = unpersistableComposerReferenceForRenderedPromptOnly;
-                if (opts?.hasComposerAttachments !== true && !unpersistableComposerReference) {
-                    return false;
-                }
-                Modal.alert(t('common.error'), unpersistableComposerReference
-                    ? t('automations.unsupportedReference', {
-                        reference: unpersistableComposerReference.token,
-                    })
-                    : t('newSession.failedToStart'));
-                reportAfterCreatedSettlement({ status: 'rejected' });
-                current.setIsCreating(false);
-                return true;
-            };
 
             if (!selectedMachineId) {
                 Modal.alert(t('common.error'), t('newSession.noMachineSelected'));
@@ -1043,50 +942,6 @@ export function useCreateNewSession(params: Readonly<{
                     ?? null,
                 automation: current.authoringDraft?.automation ?? null,
             });
-            const activeAutomationDraft = authoringDraft.automation ?? null;
-            if (activeAutomationDraft !== null) {
-                if (rejectUnsupportedComposerSemanticsForAutomation()) {
-                    return;
-                }
-                if (!agentTarget || !selectedMachineId) {
-                    Modal.alert(t('common.error'), t('newSession.failedToStart'));
-                    current.setIsCreating(false);
-                    return;
-                }
-                const isAutomationAuthoringCurrent = captureExactTurnCurrentness(activeAutomationDraft);
-                if (!isAutomationAuthoringCurrent) {
-                    Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
-                    current.setIsCreating(false);
-                    return;
-                }
-                const spawn = buildSessionServerStartSpawnDraftV1FromAuthoringDraft({
-                    draft: { ...authoringDraft, ...spawnSessionExtras },
-                    permissionMode: spawnPermissionMode,
-                    configurationUpdatedAtMs: spawnPermissionModeUpdatedAt,
-                });
-                const recipe = await buildAutomationRecipeFromSessionAuthoring({
-                    credentials: sync.getCredentials(),
-                    templateVersion: 1,
-                    prompt: normalizedSessionPrompt,
-                    target: { kind: 'newSession', spawn },
-                    ...(sync.encryption ? {
-                        encryptRaw: (value) => sync.encryption!.encryptAutomationTemplateRaw(value),
-                    } : {}),
-                    isCurrent: isAutomationAuthoringCurrent,
-                });
-                await sync.saveAutomationEditorDraft(materializeNewSessionAutomationEditorDraft({
-                    draft: activeAutomationDraft,
-                    executionRecipe: recipe,
-                    assignments: [{ machineId: selectedMachineId, enabled: true, priority: 100 }],
-                }), { isCurrent: isAutomationAuthoringCurrent });
-                current.disableDraftPersistence?.();
-                await clearCompletedDraft();
-                await sync.refreshAutomations();
-                reportAfterCreatedSettlement({ status: 'accepted', sessionId: null });
-                current.router.replace('/automations' as any);
-                return;
-            }
-
             const strictV2ConfigurationOptionKeys = new Set(
                 Object.keys(spawnSessionExtras.sessionConfigOptionOverrides?.overrides ?? {}),
             );
@@ -1670,61 +1525,6 @@ export function useCreateNewSession(params: Readonly<{
                 },
             });
             if (!mountedRef.current) return;
-            if (isAutomationTemplateEncryptionMaterialUnavailableError(error)) {
-                Modal.alert(
-                    t('settingsAccount.restoreRequiredTitle'),
-                    t('settingsAccount.secretKeyMissing'),
-                );
-                latestParamsRef.current.setIsCreating(false);
-                return;
-            }
-            if (isAutomationApiErrorCode(error, 'automation_stored_content_unavailable')) {
-                Modal.alert(
-                    t('settingsPlugins.eventAutomationComposer.storedContentUnavailableTitle'),
-                    t('settingsPlugins.eventAutomationComposer.storedContentUnavailableBody'),
-                );
-                latestParamsRef.current.setIsCreating(false);
-                return;
-            }
-            if (isAutomationApiErrorCode(error, 'automation_template_version_conflict')) {
-                Modal.alert(t('common.error'), t('automations.edit.updateFailed'));
-                latestParamsRef.current.setIsCreating(false);
-                return;
-            }
-            if (
-                isAutomationApiErrorCode(error, 'sourceTurnNotCurrent')
-                || isAutomationApiErrorCode(error, 'sourceTurnNotInProgress')
-                || isAutomationApiErrorCode(error, 'sourceTurnUnavailable')
-                || isAutomationApiErrorCode(error, 'sourceSessionUnavailable')
-                || (error instanceof Error && error.message === 'Automation authoring authority changed')
-            ) {
-                const latest = latestParamsRef.current;
-                const automation = latest.authoringDraft?.automation ?? null;
-                const replacement = automation
-                    ? replaceExactTurnAutomationRowsWithCurrentTurns({
-                        automation,
-                        readExactTurn: (sourceSessionId) => readExactActiveParentTurn(
-                            storage.getState().sessions[sourceSessionId],
-                        ),
-                    })
-                    : null;
-                const shouldReplace = replacement && replacement.canReplace && replacement.changed && latest.onAutomationDraftChange
-                    ? await Modal.confirm(
-                        t('automations.exactTurn.staleTitle'),
-                        t('automations.exactTurn.staleBody'),
-                        {
-                            cancelText: t('common.cancel'),
-                            confirmText: t('automations.exactTurn.useCurrentTurn'),
-                        },
-                    )
-                    : false;
-                if (shouldReplace && replacement) latest.onAutomationDraftChange?.(replacement.automation);
-                else if (!replacement || !replacement.changed || !replacement.canReplace) {
-                    Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
-                }
-                latestParamsRef.current.setIsCreating(false);
-                return;
-            }
             let errorMessage = error instanceof Error
                 ? error.message
                 : t('newSession.failedToStart');

@@ -10,6 +10,7 @@ import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
     publishSessionCollaborationIntent,
     type SessionCollaborationFocusTarget,
+    type SessionCollaborationHandoff,
 } from './sessionCollaborationIntent';
 
 /**
@@ -51,7 +52,14 @@ export function useConsumeSessionCollaborationRouteFocus(): () => void {
     }, [router]);
 }
 
-/** One exact-target command shared by the Session header, composer and detached routes. */
+/**
+ * One exact-target command shared by the Session header, composer and detached routes.
+ *
+ * The returned command takes an options bag rather than a positional handoff
+ * value because it is also wired straight to press handlers (`Item`, the header
+ * entry, and the composer chip's `onOpen`, which calls it with its focus-return
+ * ref). Those callers hand it an object that simply carries no `query`.
+ */
 export function useOpenSessionCollaboration(input: Readonly<{
     /**
      * The exact Session. A released deep link may be unqualified, in which case
@@ -63,7 +71,7 @@ export function useOpenSessionCollaboration(input: Readonly<{
     pane?: Pick<AppPaneScopeApi, 'openRight' | 'setRightTab'>;
     replace?: boolean;
     focusTarget?: SessionCollaborationFocusTarget;
-}>): () => void {
+}>): (handoff?: SessionCollaborationHandoff) => void {
     const router = useRouter();
     const cockpitNavigation = useSessionCockpitSurfaceNavigation();
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
@@ -74,10 +82,12 @@ export function useOpenSessionCollaboration(input: Readonly<{
     const replace = input.replace === true;
     const focusTarget = input.focusTarget ?? 'top';
 
-    return React.useCallback(() => {
+    return React.useCallback((handoff?: SessionCollaborationHandoff) => {
         if (!sessionId) return;
         if (serverId) {
-            publishSessionCollaborationIntent({ serverId, sessionId }, focusTarget);
+            // The query stays in the in-process mailbox only: a private roster
+            // search is mounted-surface state, not route state.
+            publishSessionCollaborationIntent({ serverId, sessionId }, focusTarget, handoff?.query);
         }
         if (serverId && openRight && cockpitNavigation) {
             cockpitNavigation.switchSurface('collaboration');

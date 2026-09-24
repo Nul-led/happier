@@ -292,6 +292,58 @@ describe("managed GitHub App registration lifecycle", () => {
         })).resolves.toMatchObject({ cursor: expect.any(Number) });
     });
 
+    it("reports the identity permissions a Home-owned sign-in provider needs without any Team connection", async () => {
+        const actorAccountId = await createAccount("owner");
+        const created = await createHomeGitHubAppRegistration({
+            actorAccountId,
+            input: {
+                githubHost: "https://github.com",
+                githubAppId: 180n,
+                githubClientId: "Iv1.home-signin",
+                secrets: { v: 1, privateKey: "home-signin-private-key" },
+            },
+        });
+        if (created.status !== "created") throw new Error("expected created registration");
+        const installation = await db.gitHubAppInstallation.create({
+            data: {
+                registrationId: created.registration.id,
+                githubInstallationId: 181n,
+                githubOrganizationId: 182n,
+                githubOrganizationLogin: "HomeSignIn",
+                repositorySelection: "all",
+                state: "verified",
+                verifiedPermissions: {},
+                verifiedEvents: [],
+            },
+        });
+        // A Home managed-GitHub sign-in provider has no Team connection at all; it is still
+        // the consumer whose organization evidence the installation must be granted.
+        await db.identityProviderInstance.create({
+            data: {
+                ownerTeamId: null,
+                kind: "github_app_identity",
+                displayName: "HomeSignIn GitHub",
+                config: { v: 1, kind: "github_app_identity" },
+                githubAppInstallationId: installation.id,
+            },
+        });
+
+        await expect(listGitHubAppRegistrations({
+            actorAccountId,
+            owner: { kind: "home" },
+        })).resolves.toMatchObject({
+            status: "ready",
+            installations: [{
+                id: installation.id,
+                teamConsumers: [],
+                requirements: {
+                    permissions: { members: "read" },
+                    missingPermissions: [{ permission: "members", required: "read" }],
+                },
+            }],
+        });
+    });
+
     it("withdraws verification, identity, and directory readiness when Home removes a GHES origin", async () => {
         const actorAccountId = await createAccount("owner");
         const githubHost = "https://github.current-origin.example";
@@ -451,11 +503,15 @@ describe("managed GitHub App registration lifecycle", () => {
             secrets: { v: 1 as const, privateKey: "restricted-private-key" },
         };
 
+        // The actor IS this Team's owner; only the credential the restricted
+        // policy accepts is missing. That is a recoverable authentication
+        // outcome, so it travels as itself rather than collapsing into the
+        // capability refusal a non-administrator gets.
         await expect(createGitHubAppRegistration({ ...unqualified, actorAccountId, owner, input }))
-            .resolves.toEqual({ status: "forbidden" });
+            .resolves.toEqual({ status: "team_authentication_required" });
         await expect(db.gitHubAppRegistration.count()).resolves.toBe(0);
         await expect(listGitHubAppRegistrations({ ...unqualified, actorAccountId, owner }))
-            .resolves.toEqual({ status: "forbidden" });
+            .resolves.toEqual({ status: "team_authentication_required" });
 
         const created = await createGitHubAppRegistration({ ...qualified, actorAccountId, owner, input });
         expect(created).toMatchObject({ status: "created", registration: { githubAppId: 63n } });
@@ -469,7 +525,7 @@ describe("managed GitHub App registration lifecycle", () => {
             registrationId: created.registration.id,
             expectedRevision: created.registration.revision,
             patch: { githubAppSlug: "unqualified-edit" },
-        })).resolves.toEqual({ status: "forbidden" });
+        })).resolves.toEqual({ status: "team_authentication_required" });
         await expect(db.gitHubAppRegistration.findUniqueOrThrow({ where: { id: created.registration.id } }))
             .resolves.toMatchObject({ revision: 1, githubAppSlug: null });
 

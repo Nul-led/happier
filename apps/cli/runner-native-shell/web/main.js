@@ -40,9 +40,23 @@ function handle(value){
   // An outstanding question owns the action area until it is settled; ambient
   // status never removes the only decision the core is waiting for.
   if(pending===null)renderAmbient();return}
- const id=value.requestId,r=value.request;if(!r)return;pending=id;const language=r.chooser?.documentLanguage||r.review?.documentLanguage||r.confirm?.documentLanguage||r.recovery?.documentLanguage;if(language)document.documentElement.lang=language;
+ const id=value.requestId,r=value.request;if(!r)return;pending=id;const language=r.chooser?.documentLanguage||r.registry?.documentLanguage||r.review?.documentLanguage||r.confirm?.documentLanguage||r.recovery?.documentLanguage;if(language)document.documentElement.lang=language;
  if(r.type==='choose_directory'){chooseFolder(id,r.chooser,false);return}
- if(r.type==='review'){renderPanel(r.review.title,r.review.sections,r.review.notice);actions.replaceChildren();button(r.review.declineLabel,()=>settle(id,{v:1,type:'consent_decision',decision:'decline'}));button(r.review.allowLabel,()=>settle(id,{v:1,type:'consent_decision',decision:'allow'}));heading.focus();return}
+ // The private-registry sign-in happens before any installation review. The
+ // token is typed into a masked field and leaves only as this one answer; an
+ // empty field is not an answer, so Sign in keeps the question open.
+ if(r.type==='registry_profile'){const g=r.registry;renderPanel(g.title,[],g.signInAgain?[g.detail,g.signInAgain]:[g.detail]);actions.replaceChildren();
+  const label=document.createElement('label');label.textContent=g.tokenLabel;const token=document.createElement('input');token.type='password';token.autocomplete='off';token.spellcheck=false;label.append(token);actions.append(label);
+  button(g.signInLabel,()=>{const value=(token.value||'').trim();if(!value){token.focus();return}token.value='';settle(id,{v:1,type:'registry_profile_decision',decision:'sign_in',token:value})});
+  button(g.withoutTokenLabel,()=>{token.value='';settle(id,{v:1,type:'registry_profile_decision',decision:'without_token'})});
+  button(g.declineLabel,()=>{token.value='';settle(id,{v:1,type:'registry_profile_decision',decision:'decline'})});token.focus();return}
+ if(r.type==='review'){renderPanel(r.review.title,r.review.sections,r.review.notice);actions.replaceChildren();
+  // Optional plugin access is granted only by turning its own switch on; every
+  // switch starts off and Allow sends exactly these answers.
+  const choices=(r.review.optionalAccess&&r.review.optionalAccess.choices)||[];const selected=new Map(choices.map((c)=>[c.accessId,false]));
+  if(choices.length){const title=document.createElement('p');title.textContent=r.review.optionalAccess.title;actions.append(title);
+   for(const choice of choices){const sw=button(choice.label,()=>{const next=!selected.get(choice.accessId);selected.set(choice.accessId,next);sw.setAttribute('aria-checked',String(next))});sw.setAttribute('role','switch');sw.setAttribute('aria-checked','false')}}
+  button(r.review.declineLabel,()=>settle(id,{v:1,type:'consent_decision',decision:'decline'}));button(r.review.allowLabel,()=>settle(id,{v:1,type:'consent_decision',decision:'allow',...(choices.length?{optionalSelections:[...selected].map(([accessId,value])=>({accessId,selected:value}))}:{})}));heading.focus();return}
  // The close question adds its consequence above the quiet running facts; the
  // endpoint keeps seeing which Session, folder and Agent it is deciding about.
  if(r.type==='confirm_active_close'){renderPanel(r.confirm.title,quietFacts(),[r.confirm.consequence]);actions.replaceChildren();const keep=button(r.confirm.keepOpenLabel,()=>settle(id,{v:1,type:'active_close_decision',decision:'keep_open'}));button(r.confirm.stopLabel,()=>settle(id,{v:1,type:'active_close_decision',decision:'stop'}));keep.focus();return}
@@ -50,5 +64,11 @@ function handle(value){
  // endpoint cannot answer.
  if(r.type==='failure_recovery'){renderPanel(null,[],r.canRetry?[r.recovery.message,r.recovery.question]:[r.recovery.message]);actions.replaceChildren();if(r.canRetry)button(r.recovery.retryLabel,()=>settle(id,{v:1,type:'failure_recovery_decision',decision:'retry'}));button(r.recovery.exitLabel,()=>settle(id,{v:1,type:'failure_recovery_decision',decision:'exit'}));applyFocus(true)}
 }
-listen('runner-core-stdout',e=>{buffer+=e.payload;for(;;){const i=buffer.indexOf('\n');if(i<0)break;const line=buffer.slice(0,i);buffer=buffer.slice(i+1);try{handle(JSON.parse(line))}catch{}}});
-listen('runner-window-close-requested',()=>send({v:1,event:{v:1,type:'close_requested'}}));
+// Tauri delivers an event only to a listener that already exists, and the
+// shell starts the core only on the readiness signal below. Both listeners are
+// therefore awaited first, so the core's first question is never emitted into
+// a page that cannot hear it yet.
+Promise.all([
+ listen('runner-core-stdout',e=>{buffer+=e.payload;for(;;){const i=buffer.indexOf('\n');if(i<0)break;const line=buffer.slice(0,i);buffer=buffer.slice(i+1);try{handle(JSON.parse(line))}catch{}}}),
+ listen('runner-window-close-requested',()=>send({v:1,event:{v:1,type:'close_requested'}})),
+]).then(()=>invoke('runner_renderer_ready'));

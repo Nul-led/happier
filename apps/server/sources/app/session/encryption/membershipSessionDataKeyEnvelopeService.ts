@@ -5,7 +5,6 @@ import {
     encodeMembershipSessionDataKeyEnvelopeCursorV1,
     MembershipSessionDataKeyEnvelopeErrorCodeV1Schema,
     MembershipSessionDataKeyEnvelopeErrorV1Schema,
-    parseEncryptedDataKeyEnvelopeV1,
     PatchMembershipSessionDataKeyEnvelopesV1Schema,
     type MembershipSessionDataKeyEnvelopeExceptionsV1,
     type MembershipSessionDataKeyEnvelopeItemV1,
@@ -25,7 +24,10 @@ import { getTeamGroupForActorInTx } from "@/app/teams/groups/groupService";
 import { getTeamMemberForActorInTx } from "@/app/teams/memberships/memberAdministration";
 import { inTx, type Tx } from "@/storage/inTx";
 
-import { writeSessionDataKeyEnvelopeInTx } from "./sessionDataKeyEnvelopePersistence";
+import {
+    isStructurallyValidSessionDataKeyEnvelope,
+    writeSessionDataKeyEnvelopeInTx,
+} from "./sessionDataKeyEnvelopePersistence";
 import {
     projectRecipientContentKey,
     RECIPIENT_READINESS_SELECT,
@@ -162,11 +164,24 @@ async function resolveSubjectInTx(tx: Tx, input: Readonly<{
     authentication: SessionAccessAuthentication;
 }>): Promise<SubjectResolution> {
     const { actorAccountId, subject } = input;
+    // The verified request credential the route already holds. Without it the Team
+    // visibility owners qualify this caller as an evidence-free present user, so a
+    // restricted Team answers `team_authentication_required` to the very manager who
+    // just qualified for this request. Mapped once, in the shape the Team
+    // qualification owner takes everywhere else.
+    const teamAuthentication = {
+        env: input.authentication.env,
+        authenticationAuthority: input.authentication.authority,
+        ...(input.authentication.authenticationEvidence === undefined
+            ? {}
+            : { authenticationEvidence: input.authentication.authenticationEvidence }),
+    } as const;
     if (subject.kind === "team") {
         const member = await getTeamMemberForActorInTx(tx, {
             teamId: subject.teamId,
             actorAccountId,
             membershipId: subject.teamMembershipId,
+            authentication: teamAuthentication,
         });
         if (!member.ok) return { ok: false, error: member.error };
 
@@ -190,6 +205,7 @@ async function resolveSubjectInTx(tx: Tx, input: Readonly<{
         teamId: subject.teamId,
         actorAccountId,
         groupId: subject.groupId,
+        authentication: teamAuthentication,
     });
     if (!group.ok) return { ok: false, error: group.error };
 
@@ -270,8 +286,13 @@ async function readSessionChunk(tx: Tx, input: Readonly<{
     }));
 }
 
+/**
+ * Absence and structural validity are different facts, and only the second one is
+ * this resource's to decide — so the persistence owner's exported predicate
+ * decides it here too, for every envelope this service classifies.
+ */
 function isStructurallyValid(envelope: Uint8Array | null): boolean {
-    return envelope !== null && parseEncryptedDataKeyEnvelopeV1(envelope) !== null;
+    return envelope !== null && isStructurallyValidSessionDataKeyEnvelope(envelope);
 }
 
 /**
@@ -421,7 +442,7 @@ export async function readMembershipSessionDataKeyEnvelopePage(input: Readonly<{
             });
             let callerInvalidPresent = 0;
             for (const row of presentCallerEnvelopes) {
-                if (parseEncryptedDataKeyEnvelopeV1(new Uint8Array(row.encryptedDataKey)) === null) {
+                if (!isStructurallyValid(new Uint8Array(row.encryptedDataKey))) {
                     callerInvalidPresent += 1;
                 }
             }
@@ -447,7 +468,7 @@ export async function readMembershipSessionDataKeyEnvelopePage(input: Readonly<{
                 },
             });
             const invalidTargets = presentTargetEnvelopes.filter(row => (
-                parseEncryptedDataKeyEnvelopeV1(new Uint8Array(row.encryptedDataKey)) === null
+                !isStructurallyValid(new Uint8Array(row.encryptedDataKey))
             ));
             if (invalidTargets.length > 0) {
                 const invalidTargetSessionIds = invalidTargets.map(row => row.sessionId);
@@ -470,7 +491,7 @@ export async function readMembershipSessionDataKeyEnvelopePage(input: Readonly<{
                         } else {
                             invalidTargetCallerMissingUnowned += 1;
                         }
-                    } else if (parseEncryptedDataKeyEnvelopeV1(caller) === null) {
+                    } else if (!isStructurallyValid(caller)) {
                         invalidTargetCallerInvalid += 1;
                     }
                 }
@@ -523,7 +544,7 @@ function validateRequest(request: unknown): Readonly<{
         } catch {
             return null;
         }
-        if (parseEncryptedDataKeyEnvelopeV1(envelope) === null) return null;
+        if (!isStructurallyValid(envelope)) return null;
         entries.push({ sessionId: entry.sessionId, envelope });
     }
     return { recipientAccountId: parsed.data.recipientAccountId, entries };

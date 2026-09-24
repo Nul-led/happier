@@ -1,17 +1,33 @@
 import {
+  type MarketplaceRegistryProfileRequiredResultV1,
+  type MarketplaceRegistryProfileRequirementV1,
   type PluginRequestInterceptorContributionV1,
+  type PluginInstallReviewPrincipalDigest,
+  type PluginInstallReviewPrincipalPresentationV1,
   type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
 import {
   type ExpectedMarketplaceListingV1,
   type PluginChangePendingReviewResult,
-  type PluginDevelopmentSourceRootReview,
+  type PluginDevelopmentProjectTrustReview,
   type PluginInstallationReview,
   type PluginInstallationReviewRequestInterceptor,
 } from '@happier-dev/protocol/marketplace/internal';
+import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
+import type { PreparedPluginDevelopmentActivationGraph } from '@/plugins/authoring/sourceModule';
+import type { DevelopmentPluginSourceCustody, PluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
+import type { PluginAccessSelection } from '@/plugins/store/install/accessScopeRegistry';
+import type { PluginTrustRecord } from '@/plugins/store/install/trustIdentity';
+import type { PluginStateRecord } from '@/plugins/store/state';
+import type { PluginAuthorityExpansionCategory } from './updateReviewPolicy';
 
 export type PluginChangeRequest =
-  | Readonly<{ kind: 'installPath'; locator: string; development: boolean; sdkRegistryOrigin?: string }>
+  | Readonly<{
+      kind: 'installPath';
+      locator: string;
+      /** Retained only as an explicit managed-install marker; development uses registered roots. */
+      development?: false;
+    }>
   | Readonly<{ kind: 'installArchive'; locator: string; expectedIntegrity?: string }>
   | Readonly<{
       kind: 'installNpm';
@@ -28,6 +44,7 @@ export type PluginChangeRequest =
       pluginId?: string;
       sourceRootPath: string;
       changedPaths?: readonly string[];
+      observedRevision?: number;
       sdkRegistryOrigin?: string;
     }>
   | Readonly<{ kind: 'enable' | 'disable' | 'rollback' | 'forgetTrust'; pluginId: string }>
@@ -90,15 +107,42 @@ export type PluginDataRemovalPartial = Readonly<{
 
 export type PluginChangeApplyResult =
   | PluginChangeSuccess
+  | Readonly<{ kind: 'projectTrustAccepted'; projectRoot: string }>
   | PluginDataRemovalPartial
   | Readonly<{ kind: 'unavailable'; code: string }>
   | Readonly<{ kind: 'conflict'; pluginId: string }>
   | Readonly<{ kind: 'failed'; code: string; message?: string }>
   | Readonly<{ kind: 'outcomeUnknown'; pluginId: string; expectedCandidate?: string }>;
 
+/**
+ * The npm artifact a change needs is served by a registry this Home has no
+ * usable profile for. The shape and the listing rule are the Protocol's
+ * (`MarketplaceRegistryProfileRequirementV1`), so the preparer, the exact
+ * install resolver, the RPC result and every present-user consumer read one
+ * fact. Preparation stops before any package bytes are reviewed and names what
+ * must be selected; the caller selects or creates a profile through the npm
+ * registry profile service, binds it where a marketplace source applies, and
+ * requests the same change again.
+ */
+export type PluginRegistryProfileRequirement = MarketplaceRegistryProfileRequirementV1;
+
+export type PluginRegistryProfileRequiredResult = MarketplaceRegistryProfileRequiredResultV1;
+
+/** Raised by a change preparer; the change owner projects it as {@link PluginRegistryProfileRequiredResult}. */
+export class PluginRegistryProfileRequiredError extends Error {
+  readonly requirement: PluginRegistryProfileRequirement;
+
+  constructor(requirement: PluginRegistryProfileRequirement) {
+    super(`Npm registry '${requirement.registryOrigin}' requires a registry profile on this Home`);
+    this.name = 'PluginRegistryProfileRequiredError';
+    this.requirement = Object.freeze({ ...requirement });
+  }
+}
+
 export type PluginChangeRequestResult =
   | PluginChangePendingReviewResult
   | PluginChangeApplyResult
+  | PluginRegistryProfileRequiredResult
   | Readonly<{ kind: 'busy'; pluginId: string }>;
 
 /**
@@ -110,10 +154,6 @@ export type PluginChangeRequestResult =
  * are taken from the daemon clock where the record is written.
  */
 export type PluginChangeDecision =
-  | Readonly<{
-      pendingChangeId: string;
-      decision: 'trustSourceRoot';
-    }>
   | Readonly<{
       pendingChangeId: string;
       decision: 'installAndTrust';
@@ -186,6 +226,9 @@ export type PluginChangeStatusResult =
 export type PreparedDaemonPluginChangeCandidate = Readonly<{
   pluginId: string;
   review?: PluginInstallationReview;
+  reviewReason?: 'firstInstall' | 'authorityExpansion';
+  currentVersion?: string;
+  authorityExpansion?: readonly PluginAuthorityExpansionCategory[];
   requiresReview?: boolean;
   apply: (decision?: Readonly<{
     optionalSelections: readonly PluginResourceSelection[];
@@ -196,14 +239,50 @@ export type PreparedDaemonPluginChangeCandidate = Readonly<{
   cleanup: () => Promise<void>;
 }>;
 
-export type PreparedDaemonPluginSourceRootApproval = Readonly<{
-  kind: 'sourceRootApprovalRequired';
+/**
+ * Fully evaluated process-local development candidate. The daemon lifecycle
+ * may publish this candidate after review/readiness; persistence may retain
+ * only its root registration/trust facts, never the graph or revision.
+ */
+export type PreparedPluginDevelopmentCandidate = Readonly<{
+  kind: 'preparedDevelopmentCandidate';
+  pluginId: string;
+  sourceAuthority: Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody>;
+  manifest: CanonicalPluginManifest;
+  preparedActivationGraph: PreparedPluginDevelopmentActivationGraph;
+  review?: PluginInstallationReview;
+  reviewReason?: 'firstInstall' | 'authorityExpansion';
+  currentVersion?: string;
+  authorityExpansion?: readonly PluginAuthorityExpansionCategory[];
+  registryRevision?: number;
+  priorOptionalAccess?: readonly PluginAccessSelection[];
+  preservedOptionalAccess?: readonly PluginAccessSelection[] | null;
+  installReviewPrincipal?: Readonly<{
+    digest: PluginInstallReviewPrincipalDigest;
+    presentation: PluginInstallReviewPrincipalPresentationV1;
+  }>;
+  priorInstallReviewPrincipal?: Readonly<{
+    digest: PluginInstallReviewPrincipalDigest;
+    presentation: PluginInstallReviewPrincipalPresentationV1;
+  }>;
+  catalogRecord: PluginStateRecord;
+  trust: PluginTrustRecord;
+  updatePolicy: PluginUpdatePolicyV1;
+  requiresReview: boolean;
+  cleanup: () => Promise<void>;
+}>;
+
+export type PreparedDaemonPluginProjectTrustApproval = Readonly<{
+  kind: 'projectTrustApprovalRequired';
   pendingKey: string;
-  review: PluginDevelopmentSourceRootReview;
-  continueAfterSourceRootApproval: () => Promise<PreparedDaemonPluginChangeCandidate>;
+  review: PluginDevelopmentProjectTrustReview;
+  continueAfterProjectTrustApproval: () => Promise<
+    PreparedDaemonPluginChangeCandidate | PreparedPluginDevelopmentCandidate
+  >;
   cleanup: () => Promise<void>;
 }>;
 
 export type PreparedDaemonPluginChange =
   | PreparedDaemonPluginChangeCandidate
-  | PreparedDaemonPluginSourceRootApproval;
+  | PreparedPluginDevelopmentCandidate
+  | PreparedDaemonPluginProjectTrustApproval;

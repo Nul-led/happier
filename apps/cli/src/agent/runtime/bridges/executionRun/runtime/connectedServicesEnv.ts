@@ -7,15 +7,12 @@ import {
 } from '@/daemon/controlClient';
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
 import {
-    createSpawnConnectedServicesTeamResourceCatalogResolver,
+    createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver,
     resolveSessionSpawnConnectedServicesDefaultsPayload,
 } from '@/session/services/spawnConnectedServicesDefaults';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
 import { logger } from '@/ui/logger';
 import type { ExecutionRunConnectedServicesRegistrationV1 } from '@/daemon/connectedServices/runs/materializeContract';
-import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
-import { configuration } from '@/configuration';
 
 /**
  * Generic (provider-agnostic) connected-services env resolution for execution-run backends.
@@ -110,23 +107,11 @@ function defaultDeps(): MaterializationDeps {
         release: releaseExecutionRunConnectedServices,
         readCredentials: async () => await readStoredCredentials(),
         resolveSessionSpawnDefaults: async (params) => {
-            const accountId = decodeJwtPayload(params.credentials.token)?.sub;
-            const homeDomainAction = createAccountServerActionDeps({
-                token: params.credentials.token,
-                credentials: params.credentials,
-            }).homeDomainAction;
+            const resolveTeamCredentialResourceCatalog =
+                createCredentialsSpawnConnectedServicesTeamResourceCatalogResolver(params.credentials);
             return await resolveSessionSpawnConnectedServicesDefaultsPayload({
                 ...params,
-                ...(typeof accountId === 'string' && accountId.trim() && homeDomainAction
-                    ? {
-                        resolveTeamCredentialResourceCatalog:
-                            createSpawnConnectedServicesTeamResourceCatalogResolver({
-                                homeDomainAction,
-                                serverId: configuration.activeServerId,
-                                accountId: accountId.trim(),
-                            }),
-                    }
-                    : {}),
+                ...(resolveTeamCredentialResourceCatalog ? { resolveTeamCredentialResourceCatalog } : {}),
             });
         },
         runnerPid: process.pid,

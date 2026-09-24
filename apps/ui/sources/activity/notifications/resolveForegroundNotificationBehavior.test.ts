@@ -1,124 +1,247 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { accountSettingsParse } from '@happier-dev/protocol';
+import { PUSH_NOTIFICATION_CATEGORY_IDS } from '@happier-dev/protocol';
 
+import { settingsParse } from '@/sync/domains/settings/settings';
 import { localSettingsParse } from '@/sync/domains/settings/localSettings';
-import { resolveForegroundNotificationBehavior } from './resolveForegroundNotificationBehavior';
+import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+
+import { resetActivityAlertPresentationNotesForTests } from './remoteAlerts/activityAlertPresentationNotes';
+
+// Device secure-credential storage is the only mocked boundary: which Account
+// this device holds for a Home. The saved-Home profiles, the strict remote-alert
+// parser, the exact-Home settings read, the Account policy and the delivery plan
+// all stay real.
+const credentialScopes = new Map<string, ServerAccountScope>();
+vi.mock('@/sync/domains/scope/serverCredentialAccountScope', () => ({
+    resolveServerCredentialAccountScope: async (serverId: string) => {
+        const scope = credentialScopes.get(serverId);
+        return scope ? { kind: 'bound' as const, scope } : { kind: 'signed_out' as const };
+    },
+}));
+
+const serverProfiles = await import('@/sync/domains/server/serverProfiles');
+const { resolveForegroundNotificationBehavior } = await import('./resolveForegroundNotificationBehavior');
+
+type Home = Readonly<{ scope: ServerAccountScope; serverUrl: string; portableId: string }>;
+
+async function clearProfiles(): Promise<void> {
+    for (const profile of serverProfiles.listServerProfiles()) {
+        await serverProfiles.removeServerProfile(profile.id);
+    }
+}
+
+async function enrollHome(name: string, settings: unknown): Promise<Home> {
+    const serverUrl = `https://${name}.example.test`;
+    const profile = await serverProfiles.upsertServerProfile({ serverUrl, name });
+    const portableId = `srv_${name}`;
+    await serverProfiles.setServerProfileIdentityForUrl(profile.serverUrl, portableId);
+    const scope: ServerAccountScope = { serverId: profile.id, accountId: `account-${name}` };
+    credentialScopes.set(scope.serverId, scope);
+    saveAccountSettings(scope, settingsParse(settings), 1);
+    return { scope, serverUrl: profile.serverUrl, portableId };
+}
+
+function readyAlert(home: Home) {
+    return {
+        type: 'activity_alert',
+        v: 2,
+        serverId: home.portableId,
+        sessionId: 'session-1',
+        accountId: home.scope.accountId,
+        event: { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 7 },
+        previewBehavior: 'include_preview',
+    };
+}
+
+const NOON = new Date('2026-09-23T12:00:00.000Z');
+const nothingVisible = () => false;
+
+const QUIET_HOURS_NIGHTLY_UTC = {
+    enabled: true,
+    timezone: 'UTC',
+    windows: [{ startLocalTime: '22:00', endLocalTime: '07:00' }],
+} as const;
 
 describe('resolveForegroundNotificationBehavior', () => {
-    it('prefers device-local notification disablement over synced account settings', () => {
-        expect(resolveForegroundNotificationBehavior({
-            localSettings: {
-                localNotificationsEnabled: false,
-                localNotificationsForegroundBehavior: 'full',
-            },
-            accountSettings: {
-                notificationsSettingsV1: {
-                    v: 1,
-                    pushEnabled: true,
-                    ready: true,
-                    readyIncludeMessageText: true,
-                    requestIncludeMessageText: false,
-                    permissionRequest: true,
-                    userActionRequest: true,
-                    connectedServiceAccountSwitch: true,
-                    connectedServiceQuotaBlocked: true,
-                    connectedServiceQuotaRecovered: true,
-                    foregroundBehavior: 'full',
-                },
-            },
-        })).toBe('off');
+    beforeEach(async () => {
+        credentialScopes.clear();
+        resetActivityAlertPresentationNotesForTests();
+        await clearProfiles();
     });
 
-    it('uses the local device foreground behavior when notifications are enabled', () => {
-        expect(resolveForegroundNotificationBehavior({
-            localSettings: {
-                localNotificationsEnabled: true,
-                localNotificationsForegroundBehavior: 'silent',
-            },
-            accountSettings: {
-                notificationsSettingsV1: {
-                    v: 1,
-                    pushEnabled: true,
-                    ready: true,
-                    readyIncludeMessageText: true,
-                    requestIncludeMessageText: false,
-                    permissionRequest: true,
-                    userActionRequest: true,
-                    connectedServiceAccountSwitch: true,
-                    connectedServiceQuotaBlocked: true,
-                    connectedServiceQuotaRecovered: true,
-                    foregroundBehavior: 'full',
-                },
-            },
-        })).toBe('silent');
+    afterEach(async () => {
+        await clearProfiles();
+        resetActivityAlertPresentationNotesForTests();
     });
 
-    it('falls back to the synced account setting when local preferences are absent', () => {
-        expect(resolveForegroundNotificationBehavior({
+    it('answers with the incoming alert Home policy, not the other enrolled Home', async () => {
+        const homeA = await enrollHome('alpha', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'off' } });
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeB) },
             localSettings: null,
-            accountSettings: {
-                notificationsSettingsV1: {
-                    v: 1,
-                    pushEnabled: true,
-                    ready: true,
-                    readyIncludeMessageText: true,
-                    requestIncludeMessageText: false,
-                    permissionRequest: true,
-                    userActionRequest: true,
-                    connectedServiceAccountSwitch: true,
-                    connectedServiceQuotaBlocked: true,
-                    connectedServiceQuotaRecovered: true,
-                    foregroundBehavior: 'silent',
-                },
-            },
-        })).toBe('silent');
-    });
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('full');
 
-    it('falls back to the default behavior when account settings are malformed', () => {
-        expect(resolveForegroundNotificationBehavior({
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeA) },
             localSettings: null,
-            accountSettings: {
-                notificationsSettingsV1: {
-                    v: 1,
-                    pushEnabled: true,
-                    ready: true,
-                    readyIncludeMessageText: true,
-                    requestIncludeMessageText: false,
-                    permissionRequest: true,
-                    userActionRequest: true,
-                    foregroundBehavior: 'not-a-real-mode',
-                } as never,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
+    });
+
+    it('evaluates a Home push against the push channel, so disabling device local notifications never silences it', async () => {
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeB) },
+            localSettings: { localNotificationsEnabled: false },
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('full');
+    });
+
+    it('presents the current daemon rich push, which names its Home only by URL, on the push channel of that saved Home', async () => {
+        // `withServerUrlInPushData` adds only the client URL; the rich sender never
+        // knows this device's saved Home id.
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: {
+                data: { sessionId: 'session-1', requestId: 'request-1', type: 'permission_request', kind: 'permission', serverUrl: homeB.serverUrl },
+                categoryIdentifier: PUSH_NOTIFICATION_CATEGORY_IDS.permissionRequestV1,
             },
-        })).toBe('full');
+            localSettings: { localNotificationsEnabled: false },
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('full');
     });
 
-    it('uses the unified account delivery foreground behavior when present', () => {
-        expect(resolveForegroundNotificationBehavior({
-            localSettings: {},
-            accountSettings: accountSettingsParse({
-                attentionDeliveryPolicyV1: {
-                    v: 1,
-                    foregroundBehavior: 'silent',
-                },
-            }),
-        })).toBe('silent');
+    it('fails closed for a URL-only push whose Home this device cannot name exactly', async () => {
+        await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: { sessionId: 'session-1', serverUrl: 'https://unknown.example.test' } },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
     });
 
-    it('lets nested device foreground overrides supersede account delivery policy', () => {
-        expect(resolveForegroundNotificationBehavior({
-            localSettings: localSettingsParse({
-                attentionDeviceOverridesV1: {
-                    v: 1,
-                    foregroundBehavior: 'off',
-                },
-            }),
-            accountSettings: accountSettingsParse({
-                attentionDeliveryPolicyV1: {
-                    v: 1,
-                    foregroundBehavior: 'full',
-                },
-            }),
-        })).toBe('off');
+    it('classifies a device-local permission request as a permission request, not as ready', async () => {
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const readyLocalNotificationsOff = localSettingsParse({
+            attentionDeviceOverridesV1: {
+                localNotifications: { events: { ready: false, permission_request: true, user_action_request: true } },
+            },
+        });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: {
+                data: { serverId: homeB.scope.serverId, sessionId: 'session-1', requestId: 'request-1', serverUrl: homeB.serverUrl },
+                categoryIdentifier: PUSH_NOTIFICATION_CATEGORY_IDS.permissionRequestV1,
+            },
+            localSettings: readyLocalNotificationsOff,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('full');
+
+        // The same device setting still silences an actual ready notification.
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: { serverId: homeB.scope.serverId, sessionId: 'session-1', serverUrl: homeB.serverUrl } },
+            localSettings: readyLocalNotificationsOff,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
+    });
+
+    it('suppresses a device-local notification only when its own exact Home Session is visible, never for the same Session id on another Home', async () => {
+        const homeA = await enrollHome('alpha', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const visibleOnA = (address: Readonly<{ serverId: string; sessionId: string }>) =>
+            address.serverId === homeA.scope.serverId && address.sessionId === 'session-1';
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: { serverId: homeB.scope.serverId, sessionId: 'session-1', serverUrl: homeB.serverUrl } },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: visibleOnA,
+        })).resolves.toBe('full');
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: { serverId: homeA.scope.serverId, sessionId: 'session-1', serverUrl: homeA.serverUrl } },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: visibleOnA,
+        })).resolves.toBe('off');
+    });
+
+    it('suppresses a device-local notification whose own channel this device disabled', async () => {
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: { serverId: homeB.scope.serverId, sessionId: 'session-1' } },
+            localSettings: { localNotificationsEnabled: false },
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
+    });
+
+    it('evaluates quiet hours against the supplied instant rather than a fixed one', async () => {
+        const homeB = await enrollHome('bravo', {
+            attentionDeliveryPolicyV1: {
+                v: 1,
+                foregroundBehavior: 'full',
+                quietHours: QUIET_HOURS_NIGHTLY_UTC,
+            },
+        });
+
+        const insideQuietHours = await resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeB) },
+            localSettings: null,
+            now: new Date('2026-09-23T23:30:00.000Z'),
+            isSessionVisible: nothingVisible,
+        });
+        resetActivityAlertPresentationNotesForTests();
+        const outsideQuietHours = await resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeB) },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        });
+
+        // `expo_push` quiet hours default to suppression, so a frozen clock could
+        // never reach this arm.
+        expect(insideQuietHours).toBe('off');
+        expect(outsideQuietHours).toBe('full');
+    });
+
+    it('does not present a Home alert addressed to another Account than the one this device now holds for that Home', async () => {
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        const staleAlert = { ...readyAlert(homeB), accountId: 'account-previously-signed-in' };
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: staleAlert },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
+    });
+
+    it('fails closed when this device cannot name the alert Home Account', async () => {
+        const homeB = await enrollHome('bravo', { attentionDeliveryPolicyV1: { v: 1, foregroundBehavior: 'full' } });
+        credentialScopes.clear();
+
+        await expect(resolveForegroundNotificationBehavior({
+            content: { data: readyAlert(homeB) },
+            localSettings: null,
+            now: NOON,
+            isSessionVisible: nothingVisible,
+        })).resolves.toBe('off');
     });
 });

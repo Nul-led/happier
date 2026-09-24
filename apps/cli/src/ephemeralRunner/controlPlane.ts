@@ -18,6 +18,7 @@ import {
 import { signRunnerConsentV1, type RunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/consent';
 import type { RunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
 import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
+import type { PluginRegistryProfileRequirement, PluginResourceSelection } from '@/plugins/daemon/changeContract';
 import type { RunnerActivationProgressPhaseV1 } from '@happier-dev/protocol/ephemeralRunner/progress';
 import tweetnacl from 'tweetnacl';
 
@@ -114,11 +115,45 @@ export type EphemeralRunnerRuntimeHandle = Readonly<{
  */
 export type ReviewedRunnerPluginAcquisition = Readonly<{
   review: PluginInstallationReview | null;
-  /** Installs and trusts the exact committed generation. A no-op for a bundled Agent. */
-  apply(input: Readonly<{ signal: AbortSignal }>): Promise<void>;
+  /**
+   * Installs and trusts the exact committed generation with the endpoint's own
+   * optional host-access choices. A no-op for a bundled Agent.
+   */
+  apply(input: Readonly<{
+    signal: AbortSignal;
+    optionalSelections: readonly PluginResourceSelection[];
+  }>): Promise<void>;
   /** Releases an undecided prepared candidate on every terminal path. Idempotent. */
   release(): Promise<void>;
 }>;
+
+/**
+ * The canonical plugin change owner could not prepare the reviewed generation
+ * because its registry needs a registry profile on the activation-local Home.
+ * Private registry authentication is the endpoint's explicit selection and is
+ * never inferred from the creator: the endpoint answers, the answer is applied
+ * through the canonical npm registry profile service, and preparation runs
+ * again.
+ */
+export type ReviewedRunnerPluginRegistrySelection = Readonly<{
+  kind: 'registryProfileRequired';
+  requirement: PluginRegistryProfileRequirement;
+  /**
+   * Signs in (or, with `credential: null`, selects without a credential) this
+   * Home's profile for the named registry, then prepares again.
+   */
+  selectRegistryProfile(input: Readonly<{
+    credential: string | null;
+    signal: AbortSignal;
+  }>): Promise<ReviewedRunnerPluginPreparation>;
+}>;
+
+export type ReviewedRunnerPluginPreparation =
+  | ReviewedRunnerPluginAcquisition
+  | ReviewedRunnerPluginRegistrySelection;
+
+/** The endpoint's explicit registry answer; `null` declines the activation. */
+export type EphemeralRunnerRegistryProfileDecision = Readonly<{ credential: string | null }> | null;
 
 export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = Readonly<{
   createConnection(input: Readonly<{
@@ -139,7 +174,7 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
     manifest: Manifest;
     homeDirectory: string;
     signal: AbortSignal;
-  }>): Promise<ReviewedRunnerPluginAcquisition>;
+  }>): Promise<ReviewedRunnerPluginPreparation>;
   prepareAgent(input: Readonly<{
     manifest: Manifest;
     environment: NodeJS.ProcessEnv;
@@ -207,8 +242,26 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
   }>): Promise<void>;
 }>;
 
+/**
+ * The endpoint's one consent answer. Allow carries its choices for the
+ * reviewed plugin's optional host access — each off unless the endpoint user
+ * turned it on — in the canonical plugin-installation selection shape, so the
+ * same change owner that decides every other installation validates them.
+ */
+export type EphemeralRunnerConsentDecision =
+  | Readonly<{ allow: false }>
+  | Readonly<{ allow: true; optionalSelections: readonly PluginResourceSelection[] }>;
+
 export type EphemeralRunnerEndpointUi<Manifest> = Readonly<{
   selectDirectory(input: Readonly<{ signal: AbortSignal }>): Promise<string | null>;
+  /**
+   * Asks the endpoint to sign in to the reviewed plugin's private registry,
+   * before the installation review exists. Declining declines the activation.
+   */
+  requestRegistryProfile(input: Readonly<{
+    requirement: PluginRegistryProfileRequirement;
+    signal: AbortSignal;
+  }>): Promise<EphemeralRunnerRegistryProfileDecision>;
   reviewAndRequestConsent(input: Readonly<{
     review: VerifiedEphemeralRunnerReview<Manifest>;
     /**
@@ -217,7 +270,7 @@ export type EphemeralRunnerEndpointUi<Manifest> = Readonly<{
      */
     pluginInstallation: PluginInstallationReview | null;
     signal: AbortSignal;
-  }>): Promise<boolean>;
+  }>): Promise<EphemeralRunnerConsentDecision>;
   confirmActiveClose(input: Readonly<{
     phase: Extract<EphemeralRunnerEndpointPhase, 'starting' | 'running'>;
     signal: AbortSignal;
@@ -558,17 +611,34 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         // The reviewed Agent's plugin generation is prepared — never installed —
         // before the endpoint is asked to allow anything, so its canonical
         // installation review is part of the one consent decision.
-        pluginAcquisition = await input.dependencies.prepareReviewedPluginAcquisition({
+        let prepared = await input.dependencies.prepareReviewedPluginAcquisition({
           manifest: review.manifest,
           homeDirectory: input.localState.homeDirectory,
           signal: lifetime.signal,
         });
-        const allowed = await input.ui.reviewAndRequestConsent({
+        // A private registry is signed in to only by the endpoint's explicit
+        // answer; a rejected credential asks again, and declining declines.
+        while ('kind' in prepared) {
+          const registryDecision = await input.ui.requestRegistryProfile({
+            requirement: prepared.requirement,
+            signal: lifetime.signal,
+          });
+          if (registryDecision === null) {
+            await connection.decline({ claim, signal: lifetime.signal });
+            return { status: 'declined' };
+          }
+          prepared = await prepared.selectRegistryProfile({
+            credential: registryDecision.credential,
+            signal: lifetime.signal,
+          });
+        }
+        pluginAcquisition = prepared;
+        const decision = await input.ui.reviewAndRequestConsent({
           review,
           pluginInstallation: pluginAcquisition.review,
           signal: lifetime.signal,
         });
-        if (!allowed) {
+        if (!decision.allow) {
           await connection.decline({ claim, signal: lifetime.signal });
           return { status: 'declined' };
         }
@@ -577,7 +647,10 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         // this activation cleanly instead of consenting to a launch that
         // cannot run.
         present('installing_agent');
-        await pluginAcquisition.apply({ signal: lifetime.signal });
+        await pluginAcquisition.apply({
+          signal: lifetime.signal,
+          optionalSelections: decision.optionalSelections,
+        });
         lifetime.signal.throwIfAborted();
         const consentInstallationKey = decodeBase64(input.installation.privateKey, 'base64url');
         let consent: RunnerConsentV1;

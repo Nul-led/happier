@@ -4,7 +4,9 @@ import type { TeamCredentialSourceBindingV1 } from "@happier-dev/protocol/teams"
 
 /**
  * Asks each candidate Pool member whether it can currently run this source for
- * this exact application and model. This is the one server-side reader for that
+ * this exact application and model, or — for an external API key, whose
+ * protocol and model are only known per request — for any application
+ * (`scope: 'source_any'`). This is the one server-side reader for that
  * question: the placement owner ranks only members this reader retained, and
  * every ingress that can reach a Pool placement — external API, Session broker
  * open and the pre-Session Runner selection — uses it so a member is never
@@ -17,11 +19,15 @@ export type TeamCredentialPoolSourceEligibilityReader = (input: Readonly<{
     resourceId: string;
     resourceRevision: number;
     source: TeamCredentialSourceBindingV1;
-    application: ProviderBrokerOpenRequestV1["application"];
-    modelId: string;
-    sourceRevision: string;
     signal: AbortSignal;
-}>) => Promise<Readonly<{
+} & (
+    | {
+        application: ProviderBrokerOpenRequestV1["application"];
+        modelId: string;
+        sourceRevision: string;
+    }
+    | { scope: "source_any" }
+)>) => Promise<Readonly<{
     eligibleMachineIds: ReadonlySet<string>;
     reasons: ReadonlyMap<string, string>;
 }>>;
@@ -50,9 +56,13 @@ export function createTeamCredentialPoolSourceEligibilityReader(
                     resourceId: input.resourceId,
                     expectedResourceRevision: input.resourceRevision,
                     source: input.source,
-                    application: input.application,
-                    modelId: input.modelId,
-                    sourceRevision: input.sourceRevision,
+                    ...("scope" in input
+                        ? { scope: input.scope }
+                        : {
+                            application: input.application,
+                            modelId: input.modelId,
+                            sourceRevision: input.sourceRevision,
+                        }),
                 },
             });
             if (!rpcResult.ok) return [machineId, "source_unavailable"] as const;

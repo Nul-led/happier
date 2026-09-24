@@ -488,6 +488,15 @@ export function createSessionDiscussionRepository(options: Readonly<{
             return;
         }
         applySummary(outcome.value.discussion);
+        // `applySummary` only refreshes a thread that already exists. A reader opening
+        // an existing Discussion for the first time in this repository lifetime has no
+        // thread yet, so the summary this get just proved must seed it; otherwise the
+        // following message read creates an empty thread and the Discussion renders
+        // unavailable after a successful load. Other summary producers (list rows,
+        // lifecycle results) deliberately do not create threads.
+        if (!snapshot.threads[discussionId]) {
+            updateThread(discussionId, { ...emptyThread(), summary: outcome.value.discussion });
+        }
         await refreshMessages(discussionId, signal);
     };
 

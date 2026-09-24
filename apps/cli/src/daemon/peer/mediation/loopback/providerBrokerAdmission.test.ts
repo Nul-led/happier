@@ -20,7 +20,7 @@ function signedAuthority(): SignedProviderBrokerRouteGrantV1 {
   const payload: ProviderBrokerRouteGrantPayloadV1 = {
     v: 1, grantId: 'grant-1', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 10_000,
     teamId: 'team-1', resourceId: 'resource-1',
-    expectedResourceRevision: 7, modelId: 'gpt-5', sourceRevision: 'source-revision-7',
+    sourceRevision: 'source-revision-7',
     initiator: { accountId: 'account-a', machineId: 'machine-a', endpointId: sourceEndpoint },
     target: { custodianAccountId: 'account-b', machineId: 'machine-b', endpointId: targetEndpoint },
     consumer: { kind: 'session', sessionId: 'session-1' },
@@ -153,16 +153,22 @@ describe('provider-broker machine/1 admission', () => {
     await app.close();
   });
 
-  it('rejects an expired broker witness on a later machine stream without invoking the target resolver', async () => {
-    const resolve = vi.fn(async () => ({ port: 46_123 }));
+  it('leaves an authentic expired broker witness to the broker owner, which alone decides what that stream may do', async () => {
+    // The broker owner admits an expired authority only to release the exact
+    // claim it names (see daemonProviderBrokerRuntime tests); here it refuses.
+    const resolve = vi.fn(async () => null);
     const app = createApp(resolve, 10_000);
+    const authority = signedAuthority();
     const result = await app.inject({
       method: 'POST', url: IROH_MACHINE_ADMISSION_PATH,
       headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: sourceEndpoint },
-      payload: { v: 1, kind: 'provider_broker', authority: signedAuthority() },
+      payload: { v: 1, kind: 'provider_broker', authority },
     });
     expect(result.statusCode).toBe(403);
-    expect(resolve).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      authenticatedRemoteEndpointId: sourceEndpoint,
+      authority,
+    }));
     await app.close();
   });
 

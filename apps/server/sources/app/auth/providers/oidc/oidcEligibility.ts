@@ -23,3 +23,31 @@ export function evaluateOidcEligibility(
     }
     return { status: rules.every(rule => rule.matched) ? "eligible" as const : "ineligible" as const, rules };
 }
+
+export type OidcEligibilityEvaluation = ReturnType<typeof evaluateOidcEligibility>;
+
+/**
+ * The single eligibility answer for one identity: the provider instance's rules plus, when the
+ * identity is reached through a Team connection, that connection's additional rules.
+ *
+ * Sign-in admission and the administrator's test diagnostic both consume this, so a Test can
+ * never report `eligible` for a subject the same connection's sign-in refuses. Rules of the same
+ * kind collapse into one outcome because that is the granularity the diagnostic reports.
+ */
+export function evaluateOidcIdentityEligibility(params: Readonly<{
+    allow: OidcAuthProviderInstanceConfig["allow"];
+    additionalAllow?: OidcAuthProviderInstanceConfig["allow"];
+    claims: Readonly<NormalizedOidcIdentityClaims>;
+}>): OidcEligibilityEvaluation {
+    const instanceEvaluation = evaluateOidcEligibility(params.allow, params.claims);
+    if (!params.additionalAllow) return instanceEvaluation;
+
+    const additionalEvaluation = evaluateOidcEligibility(params.additionalAllow, params.claims);
+    const rules: OidcEligibilityEvaluation["rules"] = [];
+    for (const rule of [...instanceEvaluation.rules, ...additionalEvaluation.rules]) {
+        const existing = rules.find(candidate => candidate.kind === rule.kind);
+        if (existing) existing.matched = existing.matched && rule.matched;
+        else rules.push({ kind: rule.kind, matched: rule.matched });
+    }
+    return { status: rules.every(rule => rule.matched) ? "eligible" as const : "ineligible" as const, rules };
+}

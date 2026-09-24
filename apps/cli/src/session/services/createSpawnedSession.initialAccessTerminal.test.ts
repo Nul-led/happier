@@ -21,12 +21,10 @@ import { HAPPIER_SESSION_STARTUP_SPAWN_NONCE_ENV_KEY } from '@/session/runtime/c
 import type { SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 
-const refusal = {
-  kind: 'update_required',
-  operation: 'session.spawn_new',
-  component: 'server',
-  reason: 'session_initial_access_update_required',
-} as const;
+// The Home's typed no-effect refusal when Session sharing is off. It must
+// reach the Action as that reason, never as an update requirement.
+const refusalCode = 'session_access_sharing_unavailable' as const;
+const refusalDetail = { kind: 'session_creation_access_refused', code: refusalCode } as const;
 const initialAccess: SessionInitialAccessDraftV1 = {
   grants: [{ subject: { kind: 'account', accountId: 'recipient' }, accessLevel: 'view', canApprovePermissions: false }],
 };
@@ -37,8 +35,8 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
     reloadConfiguration();
   });
 
-  it.each(['spawn-response', 'nonce-resolution', 'old-server-preflight'] as const)(
-    'returns a no-effect update requirement via %s without creating or attaching a Session',
+  it.each(['spawn-response', 'nonce-resolution', 'sharing-disabled-preflight'] as const)(
+    'returns the typed no-effect sharing refusal via %s without creating or attaching a Session',
     async (mode) => {
       const homeDir = await createTempDir('happier-initial-access-terminal-');
       const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> = [];
@@ -53,8 +51,8 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
         if (request.url === '/v1/features' || request.url === '/v1/features/authenticated') {
           response.end(JSON.stringify({
             features: {
-              sessions: { enabled: true, ...(mode === 'old-server-preflight' ? {} : { collaboration: { enabled: true } }) },
-              sharing: { session: { enabled: true } },
+              sessions: { enabled: true },
+              sharing: { session: { enabled: mode !== 'sharing-disabled-preflight' } },
             },
             capabilities: {
               accountStoredContentCompatibility: {
@@ -76,7 +74,7 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
           response.end(JSON.stringify({ sessions: [] }));
         } else if (request.url === '/v1/sessions' && request.method === 'POST') {
           response.statusCode = 409;
-          response.end(JSON.stringify({ error: 'update_required', ...refusal }));
+          response.end(JSON.stringify({ error: refusalCode }));
         } else {
           response.statusCode = 404;
           response.end(JSON.stringify({ error: 'unexpected_test_request' }));
@@ -179,17 +177,17 @@ describe('initial access terminal refusal through API, daemon HTTP, waiter and A
           signal: AbortSignal.timeout(5_000),
         });
         await startup;
-        expect(startupError).toMatchObject(refusal);
-        expect(result).toEqual({ type: 'error', code: 'update_required', retryable: false, details: refusal });
+        expect(startupError).toMatchObject({ code: refusalCode, retryable: false });
+        expect(result).toEqual({ type: 'error', code: refusalCode, retryable: false });
         expect(await resolveDaemonSpawnSessionByNonce(observedNonce)).toMatchObject({
-          status: 'error', errorCode: 'SPAWN_VALIDATION_FAILED', errorDetail: refusal,
+          status: 'error', errorCode: 'SPAWN_VALIDATION_FAILED', errorDetail: refusalDetail,
         });
         expect(spawnCount).toBe(1);
         expect(awaiters.size).toBe(0);
         expect(resolvers.size).toBe(0);
         expect(timeouts.size).toBe(0);
         const creates = requests.filter((request) => request.url === '/v1/sessions');
-        expect(creates).toHaveLength(mode === 'old-server-preflight' ? 0 : 1);
+        expect(creates).toHaveLength(mode === 'sharing-disabled-preflight' ? 0 : 1);
         if (creates.length) expect(creates[0]?.body).toMatchObject({ initialAccess });
         expect(requests.filter((request) => request.url?.includes('/access-grants/'))).toEqual([]);
       } finally {

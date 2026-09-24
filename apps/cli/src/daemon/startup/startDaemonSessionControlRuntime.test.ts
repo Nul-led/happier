@@ -1287,11 +1287,10 @@ function createHostedWebStaticAssetsRegistry(input: Readonly<{
             ...base,
             identity: { pluginId: base.pluginId, localId: 'preview-web' },
             generatedUiArtifactsManifest: {
-                version: 1,
+                version: 2,
                 entries: [{
-                    contributionId: 'preview-web',
+                    artifactId: 'preview-web',
                     tier: 'hostedWeb',
-                    platform: 'web',
                     entry: 'hosted-web/preview-web/index.html',
                     files: [{
                         relativePath: 'hosted-web/preview-web/index.html',
@@ -1299,9 +1298,8 @@ function createHostedWebStaticAssetsRegistry(input: Readonly<{
                         byteSize: input.byteSize,
                     }],
                     digest: input.digest,
-                    builtWith: { bundler: 'vite', version: '6.0.0' },
-                    hostUiApiVersion: '1.0.0',
-                    compat: {},
+                    builtWith: { staging: 'staticDirectory' },
+                    hostUiApiRange: '^1.0.0',
                 }],
             },
             definition: {
@@ -1623,6 +1621,47 @@ describe('startDaemonSessionControlRuntime', () => {
                 }),
             );
 
+            // The explicit replay checker this composition hands the executor
+            // wins over the executor's own fallback, so it must carry the same
+            // Workflow accepted-authorization owner: a deferred Workflow-origin
+            // approval (exactly as the Workflow coordinator's context stamps it,
+            // with its admitted ceiling as caller permission) replays only while
+            // that owner says the Run's accepted authorization is current.
+            const composedApprovalCurrentness = createCliActionExecutorFromCredentialsMock.mock.calls
+                .at(-1)?.[0]?.isApprovalExecutionOriginCurrent;
+            if (!composedApprovalCurrentness) throw new Error('Expected composed approval currentness');
+            const workflowAuthorization = {
+                admittedPermissionCeiling: 'safe-yolo' as const,
+                principal: { kind: 'host' as const },
+            };
+            const workflowOrigin = {
+                v: 1 as const,
+                authority: 'account_automation' as const,
+                surface: 'agent' as const,
+                caller: {
+                    kind: 'workflowRun' as const,
+                    runId: 'workflow-run-replay',
+                    authorization: workflowAuthorization,
+                },
+                serverId: configuration.activeServerId,
+                accountId: 'account-external-action-ingress',
+                machineId: 'machine-external-action-ingress',
+                callerPermissionMode: workflowAuthorization.admittedPermissionCeiling,
+                actionId: 'machines.pools.delete' as const,
+                requestId: 'workflow-replay-request-1',
+            };
+            const tokenListRequest = vi.spyOn(axios, 'request').mockResolvedValue({
+                status: 200,
+                data: { tokens: [] },
+            });
+            onTestFinished(() => tokenListRequest.mockRestore());
+            await expect(composedApprovalCurrentness({ origin: workflowOrigin })).resolves.toBe(true);
+            expect(workflowAcceptedAuthorizationCurrentness).toHaveBeenCalledWith(
+                expect.objectContaining({ authorization: workflowAuthorization }),
+            );
+            workflowAcceptedAuthorizationCurrentness.mockResolvedValueOnce(false);
+            await expect(composedApprovalCurrentness({ origin: workflowOrigin })).resolves.toBe(false);
+
             const capturePortableTargetExecutor = vi.fn(async () => ({
                 ok: true as const,
                 result: { sessionId: 'session-portable-target' },
@@ -1809,11 +1848,14 @@ describe('startDaemonSessionControlRuntime', () => {
             alphaPath: '/workspace/alpha',
             betaPath: '/workspace/beta',
             mode: 'keep_both_in_sync' as const,
-            changedFiles: 0,
+            endpointStates: {
+                alpha: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+                beta: { connected: true, scanned: true, scanProblemCount: 0, transitionProblemCount: 0 },
+            },
             conflictCount: 0,
-            lastSuccessfulSyncAtMs: 1,
+            lastCycleObservedAtMs: 1,
         };
-        const invokeLocal = vi.fn(async (method: string) => method === RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE
+        const invokeLocal = vi.fn(async (method: string) => method === RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE
             ? conflictStatus
             : { ok: true, result: { handoffId: 'handoff-current' } });
         const apiMachineAtStartup: ApiMachineForTest = {
@@ -1987,7 +2029,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 { signal: controller.signal },
             );
             expect(invokeLocal).toHaveBeenCalledWith(
-                RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
+                RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
                 {
                     actionReceiptId: 'approval-receipt-1',
                     actionInput: conflictInput,
@@ -2369,7 +2411,12 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.2.3',
             agentId: 'codex',
             backendId: 'codex',
-            generation: 'generation-startup-custody',
+            occurrenceId: 'occurrence:happier.agent.codex:startup',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId: 'generation-startup-custody',
+                installSource: 'localPath' as const,
+            },
             runtimeAuthority: {
                 runtimeCapabilities: [],
             },
@@ -2379,7 +2426,8 @@ describe('startDaemonSessionControlRuntime', () => {
             sessionId: 'session-startup-custody',
             pluginId: descriptor.pluginId,
             agentId: descriptor.agentId,
-            generation: descriptor.generation,
+            generation:
+                descriptor.sourceCustody.immutableGenerationId,
         };
         const request = {
             kind: 'create' as const,
@@ -2402,7 +2450,10 @@ describe('startDaemonSessionControlRuntime', () => {
                     pluginId: descriptor.pluginId,
                     pluginVersion: descriptor.pluginVersion,
                     agentId: descriptor.agentId,
-                    generation: descriptor.generation,
+                    generation:
+                        descriptor.sourceCustody.immutableGenerationId,
+                    occurrenceId: descriptor.occurrenceId,
+                    sourceCustody: descriptor.sourceCustody,
                     startupInstructionsVersions: [1],
                     isCurrent: () => true,
                     retirementSignal: new AbortController().signal,
@@ -2528,7 +2579,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.2.3',
             agentId: 'acme-agent',
             localAgentId: 'acme-agent',
-            immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: `sha256:${'1'.repeat(64)}`,
+                installSource: 'localPath',
+            },
             locator: {
                 module: './runtime.mjs',
                 export: 'createRuntime',
@@ -2547,7 +2602,7 @@ describe('startDaemonSessionControlRuntime', () => {
             startedBy: 'daemon',
             pid: runner.pid,
             happySessionId: sessionId,
-            runnerAgentImmutableGenerationId: binding.immutableGenerationId,
+            runnerAgentSourceCustodyV1: binding.sourceCustody,
             processStartTimeMs: runner.processStartTimeMs,
             processCommandHash: runner.processCommandHash,
             agentRuntimeDaemonServiceAuthorityFilePath:
@@ -2662,6 +2717,217 @@ describe('startDaemonSessionControlRuntime', () => {
                 status: 'opened',
                 request: openRequest,
             });
+        } finally {
+            await runtime.stopControlServer();
+        }
+    });
+
+    it('opens an attached Run on its own carried binding, independently of its parent Session and across a parent edit', async () => {
+        // `PLAN.md` §2.3: one open per independently owned Execution Run
+        // binding. The parent Session is on resource A; the Run selected B from
+        // the Home-wide catalog, possibly in another Team.
+        const sessionId = 'session-run-own-binding';
+        const binding = createAgentSessionRunnerFactoryBinding({
+            v: 1,
+            pluginId: 'acme.plugin',
+            pluginVersion: '1.2.3',
+            agentId: 'acme-agent',
+            localAgentId: 'acme-agent',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: `sha256:${'2'.repeat(64)}`,
+                installSource: 'localPath',
+            },
+            locator: {
+                module: './runtime.mjs',
+                export: 'createRuntime',
+                runtimeApiVersion: 1,
+            },
+            normalizedModulePath: '/immutable/acme/runtime.mjs',
+            loadMode: 'immutable-js',
+        });
+        const runner = Object.freeze({
+            pid: 4322,
+            processStartTimeMs: 1_717_171_717_001,
+            processCommandHash: 'b'.repeat(64),
+            snapshotIdentity: 'snapshot:runner-run-binding',
+        });
+        const agentTargetKey = 'agent:acme.plugin/acme-agent';
+        const parentOn = (
+            resourceId: string,
+            teamId: string,
+            modelId: string,
+        ): SpawnSessionOptions => ({
+            directory: '/workspace',
+            teamCredentialBindings: [{
+                v: 1 as const,
+                slot: { kind: 'provider_model' as const },
+                resourceId,
+                expectedResourceRevision: 3,
+                deliveryMode: 'brokered' as const,
+                teamId,
+            }],
+            modelSelection: {
+                v: 1,
+                updatedAt: 1,
+                ref: {
+                    agentTargetKey,
+                    providerConnectionId: null,
+                    modelId,
+                },
+            },
+        });
+        const tracked: TrackedSession = {
+            startedBy: 'daemon',
+            pid: runner.pid,
+            happySessionId: sessionId,
+            runnerAgentSourceCustodyV1: binding.sourceCustody,
+            processStartTimeMs: runner.processStartTimeMs,
+            processCommandHash: runner.processCommandHash,
+            spawnOptions: parentOn('resource-a', 'team-a', 'model-a'),
+        };
+        const openTeamCredentialProviderBinding = vi.fn(async (input: Readonly<{ resourceId: string }>) => ({
+            providerBinding: {
+                source: { kind: 'team_resource' as const, resourceId: input.resourceId, resourceRevision: 5 },
+                model: { id: 'model-b', name: 'Model B' },
+                upstream: {
+                    protocol: 'openai-responses' as const,
+                    normalizedUrl: 'http://127.0.0.1:43123/v1',
+                    credential: 'apiKey' as const,
+                },
+                materialization: { v: 1 as const, kind: 'spawnEnv' as const },
+            },
+            environmentOverlay: [],
+            additionalRedactionValues: [],
+            cleanup: vi.fn(async () => undefined),
+        }));
+        const runtime = await startDaemonSessionControlRuntime({
+            machineId: 'machine-run-own-binding',
+            credentials: {
+                token: 'token-daemon',
+                encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+            },
+            api: {} as never,
+            openTeamCredentialProviderBinding,
+            connectedServicesMaterializationBaseDir: '/tmp/connected-services',
+            getConnectedServiceRefreshCoordinator: () => null,
+            getConnectedServiceQuotasCoordinator: () => null,
+            pidToTrackedSession: new Map([[runner.pid, tracked]]),
+            pidToAwaiter: new Map(),
+            pidToSpawnResultResolver: new Map(),
+            pidToSpawnWebhookTimeout: new Map(),
+            getApiMachineForSessions: () => null,
+            spawnResourceCleanupByPid: new Map(),
+            sessionAttachCleanupByPid: new Map(),
+            connectedServicesRestartRequestedPids: new Set(),
+            beforeShutdown: vi.fn(),
+            onHappySessionWebhook: vi.fn(),
+            requestShutdown: vi.fn(),
+            processEnv: {},
+        });
+
+        try {
+            const dispatch = vi.mocked(startDaemonControlServer)
+                .mock.calls.at(-1)?.[0].agentRuntimeDaemonServices?.dispatch;
+            if (!dispatch) throw new Error('Expected runner Agent daemon-service dispatcher');
+            const context = {
+                sessionId,
+                runner,
+                retainedAgent: binding,
+                trackedSession: tracked,
+                invocationContext: { cwd: '/workspace', environment: {}, providerBindingActive: false },
+                signal: new AbortController().signal,
+            };
+            let openCount = 0;
+            const open = async (operation: Record<string, unknown>) => await dispatch(
+                AgentRuntimeDaemonServiceRequestV1Schema.parse({
+                    v: 1,
+                    context: { token: 'a'.repeat(43), sessionId },
+                    operation: { kind: 'provider_broker.binding.open', requestId: `open-${++openCount}`, ...operation },
+                }),
+                context,
+            );
+            const runB = {
+                resourceId: 'resource-b',
+                expectedResourceRevision: 5,
+                agentTargetKey,
+                modelId: 'model-b',
+                consumer: { kind: 'execution_run', executionRunId: 'run-b' },
+                teamId: 'team-b',
+                deliveryMode: 'brokered',
+                // The Run's own Agent, which need not be its parent Session's.
+                agentId: 'run-agent',
+            };
+
+            await expect(open(runB)).resolves.toMatchObject({
+                ok: true,
+                result: { kind: 'provider_broker.binding', status: 'opened', bindingId: expect.any(String) },
+            });
+            expect(openTeamCredentialProviderBinding).toHaveBeenLastCalledWith(expect.objectContaining({
+                teamId: 'team-b',
+                resourceId: 'resource-b',
+                expectedResourceRevision: 5,
+                deliveryMode: 'brokered',
+                modelId: 'model-b',
+                consumer: { kind: 'execution_run', executionRunId: 'run-b' },
+                agentId: 'run-agent',
+            }));
+
+            // The parent later switches to C. The Run's authority stays its own B.
+            tracked.spawnOptions = parentOn('resource-c', 'team-c', 'model-c');
+            await expect(open({ ...runB, consumer: { kind: 'execution_run', executionRunId: 'run-b2' } })).resolves.toMatchObject({ ok: true });
+            expect(openTeamCredentialProviderBinding).toHaveBeenLastCalledWith(expect.objectContaining({
+                teamId: 'team-b',
+                resourceId: 'resource-b',
+            }));
+            expect(tracked.spawnOptions).toMatchObject({
+                modelSelection: { ref: { modelId: 'model-c' } },
+                teamCredentialBindings: [{ resourceId: 'resource-c', teamId: 'team-c' }],
+            });
+            // A Run that selected nothing inherits its parent's current binding.
+            await expect(open({
+                resourceId: 'resource-c', expectedResourceRevision: 3, agentTargetKey, modelId: 'model-c',
+                consumer: { kind: 'execution_run', executionRunId: 'run-inherits' },
+                agentId: 'acme-agent',
+            })).resolves.toMatchObject({ ok: true });
+            expect(openTeamCredentialProviderBinding).toHaveBeenLastCalledWith(expect.objectContaining({
+                teamId: 'team-c',
+                resourceId: 'resource-c',
+                agentId: 'acme-agent',
+            }));
+            // The Session's own open materializes for the Session's retained Agent.
+            await expect(open({ resourceId: 'resource-c', expectedResourceRevision: 3, agentTargetKey, modelId: 'model-c' }))
+                .resolves.toMatchObject({ ok: true });
+            expect(openTeamCredentialProviderBinding).toHaveBeenLastCalledWith(expect.objectContaining({
+                resourceId: 'resource-c',
+                agentId: 'acme-agent',
+            }));
+
+            // The Session's own open is still decided only by its tracked binding.
+            const calls = openTeamCredentialProviderBinding.mock.calls.length;
+            await expect(open({ resourceId: 'resource-b', expectedResourceRevision: 5, agentTargetKey, modelId: 'model-b' }))
+                .resolves.toMatchObject({ ok: false, error: { code: 'provider_broker_binding_not_current' } });
+            // A Session consumer cannot carry a Run binding, and a Run must carry all of it.
+            await expect(open({
+                resourceId: 'resource-c', expectedResourceRevision: 3, agentTargetKey, modelId: 'model-c',
+                teamId: 'team-b', deliveryMode: 'brokered',
+            })).resolves.toMatchObject({ ok: false, error: { code: 'provider_broker_binding_not_current' } });
+            const { teamId: _teamId, ...runWithoutTeam } = runB;
+            await expect(open(runWithoutTeam)).resolves.toMatchObject({
+                ok: false,
+                error: { code: 'provider_broker_binding_not_current' },
+            });
+            // A Run names its own Agent; a Session never overrides its retained one.
+            const { agentId: _agentId, ...runWithoutAgent } = runB;
+            await expect(open(runWithoutAgent)).resolves.toMatchObject({
+                ok: false,
+                error: { code: 'provider_broker_binding_not_current' },
+            });
+            await expect(open({
+                resourceId: 'resource-c', expectedResourceRevision: 3, agentTargetKey, modelId: 'model-c',
+                agentId: 'run-agent',
+            })).resolves.toMatchObject({ ok: false, error: { code: 'provider_broker_binding_not_current' } });
+            expect(openTeamCredentialProviderBinding).toHaveBeenCalledTimes(calls);
         } finally {
             await runtime.stopControlServer();
         }
@@ -3280,7 +3546,11 @@ describe('startDaemonSessionControlRuntime', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'opencode',
                 localAgentId: purpose.consumer.localId,
-                immutableGenerationId: 'generation-request-auth-g',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-request-auth-g',
+                    installSource: 'localPath',
+                },
                 locator: {
                     module: './agent/runtime.mjs',
                     export: 'createRuntime',
@@ -3297,7 +3567,11 @@ describe('startDaemonSessionControlRuntime', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'pi',
                 localAgentId: piPurpose.consumer.localId,
-                immutableGenerationId: 'generation-pi-request-auth-g',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-pi-request-auth-g',
+                    installSource: 'localPath',
+                },
                 locator: {
                     module: './agent/runtime.mjs',
                     export: 'createRuntime',
@@ -3734,8 +4008,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 authority.path;
             candidate.agentRuntimeDaemonServiceCapabilityHash =
                 authority.capabilityDigest;
-            candidate.runnerAgentImmutableGenerationId =
-                retainedAgent.immutableGenerationId;
+            candidate.runnerAgentSourceCustodyV1 =
+                retainedAgent.sourceCustody;
         };
         for (const candidate of [
             tracked,
@@ -6226,7 +6500,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.0.0',
             agentId: 'claude',
             localAgentId: 'claude',
-            immutableGenerationId: 'generation-composer-attachment',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-composer-attachment',
+                installSource: 'localPath',
+            },
             locator: {
                 module: './runtime.mjs',
                 export: 'createRuntime',
@@ -6542,7 +6820,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.0.0',
             agentId: 'claude',
             localAgentId: 'claude',
-            immutableGenerationId: 'generation-composer-attachment',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-composer-attachment',
+                installSource: 'localPath',
+            },
             locator: {
                 module: './runtime.mjs',
                 export: 'createRuntime',
@@ -6686,7 +6968,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 valueSchema: contribution.definition.valueSchema,
                 preparedValueSchema: contribution.definition.preparedValueSchema,
             })),
-            resolveGenerationLifecycle: () => ({
+            resolveOccurrenceLifecycle: () => ({
                 isCurrent: () => true,
                 retirementSignal: new AbortController().signal,
             }),
@@ -7104,7 +7386,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.0.0',
             agentId: 'claude',
             localAgentId: 'claude',
-            immutableGenerationId: 'generation-composer-source-ref',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-composer-source-ref',
+                installSource: 'localPath',
+            },
             locator: { module: './runtime.mjs', export: 'createRuntime', runtimeApiVersion: 1 },
             normalizedModulePath: '/immutable/runtime.mjs',
             loadMode: 'immutable-js',
@@ -7551,7 +7837,11 @@ describe('startDaemonSessionControlRuntime', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'claude',
                 localAgentId: 'claude',
-                immutableGenerationId: 'generation-g',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-g',
+                    installSource: 'localPath',
+                },
                 locator: {
                     module: './runtime.mjs',
                     export: 'createRuntime',
@@ -7587,8 +7877,8 @@ describe('startDaemonSessionControlRuntime', () => {
             },
             providerBindingActive: true,
         };
-        tracked.runnerAgentImmutableGenerationId =
-            binding.immutableGenerationId;
+        tracked.runnerAgentSourceCustodyV1 =
+            binding.sourceCustody;
         tracked.agentRuntimeDaemonServiceAdmittedTurnId =
             admission.turnId;
         tracked.agentRuntimeDaemonServiceAdmittedInputId =
@@ -7701,7 +7991,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 sessionId: 'session-runner-admission',
                 managedDependencyRetention: {
                     v: 1,
-                    sourceGenerationIds: [],
+                    sourceCustodies: [],
                     qualifiedDependencyIds: [],
                 },
                 correlationId:
@@ -7719,7 +8009,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
                 providerBindingActive: true,
                 signal: expect.any(AbortSignal),
-                isGenerationCurrent:
+                isOccurrenceCurrent:
                     expect.any(Function),
             });
         const closedPluginServices =
@@ -8015,9 +8305,13 @@ describe('startDaemonSessionControlRuntime', () => {
             runtimeBindingBasis: retainedRuntimeBindingBasis,
             pluginId: 'plugin.provider',
             providerLocalId: 'gateway',
-            activationGeneration: 'provider-generation-p',
-            immutableGenerationId:
-                retainedProviderImmutableGenerationId,
+            occurrenceId: 'provider-occurrence-p',
+            sourceCustody: {
+                kind: 'managed' as const,
+                immutableGenerationId:
+                    retainedProviderImmutableGenerationId,
+                installSource: 'localPath' as const,
+            },
             manifestAuthority: 'external',
             operationClaimId: retainedProviderOperationClaimId,
         });
@@ -8030,13 +8324,12 @@ describe('startDaemonSessionControlRuntime', () => {
             v: 1,
             adoptedManagedProviderAuthority: {
                 pluginId: retainedScope.pluginId,
-                immutableGenerationId:
-                    retainedScope.immutableGenerationId,
+                sourceCustody: retainedScope.sourceCustody,
                 manifestAuthority:
                     retainedScope.manifestAuthority,
                 hardRevocationRevisionAtAdmission: 0,
             },
-            sourceGenerationIds: [],
+            sourceCustodies: [],
             qualifiedDependencyIds: [],
         };
         const packagedProviderSpec = Object.freeze({
@@ -8139,10 +8432,10 @@ describe('startDaemonSessionControlRuntime', () => {
                                 input.operationClaim
                                     .runtimeBindingBasis,
                             identity: input.identity,
-                            activationGeneration:
-                                retainedScope.activationGeneration,
-                            immutableGenerationId:
-                                retainedScope.immutableGenerationId,
+                            occurrenceId:
+                                retainedScope.occurrenceId,
+                            sourceCustody:
+                                retainedScope.sourceCustody,
                             manifestAuthority:
                                 retainedScope.manifestAuthority,
                             operationClaimId:
@@ -8156,10 +8449,10 @@ describe('startDaemonSessionControlRuntime', () => {
                 return Object.freeze({
                     bootstrap: Object.freeze({
                         identity: input.identity,
-                        activationGeneration:
-                            retainedScope.activationGeneration,
-                        immutableGenerationId:
-                            retainedScope.immutableGenerationId,
+                        occurrenceId:
+                            retainedScope.occurrenceId,
+                        sourceCustody:
+                            retainedScope.sourceCustody,
                         manifestAuthority:
                             retainedScope.manifestAuthority,
                         operationClaimId:
@@ -8194,10 +8487,10 @@ describe('startDaemonSessionControlRuntime', () => {
                         localId:
                             retainedScope.providerLocalId,
                     },
-                    activationGeneration:
-                        retainedScope.activationGeneration,
-                    immutableGenerationId:
-                        retainedScope.immutableGenerationId,
+                    occurrenceId:
+                        retainedScope.occurrenceId,
+                    sourceCustody:
+                        retainedScope.sourceCustody,
                     manifestAuthority:
                         retainedScope.manifestAuthority,
                     operationClaimId:
@@ -8214,10 +8507,10 @@ describe('startDaemonSessionControlRuntime', () => {
                             pluginId: retainedScope.pluginId,
                             localId: retainedScope.providerLocalId,
                         },
-                        activationGeneration:
-                            retainedScope.activationGeneration,
-                        immutableGenerationId:
-                            retainedScope.immutableGenerationId,
+                        occurrenceId:
+                            retainedScope.occurrenceId,
+                        sourceCustody:
+                            retainedScope.sourceCustody,
                         manifestAuthority:
                             retainedScope.manifestAuthority,
                         operationClaimId:
@@ -8250,7 +8543,11 @@ describe('startDaemonSessionControlRuntime', () => {
         const successorBinding =
             createAgentSessionRunnerFactoryBinding({
                 ...binding,
-                immutableGenerationId: 'generation-h',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-h',
+                    installSource: 'localPath',
+                },
             });
         const releaseRetainedPluginServicesLease =
             vi.fn(async () => {});
@@ -8360,10 +8657,10 @@ describe('startDaemonSessionControlRuntime', () => {
                         kind: 'localPath',
                         canonicalPath: retainedProviderSourceRoot,
                     },
-                    updatePolicy: 'reviewEveryUpdate',
+                    updatePolicy: 'allowed',
                     createdAtMs: 1,
                     immutableGenerationId:
-                        retainedScope.immutableGenerationId,
+                        retainedProviderImmutableGenerationId,
                 });
             await prepareImmutablePluginGeneration({
                 paths: pluginStorePaths,
@@ -8397,7 +8694,7 @@ describe('startDaemonSessionControlRuntime', () => {
                                 retainedProviderSourceRoot,
                         },
                     },
-                    updatePolicy: 'reviewEveryUpdate' as const,
+                    updatePolicy: 'allowed' as const,
                     optionalAccess: [],
                 },
             },
@@ -8424,8 +8721,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 baseRevision: priorCommit?.revision ?? null,
                 installationState:
                     retainedProviderStateReference,
-                pluginGenerations:
-                    priorCommit?.pluginGenerations ?? {},
+                pluginOccurrenceIds:
+                    priorCommit?.pluginOccurrenceIds ?? {},
                 createdAtMs: Date.now(),
                 creator: {
                     pid: process.pid,
@@ -8439,7 +8736,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 paths: pluginStorePaths,
                 pluginId: retainedScope.pluginId,
                 immutableGenerationId:
-                    retainedScope.immutableGenerationId,
+                    retainedProviderImmutableGenerationId,
             }),
         ).resolves.toBe(true);
         const activeRetainedProviderSettings =
@@ -8814,7 +9111,7 @@ describe('startDaemonSessionControlRuntime', () => {
                     .agentRuntimeDaemonServiceCapabilityHash,
             retainedAgentGeneration:
                 tracked
-                    .runnerAgentImmutableGenerationId,
+                    .runnerAgentSourceCustodyV1,
             admittedTurnId:
                 tracked
                     .agentRuntimeDaemonServiceAdmittedTurnId,
@@ -8875,8 +9172,8 @@ describe('startDaemonSessionControlRuntime', () => {
             revokedAuthority.capabilityDigest;
         revokedTracked.agentRuntimeDaemonServiceAuthorityFilePath =
             revokedAuthority.path;
-        revokedTracked.runnerAgentImmutableGenerationId =
-            binding.immutableGenerationId;
+        revokedTracked.runnerAgentSourceCustodyV1 =
+            binding.sourceCustody;
         revokedTracked.activeTurnId = 'turn-hard-revoked';
         revokedTracked.agentRuntimeDaemonServiceAdmittedTurnId =
             'turn-hard-revoked';
@@ -8892,7 +9189,11 @@ describe('startDaemonSessionControlRuntime', () => {
                 pluginVersion: '1.0.0',
                 agentId: 'claude',
                 localAgentId: 'claude',
-                immutableGenerationId: 'generation-h',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-h',
+                    installSource: 'localPath',
+                },
                 locator: {
                     module: './runtime.mjs',
                     export: 'createRuntime',
@@ -8911,8 +9212,8 @@ describe('startDaemonSessionControlRuntime', () => {
             processCommandHash: '8'.repeat(64),
             agentRuntimeDaemonServiceCapabilityHash:
                 'non-target-capability-digest',
-            runnerAgentImmutableGenerationId:
-                nonTargetBinding.immutableGenerationId,
+            runnerAgentSourceCustodyV1:
+                nonTargetBinding.sourceCustody,
             agentRuntimeDaemonServiceAdmittedTurnId:
                 'turn-non-target',
             agentRuntimeDaemonServiceAdmittedInputId:
@@ -8984,8 +9285,8 @@ describe('startDaemonSessionControlRuntime', () => {
             nonTargetTracked.agentRuntimeDaemonServiceCapabilityHash,
         ).toBe('non-target-capability-digest');
         expect.soft(
-            nonTargetTracked.runnerAgentImmutableGenerationId,
-        ).toBe(nonTargetBinding.immutableGenerationId);
+            nonTargetTracked.runnerAgentSourceCustodyV1,
+        ).toBe(nonTargetBinding.sourceCustody);
         expect.soft(
             nonTargetTracked.agentRuntimeDaemonServiceAdmittedTurnId,
         ).toBe('turn-non-target');
@@ -9024,7 +9325,7 @@ describe('startDaemonSessionControlRuntime', () => {
 
         expect.soft(ordinaryRemovalState).toEqual({
             capabilityHash: 'capability-digest',
-            retainedAgentGeneration: binding.immutableGenerationId,
+            retainedAgentGeneration: binding.sourceCustody,
             admittedTurnId: 'turn-exact',
         });
         expect.soft(pidToTrackedSession.get(successor.pid))
@@ -9035,8 +9336,8 @@ describe('startDaemonSessionControlRuntime', () => {
             .toBeUndefined();
         expect.soft(nonTargetTracked.agentRuntimeDaemonServiceCapabilityHash)
             .toBe('non-target-capability-digest');
-        expect.soft(nonTargetTracked.runnerAgentImmutableGenerationId)
-            .toBe(nonTargetBinding.immutableGenerationId);
+        expect.soft(nonTargetTracked.runnerAgentSourceCustodyV1)
+            .toBe(nonTargetBinding.sourceCustody);
         expect.soft(nonTargetTracked.agentRuntimeDaemonServiceAdmittedTurnId)
             .toBe('turn-non-target');
         expect.soft(hardRevocationStopped).toBe(true);
@@ -9067,7 +9368,10 @@ describe('startDaemonSessionControlRuntime', () => {
             ReturnType<typeof startDaemonSessionControlRuntime>
         > | null = null;
         try {
-            const manifest = OPENCODE_PLUGIN_MANIFEST;
+            const manifest = {
+                ...OPENCODE_PLUGIN_MANIFEST,
+                id: 'acme.opencode-agent-claim',
+            };
             const moduleBytes =
                 'export function createRuntime() { throw new Error("unused"); }';
             await mkdir(join(sourceRootPath, '.happier-plugin'), {
@@ -9100,7 +9404,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         kind: 'localPath',
                         canonicalPath: sourceRootPath,
                     },
-                    updatePolicy: 'reviewEveryUpdate',
+                    updatePolicy: 'allowed',
                     createdAtMs: 1,
                     immutableGenerationId,
                 });
@@ -9117,7 +9421,7 @@ describe('startDaemonSessionControlRuntime', () => {
             await persistValidatedAgentSessionRunnerFactories({
                 paths: storePaths,
                 record,
-                manifestAuthority: 'bundled_first_party',
+                manifestAuthority: 'external',
                 factories: [{
                     localAgentId: 'opencode',
                     locator,
@@ -9136,7 +9440,11 @@ describe('startDaemonSessionControlRuntime', () => {
                 pluginVersion: manifest.version,
                 agentId: 'opencode',
                 localAgentId: 'opencode',
-                immutableGenerationId,
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId,
+                    installSource: 'localPath',
+                },
                 locator,
                 normalizedModulePath: 'agent/runtime.mjs',
                 loadMode: 'immutable-js',
@@ -9245,7 +9553,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 operationClaimId,
                 serverId: 'opencode-server',
                 instanceId: 'opencode-agent-claim-instance',
-                immutableGenerationId,
+                sourceCustody: binding.sourceCustody,
                 custodyOwner: 'sessionRunner' as const,
                 mode: 'externalAttach' as const,
                 endpoint: {
@@ -9463,11 +9771,16 @@ describe('startDaemonSessionControlRuntime', () => {
                         v: 1 as const,
                         adoptedManagedProviderAuthority: {
                             pluginId: 'plugin.provider',
-                            immutableGenerationId: 'generation-provider',
+                            sourceCustody: {
+                                kind: 'managed' as const,
+                                immutableGenerationId:
+                                    'generation-provider',
+                                installSource: 'npm' as const,
+                            },
                             manifestAuthority: 'external',
                             hardRevocationRevisionAtAdmission: 7,
                         },
-                        sourceGenerationIds: [],
+                        sourceCustodies: [],
                         qualifiedDependencyIds: [],
                     },
                 }),
@@ -9508,7 +9821,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.0.0',
             agentId: 'runner-agent',
             localAgentId: 'runner-agent',
-            immutableGenerationId: 'generation-g',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-g',
+                installSource: 'localPath',
+            },
             locator: {
                 module: './runtime.mjs',
                 export: 'createRuntime',
@@ -9525,8 +9842,8 @@ describe('startDaemonSessionControlRuntime', () => {
         });
         if (active) {
             tracked.activeTurnId = 'turn-active';
-            tracked.runnerAgentImmutableGenerationId =
-                agentBinding.immutableGenerationId;
+            tracked.runnerAgentSourceCustodyV1 =
+                agentBinding.sourceCustody;
             tracked.agentRuntimeDaemonServiceAdmittedTurnId =
                 'turn-active';
             tracked.agentRuntimeDaemonServiceAdmittedInputId =
@@ -9575,12 +9892,16 @@ describe('startDaemonSessionControlRuntime', () => {
                             v: 1,
                             adoptedManagedProviderAuthority: {
                                 pluginId: 'plugin.provider',
-                                immutableGenerationId:
-                                    'generation-provider',
+                                sourceCustody: {
+                                    kind: 'managed' as const,
+                                    immutableGenerationId:
+                                        'generation-provider',
+                                    installSource: 'npm' as const,
+                                },
                                 manifestAuthority: 'external',
                                 hardRevocationRevisionAtAdmission: 7,
                             },
-                            sourceGenerationIds: [],
+                            sourceCustodies: [],
                             qualifiedDependencyIds: [],
                         },
                         createdAt: 1,
@@ -9730,8 +10051,8 @@ describe('startDaemonSessionControlRuntime', () => {
                 .toBe(combinedPlugin
                     ? tracked.agentRuntimeDaemonServiceCapabilityHash
                     : 'active-agent-capability');
-            expect(candidate.runnerAgentImmutableGenerationId)
-                .toBe(agentBinding.immutableGenerationId);
+            expect(candidate.runnerAgentSourceCustodyV1)
+                .toBe(agentBinding.sourceCustody);
             expect(candidate.agentRuntimeDaemonServiceAdmittedTurnId)
                 .toBe('turn-active');
             expect(candidate.agentRuntimeDaemonServiceAdmittedInputId)
@@ -9889,7 +10210,11 @@ describe('startDaemonSessionControlRuntime', () => {
             pluginVersion: '1.0.0',
             agentId: 'claude',
             localAgentId: 'claude',
-            immutableGenerationId: 'generation-action-g',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-action-g',
+                installSource: 'localPath',
+            },
             locator: {
                 module: './runtime.mjs',
                 export: 'createRuntime',
@@ -9919,8 +10244,8 @@ describe('startDaemonSessionControlRuntime', () => {
         Object.assign(tracked, {
             processStartTimeMs: runner.processStartTimeMs,
             processCommandHash: runner.processCommandHash,
-            runnerAgentImmutableGenerationId:
-                binding.immutableGenerationId,
+            runnerAgentSourceCustodyV1:
+                binding.sourceCustody,
             runnerAgentInvocationContext: {
                 cwd: '/workspace',
                 environment: {},
@@ -9948,7 +10273,7 @@ describe('startDaemonSessionControlRuntime', () => {
             'plugin.runner',
         );
         const createCurrentActions = vi.fn(async (input: Readonly<{
-            isGenerationCurrent(): boolean;
+            isOccurrenceCurrent(): boolean;
         }>) => createPluginInvocationActionsService({
             seed: {
                 plugin: {
@@ -9957,12 +10282,12 @@ describe('startDaemonSessionControlRuntime', () => {
                 },
                 resolveCurrentPluginMaterializationRef:
                     runnerMaterialization.resolveCurrentPluginMaterializationRef,
-                generation: 'generation-current',
+                occurrenceId: 'generation-current',
                 surface: 'agent',
                 session: { id: tracked.happySessionId! },
                 signal: new AbortController().signal,
-                isGenerationCurrent:
-                    input.isGenerationCurrent,
+                isOccurrenceCurrent:
+                    input.isOccurrenceCurrent,
             },
             actionExecutor: { execute: actionEffect },
             invokeContributedAction: async () => {
@@ -10219,8 +10544,8 @@ describe('startDaemonSessionControlRuntime', () => {
                             },
                         }]]),
                     },
-                    resolveCurrentPluginImmutableGenerationId: vi.fn(async () =>
-                        'generation-codex-run-startup-port',
+                    readPluginOccurrenceId: vi.fn(() =>
+                        'occurrence-codex-run-startup-port',
                     ),
                 },
                 source: 'active',

@@ -39,6 +39,20 @@ export { formatPathRelativeToHome } from './formatPathRelativeToHome';
 
 export type SessionState = 'unknown' | 'stale' | 'locked' | 'preparing' | 'repair_needed' | 'access_pending' | 'setup_required' | 'content_unavailable' | 'failed' | 'ready' | 'pending_input' | 'disconnected' | 'recoverable_unservable' | 'resuming' | 'thinking' | 'background_active' | 'waiting' | 'permission_required' | 'action_required';
 
+/**
+ * The canonical presented answer for one Session's awareness: which state it is in, how that
+ * state is worded, and whether it is worth saying at all. It carries no colour, dot, pill
+ * variant or animation — those belong to each presenter's own chrome.
+ */
+export type SessionAwarenessPresentationV1 = Readonly<{
+    state: SessionState;
+    statusText: string;
+    /** The canonical owner's judgement that this state needs no badge (idle online, archived). */
+    quiet: boolean;
+}>;
+
+type UiSessionAwareness = import('@happier-dev/protocol').SessionAwarenessProjectionV1;
+
 export interface SessionStatus {
     /**
      * The canonical projection this status was localized from. Required, not optional: a consumer
@@ -116,6 +130,37 @@ const DEFAULT_SESSION_STATUS_COLORS: SessionStatusColors = {
     error: '#FF3B30',
     default: '#8E8E93',
 };
+
+/**
+ * Per-state chrome for the list/header presenter. It is a lookup beside the one ladder rather
+ * than a second ladder: adding a Session state makes this table fail to compile until its
+ * chrome is stated, which is how the two stayed in step when they were one expression.
+ */
+const SESSION_STATE_STATUS_CHROME: Readonly<Record<SessionState, Readonly<{
+    color: keyof SessionStatusColors;
+    pulse: boolean;
+    disconnected?: boolean;
+}>>> = Object.freeze({
+    waiting: { color: 'connected', pulse: false },
+    unknown: { color: 'default', pulse: false },
+    stale: { color: 'default', pulse: false },
+    locked: { color: 'default', pulse: false },
+    preparing: { color: 'default', pulse: false },
+    repair_needed: { color: 'default', pulse: false },
+    access_pending: { color: 'default', pulse: false },
+    setup_required: { color: 'default', pulse: false },
+    content_unavailable: { color: 'default', pulse: false },
+    failed: { color: 'error', pulse: false },
+    ready: { color: 'connected', pulse: false },
+    pending_input: { color: 'default', pulse: false },
+    disconnected: { color: 'disconnected', pulse: false },
+    recoverable_unservable: { color: 'error', pulse: false, disconnected: true },
+    resuming: { color: 'connecting', pulse: true },
+    thinking: { color: 'connecting', pulse: true },
+    background_active: { color: 'default', pulse: false },
+    permission_required: { color: 'actionRequired', pulse: true },
+    action_required: { color: 'actionRequired', pulse: true },
+});
 
 export function listPendingTranscriptRequests(
     session: Session,
@@ -203,18 +248,28 @@ function resolveRuntimeStatusFreshnessRefreshDelayMs(
         if (staleAtMs > nowMs) expirations.push(staleAtMs);
     }
 
-    if (expirations.length === 0) return null;
-    return Math.min(...expirations.map((expiresAtMs) => Math.max(0, expiresAtMs - nowMs)));
+    // Only a deadline still ahead of this observation can change what is already rendered, and a
+    // past deadline clamped to zero would re-arm the refresh immediately, forever.
+    const delays = expirations
+        .map((expiresAtMs) => expiresAtMs - nowMs)
+        .filter((delayMs) => delayMs > 0);
+    if (delays.length === 0) return null;
+    return Math.min(...delays);
 }
 
 function useRuntimeStatusFreshnessRefresh(input: RuntimeStatusFreshnessRefreshInput): void {
-    const [, refresh] = React.useReducer((value: number) => value + 1, 0);
+    // The revision is a dependency on purpose: one expiration can be followed by a later one from
+    // the same unchanged facts, so the effect must re-evaluate its own next deadline after it
+    // fires. Without it only the first deadline is ever armed and a later staleness transition
+    // stays visually fresh until an unrelated state change.
+    const [freshnessRevision, refresh] = React.useReducer((value: number) => value + 1, 0);
     React.useEffect(() => {
         const delayMs = resolveRuntimeStatusFreshnessRefreshDelayMs(input, Date.now());
         if (delayMs === null) return undefined;
         const timeoutId = setTimeout(refresh, delayMs);
         return () => clearTimeout(timeoutId);
     }, [
+        freshnessRevision,
         input.session.active,
         input.session.activeAt,
         input.session.presence,
@@ -271,6 +326,68 @@ function resolveGetSessionStatusOptions(options?: GetSessionStatusOptionsInput):
  * Get the current state of a session based on presence and thinking status.
  * Uses centralized session state from storage.ts
  */
+/**
+ * The ONE ordering that turns canonical awareness into a presented Session state and its
+ * label. Content readability, an unservable runtime, resuming, an offline or unknown runtime
+ * and staleness all outrank `operational.primary`, which is why a consumer that reads
+ * `operational.primary` alone reports an offline Session as "Online". Every presenter —
+ * the list row, the Session header and the Companion Summary pill — consumes this answer and
+ * adds only its own chrome (colour, dot, pill variant, visibility).
+ */
+export function presentSessionAwarenessV1(
+    awareness: UiSessionAwareness,
+    options?: Readonly<{
+        /** `activeAt` for the "last seen" wording; omit it for a plain disconnected label. */
+        lastSeenAtMs?: number | null;
+        /** The caller's already-chosen working wording; omitted callers get the static one. */
+        workingLabel?: string;
+    }>,
+): SessionAwarenessPresentationV1 {
+    if (awareness.lifecycle === 'archived') {
+        return { state: 'waiting', statusText: t('status.online'), quiet: true };
+    }
+    // Every state the content owner cannot read stays visible and quiet: guessing an operational
+    // state from facts we cannot see is how a blocked session reports itself as working.
+    if (!isSessionAwarenessContentReadableV1(awareness.encryption)) {
+        return { ...presentUnreadableSessionContent(awareness.encryption), quiet: false };
+    }
+    if (awareness.operational.reasons.includes('runtime_unservable')) {
+        return { state: 'recoverable_unservable', statusText: t('status.disconnected'), quiet: false };
+    }
+    if (awareness.operational.reasons.includes('resuming')) {
+        return { state: 'resuming', statusText: t('session.resuming'), quiet: false };
+    }
+    if (awareness.runtime === 'offline') {
+        const lastSeenAtMs = options?.lastSeenAtMs;
+        return {
+            state: 'disconnected',
+            statusText: typeof lastSeenAtMs === 'number'
+                ? t('status.lastSeen', { time: formatLastSeen(lastSeenAtMs, false) })
+                : t('status.disconnected'),
+            quiet: false,
+        };
+    }
+    if (awareness.runtime === 'unknown') return { state: 'unknown', statusText: t('status.unknown'), quiet: false };
+    if (awareness.freshness === 'stale') return { state: 'stale', statusText: t('status.awaitingUpdates'), quiet: false };
+    switch (awareness.operational.primary) {
+        case 'failed': return { state: 'failed', statusText: t('status.error'), quiet: false };
+        case 'action_required': return { state: 'action_required', statusText: t('status.actionRequired'), quiet: false };
+        case 'permission_required': return { state: 'permission_required', statusText: t('status.permissionRequired'), quiet: false };
+        case 'working': return {
+            state: 'thinking',
+            statusText: options?.workingLabel ?? t('status.working'),
+            quiet: false,
+        };
+        case 'ready': return { state: 'ready', statusText: t('status.ready'), quiet: false };
+        case 'pending_input': return { state: 'pending_input', statusText: t('status.queuedInput'), quiet: false };
+        case 'none': return awareness.runtime === 'background_active'
+            ? { state: 'background_active', statusText: t('status.backgroundActive'), quiet: false }
+            // An idle, reachable Session is not news: the canonical presenter has always kept
+            // this one quiet rather than labelling it.
+            : { state: 'waiting', statusText: t('status.online'), quiet: true };
+    }
+}
+
 export function getSessionStatus(session: SessionStatusSource, nowMs: number = Date.now(), options?: GetSessionStatusOptionsInput): SessionStatus {
     const resolvedOptions = resolveGetSessionStatusOptions(options);
     const { vibingIndex, workingTextMode = 'animated', statusColors = DEFAULT_SESSION_STATUS_COLORS } = resolvedOptions;
@@ -283,43 +400,29 @@ export function getSessionStatus(session: SessionStatusSource, nowMs: number = D
     const connected = awareness.runtime !== 'offline' && awareness.runtime !== 'unknown';
     const contentReadable = isSessionAwarenessContentReadableV1(awareness.encryption);
     const canAnimate = awareness.freshness === 'live' && contentReadable;
-    const present = (state: SessionState, statusText: string, color: string, visible = true, pulse = false): SessionStatus => ({
-        awareness, state, statusText, isConnected: connected, shouldShowStatus: visible,
-        statusColor: color, statusDotColor: color, isPulsing: pulse && canAnimate,
+    const idx = typeof vibingIndex === 'number' ? vibingIndex : Math.floor(Math.random() * vibingMessages.length);
+    const presented = presentSessionAwarenessV1(awareness, {
+        lastSeenAtMs: session.activeAt,
+        ...(workingTextMode === 'static'
+            ? {}
+            : { workingLabel: vibingMessages[idx % vibingMessages.length].toLowerCase() + '…' }),
     });
-    if (awareness.lifecycle === 'archived') return present('waiting', t('status.online'), statusColors.default, false);
-    // Every state the content owner cannot read stays visible and quiet: guessing an operational
-    // state from facts we cannot see is how a blocked session reports itself as working.
-    if (!contentReadable) {
-        const unavailable = presentUnreadableSessionContent(awareness.encryption);
-        return present(unavailable.state, unavailable.statusText, statusColors.default);
-    }
-    if (awareness.operational.reasons.includes('runtime_unservable')) {
-        return { ...present('recoverable_unservable', t('status.disconnected'), statusColors.error), isConnected: false };
-    }
-    if (awareness.operational.reasons.includes('resuming')) {
-        return present('resuming', t('session.resuming'), statusColors.connecting, true, true);
-    }
-    if (awareness.runtime === 'offline') {
-        return present('disconnected', t('status.lastSeen', { time: formatLastSeen(session.activeAt, false) }), statusColors.disconnected);
-    }
-    if (awareness.runtime === 'unknown') return present('unknown', t('status.unknown'), statusColors.default);
-    if (awareness.freshness === 'stale') return present('stale', t('status.awaitingUpdates'), statusColors.default);
-    switch (awareness.operational.primary) {
-        case 'failed': return present('failed', t('status.error'), statusColors.error);
-        case 'action_required': return present('action_required', t('status.actionRequired'), statusColors.actionRequired, true, true);
-        case 'permission_required': return present('permission_required', t('status.permissionRequired'), statusColors.actionRequired, true, true);
-        case 'working': {
-            const idx = typeof vibingIndex === 'number' ? vibingIndex : Math.floor(Math.random() * vibingMessages.length);
-            const text = workingTextMode === 'static' ? t('status.working') : vibingMessages[idx % vibingMessages.length].toLowerCase() + '…';
-            return present('thinking', text, statusColors.connecting, true, true);
-        }
-        case 'ready': return present('ready', t('status.ready'), statusColors.connected);
-        case 'pending_input': return present('pending_input', t('status.queuedInput'), statusColors.default);
-        case 'none': return awareness.runtime === 'background_active'
-            ? present('background_active', t('status.backgroundActive'), statusColors.default)
-            : present('waiting', t('status.online'), statusColors.connected, false);
-    }
+    const chrome = SESSION_STATE_STATUS_CHROME[presented.state];
+    // An archived Session is quiet rather than connected; its lifecycle, not its state
+    // vocabulary, is what withholds the live colour.
+    const color = awareness.lifecycle === 'archived'
+        ? statusColors.default
+        : statusColors[chrome.color];
+    return {
+        awareness,
+        state: presented.state,
+        statusText: presented.statusText,
+        isConnected: chrome.disconnected ? false : connected,
+        shouldShowStatus: !presented.quiet,
+        statusColor: color,
+        statusDotColor: color,
+        isPulsing: chrome.pulse && canAnimate,
+    };
 }
 
 /**

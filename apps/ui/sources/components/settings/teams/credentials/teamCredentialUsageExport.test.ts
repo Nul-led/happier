@@ -37,6 +37,61 @@ function rows(csv: string): string[][] {
 }
 
 describe('buildTeamCredentialUsageCsv', () => {
+    it('keeps an estimated cost distinguishable from a reported one in the file', () => {
+        const exportCosts = (cost: TeamCredentialUsageQueryResultV1['totals']['cost']) => {
+            const csv = buildTeamCredentialUsageCsv({
+                resourceName: 'Acme Claude',
+                result: result({
+                    totals: { eventCount: 1, requestCount: 1, tokens: { ...NO_TOKENS, total: 10 }, cost },
+                }),
+                startMs: Date.UTC(2026, 7, 15),
+                endMs: Date.UTC(2026, 8, 14),
+                breakdown: null,
+                breakdownComplete: true,
+                costMode: 'auto',
+            });
+            const [header, total] = rows(csv);
+            const cell = (name: string) => total?.[header?.indexOf(name) ?? -1];
+            return {
+                cost: cell('cost'),
+                mode: cell('cost_mode'),
+                reported: cell('reported_cost'),
+                estimated: cell('estimated_cost'),
+            };
+        };
+
+        const estimated = exportCosts({ ...NO_COST, estimatedUsd: 2, effectiveUsd: 2 });
+        const reported = exportCosts({ ...NO_COST, reportedUsd: 2, effectiveUsd: 2 });
+
+        // Same effective amount, different provenance: the file must say which.
+        expect(estimated.cost).toBe(reported.cost);
+        expect(estimated).toMatchObject({ mode: 'auto', reported: '0', estimated: '2' });
+        expect(reported).toMatchObject({ mode: 'auto', reported: '2', estimated: '0' });
+    });
+
+    it('leaves every cost component blank when the Home could not price the period', () => {
+        const csv = buildTeamCredentialUsageCsv({
+            resourceName: 'Acme Claude',
+            result: result({
+                coverage: {
+                    requestAdmissionCount: 1, agentObservationCount: 1, externalTerminalObservationCount: 0,
+                    directRecordedUseOnly: false, requestCountCoverage: 'complete', tokenCoverage: 'complete',
+                    costCoverage: 'unavailable', unobservedExternalRequestCount: 0,
+                },
+                totals: { eventCount: 1, requestCount: 1, tokens: { ...NO_TOKENS, total: 10 }, cost: NO_COST },
+            }),
+            startMs: Date.UTC(2026, 7, 15),
+            endMs: Date.UTC(2026, 8, 14),
+            breakdown: null,
+            breakdownComplete: true,
+            costMode: 'estimated',
+        });
+        const [header, total] = rows(csv);
+        const cell = (name: string) => total?.[header?.indexOf(name) ?? -1];
+        expect(cell('cost_mode')).toBe('estimated');
+        expect([cell('cost'), cell('reported_cost'), cell('estimated_cost')]).toEqual(['', '', '']);
+    });
+
     it('carries the measurement provenance the screen showed into the file', () => {
         const csv = buildTeamCredentialUsageCsv({
             resourceName: 'Acme Claude',
@@ -44,6 +99,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: null,
+            breakdownComplete: true,
+            costMode: 'auto',
         });
 
         const [header, total] = rows(csv);
@@ -74,6 +131,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: null,
+            breakdownComplete: true,
+            costMode: 'auto',
         });
 
         const [header, total] = rows(csv);
@@ -105,6 +164,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: null,
+            breakdownComplete: true,
+            costMode: 'auto',
         });
 
         const [header, total] = rows(csv);
@@ -118,6 +179,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: null,
+            breakdownComplete: true,
+            costMode: 'auto',
             result: result({
                 totals: {
                     eventCount: 0,
@@ -167,6 +230,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: null,
+            breakdownComplete: true,
+            costMode: 'auto',
         });
 
         const [header, total] = rows(csv);
@@ -194,6 +259,8 @@ describe('buildTeamCredentialUsageCsv', () => {
             startMs: Date.UTC(2026, 7, 15),
             endMs: Date.UTC(2026, 8, 14),
             breakdown: 'member',
+            breakdownComplete: true,
+            costMode: 'auto',
         });
 
         const parsed = rows(csv);
@@ -205,5 +272,44 @@ describe('buildTeamCredentialUsageCsv', () => {
         expect(slice[header.indexOf('key')]).toBe('account-maya');
         expect(slice[header.indexOf('label')]).toBe('Maya Chen');
         expect(slice[header.indexOf('cost')]).toBe('1.25');
+    });
+    it('names the breakdown scope so a paged export is not read as the whole ranking', () => {
+        const paged = {
+            resourceName: 'Acme Claude',
+            result: result({
+                breakdown: [{
+                    key: 'account-maya',
+                    label: 'Maya Chen',
+                    totals: {
+                        eventCount: 2,
+                        requestCount: 7,
+                        tokens: { ...NO_TOKENS, total: 900 },
+                        cost: { ...NO_COST, estimatedUsd: 1.25 },
+                    },
+                }],
+                nextCursor: 'cursor-page-two',
+            }),
+            startMs: Date.UTC(2026, 7, 15),
+            endMs: Date.UTC(2026, 8, 14),
+            breakdown: 'member' as const,
+            costMode: 'auto' as const,
+        };
+
+        const partial = rows(buildTeamCredentialUsageCsv({ ...paged, breakdownComplete: false }));
+        const header = partial[0] ?? [];
+        // The `total` row is always the whole query's total, so a file whose
+        // ranked slices stop at the loaded pages must say which it is.
+        expect(header).toContain('breakdown_scope');
+        expect(partial[1]?.[header.indexOf('breakdown_scope')]).toBe('loaded_pages');
+        expect(partial[2]?.[header.indexOf('breakdown_scope')]).toBe('loaded_pages');
+
+        const complete = rows(buildTeamCredentialUsageCsv({ ...paged, breakdownComplete: true }));
+        expect(complete[2]?.[header.indexOf('breakdown_scope')]).toBe('complete');
+
+        // A file with no ranked slices at all makes no scope claim.
+        const totalsOnly = rows(buildTeamCredentialUsageCsv({
+            ...paged, breakdown: null, breakdownComplete: false,
+        }));
+        expect(totalsOnly[1]?.[header.indexOf('breakdown_scope')]).toBe('');
     });
 });

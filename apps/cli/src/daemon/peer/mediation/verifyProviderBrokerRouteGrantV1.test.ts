@@ -11,7 +11,7 @@ const key = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
 const payload: ProviderBrokerRouteGrantPayloadV1 = {
     v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
     teamId: 'team', resourceId: 'resource',
-    expectedResourceRevision: 7, modelId: 'gpt-5', sourceRevision: 'source-revision-7',
+    sourceRevision: 'source-revision-7',
     initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
     consumer: { kind: 'session', sessionId: 'session' },
@@ -28,7 +28,7 @@ function sign(value = payload): SignedProviderBrokerRouteGrantV1 {
 const input = {
     authority: sign(), nowMs: 150,
     trustRoots: [{ keyId: 'home', publicKey: Buffer.from(key.publicKey).toString('base64url') }],
-    expected: { teamId: payload.teamId, resourceId: payload.resourceId, expectedResourceRevision: payload.expectedResourceRevision, modelId: payload.modelId, sourceRevision: payload.sourceRevision, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application },
+    expected: { teamId: payload.teamId, resourceId: payload.resourceId, sourceRevision: payload.sourceRevision, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application },
     authenticatedRemoteEndpointId: payload.initiator.endpointId,
 };
 
@@ -47,8 +47,6 @@ describe('verifyProviderBrokerRouteGrantV1', () => {
     it('rejects changed exact authority even if a Home signed the substituted grant', () => {
         const substitutes: ProviderBrokerRouteGrantPayloadV1[] = [
             { ...payload, resourceId: 'other' }, { ...payload, teamId: 'other' },
-            { ...payload, expectedResourceRevision: 8 },
-            { ...payload, modelId: 'other-model' },
             { ...payload, sourceRevision: 'other-source-revision' },
             { ...payload, consumer: { kind: 'session', sessionId: 'other' } },
             { ...payload, initiator: { ...payload.initiator, accountId: 'other' } },

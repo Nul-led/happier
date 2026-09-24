@@ -1147,6 +1147,83 @@ describe('VoiceAgentManager', () => {
     await manager.dispose();
   });
 
+  it('never delivers a Voice prompt cancelled while Follow context was still hydrating', async () => {
+    const chatBackendBase = createDeterministicBackend('chat-cancel-during-hydration');
+    // Follow context is only prepared for a runtime that reports provider input
+    // outcomes; a backend without that port never reaches the hydration path at
+    // all, so this case must carry it to exercise the real cancellation seam.
+    const chatBackend = Object.assign({}, chatBackendBase, {
+      subscribeProviderInputOutcomes: (_handler: Parameters<
+        NonNullable<ExecutionRunHostRuntime['subscribeProviderInputOutcomes']>
+      >[0]) => () => undefined,
+    });
+    const replacementBackend = createDeterministicBackend('chat-cancel-during-hydration-replacement');
+    const createBackend = vi.fn<BackendFactory>()
+      .mockReturnValueOnce(chatBackend)
+      .mockReturnValueOnce(replacementBackend);
+    const acknowledgeAccepted = vi.fn();
+    let announceHydrationStarted: (() => void) | null = null;
+    const hydrationStarted = new Promise<void>((resolve) => { announceHydrationStarted = resolve; });
+    let releaseHydration!: () => void;
+    const hydrationReleased = new Promise<void>((resolve) => { releaseHydration = resolve; });
+    const prepareFollowContext = vi.fn(async () => {
+      announceHydrationStarted?.();
+      await hydrationReleased;
+      return {
+        updates: [{
+          v: 1 as const,
+          kind: 'session_follow_update' as const,
+          edge: { sourceSessionId: 'source', destinationSessionId: 'voice-session' },
+          reason: 'source_changed' as const,
+          deliveryIntent: 'context_only' as const,
+          observed: { transcriptSeq: 4, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+          awareness: {
+            v: 1 as const,
+            sessionId: 'source',
+            lifecycle: 'ready' as const,
+            runtime: 'idle' as const,
+            freshness: 'live' as const,
+            operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+            encryption: 'plain' as const,
+            availability: 'complete' as const,
+          },
+          recentMessages: [],
+          truncated: false,
+        }],
+        acknowledgeAccepted,
+      };
+    });
+    const manager = new VoiceAgentManager({ createBackend, prepareFollowContext });
+    const started = await manager.start({
+      voiceAgentId: 'voice-agent-cancel-during-hydration',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+
+    const stream = await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      userText: 'what changed?',
+      durableUserTranscriptLocalId: 'voice-user-cancelled-during-hydration',
+    });
+    await hydrationStarted;
+    const cancelling = manager.cancelTurnStream({
+      voiceAgentId: started.voiceAgentId,
+      streamId: stream.streamId,
+    });
+    releaseHydration();
+    await expect(cancelling).resolves.toEqual({ ok: true });
+
+    expect(prepareFollowContext).toHaveBeenCalledTimes(1);
+    expect(chatBackend.getSeenPrompts()).toHaveLength(0);
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+
+    await manager.dispose();
+  });
+
   it('keeps Account Voice Follow pending through retryable pre-effect rejection and accepts a later exact outcome', async () => {
     const base = createDeterministicBackend('chat-retryable-rejection');
     let outcomeHandler: Parameters<NonNullable<ExecutionRunHostRuntime['subscribeProviderInputOutcomes']>>[0] | null = null;

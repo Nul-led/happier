@@ -261,6 +261,11 @@ export async function prepareDaemonConnectedServices(input: Readonly<{
                                     kind: 'operation',
                                     operationId: materializationKey,
                                     consumer,
+                                    // The Session this launch materializes for:
+                                    // its direct Team material opens only
+                                    // through that Session's Home-admitted
+                                    // Team binding (lane 10 child 06 §15).
+                                    ...(authSessionId ? { sessionId: authSessionId } : {}),
                                     isCurrent: () => true,
                                 },
                                 purposes: snapshot.purposes,

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 
 import {
   ActionIdSchema,
@@ -7,6 +6,7 @@ import {
   buildApprovalRequestArtifactHeaderV1,
   buildExecutionRunHostActionApprovalArtifactHeaderV1,
   buildTargetActionApprovalArtifactHeaderV1,
+  decideApprovalRequestTransition,
   type ActionId,
   type ApprovalQueueListItemV1,
   type ApprovalRequest,
@@ -22,20 +22,6 @@ import {
 } from '@/api/client/connectedServiceCredentialApi';
 import { createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
 
-function approvalRequestSubject(request: ApprovalRequest): Readonly<Record<string, unknown>> {
-  const {
-    status: _status,
-    updatedAtMs: _updatedAtMs,
-    decision: _decision,
-    execution: _execution,
-    ...subject
-  } = request;
-  return subject;
-}
-
-function approvalRequestSubjectsEqual(left: ApprovalRequest, right: ApprovalRequest): boolean {
-  return isDeepStrictEqual(approvalRequestSubject(left), approvalRequestSubject(right));
-}
 import {
   requireCurrentAccountStoredContentServerCompatibility,
 } from '@/api/clientCompatibility/accountStoredContentActivation';
@@ -320,73 +306,20 @@ export function createCliApprovalsArtifactStore(params: Readonly<{
       if (existing?.v === 1 && !approvalArtifactMatchesServerScope(existingHeader, normalizeArtifactServerId(serverId))) {
         return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' };
       }
-      if (!existing || !approvalRequestSubjectsEqual(existing, request)) {
+      if (!existing) {
         return {
           ok: false,
           errorCode: 'subject_mismatch',
           error: 'approval_request_subject_mismatch',
         };
       }
-      if (isDeepStrictEqual(existing, request)) {
-        if (existing.status === 'executing') {
-          return { ok: false, errorCode: 'invalid_transition', error: 'approval_request_invalid_transition' };
-        }
-        return { ok: true };
-      }
-      const isOpenDecision = existing.status === 'open'
-        && (request.status === 'approved'
-          || request.status === 'rejected'
-          || request.status === 'canceled');
-      // Only current V2 carries the executing claim. Released ApprovalRequestV1
-      // has terminal execution results, but no intermediate `executing` state.
-      const isApprovedExecution = existing.v === 2
-        && existing.status === 'approved'
-        && request.v === 2
-        && request.status === 'executing'
-        && request.decision?.kind === 'approve'
-        && request.execution === undefined;
-      // A definitive replay-currentness/context failure happens before an
-      // Action effect starts. It therefore settles an already-approved V2
-      // request directly, without fabricating an executing interval. Released
-      // V1 requests remain readable but cannot enter the execution lifecycle.
-      const isApprovedPreExecutionFailure = existing.v === 2
-        && existing.status === 'approved'
-        && request.v === 2
-        && request.status === 'failed'
-        && request.decision?.kind === 'approve'
-        && request.execution?.ok === false;
-      // Released V1 has no replay authority or executing claim, but the current
-      // decision owner still needs to durably close an approval after recording
-      // the user's approve decision. Admit only the fixed, non-effectful stale
-      // tombstone produced for that compatibility path; V1 can never execute or
-      // carry another terminal result through this store.
-      const isLegacyApprovedStaleFailure = existing.v === 1
-        && existing.status === 'approved'
-        && request.v === 1
-        && request.status === 'failed'
-        && request.decision?.kind === 'approve'
-        && request.execution?.ok === false
-        && request.execution.errorCode === 'approval_stale'
-        && request.execution.error === 'approval_stale';
-      const isExecutingTerminal = existing.v === 2
-        && existing.status === 'executing'
-        && (request.status === 'executed' || request.status === 'failed')
-        && request.decision?.kind === 'approve'
-        && request.execution !== undefined;
-      if (
-        (!isOpenDecision
-          && !isApprovedExecution
-          && !isApprovedPreExecutionFailure
-          && !isLegacyApprovedStaleFailure
-          && !isExecutingTerminal)
-        || request.updatedAtMs < existing.updatedAtMs
-      ) {
-        return {
-          ok: false,
-          errorCode: 'invalid_transition',
-          error: 'approval_request_invalid_transition',
-        };
-      }
+      // The Protocol subject/transition owner is shared with the UI adapter:
+      // immutable subject (settlements may only apply the Action's declared
+      // input projection), the lifecycle edges, and the refusal of a repeated
+      // `executing` claim. This store only commits against the revision it read.
+      const transition = decideApprovalRequestTransition(existing, request);
+      if (!transition.ok) return transition;
+      if (!transition.changed) return { ok: true };
 
       const header = buildApprovalRequestArtifactHeaderV1(request, { legacyServerId: serverId });
       const updated = await accountArtifactStore.update({ artifactId, expectedRevision: artifact.revision,

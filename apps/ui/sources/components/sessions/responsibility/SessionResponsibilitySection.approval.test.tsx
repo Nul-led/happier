@@ -1,0 +1,208 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
+
+// Imported from their owning testkit modules, never the `@/dev/testkit` barrel:
+// the harness installs its network boundaries with `vi.doMock`, which only
+// reaches modules imported afterwards (see `installHomeGovernanceBoundaries`).
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
+import {
+    createHomeGovernanceHarness,
+    installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
+} from '@/dev/testkit/harness/homeGovernanceHarness';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import type { useSessionResponsibilityController as UseController } from './useSessionResponsibilityController';
+
+/**
+ * Responsibility assignment awaiting its default confirmation, end to end.
+ *
+ * teams-lane-04/11-responsible-assignment.md §7.1: "Dangerous mutation
+ * confirmation is required by default and may be explicitly disabled by the user
+ * in the canonical Actions policy." So the ordinary outcome of choosing someone is
+ * an approval, and it must never look like a completed assignment. The Account
+ * here has no stored Actions settings at all: the default alone defers it.
+ *
+ * The real controller reaches the shared Action front door, which persists an open
+ * approval in the Home's stateful Artifact store; the Inbox decides it through the
+ * generic executor, whose replay is the one assignment request; and the row
+ * settles only through the real approval reader and continuation. The network,
+ * the credential store, navigation and the OS live region are the replaced
+ * boundaries.
+ */
+
+const routerPush = vi.hoisted(() => vi.fn());
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: routerPush } }).module;
+});
+
+// The platform screen-reader live region is a genuine OS/DOM boundary.
+vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
+    announceAccessibilityMessage: vi.fn(),
+}));
+
+const harness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(harness);
+
+const ACCOUNT_ID = 'account-owner';
+const SESSION_ID = 'session-1';
+const RESPONSIBILITY_SET_PATH = '/v2/sessions/responsibility/set';
+
+function summary(accountId: string, firstName: string, username: string) {
+    return { kind: 'account' as const, accountId, firstName, lastName: null, username, avatarUrl: null };
+}
+
+/**
+ * One Home publishing Session sharing, with this device signed in to its Account
+ * the way the sync owner establishes it (`activateAccountSettingsScope`: the
+ * settings, profile and Session-local scopes together), and the Session row the
+ * Home listed for it, assigned to Alice.
+ */
+async function addResponsibilityHome(): Promise<string> {
+    const serverId = await harness.addHome({
+        name: 'Home One',
+        serverUrl: 'https://responsibility-home.example',
+        accountId: ACCOUNT_ID,
+    });
+    const features = createRootLayoutFeaturesResponse();
+    if (!tryWriteServerEnabledBitInPlace(features, 'sharing.session', true)) {
+        throw new Error('The sharing.session feature bit could not be written by its own writer');
+    }
+    harness.answer(serverId, '/v1/features', { body: features });
+    harness.answer(serverId, '/v1/features/authenticated', { body: features });
+    harness.answer(serverId, '/v2/sessions/responsibility/candidates', { body: { candidates: [], nextCursor: null } });
+    const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+    primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
+
+    const { storage } = await import('@/sync/domains/state/storage');
+    const scope = { serverId, accountId: ACCOUNT_ID };
+    await storage.getState().activateSettingsScope(scope, []);
+    storage.getState().activateProfileScope(scope, []);
+    storage.getState().activateSessionLocalStateScope(scope);
+    // The Home's listing of this Session, written through the exact-Home list
+    // row owner the Session cache uses (`concurrentSessionCache`).
+    storage.getState().applyServerScopedSessionListRows(serverId, [createSessionListRenderableSessionFixture({
+        id: SESSION_ID,
+        responsibleAccountId: 'account-alice',
+        responsibleAccount: summary('account-alice', 'Alice', 'alice'),
+    })], { source: 'ordinary', mode: 'replace' });
+    return serverId;
+}
+
+async function renderAssignment(serverId: string) {
+    const { SessionResponsibilitySection } = await import('./SessionResponsibilitySection');
+    const { useSessionResponsibilityController } = await import('./useSessionResponsibilityController');
+    const { useSessionResponsibilityPickerHost } = await import('./useSessionResponsibilityPickerHost');
+    const scope = { serverId, accountId: ACCOUNT_ID };
+    let latest: ReturnType<typeof UseController> | null = null;
+    function Mounted() {
+        const controller = useSessionResponsibilityController(SESSION_ID, scope);
+        latest = controller;
+        const pickerHost = useSessionResponsibilityPickerHost({
+            sessionId: SESSION_ID,
+            scope,
+            actingAccountId: ACCOUNT_ID,
+            controller,
+            editable: controller.availability === 'editable',
+            available: controller.availability === 'editable' || controller.availability === 'read_only',
+        });
+        return <SessionResponsibilitySection controller={controller} pickerHost={pickerHost} />;
+    }
+    const screen = await renderScreen(<Mounted />);
+    const { storage } = await import('@/sync/domains/state/storage');
+    await waitForHomeGovernance(() => expect(latest!.availability, JSON.stringify({
+        availability: latest?.availability,
+        rows: storage.getState().sessionListRowsByServerId,
+        requests: harness.requests.map((request) => request.path),
+    })).toBe('editable'));
+    return { screen, controller: () => latest! };
+}
+
+/** The one approval the Home persisted for this assignment, decoded as stored. */
+function storedApproval(serverId: string): Readonly<{ id: string; request: Record<string, unknown> }> {
+    const rows = harness.artifacts(serverId).list();
+    if (rows.length !== 1) throw new Error(`expected_one_approval_artifact:${rows.length}`);
+    return { id: rows[0]!.id, request: JSON.parse(harness.artifacts(serverId).readPlainBody(rows[0]!.id)!) };
+}
+
+describe('responsibility assignment awaiting its default confirmation', () => {
+    beforeEach(async () => {
+        await harness.reset();
+        routerPush.mockReset();
+    });
+
+    afterEach(() => standardCleanup());
+
+    it('shows the wait, withholds a second submission, and applies the executed approval once', async () => {
+        const serverId = await addResponsibilityHome();
+        const { screen, controller } = await renderAssignment(serverId);
+
+        await act(async () => { expect(await controller().setResponsibleAccount('account-bob')).toBe(false); });
+        const approval = storedApproval(serverId);
+        expect(approval.request).toMatchObject({
+            status: 'open',
+            actionId: 'session.responsibility.set',
+            actionArgs: { sessionId: SESSION_ID, responsibleAccountId: 'account-bob' },
+        });
+        await waitForHomeGovernance(() => {
+            expect(controller().pendingApproval).toMatchObject({ artifactId: approval.id, serverId });
+            expect(controller().pending).toBe(true);
+        });
+        // Nothing committed: the row still names the committed assignee.
+        expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(0);
+        expect(screen.findByTestId('session-responsibility-value')!.props.children).toBe('Alice');
+        expect(screen.findByTestId('session-responsibility-approval')).not.toBeNull();
+
+        // One approval at a time: a second intent is held, not a second request.
+        await act(async () => { expect(await controller().setResponsibleAccount('account-carol')).toBe(false); });
+        expect(harness.artifacts(serverId).list()).toHaveLength(1);
+
+        await screen.pressByTestIdAsync('session-responsibility-approval');
+        expect(routerPush).toHaveBeenCalledWith(`/inbox/approvals/${approval.id}?serverId=${serverId}`);
+
+        // The Inbox approves: its replay is the one assignment on the Home.
+        harness.answer(serverId, RESPONSIBILITY_SET_PATH, {
+            body: {
+                changed: true,
+                responsibleAccountId: 'account-bob',
+                responsibleAccount: summary('account-bob', 'Bob', 'bob'),
+                autoFollowed: false,
+            },
+        });
+        await expect(decideApprovalAsInbox(serverId, approval.id, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
+
+        await waitForHomeGovernance(() => {
+            expect(screen.findByTestId('session-responsibility-value')!.props.children).toBe('Bob');
+            expect(screen.findByTestId('session-responsibility-approval')).toBeNull();
+        });
+        expect(controller().pending).toBe(false);
+        expect(controller().failure).toBeNull();
+        expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(1);
+    });
+
+    it('releases the wait without changing anything when the approval is declined', async () => {
+        const serverId = await addResponsibilityHome();
+        const { screen, controller } = await renderAssignment(serverId);
+
+        await act(async () => { expect(await controller().setResponsibleAccount('account-bob')).toBe(false); });
+        const approval = storedApproval(serverId);
+        await waitForHomeGovernance(() => expect(controller().pendingApproval).not.toBeNull());
+
+        await expect(decideApprovalAsInbox(serverId, approval.id, 'reject')).resolves.toMatchObject({ ok: true });
+        await waitForHomeGovernance(() => {
+            expect(controller().pendingApproval).toBeNull();
+            expect(controller().pending).toBe(false);
+            expect(screen.findByTestId('session-responsibility-approval')).toBeNull();
+        });
+        expect(controller().failure).toBeNull();
+        expect(harness.requestsFor(RESPONSIBILITY_SET_PATH)).toHaveLength(0);
+        expect(screen.findByTestId('session-responsibility-value')!.props.children).toBe('Alice');
+    });
+});

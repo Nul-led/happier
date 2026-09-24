@@ -14,8 +14,12 @@ import {
 const service = Object.freeze({ pluginId: 'acme.accounts', localId: 'work' });
 const account = Object.freeze({ service, accountId: 'account-a' });
 const generation = Object.freeze({
-    generation: 'process-7',
-    immutableGenerationId: 'sha256:artifact-7',
+    occurrenceId: 'occurrence-7',
+    sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: 'sha256:artifact-7',
+        installSource: 'archive' as const,
+    }),
 });
 
 function configuredMode(
@@ -55,7 +59,7 @@ function createHarness(records: readonly Readonly<{
     record: ConnectedAccountConfigurationRecord;
 }>[] = [], options?: Readonly<{
     hasSecret?(secretId: string): Promise<boolean>;
-    isGenerationCurrent?(): boolean | Promise<boolean>;
+    isRuntimeCurrent?(): boolean | Promise<boolean>;
 }>) {
     const byTarget = new Map(records.map(({ target, record }) => [JSON.stringify(target), record]));
     const read = vi.fn(async (target: ConnectedAccountConfigurationTarget) => (
@@ -121,9 +125,9 @@ function createHarness(records: readonly Readonly<{
         secretId.startsWith('saved-secret-')));
     const readSecret = vi.fn(async (secretId: string) =>
         secretId === 'saved-secret-1' ? 'super-secret' : null);
-    const isGenerationCurrent = vi.fn(async () => (
-        options?.isGenerationCurrent
-            ? await options.isGenerationCurrent()
+    const isRuntimeCurrent = vi.fn(async () => (
+        options?.isRuntimeCurrent
+            ? await options.isRuntimeCurrent()
             : currentGeneration
     ));
     const owner = createConnectedAccountConfigurationOwner({
@@ -137,10 +141,11 @@ function createHarness(records: readonly Readonly<{
             }
         }),
         secrets: {
+            admit: vi.fn(async () => undefined),
             has: hasSecret,
             read: readSecret,
         },
-        isGenerationCurrent,
+        isRuntimeCurrent,
     });
     return {
         owner,
@@ -149,7 +154,7 @@ function createHarness(records: readonly Readonly<{
         replaceForControl,
         hasSecret,
         readSecret,
-        isGenerationCurrent,
+        isRuntimeCurrent,
         setGenerationCurrent(value: boolean) {
             currentGeneration = value;
         },
@@ -728,7 +733,7 @@ describe('ConnectedAccountConfigurationOwner', () => {
                 secretValues: { clientSecret: 'account-inline-secret' },
             },
         }], {
-            isGenerationCurrent: async () => {
+            isRuntimeCurrent: async () => {
                 generationCheckCount += 1;
                 if (generationCheckCount === 2) await postReadCheck;
                 return true;
@@ -745,7 +750,7 @@ describe('ConnectedAccountConfigurationOwner', () => {
         });
         await vi.waitFor(() => {
             expect(harness.read).toHaveBeenCalledWith(target);
-            expect(harness.isGenerationCurrent).toHaveBeenCalledTimes(2);
+            expect(harness.isRuntimeCurrent).toHaveBeenCalledTimes(2);
         });
         harness.setRecord(target, {
             revision: 'revision-after',

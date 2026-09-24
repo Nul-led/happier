@@ -42,6 +42,7 @@ export type {
 export {
   combineChangedFilesAttribution,
   deriveSessionChangeAttribution,
+  compareTurnChangeSetChronology,
   mergeCheckpointOverlap,
   mergeTurnChangeSets,
 } from './mergeTurnChangeSets.js';

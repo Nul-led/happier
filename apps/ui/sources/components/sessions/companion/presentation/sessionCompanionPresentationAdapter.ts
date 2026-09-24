@@ -89,13 +89,17 @@ export function publishSessionCompanionMutationNotice(input: Readonly<{
 }>): void {
     if (!input.noticeKeyPrefix || !input.outcome) return;
     const outcome = input.outcome;
+    // The notice outlives this render and is app-global, so the realm that authored the
+    // mutation travels with it. The controller refuses the inverse when the live realm or
+    // its own mounted lifetime no longer matches.
+    const realmKey = input.companion.realmKey;
     input.publishNotice({
         key: `session-presentation:${input.noticeKeyPrefix}:${input.kind}`,
         message: input.message,
         severity: 'info',
         undo: {
             label: t('sessionBoard.companion.actions.undo'),
-            run: () => { input.companion.applyLocalInverse(outcome); },
+            run: () => { input.companion.applyLocalInverse(outcome, realmKey); },
         },
     });
 }

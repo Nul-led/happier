@@ -7,7 +7,6 @@ import { setActiveServerAndSwitch, upsertActivateAndSwitchServer } from '@/sync/
 import {
     areServerProfileIdentifiersEquivalent,
     getActiveServerSnapshot,
-    getServerProfileById,
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
@@ -23,6 +22,8 @@ import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/select
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 import { isUnsafeNotificationServerUrl, parseNotificationTap } from '../notificationRouting';
+// The same saved-Home rule names the Home of an arriving foreground notification.
+import { resolveNotificationSavedHome as findSavedServerProfile } from '../resolveNotificationSavedHome';
 import type { ActivityInteractionCommand } from '@/activity/actions/resolveActivityInteractionCommand';
 
 type ExpoNotificationsWithClear = ExpoNotificationsModule & Readonly<{
@@ -108,28 +109,6 @@ function resolveNotificationCommandServerId(command: ActivityInteractionCommand)
     }
 }
 
-function findSavedServerProfile(params: Readonly<{
-    serverId: string | null | undefined;
-    serverUrl: string;
-}>): { id: string; serverUrl: string } | null {
-    const serverId = String(params.serverId ?? '').trim();
-    if (serverId) {
-        const profile = getServerProfileById(serverId);
-        if (!profile) return null;
-        return { id: profile.id, serverUrl: profile.serverUrl };
-    }
-
-    const serverUrl = params.serverUrl;
-    const targetKey = createServerUrlComparableKey(serverUrl);
-    if (!targetKey) return null;
-    const matches = listServerProfiles().filter(
-        (profile) => createServerUrlComparableKey(profile.serverUrl) === targetKey,
-    );
-    return matches.length === 1
-        ? { id: matches[0]!.id, serverUrl: matches[0]!.serverUrl }
-        : null;
-}
-
 function isNotificationServerActive(params: Readonly<{
     serverId?: string | null;
     serverUrl: string;
@@ -157,6 +136,19 @@ function isNotificationServerActive(params: Readonly<{
     return matchingProfileCount === 0 && Boolean(targetUrlKey && targetUrlKey === activeUrlKey);
 }
 
+/**
+ * Names the Home a notification was admitted for, synchronously at the moment
+ * `isNotificationServerActive` proved it. An explicit notification Home wins; a
+ * legacy URL-only record was only admitted because its URL is the focused Home
+ * right now, so that Home is captured before any await can move focus.
+ */
+function resolveAdmittedNotificationServerId(serverId: string | null | undefined): string | null {
+    const explicit = String(serverId ?? '').trim();
+    if (explicit) return explicit;
+    const active = String(getActiveServerSnapshot().serverId ?? '').trim();
+    return active || null;
+}
+
 export function useNotificationResponseRouting(params: Readonly<{
     enabled: boolean;
     refreshAuth: () => Promise<void>;
@@ -176,12 +168,18 @@ export function useNotificationResponseRouting(params: Readonly<{
 
         if (Platform.OS === 'web') return;
 
+        // The permission response is a mutation on the exact Home the notification was
+        // admitted for (L09B-I15). That Home is named before any await; the dispatch
+        // never re-infers it from whichever Home is focused when the import resolves.
         const performPermissionAction = async (actionParams: {
+            serverId: string | null;
             sessionId: string;
             requestId: string;
             turnId?: string;
             action: 'allow' | 'deny';
         }): Promise<void> => {
+            const serverId = String(actionParams.serverId ?? '').trim();
+            if (!serverId) return;
             const { sessionAllow, sessionDeny } = await import('@/sync/ops');
             if (actionParams.action === 'allow') {
                 await sessionAllow(
@@ -192,6 +190,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                     'approved',
                     undefined,
                     actionParams.turnId,
+                    { serverId },
                 );
             } else {
                 await sessionDeny(
@@ -202,6 +201,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                     'denied',
                     'Denied from notification',
                     actionParams.turnId,
+                    { serverId },
                 );
             }
         };
@@ -209,10 +209,12 @@ export function useNotificationResponseRouting(params: Readonly<{
         const pendingAction = getPendingNotificationAction();
         if (pendingAction) {
             if (isNotificationServerActive(pendingAction)) {
+                const admittedServerId = resolveAdmittedNotificationServerId(pendingAction.serverId);
                 clearPendingNotificationAction();
                 fireAndForget((async () => {
                     try {
                         await performPermissionAction({
+                            serverId: admittedServerId,
                             sessionId: pendingAction.sessionId,
                             requestId: pendingAction.requestId,
                             ...(pendingAction.turnId ? { turnId: pendingAction.turnId } : {}),
@@ -328,7 +330,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                             });
                             clearPendingNotificationAction();
                             try {
-                                await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
+                                await performPermissionAction({ serverId: saved.id, sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
                             } catch {
                                 // best-effort
                             }
@@ -399,9 +401,10 @@ export function useNotificationResponseRouting(params: Readonly<{
                 : null;
             if (command.kind === 'executeAction' && activeServerPermissionDecisionPayload) {
                 const { action, sessionId: actionSessionId, requestId: actionRequestId, turnId } = activeServerPermissionDecisionPayload;
+                const admittedServerId = resolveAdmittedNotificationServerId(serverId);
                 fireAndForget((async () => {
                     try {
-                        await performPermissionAction({ sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
+                        await performPermissionAction({ serverId: admittedServerId, sessionId: actionSessionId, requestId: actionRequestId, ...(turnId ? { turnId } : {}), action });
                     } catch {
                         // best-effort
                     }

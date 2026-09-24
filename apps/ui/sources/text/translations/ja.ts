@@ -11,7 +11,10 @@ import { externalSessionOperationTranslations } from './externalSessionOperation
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
 import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
 import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
@@ -4931,9 +4934,25 @@ localTailscale: {
   settingsProviders: settingsProvidersTranslations.ja,
 
   settingsAgents: {
+      authoring: {
+          configureAcpBackendPrompt: 'Happier にカスタム ACP エージェントを追加するのを手伝ってください。どのエージェントを実行したいか、どう起動するか（コマンド、引数、環境変数）を私に尋ね、このマシンでコマンドが動くことを確認してから agents.acp.backends.upsert アクションで保存してください（先に action_spec_get で入力を確認してください）。設定 → エージェントに表示されたら教えてください。',
+          addAgentPrompt: 'Happier に新しいコーディングエージェントを追加したいです。どのエージェントか私に尋ねてください。ACP（Agent Client Protocol）に対応していてコマンドで起動できるなら、agents.acp.backends.upsert アクションでカスタム ACP エージェントとして追加してください。そうでなければ、happier-plugin-authoring スキルに従い plugins.scaffold アクションから始めて、それを追加する Happier プラグインを作ってください。変更する前に、どちらを選んだか、その理由を教えてください。',
+          needsMachine: '実行するマシンが必要です。マシンの設定を開きます。',
+          useAgentToConfigure: 'エージェントで設定',
+          useAgentToConfigureDescription: 'エージェントが何を実行したいか尋ね、保存します。',
+      },
       collection: {
+          askAgentToAdd: 'エージェントに追加を依頼',
+          askAgentToAddDescription: '新しいセッションでエージェントが設定します。',
+          addAgent: 'エージェントを追加',
+          addAcpAgent: 'ACP エージェントを追加',
+          addAcpAgentDescription: 'ACP 対応のエージェントをコマンドで実行します。',
+          ready: '準備完了',
+          beta: 'ベータ',
+          install: 'インストール',
+          reinstall: '再インストール',
+          customAgents: 'カスタムエージェント',
           onMachine: ({ machine }: { machine: string }) => `${machine} 上`,
-          onThisMachine: 'このマシン上',
           availableToInstall: 'インストール可能',
           searchPlaceholder: 'エージェントを検索',
           notInstalled: '未インストール',
@@ -4942,7 +4961,27 @@ localTailscale: {
           noMatches: '検索に一致するエージェントはありません',
           overviewDescription: 'Happier がマシン上で起動できるコーディングエージェント。',
       },
+      offline: {
+          pickerDetail: 'オフライン · 最後に確認した状態を表示',
+          bannerTitle: 'このマシンはオフラインです',
+          bannerDescription: '最後に確認した状態を表示しています。再接続するまでマシンの操作はできません。',
+      },
       detailPage: {
+          machineScopeLabel: '設定と状態の対象',
+          readinessDescription: '上のマシンのサインインと CLI。',
+          sessionDefaultsAccountDescription: ({ agent }: { agent: string }) => `アカウントに保存され、${agent} で新しいセッションを開始するときにすべてのマシンで使われます。`,
+          checkingMachine: ({ machine }: { machine: string }) => `${machine} を確認しています…`,
+          machineUnavailableDescription: 'Happier はこのマシンを読み取れませんでした。エージェントの設定は引き続き適用されます。',
+          noMachineTitle: 'マシンを選択',
+          noMachineDescription: ({ agent }: { agent: string }) => `${agent} の設定は実行するマシンによって異なります。上で選択してください。`,
+          cliVersion: ({ cli, version }: { cli: string; version: string }) => `${cli} CLI ${version}`,
+          cliName: ({ cli }: { cli: string }) => `${cli} CLI`,
+          checkedAt: ({ time }: { time: string }) => `${time} に確認`,
+          signInTitle: 'サインイン',
+          signInGuide: 'サインインガイド',
+          nothingToSetUpTitle: 'このマシンで設定するものはありません',
+          nothingToSetUpDescription: ({ agent }: { agent: string }) => `${agent} には、ここで管理する CLI やサインインがありません。`,
+          integrationsTitle: '連携',
           onMachine: ({ machine }: { machine: string }) => `${machine} 上`,
           notInstalledOnMachine: ({ machine }: { machine: string }) => `${machine} に未インストール`,
           readinessTitle: '準備状況',
@@ -5201,7 +5240,7 @@ localTailscale: {
                     },
                     claudeRemoteAgentSdkEnabled: {
                         title: "Agent SDK を使用（リモート）",
-                        subtitle: "リモートモードで公式の @anthropic-ai/claude-agent-sdk を使用します。"
+                        subtitle: "リモートモードで Happier の Claude Agent SDK ランタイムを使用します。"
                     },
                     claudeRemoteDebugEnabled: {
                         title: "デバッグモード",
@@ -5427,11 +5466,21 @@ localTailscale: {
   },
 
   settingsAppearance: {
-    lightThemeSlot: 'ライトテーマ',
-    lightThemeSlotDescription: 'ライトモードのときに使用します。',
-    darkThemeSlot: 'ダークテーマ',
-    darkThemeSlotDescription: 'ダークモードのときに使用します。',
     pageDescription: 'テーマ、テキスト、レイアウト、モーション。',
+    themesSummary: ({ light, dark }: { light: string; dark: string }) => `ライト: ${light} · ダーク: ${dark}`,
+    themesCount: ({ builtIn, custom }: { builtIn: number; custom: number }) => `組み込み ${builtIn} · カスタム ${custom}`,
+    textSizeGlyph: 'あ',
+    densityPreview: {
+        title: 'プレビュー',
+        sessionTitle1: '不安定な再接続テストを修正',
+        sessionTitle2: '設定画面の枠組みを整理',
+        sessionTitle3: 'リリースノートを下書き',
+        sessionSubtitle1: 'happier · Claude',
+        sessionSubtitle2: 'happier · Codex',
+        sessionSubtitle3: 'docs · Claude',
+    },
+    resetConfirmTitle: '外観をリセットしますか？',
+    resetConfirmBody: 'テーマ、テキスト、レイアウト、モーション、アバター、タブバーが既定値に戻ります。カスタムテーマは保持されます。',
     tabBarAppearance: {
       title: 'タブバー',
       footer: '下部のタブバーをカスタマイズします。',
@@ -6718,6 +6767,7 @@ localTailscale: {
 	    invalidLinkTitle: "無効なセッションリンク",
         whichHomeTitle: "どの Home を開きますか？",
         whichHomeDescription: "このセッションは複数の Home にあります。開く Home を選んでください。",
+        whichHomeUnknownDescription: 'このセッションがどの Home にあるか Happier では判断できません。開く Home を選んでください。',
 	    invalidLinkDescription: "セッションリンクが見つからないか無効です。URL を確認してもう一度お試しください。",
 	    resumeSupportNoteChecking:
 	      "注: Happier はこのマシンでプロバイダーのセッションを再開できるか確認中です。",
@@ -7430,25 +7480,11 @@ localTailscale: {
     serverGroupMustHaveServer:
       "Home グループには少なくとも 1 つの Home が必要です。",
     relayDrift: {
-        bannerDifferentRelayTitle: 'バックグラウンドサービスが別の Home に接続されています',
-        bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) => `アプリ: ${activeRelayUrl} · バックグラウンドサービス: ${daemonRelayUrl}`,
-        bannerNeedsAuthTitle: 'バックグラウンドサービスがこの Home にサインインする必要があります',
-        bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `アプリは ${activeRelayUrl} を使用していますが、バックグラウンドサービスにはまだ承認またはサインインが必要です。`,
-        bannerNotConfiguredTitle: 'バックグラウンドサービスはまだこの Home に接続されていません',
-        bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `アプリは ${activeRelayUrl} を使用していますが、このコンピューターではまだバックグラウンドサービスの接続が完了していません。`,
-        bannerNotInstalledTitle: 'この Home 用のバックグラウンドサービスがインストールされていません',
-        bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `アプリは ${activeRelayUrl} を使用していますが、このコンピューターにはまだバックグラウンドサービスのインストールが必要です。`,
-        bannerNotRunningTitle: 'バックグラウンドサービスはインストール済みですが実行されていません',
-        bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `アプリは ${activeRelayUrl} を使用していますが、バックグラウンドサービスは停止しており、再起動が必要です。`,
-        repairAction: 'バックグラウンドサービスをこの Home に接続',
         progressTitle: 'バックグラウンドサービスをこのHomeに接続しています',
         progressStepPrepare: 'バックグラウンドサービスを準備',
         progressStepConfigureRelay: 'Home 接続を更新',
         progressStepAuthenticate: 'サインインと承認を完了',
         progressStepFinish: '修復を完了',
-        statusUnknown: '不明',
     },
     retention: {
       title: "保持ポリシー",
@@ -10688,9 +10724,10 @@ settingsSession: {
         presentationScreenSubtitle: "新規セッションをメイン領域で開き、コンポーザーを下部に固定します。",
         presentationModalTitle: "モーダル",
         presentationModalSubtitle: "現在のワークスペースの上に閉じられるモーダルとして新規セッションを開きます。",
-        wizardModeTitle: "ウィザードモード",
-        wizardModeEnabledSubtitle: "個別の選択欄を備えたガイド形式の設定を開きます。",
-        wizardModeDisabledSubtitle: "コンパクトな入力中心のモーダルを使います。",
+        startWithTitle: "開始方法",
+        startWithDescription: "ウィザードは各項目を順に選びます。入力欄は前回の設定から始まります。",
+        startWithComposer: "入力欄",
+        startWithWizard: "ウィザード",
         rememberLastProjectSelectionsTitle: "プロジェクトの最後のセッション選択を記憶",
         rememberLastProjectSelectionsEnabledSubtitle:
           "プロジェクトのショートカットは、最新セッションのマシン、フォルダ、エンジン、モデル、セッションオプションを再利用します。",
@@ -11921,6 +11958,21 @@ settingsSession: {
 
   settingsAccount: {
     securityPageDescription: "この Home のサインイン方法、復旧、セッション、暗号化。",
+    hideRecoveryKey: "復旧キーを隠す",
+    showRecoveryKey: "復旧キーを表示",
+    accountIdCopy: "アカウント ID をコピー",
+    accountIdLabel: "アカウント ID",
+    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `${accountService} にサインイン`,
+    accountServiceBenefitFindHomes: "Home が見つかる",
+    thisHome: "この Home",
+    thisHomeTitle: "この Home",
+    shareUsageData: "匿名の使用状況データを共有",
+    shareUsageDataDescription: "Happier の改善に役立ちます。個人情報は収集されません。",
+    shareCrashReports: "クラッシュレポートを共有",
+    deleteAccountEllipsis: "アカウントを削除…",
+    signOutFootnote: "この Home からサインアウトしても、ほかの Home とサインインサービスにはサインインしたままです。",
+    sessionsSectionTitle: "セッション",
+    apiAccessSectionTitle: "API アクセス",
     endToEndEncrypted: "エンドツーエンド暗号化",
     notEndToEndEncrypted: "エンドツーエンド暗号化なし",
     editUsername: "ユーザー名を編集",
@@ -11937,14 +11989,14 @@ settingsSession: {
     moreSecurity: "その他のセキュリティ",
     moreSecuritySummary: "API トークン · 暗号化 · セッション",
     allSecuritySettings: "サインインとセキュリティのすべての設定",
-    accountServiceDescription: "あなたの Home を見つけ、どのデバイスからでもサインインします。",
-    accountServiceInviteTitle: "すべてのデバイスであなたの Home を",
-    accountServiceInviteBody: "一度サインインすれば、使っている Home を見つけてスマートフォン、ノートパソコン、ブラウザから開けます。Home とそのデータは今ある場所に残ります。",
-    accountServiceBenefitFindHomesDescription: "リンクされた Home が自動的に表示されます。",
-    accountServiceBenefitSignIn: "Home にサインイン",
-    accountServiceBenefitSignInDescription: "資格情報を再入力せずにリンクされた Home を開けます。",
-    accountServiceBenefitDevices: "ほかのデバイスを使う",
-    accountServiceBenefitDevicesDescription: "ほかのデバイスからあなたの Home を見つけてアクセスを申請できます。",
+    accountServiceDescription: "デバイスとあなたの Home をつなぐひとつのアカウント。",
+    accountServiceInviteTitle: "Home をどこへでも",
+    accountServiceInviteBody: "一度つなげば、使っているどのデバイスからでも Home を見つけて開けます。Home とそのデータは今ある場所に残ります。",
+    accountServiceBenefitFindHomesDescription: "アカウントにリンクされた Home が、すべてのデバイスに表示されます。",
+    accountServiceBenefitSignIn: "Home をすぐに開く",
+    accountServiceBenefitSignInDescription: "資格情報を再入力せずに、リンクされた Home を開けます。",
+    accountServiceBenefitDevices: "すべてのデバイスで",
+    accountServiceBenefitDevicesDescription: "スマートフォンやほかのデバイスを Home につなげます。",
     accountServiceLinkedHomes: "リンクされた Home",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `${time} に更新`,
     accountServiceSignInAgain: "再度サインイン",
@@ -12605,20 +12657,16 @@ settingsSession: {
 
           },
         cliFollowUpTitle: 'ターミナルでの代替手順（任意）',
-        manualDisclosure: {
-            show: '手動のターミナル手順を表示',
-            hide: '手動のターミナル手順を非表示',
-        },
 
           subtitle: {
 
               connectMachine: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `デスクトップのセットアップフローを使って、このコンピューターを ${targetLabel} に接続します。ターミナル経由を使いたい場合のみ、手動手順を開いてください。`,
+                  `デスクトップのセットアップフローを使って、このコンピューターを ${targetLabel} に接続します。`,
 
               startDaemon: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `デスクトップのセットアップフローを使って、${targetLabel} のバックグラウンドサービスを再接続します。すでにそのコンピューターにいる場合のみ、手動手順を開いてください。`,
+                  `デスクトップのセットアップフローを使って、${targetLabel} のバックグラウンドサービスを再接続します。`,
 
               createSession: '+ ボタン、またはターミナルから新しいセッションを開始します。',
 
@@ -13039,6 +13087,7 @@ settingsSession: {
     },
     repairBackgroundServiceAction: "バックグラウンドサービスを修復",
     repairBackgroundServiceProgressTitle: "バックグラウンドサービスを修復中",
+    thisComputer: thisComputerConnectionTranslations.ja,
     cliPath: cliPathExposureTranslations.ja,
     cliTrust: cliTrustPromptTranslations.ja,
     runtimeInventory: 'Happier ランタイム一覧',
@@ -13511,6 +13560,12 @@ settingsSession: {
       outcomeUnknown: "このシークレットを共有できたかどうか、Happier は確認できませんでした。再試行する前にリストを更新してください。",
       inUseTitle: "まだ使用中です",
       inUseBody: ({ places }: { places: string }) => `先に、この共有シークレットを使っている場所から削除してください:\n${places}`,
+      recipientReadinessTitle: "開けるユーザー",
+      recipientHomeManagedRequired: "このユーザーは Home 管理のストレージを使用しています。このシークレットを Home 管理に変更すると共有できます。",
+      recipientEncryptionSetupRequired: "暗号化の設定がまだ完了していません",
+      recipientEncryptionRepairRequired: "開くには暗号鍵の修復が必要です",
+      recipientFinishSharing: "共有を完了",
+      recipientReadinessUnavailable: "このシークレットを開けるユーザーを確認できませんでした。もう一度お試しください。",
       shareDisclosureTitle: "このシークレットを共有しますか？",
       shareDisclosureBody: "共有した相手は、Happier が保存済みシークレットを受け付けるすべての場所でこれを使えます。アプリやローカルのツールにも値が渡ることがあります。",
       shareDisclosureTargetCount: ({ count }: { count: number }) => `${count} 人`,
@@ -13668,6 +13723,7 @@ settingsSession: {
   },
    ...apiTokenSettingsTranslations.ja,
    settingsPlugins: {
+      updateReview: pluginUpdateReviewTranslations.ja,
       ...pluginWebhookAdministrationTranslations['ja'],
       ...pluginAccountDataEraseTranslations.ja,
       ...pluginAccountReleaseSelectionTranslations.ja,
@@ -13715,23 +13771,24 @@ settingsSession: {
     developmentEditWithAgent: "エージェントで編集",
     developmentEditWithAgentSubtitle: "このプラグインのソースフォルダーで通常のセッションを開きます。",
     developmentCreateWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `このフォルダーで Happier プラグイン '${pluginId}' の作成を続けてください。happier-plugin-authoring スキルと、公開されている 'happier plugins' コマンドおよび公開 SDK インポートのみを使ってください。新しい権限や認証情報の付与は私が判断します。`,
-    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `ここは Happier プラグイン '${pluginId}' の開発フォルダーです。依頼する変更には、happier-plugin-authoring スキルと、公開されている 'happier plugins' コマンドおよび公開 SDK インポートのみを使ってください。新しい権限や認証情報の付与は私が判断します。`,
+    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `これは Happier プラグイン '${pluginId}' の現在の開発ソースです。依頼する変更には、happier-plugin-authoring スキルと、公開されている 'happier plugins' コマンドおよび公開 SDK インポートのみを使ってください。新しい権限や認証情報の付与は私が判断します。`,
     developmentSourcePathLabel: ({ path }: { path: string }) => `パス: ${path}`,
-    developmentSourceInstall: "ローカルのプラグインフォルダーを開発する",
-    developmentSourceInstallSubtitle: "このマシンのデーモンが、あなたのフォルダーからプラグインをビルドして実行できるようにします。まず対象のフォルダーを承認します。",
-    developmentSourceInstallTitle: "プラグインフォルダー",
-    developmentSourceInstallBody: "このマシン上のプラグインプロジェクトフォルダーの絶対パスを入力してください。",
+    developmentSourceInstall: "ローカルプラグインを開発する",
+    developmentSourceInstallSubtitle: "このマシンのデーモンが、あなたのファイルまたはフォルダーからプラグインをビルドして実行できるようにします。まず対象のソースを承認します。",
+    developmentSourceInstallTitle: "プラグインのファイルまたはフォルダー",
+    developmentSourceInstallBody: "このマシン上の .ts、.mts、.js、.mjs プラグインファイル、またはプラグインプロジェクトフォルダーの絶対パスを入力してください。",
+    developmentSourceInstallPlaceholder: "/path/to/plugin.mjs または /path/to/plugin-folder",
     developmentSourceInstallSucceeded: "開発ソースを承認し、投影しました。",
     developmentSourceInstallFailed: ({ outcome }: { outcome: string }) => `開発ソースをインストールできませんでした（${outcome}）。`,
-    developmentTrustProjectSourceTitle: "このプラグインフォルダーを信頼しますか？",
-    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier は次の場所で依存関係をインストールし、コードをビルドして実行します:\n\n${path}（${machine} / ${server}）\n\nそのフォルダー内のすべてと、そこから取得されうるすべてを信頼できる場合にのみ続行してください。`,
-    developmentTrustProjectSourceConfirm: "フォルダーを信頼",
+    developmentTrustProjectSourceTitle: "このプラグインソースを信頼しますか？",
+    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier は次の場所のコードをビルドして実行します:\n\n${path}（${machine} / ${server}）\n\nプロジェクトフォルダーの場合、宣言された依存関係をインストールすることがあります。このソースと依存関係を信頼できる場合にのみ続行してください。`,
+    developmentTrustProjectSourceConfirm: "ソースを信頼",
     pendingChangesTitle: "あなたの判断待ち",
     pendingChangesFooter: "このマシンで準備されたプラグイン変更です。エージェントは準備できますが、承認できるのはあなただけです。",
     pendingChangesReviewHint: "何かを信頼する前に、完全なレビューを表示します。",
     pendingChangeReviewAction: "レビュー",
     pendingChangeRejectHint: "準備された変更を破棄します。インストールも信頼もされません。",
-    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `プラグインフォルダー: ${path}`,
+    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `プラグインソース: ${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${source} からの ${pluginId}`,
     pendingChangeApplying: "この変更はすでに決定され、適用中です。",
     pendingChangeExpired: "この変更は判断される前に期限切れになりました。もう一度依頼してください。",
@@ -14022,12 +14079,13 @@ settingsSession: {
             readyStatus: 'Home の準備ができました。',
             failureBody: 'この手順を完了できませんでした。完了済みのセットアップは保持されています。再試行するか、詳細を開いてください。',
             profileRecoveryBody: 'パーソナル Home の準備ができました。Happier はまだ接続を完了する必要があります。',
-            computerRecoveryBody: 'パーソナル Home の準備ができました。エージェントのセットアップを確認してください。',
+            computerRecoveryBody: 'パーソナル Home の準備ができました。エージェントを実行する前に、このコンピューターを確認してください。',
             existingRuntimeBody: 'このコンピューターに既存のローカル Home が見つかりました。続行方法を選択してください。',
             useExisting: 'このローカル Home を使用',
             useExistingDetail: '現在選択中の Home を変更せずに、アクセスを確認して登録を保護します。',
             useAnother: '別の Home を使用',
             useAnotherDetail: 'このローカル Home を変更せず、 Home の一覧から選択します。',
+            ...personalHomeDecisionTranslations.ja,
             ...personalHomeBootstrapBlockedTranslations.ja,
         },
     },

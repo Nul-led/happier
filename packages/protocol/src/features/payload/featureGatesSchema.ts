@@ -120,7 +120,6 @@ export const FeatureGatesSchema = z.object({
       drafts: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       filteredListing: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       following: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
-      collaboration: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       conversations: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
       usageLimitRecovery: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
     })
@@ -135,7 +134,6 @@ export const FeatureGatesSchema = z.object({
       drafts: DEFAULT_GATE_DISABLED,
       filteredListing: DEFAULT_GATE_DISABLED,
       following: DEFAULT_GATE_DISABLED,
-      collaboration: DEFAULT_GATE_DISABLED,
       conversations: DEFAULT_GATE_DISABLED,
       usageLimitRecovery: DEFAULT_GATE_DISABLED,
     }),
@@ -280,16 +278,15 @@ export const FeatureGatesSchema = z.object({
           reactNativeBundles: z
             .object({
               enabled: z.boolean(),
-              devHotReload: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
             })
             .optional()
-            .default({ enabled: false, devHotReload: DEFAULT_GATE_DISABLED }),
+            .default({ enabled: false }),
         })
         .optional()
         .default({
           enabled: false,
           hostedWeb: DEFAULT_GATE_DISABLED,
-          reactNativeBundles: { enabled: false, devHotReload: DEFAULT_GATE_DISABLED },
+          reactNativeBundles: { enabled: false },
         }),
     })
     .optional()
@@ -299,7 +296,7 @@ export const FeatureGatesSchema = z.object({
       ui: {
         enabled: false,
         hostedWeb: DEFAULT_GATE_DISABLED,
-        reactNativeBundles: { enabled: false, devHotReload: DEFAULT_GATE_DISABLED },
+        reactNativeBundles: { enabled: false },
       },
     }),
   devices: z

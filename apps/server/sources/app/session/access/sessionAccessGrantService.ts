@@ -46,8 +46,7 @@ import {
  *
  * Every Account, Team, and Group grant enters here so that one transaction makes
  * the final capability decision, the final subject-eligibility decision, and the
- * write itself. The released `/v1/sessions/:id/shares` routes are translation
- * adapters over this service; they no longer own a mutation path.
+ * write itself.
  *
  * The service also owns the bounded before/after effective-access delta. Without
  * it, deleting one grant row looks identical to losing access, and a collaborator
@@ -55,18 +54,6 @@ import {
  * their draft tombstoned and their local Session deleted.
  */
 export type SessionAccessGrantValue = SessionAccessGrantCapabilityValueV1;
-
-/**
- * Released V1 recipient key material for a direct Account grant.
- *
- * Absent means "preserve whatever is stored"; present replaces it. There is
- * deliberately no readiness requirement in this compatibility input: missing-key
- * admission is a property of the calling operation's released contract.
- * The released V1 create route keeps its own `encryptedDataKey required` rejection.
- */
-export type SessionAccessDirectEnvelopeInput = Readonly<{
-    encryptedDataKey: Uint8Array<ArrayBuffer> | null;
-}>;
 
 export type SessionAccessGrantErrorCode =
     | SessionAccessGrantSubjectError
@@ -76,7 +63,6 @@ export type SessionAccessGrantErrorCode =
     | "session_access_permission_delegation_forbidden"
     | "session_access_permission_delegation_requires_edit"
     | "session_access_team_policy_required"
-    | "session_access_invalid_recipient_envelope"
     | "session_access_authentication_required"
     | "session_access_authentication_unavailable"
     | SessionExternalSharingPolicyError;
@@ -276,9 +262,7 @@ export async function applyInitialSessionAccessInTx(
     const primaryTeamGrant = resolved.find(
         (item) => item.subject.kind === "team" && item.subject.teamId === session.primaryTeamId,
     );
-    if (primaryTeam?.archivedAt === null
-        && primaryTeam.sessionCreationPolicy === TeamSessionCreationPolicy.team_required
-        && session.primaryTeamId) {
+    if (teamPolicyRequiresGrant(primaryTeam) && session.primaryTeamId) {
         if (!primaryTeamGrant) {
             resolved.push({
                 subject: { kind: "team", teamId: session.primaryTeamId },
@@ -462,18 +446,28 @@ async function loadStoredGrantInTx(
 }
 
 /**
+ * The one condition behind the required-Team floor, over a Team row the caller
+ * already holds. The creation path reads the primary Team for other reasons and
+ * used to restate this rule inline; both sites now ask this.
+ */
+function teamPolicyRequiresGrant(
+    team: Readonly<{ sessionCreationPolicy: TeamSessionCreationPolicy; archivedAt: Date | null }> | null,
+): boolean {
+    return team !== null
+        && team.archivedAt === null
+        && team.sessionCreationPolicy === TeamSessionCreationPolicy.team_required;
+}
+
+/**
  * A Team policy that still requires this Session's Team grant blocks weakening or
  * removing it. When the policy has been relaxed, this explicit authorized edit is
  * also where the now-stale marker is cleared: there is no bulk relaxation job.
  */
 export async function teamPolicyStillRequiresGrant(tx: Tx, teamId: string): Promise<boolean> {
-    const team = await tx.team.findUnique({
+    return teamPolicyRequiresGrant(await tx.team.findUnique({
         where: { id: teamId },
         select: { sessionCreationPolicy: true, archivedAt: true },
-    });
-    return team !== null
-        && team.archivedAt === null
-        && team.sessionCreationPolicy === TeamSessionCreationPolicy.team_required;
+    }));
 }
 
 async function resolveAffectedAccountIdsInTx(
@@ -526,7 +520,6 @@ export async function putSessionAccessGrantInTx(
         subject: SessionAccessGrantSubject;
         grant: SessionAccessGrantValue;
         accountEnvelopeInput?: unknown;
-        directEnvelope?: SessionAccessDirectEnvelopeInput;
         /** Verified request/runtime credential context supplied by the entry point. */
         authentication: SessionAccessAuthentication;
     }>,
@@ -625,16 +618,14 @@ export async function putSessionAccessGrantInTx(
     let storedEnvelope: Uint8Array | null = null;
     let envelopeToWrite: Uint8Array | null = null;
     if (subject.kind !== "account") {
-        if (params.accountEnvelopeInput !== undefined || params.directEnvelope !== undefined) {
+        if (params.accountEnvelopeInput !== undefined) {
             return { ok: false, error: "invalid_request" };
         }
     } else if (sessionEncryptionMode === "plain") {
         // Persisted Session mode is the authority. Plain grants neither inspect
-        // recipient crypto readiness nor touch the envelope table. The released
-        // adapter's `null` means “no key supplied”; actual supplied bytes are
-        // rejected just like the current physical input.
-        if (params.accountEnvelopeInput !== undefined
-            || (params.directEnvelope !== undefined && params.directEnvelope.encryptedDataKey !== null)) {
+        // recipient crypto readiness nor touch the envelope table; supplied
+        // material is rejected.
+        if (params.accountEnvelopeInput !== undefined) {
             return { ok: false, error: "data_key_not_required" };
         }
     } else {
@@ -642,28 +633,18 @@ export async function putSessionAccessGrantInTx(
             sessionId: params.sessionId,
             recipientAccountId: subject.accountId,
         });
-        if (params.directEnvelope !== undefined) {
-            // Released V1 operations have no current-recipient readiness prerequisite.
-            // Null preserves a retained tuple; only this adapter input selects V1 semantics.
-            if (params.accountEnvelopeInput !== undefined) return { ok: false, error: "invalid_request" };
-            envelopeToWrite = params.directEnvelope.encryptedDataKey;
-            if (envelopeToWrite !== null && !isStructurallyValidSessionDataKeyEnvelope(envelopeToWrite)) {
-                return { ok: false, error: "session_access_invalid_recipient_envelope" };
-            }
-        } else {
-            const recipient = await tx.account.findUniqueOrThrow({
-                where: { id: subject.accountId },
-                select: { publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true },
-            });
-            const envelopeAdmission = admitDirectSessionRecipientEnvelope({
-                sessionEncryptionMode,
-                recipientReadiness: deriveAccountRecipientEnvelopeReadinessFromRow(recipient),
-                hasExistingEnvelope: storedEnvelope !== null && isStructurallyValidSessionDataKeyEnvelope(storedEnvelope),
-                input: params.accountEnvelopeInput,
-            });
-            if (envelopeAdmission.outcome === "rejected") return { ok: false, error: envelopeAdmission.error };
-            if (envelopeAdmission.outcome === "write") envelopeToWrite = decodeBase64(envelopeAdmission.encryptedDataKey);
-        }
+        const recipient = await tx.account.findUniqueOrThrow({
+            where: { id: subject.accountId },
+            select: { publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true },
+        });
+        const envelopeAdmission = admitDirectSessionRecipientEnvelope({
+            sessionEncryptionMode,
+            recipientReadiness: deriveAccountRecipientEnvelopeReadinessFromRow(recipient),
+            hasExistingEnvelope: storedEnvelope !== null && isStructurallyValidSessionDataKeyEnvelope(storedEnvelope),
+            input: params.accountEnvelopeInput,
+        });
+        if (envelopeAdmission.outcome === "rejected") return { ok: false, error: envelopeAdmission.error };
+        if (envelopeAdmission.outcome === "write") envelopeToWrite = decodeBase64(envelopeAdmission.encryptedDataKey);
     }
     const envelopeChanges = envelopeToWrite !== null && !sameEncryptedDataKey(storedEnvelope, envelopeToWrite);
     const valueChanges = stored === null
@@ -792,6 +773,10 @@ export async function putSessionAccessGrantInTx(
     if (stored === null) {
         await applySessionAutoFollowForRelationshipChangeInTx(tx, {
             sessionId: params.sessionId,
+            // Only Accounts that actually gained effective read, never an overlap
+            // (teams-lane-04-session-access-sharing-authorship-presence.md §3).
+            // Eligibility, explicit-choice precedence and the conditional insert
+            // stay in the Follow owner.
             accountIds: effects.grantedAccountIds,
             relationship: subject.kind === "account" ? "direct" : subject.kind,
         });

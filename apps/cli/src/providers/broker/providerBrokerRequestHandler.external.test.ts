@@ -104,7 +104,7 @@ describe('Provider broker external authenticated context', () => {
     }));
     expect(access.request).toHaveBeenCalledWith(expect.objectContaining({ headers: { 'content-type': 'application/json' } }));
     expect(recordTerminal).toHaveBeenCalledOnce();
-    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'succeeded' });
+    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'succeeded', actualModelId: null, tokens: null });
   });
 
   it.each([
@@ -162,7 +162,76 @@ describe('Provider broker external authenticated context', () => {
     if (cancel) await reader.cancel();
     else await reader.read();
     expect(recordTerminal).toHaveBeenCalledOnce();
-    expect(recordTerminal).toHaveBeenCalledWith({ outcome });
+    expect(recordTerminal).toHaveBeenCalledWith({ outcome, actualModelId: null, tokens: null });
+  });
+
+  it('reports the streamed Provider terminal token fact of the admitted external request', async () => {
+    const recordTerminal = vi.fn(async () => {});
+    const sse = [
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5-2025-11-01"}}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"he"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5-2025-11-01",'
+        + '"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":80},'
+        + '"output_tokens":45,"output_tokens_details":{"reasoning_tokens":30},"total_tokens":165}}}\n\n',
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Split across chunk boundaries so the observer cannot depend on one
+        // SSE event arriving as one transport chunk.
+        const encoded = new TextEncoder().encode(sse.join(''));
+        controller.enqueue(encoded.slice(0, 90));
+        controller.enqueue(encoded.slice(90));
+        controller.close();
+      },
+    });
+    const access: ManagedProviderEndpointHttpAccess = {
+      endpointUrl: () => 'http://127.0.0.1:1234',
+      request: vi.fn(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+        body,
+      })),
+    };
+    const handler = createProviderBrokerRequestHandler({
+      resolveTrustRoots: () => [], nowMs: Date.now,
+      resolveRequestPolicy: vi.fn(), admit: vi.fn(), createRequestId: () => 'unused',
+      resolveExternalRequestPolicy: async () => ({
+        kind: 'application' as const,
+        resourceRevision: 4,
+        policy: null,
+        modelCatalog: { models: [{ id: 'gpt-5' }], resolveCanonicalModelId: (id) => id },
+        application: {
+          agentTargetKey: 'agent:happier.agent.codex/codex',
+          implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+          endpointTemplateId: 'cliproxyapi-openai-responses', protocol: 'openai-responses',
+        },
+      }),
+      admitExternal: async () => ({ ok: true as const, access, terminalUsage: { record: recordTerminal } }),
+    });
+    const result = await handler({
+      context: { kind: 'external', binding },
+      carrierRequest: { ...externalRequest, bodyBase64: 'e30=' },
+      request: {
+        pathAndQuery: '/v1/responses', method: 'POST',
+        body: new TextEncoder().encode('{"model":"gpt-5","input":"hello","stream":true}'),
+      },
+    });
+    if (!result.ok || !result.response.body) throw new Error('expected streamed Provider response');
+    const reader = result.response.body.getReader();
+    const seen: string[] = [];
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      seen.push(new TextDecoder().decode(next.value));
+    }
+    // The caller still receives the Provider's exact bytes.
+    expect(seen.join('')).toBe(sse.join(''));
+    expect(recordTerminal).toHaveBeenCalledOnce();
+    expect(recordTerminal).toHaveBeenCalledWith({
+      outcome: 'succeeded',
+      actualModelId: 'gpt-5-2025-11-01',
+      tokens: { input: 120, output: 45, reasoning: 30, cacheRead: 80, cacheWrite: 0, total: 165 },
+    });
   });
 
   it('records one failed terminal fact when the admitted Provider response is lost', async () => {
@@ -199,7 +268,7 @@ describe('Provider broker external authenticated context', () => {
       },
     })).rejects.toThrow('response lost');
     expect(recordTerminal).toHaveBeenCalledOnce();
-    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'failed' });
+    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'failed', actualModelId: null, tokens: null });
   });
 
   it('records one failed terminal fact when the Provider stream truncates', async () => {
@@ -250,7 +319,7 @@ describe('Provider broker external authenticated context', () => {
     const reader = result.response.body.getReader();
     await expect(reader.read()).rejects.toThrow('truncated');
     expect(recordTerminal).toHaveBeenCalledOnce();
-    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'failed' });
+    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'failed', actualModelId: null, tokens: null });
   });
 
   it('authorizes every exact current application before returning the protocol-neutral model union', async () => {

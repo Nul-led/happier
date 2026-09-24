@@ -110,6 +110,40 @@ describe('Provider Connection CPX bridge', () => {
     expect(JSON.stringify({ projection, result })).not.toContain('gateway.example');
   });
 
+  it('keeps the retained operation current after the creating caller goes away, and ends it only on retirement', async () => {
+    const managed = custody(async () => response());
+    const bridge = createProviderConnectionCpxBridge({ custody: managed.owner });
+    const caller = new AbortController();
+    let sourceCurrent = true;
+    const projection = await bridge.open({
+      application,
+      operation,
+      endpoint: {
+        endpointTemplateId: 'responses', normalizedUrl: 'https://gateway.example/v1',
+        protocol: 'openai-responses', publicHeaders: {},
+        resolvedAddresses: ['203.0.113.10'],
+      },
+      signal: caller.signal,
+      isCurrent: async () => sourceCurrent,
+      acquireRequestCredential: async () => credentialLease(),
+    });
+    const retained = managed.acquire.mock.calls[0]![0];
+
+    // The retained currentness belongs to the operation, which outlives the
+    // stream that created it: closing that stream releases only this caller's
+    // join, so a later stream on the same signed operation is still served.
+    caller.abort();
+    await projection!.cleanup();
+    expect(retained.isAuthorizationCurrent()).toBe(true);
+    await expect(retained.revalidateAuthorization()).resolves.toBe(true);
+    expect(managed.owner.retire).not.toHaveBeenCalled();
+
+    // The operation's own authority still ends it.
+    sourceCurrent = false;
+    await expect(retained.revalidateAuthorization()).resolves.toBe(false);
+    expect(retained.isAuthorizationCurrent()).toBe(false);
+  });
+
   it('supports the Anthropic x-api-key variant and refuses caller/public header collisions', async () => {
     const managedRequest = vi.fn<(input: ManagedServiceRequest) => Promise<ManagedServiceResponse>>(async () => response('{"ok":true}'));
     const managed = custody(managedRequest);

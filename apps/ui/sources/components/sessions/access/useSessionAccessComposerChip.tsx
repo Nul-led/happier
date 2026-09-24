@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { createSessionAccessActionChip } from '@/components/sessions/agentInput/definitions/createSessionAccessActionChip';
+import type { SessionCollaborationHandoff } from '@/components/sessions/collaboration/sessionCollaborationIntent';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { buildSessionContextFacts } from '@/sync/domains/session/presentation/sessionContextPresentation';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -47,9 +48,11 @@ export function useSessionAccessComposerChip(input: Readonly<{
     onOpen?: (() => void) | null;
     /**
      * The handoff an anchored compact editor offers from inside its popover, so
-     * the desktop composer is not a dead end.
+     * the desktop composer is not a dead end. It forwards the editor's own
+     * root-step query, which is all the destination's separate controller
+     * cannot rebuild for itself.
      */
-    onOpenFullSurface?: (() => void) | null;
+    onOpenFullSurface?: ((handoff: SessionCollaborationHandoff) => void) | null;
 }>): SessionAccessComposerChipParams | null {
     const serverId = input.target?.serverId ?? null;
     const sessionId = input.target?.sessionId ?? null;
@@ -107,7 +110,7 @@ export function useSessionAccessComposerChip(input: Readonly<{
                     presentation="compact"
                     onRequestClose={requestClose}
                     {...(onOpenFullSurface
-                        ? { onOpenFullSurface: () => { requestClose(); onOpenFullSurface(); } }
+                        ? { onOpenFullSurface: (handoff: SessionCollaborationHandoff) => { requestClose(); onOpenFullSurface(handoff); } }
                         : {})}
                     testID="session-access-editor:composer"
                 />

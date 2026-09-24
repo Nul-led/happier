@@ -83,6 +83,12 @@ code runs, and the host access it requires. That is the same Install and Trust
 review Happier shows anywhere else a plugin is installed — Allow performs it,
 Decline installs nothing.
 
+If that plugin is published on a private registry, the temporary computer first
+asks its user to sign in to that exact registry — with a token, or without one
+for a registry that needs none — before the review appears. The token stays in
+the temporary computer's own registry profile; nothing from the requester's
+account or machine is used. Declining ends the request.
+
 The review also carries the warning that matters most, and Happier does not soften
 it: **The Agent runs with the current OS user's permissions. The selected folder
 is not a sandbox, and the Agent may access other files that this OS user can

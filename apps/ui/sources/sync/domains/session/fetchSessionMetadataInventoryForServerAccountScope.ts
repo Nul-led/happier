@@ -13,7 +13,7 @@ import {
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
+import { resolveUiClientEncryptionRequirementForScope } from '@/sync/domains/settings/clientEncryptionRequirement';
 
 export type SessionMetadataInventoryAccountLifetime = Readonly<{
     isCurrent(): boolean;
@@ -46,9 +46,9 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
         let cursor: string | null = null;
         let hasNext = false;
         const fetchPage = async (pageCursor: string | null) => await fetchAndApplySessions({
-            clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
-                syncedSettings: storage.getState().settings,
-                localSettings: storage.getState().settings,
+            clientEncryptionRequirement: resolveUiClientEncryptionRequirementForScope({
+                scope: params.scope,
+                focusedSettings: storage.getState().settings,
             }),
             ...(sessionListPath
                 ? { sessionListPath }

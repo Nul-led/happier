@@ -144,34 +144,41 @@ for every request.
 
 ### Session collaboration feature ids
 
-`sessions.collaboration` is the one current-component boundary for Account,
-Team, and Group Session grants, responsibility, primary-Team context, and atomic
-initial access. It depends on `sessions` and the released `sharing.session`
-capability. `resolveSessionCollaborationFeature` is its only server producer and
-enables it by default, with `HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED=0`
-as the operator opt-out; the dependency resolver still forces it off when normal
-Session sharing is unavailable.
+Account, Team, and Group Session grants, responsibility, primary-Team context,
+and atomic initial access are Session sharing. They are served wherever the
+exact Home's `sharing.session` decision is enabled; there is no separate
+collaboration bit. The former server-only `sessions.collaboration` bit and its
+`HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED` switch were retired on
+2026-09-24: the bit had no user-facing toggle and existed only as the
+current-component boundary, which the one-way 0.3 upgrade (every component
+updates together) removed. The environment variable is no longer read.
 
-The current grant and responsibility routes are mounted through
-`createServerFeatureGatedRouteApp`, and UI hosts consume the exact Home's same
-published decision through `useSessionCollaborationAvailability`. No route or
-client reconstructs a Team/Group dependency locally. The older
-`sharing.session` decision remains the independent released Account-direct
-sharing boundary: when collaboration is absent, the current Access editor uses
-the released direct-only adapter rather than hiding direct sharing or probing a
-new route by failure.
+The grant and responsibility routes are mounted through
+`createServerFeatureGatedRouteApp(app, "sharing.session")`; the server's
+collective-access evaluator, filtered-listing audience query and atomic
+initial-access admission read the same decision through
+`isSessionCollaborationEnabled()` in `session/access/sessionAccess.ts`. UI hosts
+consume it through `useSessionCollaborationAvailability`, whose two states are
+`available` and `unavailable`, and the CLI through `resolveCliFeatureDecision`
+on `sharing.session`. There is no direct-only mode and no legacy direct-share
+adapter. Direct Account shares created by 0.2 stay effective and readable
+whatever this decision says; disabling Session sharing withholds collective
+Team/Group sources and the access routes, it never deletes grants.
 
-Human Session presence is not governed by `sessions.collaboration`. It is an
-independently negotiated socket protocol over an already readable Session, so a
-Home that supports released direct sharing can expose presence without claiming
-Team/Group grants or responsibility. Session-to-Session Follow remains under
-the separate `sessions.following` owner and runtime capability; neither feature
-bit is a substitute for current access admission.
+When the decision is off, every refusal names that cause with the one
+protocol code `session_access_sharing_unavailable`
+(`SessionAccessErrorCodeV1`): the atomic create answers `409` with it, the CLI
+preflight throws the same answer before POST, a daemon-spawned creation carries
+it to the Action as the `session_creation_access_refused` terminal detail, and
+the UI maps the gated routes' `404 not_found` and its own `unavailable`
+decision to it. It is never reported as `update_required`, and its copy never
+asks the person to update the Home.
 
-The bit is a Home capability boundary, not a rollout stage: it must not be split
-into mechanism-level feature bits, and disabling it is not permission to delete
-Account/Team/Group access, responsibility, presence, public links, or the Access
-editor.
+Human Session presence is not governed by this decision. It is an
+independently negotiated socket protocol over an already readable Session.
+Session-to-Session Follow remains under the separate `sessions.following` owner
+and runtime capability; neither feature bit is a substitute for current access
+admission.
 
 ### Session Follow feature id
 
@@ -179,7 +186,7 @@ editor.
 accessible Session, its notification and Voice preferences, and the four
 auto-follow defaults (`assigned`, `direct`, `team`, `group`). It is
 server-represented, `defaultFailMode: 'fail_closed'`, and depends only on
-`sessions` in the Protocol catalog — not on `sessions.collaboration`, because
+`sessions` in the Protocol catalog — not on `sharing.session`, because
 following a Session you can already read is not a Team capability.
 
 `resolveSessionFollowingFeature`, registered in the one `serverFeatureRegistry`,
@@ -219,13 +226,13 @@ place to hide Team Sessions from a member who may read them.
 
 `sessions.conversations` gates the Session-owned human Conversation routes and mounted
 Collaboration surface. It is server-represented, fail-closed, and depends exactly on
-`sessions.collaboration`; the dependency is declared in the Protocol catalog and applied by
-`applyFeatureDependencies(...)`.
+`sessions` and `sharing.session`; the dependency is declared in the Protocol catalog and applied
+by `applyFeatureDependencies(...)`.
 
 Its server value is produced by `resolveSessionConversationsFeature`, registered in the one
 `serverFeatureRegistry`, from `HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED`. The resolver
 defaults on, with `=0` as the operator opt-out, and still resolves false when Session
-collaboration is absent, disabled, or malformed. The nested Discussion routes use
+sharing is absent, disabled, or malformed. The nested Discussion routes use
 `createServerFeatureGatedRouteApp`, while the UI consumes the same published decision through
 `useFeatureEnabled`; neither side reconstructs the dependency locally.
 

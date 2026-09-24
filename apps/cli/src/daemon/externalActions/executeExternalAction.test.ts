@@ -287,6 +287,74 @@ describe('executeExternalAction', () => {
     });
   });
 
+  it('rejects a foreign Session target before a Session-bound receiver opens the envelope', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.message.send',
+      requestId: 'foreign-session', target: { kind: 'session' as const, sessionId: 'session-other' } };
+    const envelope = sealExternalActionRequestV2({ binding, material,
+      input: { sessionId: 'session-other', message: 'private-input' },
+      randomBytes: (length) => new Uint8Array(length).fill(2) });
+    const resolveTarget = vi.fn<ResolveExternalActionTarget>();
+    const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+      principal: { ...principal, credentialId: binding.credentialId }, currentMachineId: 'machine-1',
+      currentSessionId: 'session-own',
+      // This receiver's own material would open the envelope, so the refusal is
+      // the bound-Session guard and not a failed open.
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget,
+      executor: { execute: async () => { throw new Error('A foreign Session cannot execute'); } },
+    });
+    expect(result).toEqual({
+      kind: 'invalid_request',
+      errorCode: 'invalid_encrypted_envelope',
+      requestId: 'foreign-session',
+    });
+    expect(resolveTarget).not.toHaveBeenCalled();
+  });
+
+  it('keeps a many-Session daemon deciding the same foreign Session at its target owner', async () => {
+    // The same envelope as the case above. Without a bound Session the receiver
+    // cannot answer the question before opening, so the decision stays with
+    // `resolveTarget` exactly as it did before that fact existed.
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.message.send',
+      requestId: 'foreign-session', target: { kind: 'session' as const, sessionId: 'session-other' } };
+    const envelope = sealExternalActionRequestV2({ binding, material,
+      input: { sessionId: 'session-other', message: 'private-input' },
+      randomBytes: (length) => new Uint8Array(length).fill(2) });
+    const resolveTarget = vi.fn<ResolveExternalActionTarget>(async () => null);
+    const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+      principal: { ...principal, credentialId: binding.credentialId }, currentMachineId: 'machine-1',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget,
+      executor: { execute: async () => { throw new Error('A foreign Session cannot execute'); } },
+    });
+    expect(result.kind).toBe('response');
+    expect(resolveTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps admitting its own bound Session on a Session-bound receiver', async () => {
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+    const binding = { serverIdentityId: 'srv_test', accountId: principal.accountId,
+      credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.message.send',
+      requestId: 'own-session', target: { kind: 'session' as const, sessionId: 'session-own' } };
+    const envelope = sealExternalActionRequestV2({ binding, material,
+      input: { sessionId: 'session-own', message: 'hello' },
+      randomBytes: (length) => new Uint8Array(length).fill(2) });
+    const resolveTarget = vi.fn<ResolveExternalActionTarget>(async () => binding.target);
+    const result = await executeExternalAction({ actionId: binding.actionId, envelope,
+      principal: { ...principal, credentialId: binding.credentialId }, currentMachineId: 'machine-1',
+      currentSessionId: 'session-own',
+      resolveEncryption: async () => ({ serverIdentityId: binding.serverIdentityId, material }),
+      resolveTarget,
+      executor: { execute: async () => ({ ok: true, result: { status: 'accepted', localId: 'local-1' } }) },
+    });
+    expect(result.kind).toBe('response');
+    expect(resolveTarget).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a present authorization whose immutable envelope binding does not match', async () => {
     const execute = vi.fn<ExternalActionExecutor['execute']>();
     const resolveTarget = vi.fn<ResolveExternalActionTarget>();

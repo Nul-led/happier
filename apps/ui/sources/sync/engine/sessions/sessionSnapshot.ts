@@ -1,5 +1,9 @@
 import { normalizeSessionAccessProjection, readSessionAccessRole } from './normalizeSessionAccessProjection';
 import {
+    captureSessionListRetirementFence,
+    wasSessionRetiredSinceFence,
+} from '@/sync/store/domains/sessions';
+import {
     hasUnreadActivityForSessionViewer,
     normalizeSessionViewerCompatibility,
 } from '@/sync/domains/session/readState/sessionViewer';
@@ -63,7 +67,9 @@ import {
     readSessionMetadataLayoutVersion,
 } from './parsePlainSessionPayload';
 import {
+    DEFAULT_SESSION_LIST_PATH,
     fetchSessionListPageCompat,
+    resolveSessionListRequestPath,
     type SessionListPageSource,
 } from './sessionHttpCompat';
 import { orderRowsForSessionListHydration } from './sessionListHydrationPriority';
@@ -113,6 +119,12 @@ export type SessionListFetchResult = Readonly<{
     current: boolean;
     source: 'v2' | 'v1';
     accountCurrentness?: AccountEncryptionCurrentnessResponse;
+    /**
+     * Historical rows the Home selected for this read but withheld from this viewer
+     * until their owner migrates the Session metadata (released layout 0). Non-zero
+     * means the pages were read to the end yet the corpus is not whole.
+     */
+    metadataUpgradeRequiredCount?: number;
 }>;
 type HydrationApplyFlushReason = 'size' | 'timer' | 'required' | 'final' | 'manual';
 type CurrentSessionListRenderableLookup = (sessionId: string) => SessionListRenderableSession | null | undefined;
@@ -141,7 +153,6 @@ type SessionListRenderablePatch = Readonly<{
     patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
 }>;
 
-const DEFAULT_SESSION_LIST_PATH = '/v2/sessions';
 // Bound one cold-sync pump so a malformed or moving server cursor cannot make a
 // single fetch open-ended. The owning runtime retains and resumes the returned
 // attention cursor; this is a work bound, never a corpus-completeness limit.
@@ -153,16 +164,25 @@ function readSessionListRowAgentStateVersion(row: SessionListRow): number {
     return row.agentStateVersion ?? 0;
 }
 
+/**
+ * Identifies the read whose in-flight data-key hydration a new read supersedes.
+ * The key must describe the acquisition actually issued: the corpus it reads
+ * (through the canonical request-path owner) and, for a strict query, the
+ * owning reader — otherwise two independent acquisitions cancel each other and
+ * a page is fetched but never applied.
+ */
 function normalizeSessionListAbortKey(params: Readonly<{
     serverId?: string | null;
     source?: SessionListPageSource;
     sessionListPath?: string;
+    sessionListReadScopeId?: string;
     sessionListCursor?: string | null;
     sessionListPageSize?: number;
     sessionListMaxPages?: number;
     includeActiveSessionRows?: boolean;
 }>): string {
     const serverId = String(params.serverId ?? '').trim() || NO_SERVER_ID_ABORT_KEY;
+    const readScopeId = String(params.sessionListReadScopeId ?? '').trim();
     if (params.source?.kind === 'query') {
         const {
             cursor: _cursor,
@@ -170,10 +190,9 @@ function normalizeSessionListAbortKey(params: Readonly<{
             limit: _limit,
             ...query
         } = params.source.body;
-        return `${serverId}\u0000query\u0000${JSON.stringify(query)}`;
+        return `${serverId}\u0000query\u0000${readScopeId}\u0000${JSON.stringify(query)}`;
     }
-    const sessionListPath = String(params.sessionListPath ?? '').trim() || DEFAULT_SESSION_LIST_PATH;
-    return `${serverId}\u0000${sessionListPath}`;
+    return `${serverId}\u0000${resolveSessionListRequestPath(params)}\u0000${readScopeId}`;
 }
 
 function createSessionListDataKeyHydrationAbortController(params: Readonly<{
@@ -181,6 +200,7 @@ function createSessionListDataKeyHydrationAbortController(params: Readonly<{
     serverId?: string | null;
     source?: SessionListPageSource;
     sessionListPath?: string;
+    sessionListReadScopeId?: string;
 }>): AbortController {
     if (!params.encryption) {
         return new AbortController();
@@ -1475,6 +1495,12 @@ export async function fetchAndApplySessions(params: {
     serverId?: string | null;
     source?: SessionListPageSource;
     sessionListPath?: string;
+    /**
+     * Identity of the reader that owns this acquisition. Independent readers of
+     * one corpus (a mounted list controller and an ad-hoc row-only read) must
+     * not cancel one another's in-flight data-key hydration.
+     */
+    sessionListReadScopeId?: string;
     sessionListCursor?: string | null;
     sessionListAttentionCursor?: string | null;
     sessionListPageSize?: number;
@@ -1518,6 +1544,9 @@ export async function fetchAndApplySessions(params: {
     const isQuerySource = params.source?.kind === 'query';
     const applySessions = isQuerySource ? (_sessions: HydratedSession[]) => {} : params.applySessions;
     const snapshotStartedAtMs = nowMs();
+    // Captured before the first request: a retirement committed after this point
+    // wins over whatever this read's pages still carry for that exact Home.
+    const retirementFence = captureSessionListRetirementFence();
     const request =
         params.request
         ?? ((path: string, init: RequestInit) => serverFetch(path, init, { includeAuth: false }));
@@ -1548,6 +1577,7 @@ export async function fetchAndApplySessions(params: {
         serverId: params.serverId,
         source: params.source,
         sessionListPath: params.sessionListPath,
+        sessionListReadScopeId: params.sessionListReadScopeId,
     });
     const rawShouldContinue = params.shouldContinue ?? (() => true);
     const shouldContinue = () => {
@@ -1583,6 +1613,7 @@ export async function fetchAndApplySessions(params: {
     let fetchedAttentionPages = 0;
     let source: 'v2' | 'v1' = 'v2';
     let accountCurrentness = params.accountCurrentness;
+    let metadataUpgradeRequiredCount = 0;
     const buildFetchResult = (): SessionListFetchResult => ({
         sessionIds: sessions.map((session) => session.id),
         nextCursor: nextCursorForMore,
@@ -1592,6 +1623,7 @@ export async function fetchAndApplySessions(params: {
         current: shouldContinue(),
         source,
         ...(accountCurrentness ? { accountCurrentness } : {}),
+        metadataUpgradeRequiredCount,
     });
     const appendRows = (rows: V2SessionListResponse['sessions']): void => {
         for (const row of rows) {
@@ -1671,6 +1703,7 @@ export async function fetchAndApplySessions(params: {
             },
             () => {
                 appendRows(page.sessions);
+                metadataUpgradeRequiredCount += page.metadataUpgradeRequiredCount;
                 source = page.source;
                 if (page.source === 'v1') {
                     usedLegacyV1Snapshot = true;
@@ -1724,6 +1757,7 @@ export async function fetchAndApplySessions(params: {
                 allowLegacyV1Fallback: false,
             });
             appendRows(attentionPage.sessions);
+            metadataUpgradeRequiredCount += attentionPage.metadataUpgradeRequiredCount;
             fetchedAttentionPages += 1;
             attentionNextCursor = attentionPage.attentionNextCursor;
             attentionHasNext = attentionPage.attentionHasNext;
@@ -1764,7 +1798,10 @@ export async function fetchAndApplySessions(params: {
     const fetchedSessionIds = sessions.map((session) => session.id);
     const fetchedSessionIdSet = new Set(fetchedSessionIds);
     const retainedCachedSessionIds = usedLegacyV1Snapshot
-        ? Object.keys(cachedSessionListEntries).filter((sessionId) => !fetchedSessionIdSet.has(sessionId))
+        ? Object.keys(cachedSessionListEntries).filter((sessionId) => (
+            !fetchedSessionIdSet.has(sessionId)
+            && !wasSessionRetiredSinceFence(retirementFence, params.serverId, sessionId)
+        ))
         : [];
     const shouldApplyRenderables = typeof params.applySessionListRenderables === 'function';
     let appliedRenderableCount = 0;
@@ -1789,8 +1826,18 @@ export async function fetchAndApplySessions(params: {
     if (!shouldContinue()) {
         return buildFetchResult();
     }
+    // Rows and membership only: a Session this exact Home retired (deleted or
+    // revoked) while the pages were in flight is not reinserted, and the rest of the
+    // page still applies. From here to the renderable application below is
+    // synchronous, so no later retirement can slip between this check and the store.
+    for (let index = sessions.length - 1; index >= 0; index -= 1) {
+        const row = sessions[index];
+        if (row && wasSessionRetiredSinceFence(retirementFence, params.serverId, row.id)) {
+            sessions.splice(index, 1);
+        }
+    }
     if (!isQuerySource) {
-        params.onSnapshotFetched?.([...fetchedSessionIds, ...retainedCachedSessionIds]);
+        params.onSnapshotFetched?.([...sessions.map((row) => row.id), ...retainedCachedSessionIds]);
     }
     if (shouldApplyRenderables) {
         const renderables = syncPerformanceTelemetry.measure(

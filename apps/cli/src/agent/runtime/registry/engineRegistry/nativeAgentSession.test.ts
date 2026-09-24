@@ -535,7 +535,11 @@ function createLease(agentId: string): AgentRuntimeRegistrationLease {
         pluginVersion: '1.0.0',
         agentId,
         localAgentId: agentId,
-        generation: 'generation-1',
+        occurrenceId: 'native-agent-session-fixture',
+        sourceCustody: {
+            kind: 'development',
+            registeredRootId: 'native-agent-session-fixture',
+        },
         immutableGenerationId: null,
         hasPrimaryRuntime: true,
         isCurrent: () => true,
@@ -6055,7 +6059,7 @@ describe('native Agent session host adapter', () => {
                     id: 'codex-acp',
                 }],
                 signal: generationController.signal,
-                isGenerationCurrent: () => !generationController.signal.aborted,
+                isOccurrenceCurrent: () => !generationController.signal.aborted,
                 async resolveExecutable(executable) {
                     expect(executable).toEqual({
                         kind: 'managedDependency',
@@ -6758,7 +6762,7 @@ describe('native Agent session host adapter', () => {
                 const interactions = createPluginInteractionsService({
                     currentSession: input.session.current,
                     signal: input.signal,
-                    isGenerationCurrent: () => true,
+                    isOccurrenceCurrent: () => true,
                 });
                 return Object.freeze({
                     ...operationServices,
@@ -7103,7 +7107,8 @@ describe('native Agent session host adapter', () => {
             contributionId: 'acme-agent',
             runtimeId: 'acme-agent',
             sessionId: 'session-1',
-            generationId: 'generation-1',
+            occurrenceId: 'occurrence-1',
+            sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'npm' },
             isCurrent: () => true,
         });
 
@@ -10911,12 +10916,14 @@ describe('native Agent session host adapter', () => {
         const controls = runtime as typeof runtime & Readonly<{
             prepareRunTeamCredentialProviderBinding(request: Readonly<{
                 runId: string;
+                agentId: string;
                 resourceId: string;
                 modelId: string;
             }>): Promise<unknown>;
         }>;
         await expect(controls.prepareRunTeamCredentialProviderBinding({
             runId: 'run-1',
+            agentId: 'run-agent',
             resourceId: 'resource-1',
             modelId: 'team-model',
         })).resolves.toMatchObject({
@@ -10926,6 +10933,7 @@ describe('native Agent session host adapter', () => {
         });
         expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledWith({
             runId: 'run-1',
+            agentId: 'run-agent',
             resourceId: 'resource-1',
             modelId: 'team-model',
         });

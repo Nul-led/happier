@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDeferred } from '@/dev/testkit';
 import { createSyncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 
-import { runNativeCryptoWorkerQueuedBatch } from './nativeCryptoWorkerQueue';
+import {
+    markNativeCryptoWorkerQueueActive,
+    markNativeCryptoWorkerQueueQuiescent,
+    resetNativeCryptoWorkerQueueLifecycleForTests,
+    runNativeCryptoWorkerQueuedBatch,
+} from './nativeCryptoWorkerQueue';
 import {
     normalizeNativeCryptoWorkerRouting,
     resetNativeCryptoWorkerCapabilityCacheForTests,
@@ -160,6 +165,42 @@ describe('runNativeCryptoWorkerBatch', () => {
             });
         } finally {
             vi.useRealTimers();
+        }
+    });
+
+    it('does not degrade the capability when a deliberate suspension outlasts the routing timeout', async () => {
+        // `timeoutMs` is a dispatch budget, not a wall clock over the app being
+        // backgrounded: the queue suspends regular dispatch on purpose, so the
+        // native run must not be started — and timed — until dispatch resumes.
+        resetNativeCryptoWorkerQueueLifecycleForTests();
+        markNativeCryptoWorkerQueueQuiescent();
+        vi.useFakeTimers();
+        try {
+            let nativeRuns = 0;
+            const result = runNativeCryptoWorkerBatch({
+                operation: 'decryptSecretboxJson',
+                routing: { mode: 'auto', timeoutMs: 100, minPayloadBytes: 0 },
+                itemCount: 4,
+                payloadBytes: 50_000,
+                probe: async () => availableCapability,
+                nativeRun: async () => { nativeRuns += 1; return ['native']; },
+                referenceRun: async () => ['reference-after-suspension'],
+            });
+
+            await vi.advanceTimersByTimeAsync(500);
+            expect(nativeRuns).toBe(0);
+            expect(await getPromiseSettlement(result)).toBeNull();
+
+            await markNativeCryptoWorkerQueueActive();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await getPromiseSettlement(result)).toEqual({
+                status: 'fulfilled',
+                value: { status: 'ok', source: 'native', items: ['native'] },
+            });
+        } finally {
+            vi.useRealTimers();
+            resetNativeCryptoWorkerQueueLifecycleForTests();
+            resetNativeCryptoWorkerCapabilityCacheForTests();
         }
     });
 

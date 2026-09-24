@@ -131,6 +131,39 @@ export type TeamMemberTargetFacts = Readonly<{
     managementTransferTargetAvailable: boolean;
 }>;
 
+/**
+ * The single owner-required recovery rule.
+ *
+ * Home `manageAllTeams` is not membership authority: its one membership power
+ * is promoting an existing eligible non-guest member to owner — never the
+ * caller, never a guest, never an inactive one — and only while the Team has no
+ * active owner. The projection and the role mutation both decide it here, so
+ * the two can never disagree about who may recover a Team, and it composes with
+ * ordinary Team administration instead of replacing it: stronger Team
+ * membership never cancels the Home authority a plain member would hold.
+ */
+export function isHomeOwnerRecoveryPromotion(input: Readonly<{
+    actor: Pick<TeamMemberActorFacts, "accountId" | "homeManagesAllTeams">;
+    target: Pick<TeamMemberTargetFacts, "accountId" | "role" | "status" | "accountStatus">;
+    activeOwnerCount: number;
+}>): boolean {
+    return input.actor.homeManagesAllTeams
+        && input.activeOwnerCount === 0
+        && input.target.accountId !== input.actor.accountId
+        && input.target.role !== TeamRole.guest
+        && input.target.status === TeamMembershipStatus.active
+        && admitsNewTeamOwner(input.target);
+}
+
+/**
+ * Every new Team ownership requires an active Account — ordinary promotion and
+ * Home recovery alike. Account retirement is the fence erasure relies on
+ * against acquiring new required ownership (L01/01 Phase A, L01/02).
+ */
+export function admitsNewTeamOwner(target: Pick<TeamMemberTargetFacts, "accountStatus">): boolean {
+    return target.accountStatus === AccountStatus.active;
+}
+
 /** A structurally active owner: active Account, active membership, owner role. */
 export function isStructurallyActiveOwner(
     target: Readonly<{ role: TeamRole; status: TeamMembershipStatus; accountStatus: AccountStatus }>,
@@ -182,13 +215,8 @@ export function resolveTeamMemberTargetCapabilities(
 ): TeamMembershipCapabilitiesV1 {
     if (input.teamArchivedAt !== null) return NO_TARGET_CAPABILITIES;
 
+    const recoverable = isHomeOwnerRecoveryPromotion(input);
     if (!input.actor.manageMembers) {
-        const recoverable = input.actor.homeManagesAllTeams
-            && input.activeOwnerCount === 0
-            && input.target.accountId !== input.actor.accountId
-            && input.target.role !== TeamRole.guest
-            && input.target.status === TeamMembershipStatus.active
-            && input.target.accountStatus === AccountStatus.active;
         return recoverable ? { ...NO_TARGET_CAPABILITIES, setRole: true } : NO_TARGET_CAPABILITIES;
     }
 

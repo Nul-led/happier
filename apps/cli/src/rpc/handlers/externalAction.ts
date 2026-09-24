@@ -23,6 +23,8 @@ import { executeExternalAction } from '@/daemon/externalActions/executeExternalA
 
 export type ExternalActionRpcRegistrationOptions = Readonly<{
   machineId: string;
+  /** Set only by a receiver that executes inside exactly one Session. */
+  sessionId?: string;
   currentServerId: string;
   resolveAccountId: (signal?: AbortSignal) => Promise<string | null>;
   resolveTarget: ResolveExternalActionTarget;
@@ -128,6 +130,7 @@ export function registerExternalActionRpcHandler(
       envelope: request.envelope,
       principal: request.principal,
       currentMachineId: options.machineId,
+      ...(options.sessionId === undefined ? {} : { currentSessionId: options.sessionId }),
       currentServerId: options.currentServerId,
       resolveEncryption: options.resolveEncryption,
       resolveTarget: options.resolveTarget,

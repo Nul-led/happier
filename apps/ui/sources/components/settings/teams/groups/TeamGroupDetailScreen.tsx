@@ -37,6 +37,7 @@ import {
 import { t } from '@/text';
 
 import { TeamSection } from '../TeamSection';
+import { useEditedMetadataDraft } from '../useEditedMetadataDraft';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { teamMutationFailureLabel, teamReadFailureLabel } from '../teamMutationPresentation';
 import { groupManagementLabel } from '../teamLabels';
@@ -79,10 +80,14 @@ function contributionLabel(member: TeamGroupMemberV1): string | null {
 const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Readonly<{
     context: TeamSectionContext;
     group: TeamGroupV1;
+    /**
+     * Whether this Group's own projection is current. A retained Group whose
+     * point read failed keeps its content on screen, but its capabilities are
+     * last-known, so writing through them is withheld until it answers again.
+     */
+    current: boolean;
 }>) {
-    const { context, group } = props;
-    const [name, setName] = React.useState(group.name);
-    const [description, setDescription] = React.useState(group.description ?? '');
+    const { context, group, current } = props;
     const [saving, setSaving] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const saveInFlightRef = React.useRef(false);
@@ -91,15 +96,19 @@ const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Rea
         saveInFlightRef.current = false;
     }, []);
 
-    // The Home's answer stays authoritative when the Group moves under the editor.
-    React.useEffect(() => {
-        setName(group.name);
-        setDescription(group.description ?? '');
-    }, [group.name, group.description]);
+    // The Home's answer stays authoritative when the Group moves under the
+    // editor, but it never erases an unfinished draft: this is the same editor
+    // owner the Team's own identity section uses.
+    const draft = useEditedMetadataDraft({
+        name: group.name,
+        description: group.description ?? '',
+    });
+    const { name, description, conflict } = draft;
 
     const nameValidation = validateTeamGroupNameV1(name);
     const descriptionValidation = validateTeamGroupDescriptionV1(description);
     const archived = group.archivedAt !== null;
+    const editable = context.canMutate && current && !archived;
     const changed = nameValidation.status === 'ok'
         && descriptionValidation.status === 'ok'
         && (nameValidation.name !== group.name
@@ -108,68 +117,97 @@ const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Rea
     if (!group.capabilities.updateMetadata) return null;
 
     return (
-        <ItemGroup title={t('teams.groups.nameLabel')} footer={error ?? undefined}>
-            <TextInput
-                testID="team-group-name"
-                value={name}
-                onChangeText={setName}
-                placeholder={t('teams.groups.namePlaceholder')}
-                accessibilityLabel={t('teams.groups.nameLabel')}
-                maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
-                editable={context.canMutate && !archived}
-            />
-            <TextInput
-                testID="team-group-description"
-                value={description}
-                onChangeText={setDescription}
-                placeholder={t('teams.create.descriptionPlaceholder')}
-                accessibilityLabel={t('teams.create.descriptionLabel')}
-                multiline
-                editable={context.canMutate && !archived}
-            />
-            <Item
-                testID="team-group-save"
-                title={t('common.save')}
-                loading={saving}
-                disabled={!changed || saving || !context.canMutate || archived}
-                onPress={async () => {
-                    if (saveInFlightRef.current
-                        || nameValidation.status !== 'ok'
-                        || descriptionValidation.status !== 'ok') return;
-                    saveInFlightRef.current = true;
-                    setSaving(true);
-                    setError(null);
-                    let outcome: Awaited<ReturnType<typeof updateTeamGroup>>;
-                    try {
-                        outcome = await updateTeamGroup({
-                            scope: context.scope,
-                            address: context.address,
-                            groupId: group.id,
-                            name: nameValidation.name,
-                            description: descriptionValidation.description,
-                        });
-                    } catch (cause) {
+        <>
+            <ItemGroup title={t('teams.groups.nameLabel')}>
+                <TextInput
+                    testID="team-group-name"
+                    value={name}
+                    onChangeText={draft.setName}
+                    placeholder={t('teams.groups.namePlaceholder')}
+                    accessibilityLabel={t('teams.groups.nameLabel')}
+                    maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
+                    editable={editable}
+                />
+            </ItemGroup>
+            <ItemGroup
+                title={t('teams.create.descriptionLabel')}
+                footer={error ?? (descriptionValidation.status !== 'ok'
+                    ? t('teams.errors.invalidDescription')
+                    : undefined)}
+            >
+                <TextInput
+                    testID="team-group-description"
+                    value={description}
+                    onChangeText={draft.setDescription}
+                    placeholder={t('teams.create.descriptionPlaceholder')}
+                    accessibilityLabel={t('teams.create.descriptionLabel')}
+                    multiline
+                    editable={editable}
+                />
+                {conflict ? (
+                    <Item
+                        testID="team-group-identity-conflict"
+                        title={t('teams.errors.conflict')}
+                        subtitle={[group.name, group.description ?? ''].filter(Boolean).join('\n')}
+                        detail={t('common.continue')}
+                        accessibilityLiveRegion="assertive"
+                        disabled={saving}
+                        onPress={draft.acceptPublished}
+                        showChevron={false}
+                    />
+                ) : null}
+                <Item
+                    testID="team-group-save"
+                    title={t('common.save')}
+                    loading={saving}
+                    disabled={!changed
+                        || conflict
+                        || descriptionValidation.status !== 'ok'
+                        || saving
+                        || !editable}
+                    onPress={async () => {
+                        if (saveInFlightRef.current
+                            || nameValidation.status !== 'ok'
+                            || descriptionValidation.status !== 'ok') return;
+                        saveInFlightRef.current = true;
+                        setSaving(true);
+                        setError(null);
+                        let outcome: Awaited<ReturnType<typeof updateTeamGroup>>;
+                        try {
+                            outcome = await updateTeamGroup({
+                                scope: context.scope,
+                                address: context.address,
+                                groupId: group.id,
+                                name: nameValidation.name,
+                                description: descriptionValidation.description,
+                            });
+                        } catch (cause) {
+                            saveInFlightRef.current = false;
+                            setSaving(false);
+                            if (isTeamActionApprovalPendingError(cause)) {
+                                context.requestApproval(cause.artifactId);
+                            } else {
+                                setError(t('teams.errors.generic'));
+                            }
+                            return;
+                        }
                         saveInFlightRef.current = false;
                         setSaving(false);
-                        if (isTeamActionApprovalPendingError(cause)) {
-                            context.requestApproval(cause.artifactId);
-                        } else {
-                            setError(t('teams.errors.generic'));
+                        if (outcome.kind === 'failed') {
+                            setError(outcome.failure.kind === 'conflict'
+                                ? t('teams.groups.nameTaken')
+                                : teamMutationFailureLabel(outcome.failure));
+                            return;
                         }
-                        return;
-                    }
-                    saveInFlightRef.current = false;
-                    setSaving(false);
-                    if (outcome.kind === 'failed') {
-                        setError(outcome.failure.kind === 'conflict'
-                            ? t('teams.groups.nameTaken')
-                            : teamMutationFailureLabel(outcome.failure));
-                        return;
-                    }
-                }}
-                showChevron={false}
-            />
-        </ItemGroup>
+                        draft.commit({
+                            name: outcome.value.name,
+                            description: outcome.value.description ?? '',
+                        });
+                    }}
+                    showChevron={false}
+                />
+            </ItemGroup>
+        </>
     );
 });
 
@@ -239,9 +277,21 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
     const group = detail.group;
     const archived = group !== null && group.archivedAt !== null;
     const managedBy = group === null ? null : groupManagementLabel(group);
+    /**
+     * This Group's own currentness, which is not the Team's.
+     *
+     * A Group point-refresh can fail beside a Team read that succeeded. The
+     * retained Group stays on screen — losing it would be worse — but its
+     * capabilities are then last-known rather than current, so the Group's own
+     * writes are withheld and its own failure is named with its own retry
+     * instead of being presented as a current Group nobody can explain.
+     */
+    const groupCurrent = detail.isCurrent;
+    const groupStale = group !== null && !groupCurrent;
     const canEditRoster = group !== null
         && group.capabilities.manageNativeMembers
         && context.canMutate
+        && groupCurrent
         && !archived
         && !busy;
     const nativeAccountIds = React.useMemo(() => new Set(
@@ -421,8 +471,33 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
             </ItemGroup>
         ));
 
+        if (groupStale) {
+            const failure = detail.error;
+            add('group-stale', () => (
+                <ItemGroup footer={failure
+                    ? teamReadFailureLabel(failure)
+                    : t('teams.stale.label')}>
+                    <Item
+                        testID="team-group-stale"
+                        title={t('teams.stale.label')}
+                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
+                        accessibilityLiveRegion="polite"
+                        showChevron={false}
+                    />
+                    {failure === null || failure.retryable ? (
+                        <Item
+                            testID="team-group-stale-retry"
+                            title={t('teams.unavailable.retry')}
+                            onPress={() => void detail.reload()}
+                            showChevron={false}
+                        />
+                    ) : null}
+                </ItemGroup>
+            ));
+        }
+
         if (group.capabilities.updateMetadata) {
-            add('metadata', () => <GroupMetadataSection context={context} group={group} />);
+            add('metadata', () => <GroupMetadataSection context={context} group={group} current={groupCurrent} />);
         }
 
         for (let start = 0; start < members.rows.length; start += GROUP_DETAIL_CHUNK_SIZE) {
@@ -501,11 +576,22 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                             await addNative(member);
                                             return;
                                         }
+                                        // What is being confirmed is this
+                                        // person's removal from this Group —
+                                        // not the Group's archive, whose copy
+                                        // promises a retention and a restoration
+                                        // this operation does not have.
                                         const confirmed = await Modal.confirm(
-                                            t('teams.groups.removeNative'),
+                                            t('teams.groups.removeMemberTitle', {
+                                                name: displayName,
+                                                group: group.name,
+                                            }),
                                             external
                                                 ? t('teams.groups.externalOnlyBody', { source: external })
-                                                : t('teams.groups.archiveBody'),
+                                                : t('teams.groups.removeMemberBody', {
+                                                    name: displayName,
+                                                    group: group.name,
+                                                }),
                                             { confirmText: t('teams.groups.removeNative'), destructive: true },
                                         );
                                         if (!confirmed) return;
@@ -732,7 +818,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                         testID="team-group-archive"
                         title={t('teams.groups.archiveAction', { name: group.name })}
                         destructive
-                        disabled={busy || !context.canMutate}
+                        disabled={busy || !context.canMutate || !groupCurrent}
                         onPress={async () => {
                             if (mutationInFlightRef.current) return;
                             mutationInFlightRef.current = true;
@@ -784,7 +870,10 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                         // and offering the control again would request one
                         // restore twice. Same expression as the Team's own
                         // restore in `TeamSettingsScreen`.
-                        disabled={busy || !context.mutationsAvailable || context.approvalPending}
+                        disabled={busy
+                            || !context.mutationsAvailable
+                            || context.approvalPending
+                            || !groupCurrent}
                         onPress={async () => {
                             if (mutationInFlightRef.current) return;
                             mutationInFlightRef.current = true;
@@ -824,8 +913,10 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
         detail,
         eligibleCandidates,
         group,
+        groupCurrent,
         groupHistoryAccess,
         groupId,
+        groupStale,
         managedBy,
         members,
         notice,

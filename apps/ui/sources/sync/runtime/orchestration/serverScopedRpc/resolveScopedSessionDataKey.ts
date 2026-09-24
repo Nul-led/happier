@@ -1,5 +1,6 @@
 import { type V2SessionByIdResponse, V2SessionByIdResponseSchema } from '@happier-dev/protocol';
-import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import {
   createNotAuthenticatedError,
   isAuthenticationResponseStatus,
@@ -8,6 +9,7 @@ import {
 import {
   createSessionDataKeyHydrationPlan,
   hydrateSessionDataKeys,
+  readSessionDataKeyCredentialKind,
 } from '@/sync/encryption/sessionDataKeyHydration';
 import { readSessionAccessRole } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { buildSessionDetailAccessProjectionQuery } from '@/sync/api/session/sessionDetailAccessProjection';
@@ -15,6 +17,7 @@ import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { getOrCreateScopedCacheTokenKey, resetScopedCacheTokenKeysForTests } from './scopedCacheTokenKey';
 import { createScopedResolutionSingleFlight } from './scopedResolutionSingleFlight';
+import { createServerRequestForExplicitServerScope } from './createServerRequestWithServerScope';
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
@@ -25,10 +28,39 @@ function toSessionDataKeyCacheKey(serverId: string, sessionId: string, token: st
   return `${serverId}::${sessionId}::${tokenKey}`;
 }
 
+/**
+ * The canonical Session data-key hydration outcome for one explicitly scoped Session.
+ *
+ * `legacy_fallback` is the owner-only historical reader (`legacy_fallback_ready`): a Session a
+ * key-holding owner created before per-Session envelopes. It is never a standalone DEK, so it
+ * carries no key and must not be transferred (Follow preparation treats it as unavailable).
+ */
 export type ScopedSessionCryptoContext =
   | Readonly<{ encryptionMode: 'plain'; sessionDataKey: null }>
   | Readonly<{ encryptionMode: 'e2ee'; sessionDataKey: Uint8Array }>
+  | Readonly<{ encryptionMode: 'legacy_fallback'; sessionDataKey: null }>
   | Readonly<{ encryptionMode: 'unknown'; sessionDataKey: null }>;
+
+/**
+ * Installs the Session reader the scoped crypto context selected on the scoped Account
+ * encryption owner: the standalone DEK, or `null` for the owner-only historical reader.
+ * Returns false when there is no reader to install.
+ */
+export async function initializeScopedSessionReader(params: Readonly<{
+  sessionId: string;
+  serverId: string;
+  context: ScopedSessionCryptoContext;
+  encryption: Readonly<{
+    initializeSessions: (keys: Map<string, Uint8Array | null>, scope?: Readonly<{ serverId?: string }>) => Promise<unknown>;
+  }>;
+}>): Promise<boolean> {
+  if (params.context.encryptionMode !== 'e2ee' && params.context.encryptionMode !== 'legacy_fallback') return false;
+  await params.encryption.initializeSessions(
+    new Map([[params.sessionId, params.context.sessionDataKey]]),
+    { serverId: params.serverId },
+  );
+  return true;
+}
 
 const sessionCryptoContextCache = new Map<string, ScopedSessionCryptoContext>();
 const sessionCryptoContextResolutions = createScopedResolutionSingleFlight<ScopedSessionCryptoContext>();
@@ -64,7 +96,9 @@ function setSessionCryptoContextCache(cacheKey: string, value: ScopedSessionCryp
 async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
   serverUrl: string;
   runtimeOrigin?: string;
+  homeCarrier?: HomeCarrier;
   token: string;
+  credentials?: AuthCredentials;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
   timeoutMs: number;
 }>): Promise<ScopedSessionCryptoContext> {
@@ -72,20 +106,17 @@ async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
   const timeoutId = controller ? setTimeout(() => controller.abort(), Math.max(1, params.timeoutMs)) : null;
 
   try {
-    const response = await runtimeFetchWithServerReachability({
+    const request = createServerRequestForExplicitServerScope({
       serverUrl: params.serverUrl,
       token: params.token,
-      url: `${params.runtimeOrigin ?? params.serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}${buildSessionDetailAccessProjectionQuery(params.serverId)}`,
       ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
-      init: {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${params.token}`,
-          'Content-Type': 'application/json',
-        },
-        ...(controller ? { signal: controller.signal } : {}),
-      },
+      ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
       timeoutMs: params.timeoutMs,
+    });
+    const response = await request(`/v2/sessions/${encodeURIComponent(params.sessionId)}${buildSessionDetailAccessProjectionQuery(params.serverId)}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      ...(controller ? { signal: controller.signal } : {}),
     });
     if (!response.ok) {
       if (isAuthenticationResponseStatus(response.status)) {
@@ -117,9 +148,10 @@ async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
           dataEncryptionKey: session.dataEncryptionKey,
           viewerRole: readSessionAccessRole(session, { allowLegacy: true }) === 'owner' ? 'owner' : 'recipient',
         }],
-        // This resolver returns standalone Session DEKs. It has no Account fallback reader;
-        // full Session hydration owns that compatibility path and its credential authority.
-        credentialKind: 'keyless',
+        // The captured credentials of this exact scope decide whether an owner Session with a
+        // genuinely absent envelope keeps its historical Account-scoped reader, exactly as
+        // full hydration decides it. Keyless or absent credentials never reach it.
+        credentialKind: readSessionDataKeyCredentialKind(params.credentials),
         sessionDataKeys,
       }),
       encryption: {
@@ -127,8 +159,11 @@ async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
       },
       sessionDataKeys,
     });
+    if (hydration.stale) return { encryptionMode: 'unknown', sessionDataKey: null };
+    const state = hydration.states.get(session.id);
+    if (state === 'legacy_fallback_ready') return { encryptionMode: 'legacy_fallback', sessionDataKey: null };
     const sessionDataKey = hydration.sessionKeys.get(session.id);
-    if (hydration.stale || hydration.states.get(session.id) !== 'ready' || !sessionDataKey) {
+    if (state !== 'ready' || !sessionDataKey) {
       return { encryptionMode: 'unknown', sessionDataKey: null };
     }
     return { encryptionMode: 'e2ee', sessionDataKey };
@@ -145,7 +180,10 @@ async function fetchSessionCryptoContext(params: Readonly<SessionAddress & {
 export async function resolveScopedSessionCryptoContext(params: Readonly<SessionAddress & {
   serverUrl: string;
   runtimeOrigin?: string;
+  homeCarrier?: HomeCarrier;
   token: string;
+  /** The exact scope's stored credentials; the bearer `token` identifies them for the cache. */
+  credentials?: AuthCredentials;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
   timeoutMs?: number;
 }>): Promise<ScopedSessionCryptoContext> {
@@ -170,7 +208,9 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<Session
       serverId,
       serverUrl: params.serverUrl,
       ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
+      ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
       token,
+      ...(params.credentials ? { credentials: params.credentials } : {}),
       sessionId,
       decryptEncryptionKey: params.decryptEncryptionKey,
       timeoutMs,
@@ -181,17 +221,6 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<Session
     }
     return context;
   });
-}
-
-export async function resolveScopedSessionDataKey(params: Readonly<SessionAddress & {
-  serverUrl: string;
-  runtimeOrigin?: string;
-  token: string;
-  decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
-  timeoutMs?: number;
-}>): Promise<Uint8Array | null> {
-  const context = await resolveScopedSessionCryptoContext(params);
-  return context.encryptionMode === 'e2ee' ? context.sessionDataKey : null;
 }
 
 export function resetScopedSessionDataKeyCacheForTests(): void {

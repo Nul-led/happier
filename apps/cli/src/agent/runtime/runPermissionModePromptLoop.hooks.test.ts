@@ -8,6 +8,9 @@ import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { combinePermissionModeQueuedPrompts, type PermissionModeQueuedPrompt } from '@/agent/runtime/permissions/queuedPrompt';
 import type { RuntimeTurnOperations } from '@/agent/runtime/turns/runtimeTurnOperations';
 import { createSessionProviderInputConsumer } from '@/agent/runtime/session/input/sessionProviderInputConsumer';
+import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import { createSessionFollowSourceHydrator } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
+import type { ApiSessionClient } from '@/api/session/sessionClient';
 
 const { loggerDebugMock } = vi.hoisted(() => ({
   loggerDebugMock: vi.fn(),
@@ -74,7 +77,7 @@ function createSelectedToolBindings() {
       inputSchema: { type: 'object', additionalProperties: false },
       surfaces: ['agent', 'mcp'],
     },
-    expectedContributorImmutableGenerationId: 'generation-g',
+    expectedContributorOccurrenceId: 'occurrence-g',
   }] as const;
 }
 
@@ -84,6 +87,8 @@ async function runSingleSpecialCommand(params: Readonly<{
   runtime?: ReturnType<typeof createRuntime>;
   registerProviderAcceptedEffect?: (localId: string, onAccepted: (() => void) | null) => void;
   hostContextOnly?: PermissionModeQueuedPrompt['hostContextOnly'];
+  checkpointLifecycle?: Parameters<typeof runPermissionModePromptLoop>[0]['checkpointLifecycle'];
+  exitWhen?: () => boolean;
 }>) {
   const observeProviderInputSettlement = vi.fn();
   const confirmUserMessageLocallyConsumed = vi.fn();
@@ -114,6 +119,7 @@ async function runSingleSpecialCommand(params: Readonly<{
   }) : undefined;
   const runtime = params.runtime ?? createRuntime();
   let shouldExit = false;
+  let sendReadyCount = 0;
   const messageBuffer = new MessageBuffer();
 
   await runPermissionModePromptLoop({
@@ -130,19 +136,107 @@ async function runSingleSpecialCommand(params: Readonly<{
     }),
     messageBuffer,
     ...(inputConsumer ? { inputConsumer } : {}),
-    shouldExit: () => shouldExit,
+    shouldExit: () => shouldExit || params.exitWhen?.() === true,
     getAbortSignal: () => new AbortController().signal,
     keepAlive: () => undefined,
     setThinking: () => undefined,
-    sendReady: () => { shouldExit = true; },
+    sendReady: () => { shouldExit = true; sendReadyCount += 1; },
     currentPermissionModeUpdatedAt: 0,
     setCurrentPermissionMode: () => undefined,
     setCurrentPermissionModeUpdatedAt: () => undefined,
     formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
     registerProviderAcceptedEffect: params.registerProviderAcceptedEffect ?? (() => undefined),
+    ...(params.checkpointLifecycle ? { checkpointLifecycle: params.checkpointLifecycle } : {}),
   } as Parameters<typeof runPermissionModePromptLoop>[0]);
 
-  return { observeProviderInputSettlement, confirmUserMessageLocallyConsumed, runtime, messageBuffer };
+  return {
+    observeProviderInputSettlement,
+    confirmUserMessageLocallyConsumed,
+    runtime,
+    messageBuffer,
+    readSendReadyCount: () => sendReadyCount,
+  };
+}
+
+/**
+ * The real Follow reconciler and source hydrator for one wake edge. Only the
+ * true boundaries are substituted: the destination Session client's observe/ACK
+ * network transport and the source Session's authenticated transcript fetch.
+ * `setAuthorized(false)` models the server admission owner withdrawing the edge
+ * (revocation, broadened audience, lost destination input authority).
+ */
+function createRealWakeFollowContext() {
+  let authorized = true;
+  const delivered = { transcriptSeq: 0, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+  const observed = { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+  const observation = {
+    sourceSessionId: 'source',
+    destinationSessionId: 'session-local-special-command',
+    delivered,
+    observed,
+    mode: 'wake_on_human_change' as const,
+  };
+  const acknowledgeSessionFollow = vi.fn(async () => ({ ok: false }));
+  const destinationClient = {
+    sessionId: 'session-local-special-command',
+    runSessionFollowSourceRequest: <T>(input: Readonly<{ request: () => T }>): T => input.request(),
+    observePendingSessionFollow: vi.fn(async () => ({
+      ok: true,
+      v: 1,
+      sessionId: 'session-local-special-command',
+      publisherGeneration: '4',
+      observations: authorized ? [observation] : [],
+    })),
+    acknowledgeSessionFollow,
+  } as unknown as ApiSessionClient;
+  const hydrateObservation = createSessionFollowSourceHydrator({
+    session: destinationClient,
+    credentials: { token: 'token' } as never,
+    deps: {
+      resolveSourceTransport: (async () => ({
+        ok: true,
+        sessionId: 'source',
+        rawSession: { id: 'source', encryptionMode: 'plain' },
+        accountEncryptionCurrentness: { mode: 'plain' },
+        ctx: null,
+        mode: 'plain',
+      })) as never,
+      fetchTranscriptPage: (async () => ({
+        messages: [{
+          seq: 1,
+          createdAt: 1,
+          content: { t: 'plain', v: {
+            role: 'user',
+            content: { type: 'text', text: 'protected human source text' },
+            meta: { happierProvenanceV1: { v: 1, kind: 'cli' } },
+          } },
+        }],
+        hasMore: false,
+        nextBeforeSeq: null,
+        nextAfterSeq: null,
+      })) as never,
+      projectSourceAwareness: () => ({
+        v: 1,
+        sessionId: 'source',
+        lifecycle: 'ready',
+        runtime: 'idle',
+        freshness: 'live',
+        operational: { primary: 'ready', reasons: ['ready'] },
+        encryption: 'plain',
+        availability: 'complete',
+      }) as never,
+    },
+  });
+  const reconcile = createSessionFollowContextReconciler({
+    session: destinationClient,
+    maxFollowContextUtf8Bytes: 8_192,
+    hydrateObservation,
+  });
+  return {
+    acknowledgeSessionFollow,
+    setAuthorized: (next: boolean) => { authorized = next; },
+    prepareWake: async () => await reconcile({ signal: new AbortController().signal, deliveryIntent: 'wake' }),
+  };
 }
 
 describe('runPermissionModePromptLoop hook dispatch', () => {
@@ -205,37 +299,124 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     });
   });
 
-  it('dispatches host Follow context without creating user input custody or echo', async () => {
+  it('captures the repository checkpoint before the final Follow admission, so authorization lost during capture omits source text', async () => {
+    // The production checkpoint hook awaits a real Git capture of arbitrary duration.
+    // Follow authorization resolved before that await would hand the provider source
+    // plaintext the destination is no longer entitled to by the time it dispatches.
+    let followEdgeAuthorized = true;
+    const capturedPrompts: string[] = [];
     const acknowledgeAccepted = vi.fn();
+    const prepareSessionFollowContext = vi.fn(async () => {
+      if (!followEdgeAuthorized) return null;
+      return {
+        updates: [{
+          v: 1,
+          kind: 'session_follow_update' as const,
+          edge: { sourceSessionId: 'source', destinationSessionId: 'session-local-special-command' },
+          reason: 'source_changed' as const,
+          deliveryIntent: 'context_only' as const,
+          observed: { transcriptSeq: 2, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+          awareness: {
+            v: 1,
+            sessionId: 'source',
+            lifecycle: 'ready' as const,
+            runtime: 'idle' as const,
+            freshness: 'live' as const,
+            operational: { primary: 'ready' as const, reasons: ['ready' as const] },
+            encryption: 'plain' as const,
+            availability: 'complete' as const,
+          },
+          recentMessages: [{ messageId: 'source-2', seq: 2, text: 'revoked source plaintext', provenance: null }],
+          truncated: false,
+        }],
+        acknowledgeAccepted,
+      };
+    });
+    const runtime = { ...createRuntime(), prepareSessionFollowContext };
+
+    await runSingleSpecialCommand({
+      text: 'ordinary input',
+      localId: 'follow-after-checkpoint',
+      runtime: runtime as ReturnType<typeof createRuntime>,
+      checkpointLifecycle: {
+        onBeforePromptDispatch: async ({ prompt }) => {
+          capturedPrompts.push(prompt);
+          followEdgeAuthorized = false;
+        },
+      },
+    });
+
+    const sentPrompt = (runtime.sendTurnPrompt.mock.calls as unknown as Array<[string]>)[0]?.[0] ?? '';
+    expect(sentPrompt).not.toContain('<session_follow>');
+    expect(sentPrompt).not.toContain('revoked source plaintext');
+    expect(sentPrompt).toContain('ordinary input');
+    expect(acknowledgeAccepted).not.toHaveBeenCalled();
+    // The checkpoint describes the real user input; optional host context never changes it.
+    expect(capturedPrompts).toEqual([expect.stringContaining('ordinary input')]);
+    expect(capturedPrompts[0]).not.toContain('<session_follow>');
+  });
+
+  it('dispatches a still-authorized host Follow wake once, without user input custody or echo, and ACKs only its exact event', async () => {
+    const follow = createRealWakeFollowContext();
+    const prepared = await follow.prepareWake();
+    expect(prepared?.wakeEventLocalId).toMatch(/^session-follow-wake:/u);
+    const wakeLocalId = prepared!.wakeEventLocalId!;
     let accept: (() => void) | null = null;
     const runtime = createRuntime();
     const result = await runSingleSpecialCommand({
-      text: '', localId: 'wake-1', runtime,
-      hostContextOnly: {
-        kind: 'session_follow',
-        prepared: {
-          updates: [{
-            v: 1, kind: 'session_follow_update',
-            edge: { sourceSessionId: 'source', destinationSessionId: 'session-local-special-command' },
-            reason: 'human_changed_source', deliveryIntent: 'wake',
-            observed: { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null },
-            awareness: { v: 1, sessionId: 'source', lifecycle: 'ready', runtime: 'idle', freshness: 'live', operational: { primary: 'ready', reasons: ['ready'] }, encryption: 'plain', availability: 'complete' },
-            recentMessages: [{ messageId: 'human-1', seq: 1, text: 'Please check', provenance: { v: 1, kind: 'cli' } }],
-            truncated: false,
-          }],
-          acknowledgeAccepted,
-        },
-      },
+      text: '', localId: wakeLocalId, runtime,
+      hostContextOnly: { kind: 'session_follow', prepared: prepared! },
       registerProviderAcceptedEffect: (_localId, callback) => { accept = callback; },
     });
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledOnce();
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
-      expect.stringContaining('<session_follow>'), expect.objectContaining({ localId: 'wake-1' }),
+      expect.stringContaining('protected human source text'), expect.objectContaining({ localId: wakeLocalId }),
     );
     expect(result.confirmUserMessageLocallyConsumed).not.toHaveBeenCalled();
     expect(result.observeProviderInputSettlement).not.toHaveBeenCalled();
     expect(result.messageBuffer.getMessages().some((message) => message.type === 'user')).toBe(false);
+    expect(follow.acknowledgeSessionFollow).not.toHaveBeenCalled();
     (accept as unknown as () => void)();
-    expect(acknowledgeAccepted).toHaveBeenCalledWith({ kind: 'context_only_wake', eventLocalId: 'wake-1' });
+    expect(follow.acknowledgeSessionFollow).toHaveBeenCalledOnce();
+    expect(follow.acknowledgeSessionFollow).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSessionId: 'source',
+      consumed: expect.objectContaining({ transcriptSeq: 1 }),
+      acceptance: expect.objectContaining({ kind: 'context_only_wake', eventLocalId: wakeLocalId }),
+    }));
+  });
+
+  it('re-enters Follow admission after checkpoint capture, so a wake whose edge is withdrawn meanwhile discloses nothing and never dispatches', async () => {
+    // The wake was hydrated and admitted before it was queued; the production checkpoint
+    // hook then awaits an arbitrary-duration Git capture. Authorization lost during that
+    // capture must stop the cached source text before the provider ever sees it.
+    const follow = createRealWakeFollowContext();
+    const prepared = await follow.prepareWake();
+    const wakeLocalId = prepared!.wakeEventLocalId!;
+    const runtime = createRuntime();
+    const registerProviderAcceptedEffect = vi.fn();
+    let withdrawnBeforeTurn = false;
+    const result = await runSingleSpecialCommand({
+      text: '', localId: wakeLocalId, runtime,
+      hostContextOnly: { kind: 'session_follow', prepared: prepared! },
+      registerProviderAcceptedEffect,
+      checkpointLifecycle: {
+        onBeforePromptDispatch: async () => {
+          follow.setAuthorized(false);
+        },
+        onTurnAbortedBeforeStart: async () => {
+          withdrawnBeforeTurn = true;
+        },
+      },
+      exitWhen: () => withdrawnBeforeTurn,
+    });
+
+    expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
+    expect(runtime.beginTurnLifecycle).not.toHaveBeenCalled();
+    expect(registerProviderAcceptedEffect).not.toHaveBeenCalled();
+    expect(follow.acknowledgeSessionFollow).not.toHaveBeenCalled();
+    // No synthetic empty turn, and no ready signal for a turn that never happened.
+    expect(result.readSendReadyCount()).toBe(0);
+    expect(withdrawnBeforeTurn).toBe(true);
   });
 
   it('dispatches an advertised provider command verbatim without consuming fresh-session composition', async () => {

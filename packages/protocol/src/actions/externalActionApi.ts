@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
 
 import { RunnerMachineContentKeyBindingV1Schema } from '../ephemeralRunner/machineContentKeyBindingSchema.js';
+import { RunnerClaimV1Schema } from '../ephemeralRunner/endpoint.js';
 import { MachineKindFromLegacyProjectionSchema } from '../machines/machineKind.js';
 
 import {
@@ -652,10 +653,11 @@ const ExternalActionTargetIdV1Schema = z.string()
  * Persistent-Machine content and daemon/install state deliberately do not
  * cross this PAT-authenticated seam. A restricted Runner carries exactly the
  * facts a protected request must seal against — its kind, its winning
- * installation, its Account-sealed content-key envelope and the strict
- * non-secret binding that authenticates it. All four are already
- * Account-material-protected: the envelope is a sealed box only an Account
- * content key opens, and the binding carries no secret. A bearer-only token
+ * installation, its Account-sealed content-key envelope, the strict
+ * non-secret binding that authenticates it and the activation-signed claim
+ * that binds it to its Session. None is usable without Account material: the
+ * envelope is a sealed box only an Account content key opens, and the binding
+ * and claim carry only public keys and signatures. A bearer-only token
  * therefore learns nothing it can use, and an encryption-capable credential
  * reaches the same verifier every other authorized Account device reaches.
  */
@@ -665,6 +667,16 @@ export const ExternalActionMachineBootstrapV1Schema = z.object({
   revokedAt: z.number().int().nonnegative().nullable(),
   replacedByMachineId: ExternalActionTargetIdV1Schema.nullable(),
   kind: MachineKindFromLegacyProjectionSchema,
+  /**
+   * Runner only; the activation-signed claim persisted when the endpoint claimed
+   * this Runner. It is how a Session-targeted protected request selects the
+   * Runner that Session was activated for: the claim signs activation, Session,
+   * Machine and installation under the activation identity the reader already
+   * trusts for the content-key binding, so the Home relays the correspondence
+   * but cannot author it. It carries public keys and proofs only, never a
+   * credential.
+   */
+  runnerClaim: RunnerClaimV1Schema.nullable().default(null),
   /** Runner only; a persistent Machine keeps the released closed projection. */
   installationId: z.string().trim().min(1).nullable().default(null),
   dataEncryptionKey: z.string().min(1).nullable().default(null),

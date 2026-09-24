@@ -72,12 +72,23 @@ function candidateSubtitle(row: TeamCredentialSourceCandidatePresentationV1): st
     ].filter((part): part is string => part !== null).join(' · ');
 }
 
-function candidateSelectable(row: TeamCredentialSourceCandidatePresentationV1): boolean {
-    return row.candidate.offeredByResourceId === null;
+/**
+ * A source another credential already offers is taken. The credential being
+ * edited is the exception: its own offer is the source its draft started from,
+ * so it must stay pickable or choosing a replacement would be irreversible.
+ */
+function candidateSelectable(
+    row: TeamCredentialSourceCandidatePresentationV1,
+    reselectableResourceId: string | null,
+): boolean {
+    return row.candidate.offeredByResourceId === null
+        || row.candidate.offeredByResourceId === reselectableResourceId;
 }
 
 export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSourcePicker(props: Readonly<{
     candidates: readonly TeamCredentialSourceCandidatePresentationV1[];
+    /** The credential being edited, whose own offer stays selectable. */
+    reselectableResourceId?: string | null;
     selected: TeamCredentialSourceCandidatePresentationV1 | null;
     disabled: boolean;
     /** Truthful state for a chooser that cannot offer anything right now. */
@@ -85,6 +96,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
     onSelect: (candidate: TeamCredentialSourceCandidatePresentationV1) => void;
 }>) {
     const { candidates, selected, disabled, unavailableReason, onSelect } = props;
+    const reselectableResourceId = props.reselectableResourceId ?? null;
     const modalIdRef = React.useRef<string | null>(null);
 
     const rootStep = React.useMemo<SelectionListStep>(() => {
@@ -99,7 +111,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
                 label: row.candidate.label,
                 subtitle: candidateSubtitle(row),
                 accessibilityLabel: [row.candidate.label, candidateSubtitle(row)].join(', '),
-                disabled: !candidateSelectable(row),
+                disabled: !candidateSelectable(row, reselectableResourceId),
             })),
         }];
         return {
@@ -108,7 +120,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
             emptyStateLabel: t('teams.credentials.create.sourceEmpty'),
             sections,
         };
-    }, [candidates]);
+    }, [candidates, reselectableResourceId]);
 
     const close = React.useCallback(() => {
         if (!modalIdRef.current) return;
@@ -127,7 +139,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
                 accessibilityLabel: t('teams.credentials.detail.sourceLabel'),
                 onSelect: (optionId: string) => {
                     const candidate = candidates.find((entry) => entry.selectionId === optionId);
-                    if (candidate && candidateSelectable(candidate)) onSelect(candidate);
+                    if (candidate && candidateSelectable(candidate, reselectableResourceId)) onSelect(candidate);
                 },
             },
             chrome: {
@@ -139,7 +151,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
             },
             closeOnBackdrop: true,
         });
-    }, [candidates, close, disabled, onSelect, rootStep, selected]);
+    }, [candidates, close, disabled, onSelect, reselectableResourceId, rootStep, selected]);
 
     // The create route can stay mounted behind another Settings destination
     // while this picker remains portaled; unmount closes it with the screen.

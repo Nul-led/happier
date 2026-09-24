@@ -8,7 +8,11 @@ import {
 import { createRpcCallError } from '@/sync/runtime/rpcErrors';
 import { apiSocket } from '@/sync/api/session/apiSocket';
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
-import { resolveScopedSessionCryptoContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveScopedSessionDataKey';
+import { createScopedSocketConnectParams } from '@/sync/runtime/orchestration/serverScopedRpc/createScopedSocketConnectParams';
+import {
+  initializeScopedSessionReader,
+  resolveScopedSessionCryptoContext,
+} from '@/sync/runtime/orchestration/serverScopedRpc/resolveScopedSessionDataKey';
 import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import type { ResolvedServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
@@ -58,40 +62,44 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
   onIssued?: () => void;
   signal?: AbortSignal;
 }>): Promise<R> {
-  if (params.signal?.aborted) throw createSocketRpcAbortError();
-  if (requiresActivePersistentHomeSocket(params.method)) {
-    throw createActiveHomeRequiredError();
-  }
-  const cryptoContext = await resolveScopedSessionCryptoContext({
-    serverId: params.context.targetServerId,
-    serverUrl: params.context.targetServerUrl,
-    ...(params.context.runtimeOrigin ? { runtimeOrigin: params.context.runtimeOrigin } : {}),
-    token: params.context.token,
-    sessionId: params.sessionId,
-    timeoutMs: params.context.timeoutMs,
-    ...(params.context.encryption
-      ? {
-          decryptEncryptionKey: (value: string) =>
-            params.context.encryption!.decryptEncryptionKey(value),
-        }
-      : {}),
-  });
-  if (params.signal?.aborted) throw createSocketRpcAbortError();
-
-  const socket = await createEphemeralServerSocketClient({
-    serverUrl: params.context.runtimeOrigin ?? params.context.targetServerUrl,
-    reachabilityServerUrl: params.context.targetServerUrl,
-    ...(params.context.carrier ? { carrier: params.context.carrier } : {}),
-    token: params.context.token,
-    timeoutMs: params.context.timeoutMs,
-  });
-  const authorization = resolveSocketRpcSessionAuthorization(params.method)
-    ? {
-        kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
-        sessionId: params.sessionId,
-      } as const
-    : undefined;
+  let carrierCustodyTransferred = false;
+  let socketForCleanup: Awaited<ReturnType<typeof createEphemeralServerSocketClient>> | null = null;
   try {
+    if (params.signal?.aborted) throw createSocketRpcAbortError();
+    if (requiresActivePersistentHomeSocket(params.method)) {
+      throw createActiveHomeRequiredError();
+    }
+    const cryptoContext = await resolveScopedSessionCryptoContext({
+      serverId: params.context.targetServerId,
+      serverUrl: params.context.targetServerUrl,
+      ...(params.context.runtimeOrigin ? { runtimeOrigin: params.context.runtimeOrigin } : {}),
+      ...(params.context.homeCarrier ? { homeCarrier: params.context.homeCarrier } : {}),
+      token: params.context.token,
+      ...(params.context.credentials ? { credentials: params.context.credentials } : {}),
+      sessionId: params.sessionId,
+      timeoutMs: params.context.timeoutMs,
+      ...(params.context.encryption
+        ? {
+            decryptEncryptionKey: (value: string) =>
+              params.context.encryption!.decryptEncryptionKey(value),
+          }
+        : {}),
+    });
+    if (params.signal?.aborted) throw createSocketRpcAbortError();
+
+    const socket = await createEphemeralServerSocketClient(
+      createScopedSocketConnectParams(params.context, () => {
+        carrierCustodyTransferred = true;
+        return params.context.release;
+      }),
+    );
+    socketForCleanup = socket;
+    const authorization = resolveSocketRpcSessionAuthorization(params.method)
+      ? {
+          kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
+          sessionId: params.sessionId,
+        } as const
+      : undefined;
     if (params.signal?.aborted) throw createSocketRpcAbortError();
     const requestId = params.signal ? createSocketRpcRequestId() : undefined;
     if (cryptoContext.encryptionMode === 'plain') {
@@ -121,7 +129,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
       });
     }
 
-    if (cryptoContext.encryptionMode !== 'e2ee') {
+    if (cryptoContext.encryptionMode !== 'e2ee' && cryptoContext.encryptionMode !== 'legacy_fallback') {
       throw createRpcCallError({
         error: 'Unable to resolve session encryption for scoped RPC',
         errorCode: 'scoped_session_encryption_unavailable',
@@ -134,7 +142,12 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
         errorCode: 'scoped_session_encryption_unavailable',
       });
     }
-    await params.context.encryption.initializeSessions(new Map([[params.sessionId, cryptoContext.sessionDataKey]]));
+    await initializeScopedSessionReader({
+      sessionId: params.sessionId,
+      serverId: params.context.targetServerId,
+      context: cryptoContext,
+      encryption: params.context.encryption,
+    });
     const sessionEncryption = params.context.encryption.getSessionEncryption(params.sessionId);
     if (!sessionEncryption) {
       throw createRpcCallError({
@@ -170,8 +183,8 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
       errorCode: typeof result.errorCode === 'string' ? result.errorCode : undefined,
     });
   } finally {
-    socket.disconnect();
-    await params.context.release?.();
+    socketForCleanup?.disconnect();
+    if (!carrierCustodyTransferred) await params.context.release?.();
   }
 }
 
@@ -217,8 +230,7 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         preferScoped: true,
       });
       if (retryContext.scope !== 'scoped') throw error;
-      try {
-        return await callScopedSessionRpc({
+      return await callScopedSessionRpc({
         sessionId,
         method: params.method,
         payload: params.payload,
@@ -226,14 +238,10 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         operationTimeoutMs,
         onIssued,
         signal: params.signal,
-        });
-      } finally {
-        await retryContext.release?.();
-      }
+      });
     }
   }
-  try {
-    return await callScopedSessionRpc({
+  return await callScopedSessionRpc({
     sessionId,
     method: params.method,
     payload: params.payload,
@@ -241,10 +249,7 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
     operationTimeoutMs,
     onIssued,
     signal: params.signal,
-    });
-  } finally {
-    await context.release?.();
-  }
+  });
 }
 
 export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
@@ -270,8 +275,7 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
     await context.release?.();
     throw new Error('Exact pending dispatch authenticated account does not match persisted scope');
   }
-  try {
-    return await callScopedSessionRpc({
+  return await callScopedSessionRpc({
     sessionId: normalizeId(params.sessionId),
     method: params.method,
     payload: params.payload,
@@ -279,8 +283,5 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
     operationTimeoutMs: context.timeoutMs,
     onIssued: params.onIssued,
     signal: params.signal,
-    });
-  } finally {
-    await context.release?.();
-  }
+  });
 }

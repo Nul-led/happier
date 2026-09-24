@@ -1,9 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-    ApprovalRequestV2Schema,
-    buildApprovalRequestArtifactHeaderV1,
-    decodePlainArtifactStoredContent,
-} from '@happier-dev/protocol';
+import { ApprovalRequestV2Schema } from '@happier-dev/protocol';
 
 import {
     createHomeGovernanceHarness,
@@ -11,6 +7,7 @@ import {
     standardCleanup,
     teamInvitationRowFixture,
 } from '@/dev/testkit';
+import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
 
 // Creating an approval Artifact crosses the stored-content HTTP compatibility
 // probe. This suite is about the invitation wrappers' Action contract, so keep
@@ -70,6 +67,29 @@ async function addHome(): Promise<string> {
 
 async function operations() {
     return await import('./teamInvitationOperations');
+}
+
+/** The approval request a Home persisted, as its Plain Account row stores it. */
+function storedApprovalRequest(serverId: string, artifactId: string) {
+    const body = harness.artifacts(serverId).readPlainBody(artifactId);
+    return ApprovalRequestV2Schema.parse(body === null ? null : JSON.parse(body));
+}
+
+/**
+ * The settled approval exactly as a mounted continuation receives it: read
+ * back from the Home through the same exact-Home reader `useApprovalArtifact`
+ * uses, never assembled by the test.
+ */
+async function readApprovalArtifact(serverId: string, artifactId: string) {
+    const { captureActionAccountContext } = await import('@/sync/ops/actions/actionAccountContext');
+    const context = await captureActionAccountContext(serverId, new AbortController().signal);
+    try {
+        const artifact = await context.fetchArtifact(artifactId);
+        if (!artifact) throw new Error(`approval_artifact_missing:${artifactId}`);
+        return artifact;
+    } finally {
+        context.dispose();
+    }
 }
 
 async function scopeAndAddress(serverId: string) {
@@ -217,53 +237,24 @@ describe('teamInvitationOperations', () => {
         });
         if (!isTeamActionApprovalPendingError(pending) || typeof pending.registration === 'string') return;
 
-        const createInput = harness.requestsFor(ARTIFACT_CREATE_PATH)[0]?.input;
-        if (!createInput || typeof createInput !== 'object' || Array.isArray(createInput)) {
-            throw new Error('Expected the approval Artifact create input');
-        }
-        const storedBody = Reflect.get(createInput, 'body');
-        const decodedBody = typeof storedBody === 'string'
-            ? decodePlainArtifactStoredContent(storedBody)
-            : null;
-        if (!decodedBody || typeof decodedBody !== 'object' || Array.isArray(decodedBody)) {
-            throw new Error('Expected the Plain approval Artifact body envelope');
-        }
-        const plaintextBody = Reflect.get(decodedBody, 'body');
-        const openRequest = ApprovalRequestV2Schema.parse(
-            typeof plaintextBody === 'string' ? JSON.parse(plaintextBody) : null,
-        );
+        const openRequest = storedApprovalRequest(serverId, pending.artifactId);
         expect(openRequest.actionArgs).toMatchObject({
             v: 1,
             continuation: { v: 1, kind: 'post_auth_invitation', teamId: 'team-1' },
         });
         expect(JSON.stringify(openRequest)).not.toContain(TOKEN);
 
-        const executedAtMs = openRequest.updatedAtMs + 1;
-        const executedRequest = ApprovalRequestV2Schema.parse({
-            ...openRequest,
-            status: 'executed',
-            updatedAtMs: executedAtMs,
-            decision: { kind: 'approve', decidedAtMs: executedAtMs },
-            execution: {
-                executedAtMs,
-                ok: true,
-                result: { outcome: 'joined', teamId: 'team-1' },
-            },
+        // Decided where the product decides it: the Inbox replays the admission
+        // once, and the registration settles from what that replay persisted.
+        await expect(decideApprovalAsInbox(serverId, pending.artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
         });
-        expect(await pending.registration.onExecuted({
-            id: pending.artifactId,
-            title: null,
-            header: buildApprovalRequestArtifactHeaderV1(executedRequest),
-            body: JSON.stringify(executedRequest),
-            headerVersion: 1,
-            bodyVersion: 1,
-            seq: 2,
-            createdAt: 1,
-            updatedAt: 2,
-            isDecrypted: true,
-        })).toBe('consumed');
+        expect(harness.requestsFor(ACCEPT_PATH)).toHaveLength(1);
+        expect(await pending.registration.onExecuted(await readApprovalArtifact(serverId, pending.artifactId)))
+            .toBe('consumed');
         expect(onApprovalSucceeded).toHaveBeenCalledWith({ outcome: 'joined', teamId: 'team-1' });
         expect(onApprovalFailed).not.toHaveBeenCalled();
+        expect(harness.requestsFor(ACCEPT_PATH)).toHaveLength(1);
     });
 
     it('leaves a handler-free accept registering only its Artifact id', async () => {
@@ -291,15 +282,16 @@ describe('teamInvitationOperations', () => {
      * projection. The caller therefore hands down its mount lifetime, and a
      * cancelled lifetime cancels the wait rather than stranding a bearer.
      */
-    it('carries only the caller lifetime into a bearer-minting creation', async () => {
+    it('ends an approval-held creation with its caller lifetime and never keeps the bearer durably', async () => {
         const serverId = await addHome();
         harness.answer(serverId, CREATE_PATH, {
             body: { invitation: teamInvitationRowFixture(), joinUrl: `https://home-a.example/join/${TOKEN}` },
         });
+        await requireUiApproval(serverId, 'teams.invitations.create');
         const { scope, address } = await scopeAndAddress(serverId);
         const lifetime = new AbortController();
 
-        const outcome = await (await operations()).createTeamInvitation({
+        const creation = (await operations()).createTeamInvitation({
             scope,
             address,
             role: 'member',
@@ -309,11 +301,24 @@ describe('teamInvitationOperations', () => {
             signal: lifetime.signal,
         });
 
-        expect(outcome.kind).toBe('succeeded');
-        // A cancelled lifetime must be able to end the wait, so it has to reach
-        // the front door rather than being dropped by the wrapper.
-        expect(harness.requestsFor(CREATE_PATH)).toHaveLength(1);
+        // The explicit approval holds this live invocation open; nothing has
+        // reached the Home yet.
+        await vi.waitFor(() => expect(harness.artifacts(serverId).list()).toHaveLength(1));
+        const artifactId = harness.artifacts(serverId).list()[0]!.id;
+        expect(harness.requestsFor(CREATE_PATH)).toHaveLength(0);
+
+        // The surface unmounts: its lifetime ends the wait instead of leaving
+        // the invocation pending forever.
         lifetime.abort();
+        await expect(creation).resolves.toMatchObject({ kind: 'failed' });
+        expect(harness.requestsFor(CREATE_PATH)).toHaveLength(0);
+
+        // A later approval still performs the reviewed creation, but nobody is
+        // waiting for its link and the durable record keeps only the safe
+        // projection: the bearer is not recoverable afterwards (reissue is).
+        await decideApprovalAsInbox(serverId, artifactId, 'approve');
+        expect(harness.requestsFor(CREATE_PATH)).toHaveLength(1);
+        expect(harness.artifacts(serverId).readPlainBody(artifactId)).not.toContain(TOKEN);
     });
 
     it('keeps every terminal accept outcome distinguishable', async () => {

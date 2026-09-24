@@ -57,6 +57,8 @@ function projectSharedSavedSecretObservationInput(id: string, input: unknown): u
       expectedRevision: parsed.data.expectedRevision,
       displayName: parsed.data.displayName,
       kind: parsed.data.kind,
+      // A mode conversion is the trust change the approver decides on.
+      ...(parsed.data.toMode ? { toMode: parsed.data.toMode } : {}),
     };
   }
   return input;
@@ -88,6 +90,15 @@ export const SHARED_SAVED_SECRET_ACTION_SPECS: readonly PreNormalizedActionSpec[
     path: SHARED_SAVED_SECRET_ACTION_PATHS_V1[id],
     inputSchema: SHARED_SAVED_SECRET_ACTION_INPUT_SCHEMAS_V1[id],
     outputSchema: SHARED_SAVED_SECRET_ACTION_OUTPUT_SCHEMAS_V1[id],
+    // Observation redaction only. `create`/`promote`/`update` deliberately do NOT
+    // declare `approvalInputCustody: 'live_only'`, and that is settled, not an
+    // oversight: their `storedContent` is the explicit
+    // `{ t: 'plain', v } | { t: 'encrypted', c }` envelope
+    // (`savedSecretResourceContentSchemaV1.ts:81-90`), so an e2ee resource puts
+    // only ciphertext into the durable approval args, and a plain resource puts
+    // the same bytes the Account-scoped destination stores in cleartext anyway —
+    // identical custody class, no new disclosure. These Actions are also
+    // deferred-replayable, so a live-only input would break replay for no gain.
     ...(id === 'secrets.shared.create'
       || id === 'secrets.shared.promote'
       || id === 'secrets.shared.grants.set'

@@ -1,15 +1,15 @@
-import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     ApprovalRequestV2Schema,
-    buildApprovalRequestArtifactHeaderV1,
     decodePlainArtifactStoredContent,
+    type ApprovalRequestV2,
 } from '@happier-dev/protocol';
 
 import {
     collectRenderedTestIds,
     createHomeGovernanceHarness,
+    decideApprovalAsInbox,
     installHomeGovernanceBoundaries,
     renderScreen,
     standardCleanup,
@@ -34,37 +34,6 @@ const navigationState = vi.hoisted(() => ({
     preventRemove: false,
     onPreventRemove: null as null | ((event: { data: { action: unknown } }) => void),
 }));
-const approvalArtifactState = vi.hoisted(() => ({
-    value: {
-        artifact: null as null | Readonly<Record<string, unknown> & { id: string }>,
-        isLoading: false,
-        error: null as boolean | null,
-        invalidArtifact: false,
-    },
-    requested: [] as (string | null)[],
-    listeners: new Set<() => void>(),
-}));
-
-vi.mock('@/components/approvals/useApprovalArtifact', () => ({
-    useApprovalArtifact: (input: Readonly<{ artifactId: string | null }>) => {
-        const held = React.useSyncExternalStore(
-            (listener) => {
-                approvalArtifactState.listeners.add(listener);
-                return () => approvalArtifactState.listeners.delete(listener);
-            },
-            () => approvalArtifactState.value,
-            () => approvalArtifactState.value,
-        );
-        approvalArtifactState.requested.push(input.artifactId);
-        return {
-            ...held,
-            artifact: held.artifact?.id === input.artifactId ? held.artifact : null,
-            homeUnavailable: false,
-            refresh: async () => {},
-        };
-    },
-}));
-
 vi.mock('expo-clipboard', () => ({
     setStringAsync: clipboardSet,
     getStringAsync: vi.fn(async () => ''),
@@ -98,6 +67,13 @@ installSettingsViewCommonModuleMocks({
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
     }),
+    // The real client store: approval Artifacts are published into it by the
+    // Action front door and read back by the mounted approval continuation, so a
+    // stub here would sever exactly the path the approval journeys prove.
+    storage: async (importOriginal) => {
+        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleMock({ importOriginal, overrides: {} });
+    },
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         return createModalModuleMock({
@@ -140,63 +116,28 @@ function key(keyId: string, resourceId: string, label: string) {
     };
 }
 
-function readOpenApprovalArtifact() {
-    const input = harness.requestsFor(ARTIFACT_CREATE_PATH).at(-1)?.input;
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-        throw new Error('approval_artifact_request_missing');
-    }
-    const id = Reflect.get(input, 'id');
-    const storedBody = Reflect.get(input, 'body');
-    if (typeof id !== 'string' || typeof storedBody !== 'string') {
-        throw new Error('approval_artifact_request_invalid');
-    }
-    const decoded = decodePlainArtifactStoredContent(storedBody);
-    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
-        throw new Error('approval_artifact_envelope_invalid');
-    }
-    const body = Reflect.get(decoded, 'body');
-    const request = ApprovalRequestV2Schema.parse(typeof body === 'string' ? JSON.parse(body) : null);
-    return { id, request };
-}
-
-async function settleApproval(status: 'executed' | 'canceled', result?: unknown): Promise<void> {
-    const { id, request } = readOpenApprovalArtifact();
-    await vi.waitFor(() => expect(approvalArtifactState.requested).toContain(id));
-    const updatedAtMs = request.updatedAtMs + 1;
-    const settled = ApprovalRequestV2Schema.parse(status === 'executed'
-        ? {
-            ...request,
-            status,
-            updatedAtMs,
-            decision: { kind: 'approve', decidedAtMs: updatedAtMs },
-            execution: { executedAtMs: updatedAtMs, ok: true, result },
-        }
-        : {
-            ...request,
-            status,
-            updatedAtMs,
-        });
-    await act(async () => {
-        approvalArtifactState.value = {
-            artifact: {
-                id,
-                title: null,
-                header: buildApprovalRequestArtifactHeaderV1(settled),
-                body: JSON.stringify(settled),
-                headerVersion: 2,
-                bodyVersion: 2,
-                seq: 2,
-                createdAt: request.createdAtMs,
-                updatedAt: updatedAtMs,
-                isDecrypted: true,
-            },
-            isLoading: false,
-            error: null,
-            invalidArtifact: false,
-        };
-        for (const listener of approvalArtifactState.listeners) listener();
-        await Promise.resolve();
-    });
+/**
+ * The one approval Artifact the Home persisted, decoded exactly as stored.
+ *
+ * The request is read from the Home's Artifact rows, not from what the client
+ * sent, so a secret that reached durable approval history is observed here.
+ */
+function readStoredApproval(serverId: string): Readonly<{
+    id: string;
+    request: ApprovalRequestV2;
+    storedJson: string;
+}> {
+    const rows = harness.artifacts(serverId).list();
+    if (rows.length !== 1) throw new Error(`expected_one_approval_artifact:${rows.length}`);
+    const row = rows[0]!;
+    const body = harness.artifacts(serverId).readPlainBody(row.id);
+    const header = decodePlainArtifactStoredContent(row.header);
+    if (body === null || header === null) throw new Error('approval_artifact_not_plain');
+    return {
+        id: row.id,
+        request: ApprovalRequestV2Schema.parse(JSON.parse(body)),
+        storedJson: JSON.stringify({ header, body }),
+    };
 }
 
 async function addManagedHome(initialKeys: readonly ReturnType<typeof key>[] = []): Promise<string> {
@@ -273,9 +214,6 @@ beforeEach(async () => {
     navigationState.setOptions.mockReset();
     navigationState.preventRemove = false;
     navigationState.onPreventRemove = null;
-    approvalArtifactState.value = { artifact: null, isLoading: false, error: null, invalidArtifact: false };
-    approvalArtifactState.requested = [];
-    approvalArtifactState.listeners.clear();
     shownModals.length = 0;
 });
 
@@ -446,6 +384,60 @@ describe('TeamCredentialExternalApiScreen', () => {
         expect(screen.getTextContent()).toContain('Ada');
     });
 
+    // The creation answer is the only copy of a bearer. Creating another key
+    // on the same mounted screen is the same loss as leaving it, so it asks the
+    // same one reveal-loss question before anything is sent.
+    it('keeps an uncopied bearer when another creation is declined and replaces it only after the loss is accepted', async () => {
+        const oldKey = key('6ba7b810-9dad-11d1-80b4-00c04fd430c8', 'resource-1', 'Old runner');
+        const serverId = await addManagedHome([oldKey]);
+        harness.answer(serverId, EXTERNAL_KEY_CREATE_PATH, {
+            body: { token: CREATED_TOKEN, key: key(CREATED_KEY_ID, 'resource-1', 'CI runner') },
+        });
+
+        const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
+        const screen = await renderScreen(
+            <TeamCredentialExternalApiScreen serverId={serverId} teamId="team-1" resourceId="resource-1" />,
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-external-assignee')).not.toBeNull());
+        act(() => screen.changeTextByTestId('team-credential-external-label', 'CI runner'));
+        await chooseMember(screen);
+        await screen.pressByTestIdAsync('team-credential-external-create');
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain(CREATED_TOKEN));
+        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(1);
+
+        // The Home mints v4 key ids; the bearer grammar rejects any other.
+        const secondKeyId = '7ba7b810-9dad-41d1-80b4-00c04fd430c8';
+        const secondToken = `hapek_v1_${secondKeyId}_${'b'.repeat(43)}`;
+        harness.answer(serverId, EXTERNAL_KEY_CREATE_PATH, {
+            body: { token: secondToken, key: key(secondKeyId, 'resource-1', 'Old runner') },
+        });
+        await screen.pressByTestIdAsync(`team-credential-external-replace:${oldKey.keyId}`);
+        modalConfirm.mockResolvedValueOnce(false);
+        await screen.pressByTestIdAsync('team-credential-external-create');
+        expect(modalConfirm).toHaveBeenCalledWith(
+            'teams.credentials.externalApi.revealDismiss.title',
+            'teams.credentials.externalApi.revealDismiss.body',
+            expect.anything(),
+        );
+        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(1);
+        expect(screen.getTextContent()).toContain(CREATED_TOKEN);
+
+        modalConfirm.mockResolvedValueOnce(true);
+        await screen.pressByTestIdAsync('team-credential-external-create');
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain(secondToken));
+        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(2);
+        expect(screen.getTextContent()).not.toContain(CREATED_TOKEN);
+
+        // A bearer that was copied is not lost, so the next creation proceeds
+        // without asking.
+        await screen.pressByTestIdAsync('team-credential-external-value:token');
+        modalConfirm.mockClear();
+        act(() => screen.changeTextByTestId('team-credential-external-label', 'Third runner'));
+        await screen.pressByTestIdAsync('team-credential-external-create');
+        await vi.waitFor(() => expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(3));
+        expect(modalConfirm).not.toHaveBeenCalled();
+    });
+
     it('uses one reveal-loss confirmation for native/browser navigation removal and keeps the bearer when canceled', async () => {
         const serverId = await addManagedHome();
         harness.answer(serverId, EXTERNAL_KEY_CREATE_PATH, {
@@ -611,9 +603,20 @@ describe('TeamCredentialExternalApiScreen', () => {
         expect(screen.findByTestId(`team-credential-external-key:${oldKey.keyId}`)).not.toBeNull();
     });
 
-    it('settles an approved create with its exact one-time bearer without redispatching', async () => {
+    // Creating a key returns its bearer exactly once, so the create Action keeps
+    // live-only result custody (`specs/teams.ts`): an approval-required create
+    // stays the blocking waiter on this exact mounted invocation and never
+    // becomes a mounted Artifact continuation (protocol
+    // `actionApprovalPolicy.test.ts`, "keeps every show-once bearer creation on
+    // its live invocation"). The decision arrives from Approval Detail through
+    // the shared approval lifecycle; the bearer reaches only this invocation and
+    // never the durable Artifact (lane-10/11 PUBLIC-04).
+    it('shows the bearer once after an approved blocking create and keeps it out of the approval Artifact', async () => {
         const serverId = await addManagedHome();
         await harness.requireUiApproval(serverId, 'teams.credentials.externalKeys.create');
+        harness.answer(serverId, EXTERNAL_KEY_CREATE_PATH, {
+            body: { token: CREATED_TOKEN, key: key(CREATED_KEY_ID, 'resource-1', 'CI runner') },
+        });
 
         const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
         const screen = await renderScreen(
@@ -624,27 +627,37 @@ describe('TeamCredentialExternalApiScreen', () => {
         await chooseMember(screen);
         await screen.pressByTestIdAsync('team-credential-external-create');
 
-        await vi.waitFor(() => expect(harness.requestsFor(ARTIFACT_CREATE_PATH)).toHaveLength(1));
-        await vi.waitFor(() => expect(screen.findByTestId('team-approval')).not.toBeNull());
-        expect(screen.findByTestId('team-credential-external-label')?.props.value).toBe('CI runner');
-        expect(screen.findHostByTestId('team-credential-external-create')?.props.disabled).toBe(true);
-        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(0);
-
-        await settleApproval('executed', {
-            token: CREATED_TOKEN,
-            key: key(CREATED_KEY_ID, 'resource-1', 'CI runner'),
+        await vi.waitFor(() => expect(harness.artifacts(serverId).list()).toHaveLength(1));
+        const pending = readStoredApproval(serverId);
+        expect(pending.request).toMatchObject({
+            status: 'open',
+            actionId: 'teams.credentials.externalKeys.create',
+            approval: { flow: 'blocking' },
         });
-        await vi.waitFor(() => expect(screen.findByTestId('team-credential-external-value:token')).not.toBeNull());
-        expect(screen.findByTestId('team-approval')).toBeNull();
-        expect(screen.findByTestId('team-credential-external-label')?.props.value).toBe('');
-        await screen.pressByTestIdAsync('team-credential-external-value:token');
-        expect(clipboardSet).toHaveBeenCalledWith(CREATED_TOKEN);
         expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(0);
+        expect(screen.findByTestId('team-credential-external-value:token')).toBeNull();
+
+        await expect(decideApprovalAsInbox(serverId, pending.id, 'approve')).resolves.toMatchObject({ ok: true });
+
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-external-value:token')).not.toBeNull());
+        expect(screen.getTextContent()).toContain(CREATED_TOKEN);
+        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)[0]?.input).toMatchObject({
+            teamMembershipId: 'membership-1', label: 'CI runner',
+        });
+        await vi.waitFor(() => expect(readStoredApproval(serverId).request.status).toBe('executed'));
+        const settled = readStoredApproval(serverId);
+        expect(settled.request).toMatchObject({ decision: { kind: 'approve' }, execution: { ok: true } });
+        expect(settled.storedJson).not.toContain(CREATED_TOKEN);
+        expect(settled.storedJson).not.toContain('a'.repeat(43));
     });
 
-    it('releases a canceled create approval for retry while preserving the key draft', async () => {
+    it('keeps a declined blocking create from reaching the Home or revealing a bearer', async () => {
         const serverId = await addManagedHome();
         await harness.requireUiApproval(serverId, 'teams.credentials.externalKeys.create');
+        harness.answer(serverId, EXTERNAL_KEY_CREATE_PATH, {
+            body: { token: CREATED_TOKEN, key: key(CREATED_KEY_ID, 'resource-1', 'CI runner') },
+        });
 
         const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
         const screen = await renderScreen(
@@ -654,17 +667,20 @@ describe('TeamCredentialExternalApiScreen', () => {
         act(() => screen.changeTextByTestId('team-credential-external-label', 'CI runner'));
         await chooseMember(screen);
         await screen.pressByTestIdAsync('team-credential-external-create');
-        await vi.waitFor(() => expect(harness.requestsFor(ARTIFACT_CREATE_PATH)).toHaveLength(1));
-        await vi.waitFor(() => expect(screen.findByTestId('team-approval')).not.toBeNull());
+        await vi.waitFor(() => expect(harness.artifacts(serverId).list()).toHaveLength(1));
+        const pending = readStoredApproval(serverId);
 
-        await settleApproval('canceled');
-        await vi.waitFor(() => {
-            expect(screen.findByTestId('team-approval')).toBeNull();
-            expect(screen.findHostByTestId('team-credential-external-create')?.props.disabled).not.toBe(true);
-        });
-        expect(screen.findByTestId('team-credential-external-label')?.props.value).toBe('CI runner');
-        expect(screen.findByTestId('team-credential-external-value:token')).toBeNull();
+        await expect(decideApprovalAsInbox(serverId, pending.id, 'reject')).resolves.toMatchObject({ ok: true });
+
+        await vi.waitFor(() => expect(
+            screen.findHostByTestId('team-credential-external-create')?.props.disabled,
+        ).toBe(false));
         expect(harness.requestsFor(EXTERNAL_KEY_CREATE_PATH)).toHaveLength(0);
+        expect(screen.findByTestId('team-credential-external-value:token')).toBeNull();
+        expect(screen.getTextContent()).not.toContain(CREATED_TOKEN);
+        const settled = readStoredApproval(serverId);
+        expect(settled.request).toMatchObject({ status: 'rejected', decision: { kind: 'reject' } });
+        expect(settled.request).not.toHaveProperty('execution');
     });
 
     it.each([
@@ -688,6 +704,7 @@ describe('TeamCredentialExternalApiScreen', () => {
         const existing = key(CREATED_KEY_ID, 'resource-1', 'CI runner');
         const serverId = await addManagedHome([existing]);
         await harness.requireUiApproval(serverId, scenario.actionId);
+        harness.answer(serverId, scenario.mutationPath, { body: scenario.result });
 
         const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
         const screen = await renderScreen(
@@ -699,17 +716,28 @@ describe('TeamCredentialExternalApiScreen', () => {
         await vi.waitFor(() => expect(screen.findByTestId('team-approval')).not.toBeNull());
         expect(screen.findHostByTestId(`team-credential-external-revoke:${CREATED_KEY_ID}`)?.props.disabled).toBe(true);
         expect(harness.requestsFor(scenario.mutationPath)).toHaveLength(0);
+        const pending = readStoredApproval(serverId);
+        expect(pending.request).toMatchObject({ status: 'open', actionArgs: scenario.expectedInput });
 
-        // Execution committed at the Home before the approval Artifact settled.
-        // The shared continuation refreshes projections as well as applying the
-        // exact result, so the genuine list boundary must now describe that
-        // committed state rather than reintroducing the revoked key.
+        // Approval Detail replays the deferred mutation through the captured
+        // Home scope. The shared continuation then refreshes projections as
+        // well as applying the exact result, so the genuine list boundary must
+        // describe the committed state rather than reintroduce the revoked key.
         harness.answer(serverId, EXTERNAL_KEYS_LIST_PATH, { body: { keys: [] } });
-        await settleApproval('executed', scenario.result);
+        await expect(decideApprovalAsInbox(serverId, pending.id, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
+
         await vi.waitFor(() => expect(screen.findByTestId(`team-credential-external-key:${CREATED_KEY_ID}`)).toBeNull());
-        expect(screen.findByTestId('team-approval')).toBeNull();
-        expect(harness.requestsFor(scenario.mutationPath)).toHaveLength(0);
-        expect(readOpenApprovalArtifact().request.actionArgs).toMatchObject(scenario.expectedInput);
+        await vi.waitFor(() => expect(screen.findByTestId('team-approval')).toBeNull());
+        // Exactly the one replayed effect: the mounted continuation consumed the
+        // settled result and dispatched nothing of its own.
+        expect(harness.requestsFor(scenario.mutationPath)).toHaveLength(1);
+        expect(harness.requestsFor(scenario.mutationPath)[0]?.input).toMatchObject(scenario.expectedInput);
+        expect(readStoredApproval(serverId).request).toMatchObject({
+            status: 'executed',
+            execution: { ok: true, result: scenario.result },
+        });
     });
 
     it('settles an initial resource-list failure and retries before reading keys', async () => {

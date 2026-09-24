@@ -114,5 +114,12 @@ describe('session.spawn_new Action failure presentation', () => {
             code: 'session_access_external_sharing_requires_team_admin',
             retryable: false,
         })).toBe('teams.policy.externalSharingAdmins');
+        // A Home whose Session sharing is off refuses access-bearing creation with
+        // its own reason; the copy states that cause instead of a generic failure.
+        expect(resolveResultFailureMessageKey?.({
+            type: 'error',
+            code: 'session_access_sharing_unavailable',
+            retryable: false,
+        })).toBe('session.collaboration.accessUnavailableReason');
     });
 });

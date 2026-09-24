@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useTeamPagedList } from '@/hooks/teams/useTeamPagedList';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { t } from '@/text';
@@ -40,6 +41,8 @@ export function useDirectoryPeopleList(props: Readonly<{
         key: `${props.scope.serverId} ${props.scope.accountId} ${props.address.teamId} ${props.sourceId}`,
         enabled: props.enabled ?? true,
         loadPage,
+        // Directory projection changes are published as the Team change.
+        accountChange: { serverId: props.address.serverId, entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 },
     });
 }
 

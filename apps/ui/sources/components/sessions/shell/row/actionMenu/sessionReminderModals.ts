@@ -2,14 +2,21 @@ import { Modal } from '@/modal';
 import type { SessionReminderPresetV1 } from '@/sync/domains/session/organization/sessionReminderPreset';
 import { t } from '@/text';
 
-import { SessionReminderDateTimeModal, type SessionReminderDateTimeResult } from './SessionReminderDateTimeModal';
+import {
+    SessionReminderDateTimeModal,
+    type SessionReminderDateTimeResult,
+    type SessionReminderDateTimeSubmitResult,
+} from './SessionReminderDateTimeModal';
 import { SessionReminderPresetManagerModal } from './SessionReminderPresetManagerModal';
 
-export async function showSessionReminderDateTimeModal(nowMs: number): Promise<SessionReminderDateTimeResult | null> {
+export async function showSessionReminderDateTimeModal(
+    nowMs: number,
+    onSubmit: (value: SessionReminderDateTimeResult) => Promise<SessionReminderDateTimeSubmitResult>,
+): Promise<SessionReminderDateTimeResult | null> {
     return await new Promise((resolve) => {
         Modal.show({
             component: SessionReminderDateTimeModal,
-            props: { nowMs, onResolve: resolve },
+            props: { nowMs, onSubmit, onResolve: resolve },
             onRequestClose: () => resolve(null),
             chrome: {
                 kind: 'card',
@@ -36,7 +43,6 @@ export async function showSessionReminderPresetManagerModal(
                 title: t('sessionsList.reminders.managePresets'),
                 subtitle: t('sessionsList.reminders.managePresetsMessage'),
                 testID: 'session-reminder-preset-manager-modal',
-                layout: 'fill',
                 dimensions: { width: 560, maxHeightRatio: 0.86, size: 'md' },
             },
             closeOnBackdrop: true,

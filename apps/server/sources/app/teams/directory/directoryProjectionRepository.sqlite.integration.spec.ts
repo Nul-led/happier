@@ -14,6 +14,8 @@ import {
     claimDirectorySourceFullReconcile,
     markActiveWorkosDirectoryPollFailed,
 } from "./directorySourceService";
+import { inTx } from "@/storage/inTx";
+import { bindDirectoryProvisionedIdentitiesInTx } from "./provisionedIdentityBinding";
 
 describe("directoryProjectionRepository", () => {
     let harness: LightSqliteHarness;
@@ -24,7 +26,6 @@ describe("directoryProjectionRepository", () => {
             initAuth: false,
             env: {
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });
@@ -1077,5 +1078,282 @@ describe("directoryProjectionRepository", () => {
             where: { directorySourceId: boundSource.id, externalGroupId: "engineering" },
             select: { externalUserId: true },
         })).resolves.toEqual([{ externalUserId: "retry-member" }]);
+    });
+
+    it("contributes Group rosters for a person whose Team lifetime another owner holds, without parking the source", async () => {
+        const team = await db.team.create({ data: { name: "Natively seeded Team" } });
+        const provider = await db.identityProviderInstance.create({
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+        });
+        const connection = await db.teamIdentityConnection.create({
+            data: {
+                teamId: team.id,
+                providerInstanceId: provider.id,
+                externalReference: { v: 1 },
+                settings: { v: 1 },
+            },
+        });
+        const source = await db.teamDirectorySource.create({
+            data: {
+                teamId: team.id,
+                kind: "workos_directory",
+                state: "initializing",
+                displayName: "WorkOS",
+                externalSourceKey: `workos-native:${team.id}`,
+                bindingConfig: { v: 1, kind: "workos_directory", workosDirectoryId: "native" },
+                teamIdentityConnectionId: connection.id,
+                activeReconcileRunId: "native-run",
+                activeReconcileStartedAt: new Date("2026-09-10T10:00:00.000Z"),
+            },
+        });
+        const account = await db.account.create({ data: { publicKey: `directory-native-${team.id}` } });
+        // The administrator invited this person by hand before enabling the
+        // directory, so the source will never own their lifetime.
+        const nativeMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: account.id, role: "admin" },
+        });
+        await db.teamProvisionedIdentity.create({
+            data: {
+                directorySourceId: source.id,
+                teamId: team.id,
+                externalUserId: "native-user",
+                state: "active",
+                boundAccountId: account.id,
+                lastSeenReconcileRunId: "native-run",
+            },
+        });
+        await db.teamDirectoryGroup.create({
+            data: {
+                directorySourceId: source.id,
+                externalGroupId: "engineering",
+                externalDisplayName: "Engineering",
+                state: "active",
+                lastSeenReconcileRunId: "native-run",
+            },
+        });
+        await db.teamDirectoryGroupMember.create({
+            data: {
+                directorySourceId: source.id,
+                externalGroupId: "engineering",
+                externalUserId: "native-user",
+                lastSeenReconcileRunId: "native-run",
+            },
+        });
+        const nativeGroup = await db.teamGroup.create({
+            data: { teamId: team.id, name: "Native Engineering", nameKey: "native engineering" },
+        });
+        const binding = await db.teamExternalGroupBinding.create({
+            data: {
+                teamId: team.id,
+                teamGroupId: nativeGroup.id,
+                directorySourceId: source.id,
+                externalGroupId: "engineering",
+                bindingMode: "native_target",
+            },
+        });
+
+        await expect(completeDirectoryProjection({
+            sourceId: source.id,
+            reconcileRunId: "native-run",
+            observedManualSyncRequestedAt: null,
+            completedAt: new Date("2026-09-10T12:00:00.000Z"),
+        })).resolves.toEqual({ applied: true });
+        await expect(db.teamDirectorySource.findUniqueOrThrow({ where: { id: source.id } }))
+            .resolves.toMatchObject({ state: "active", lastErrorCode: null, activeReconcileRunId: null });
+        // The lifetime is untouched: no seizure, no role change, no manager.
+        await expect(db.teamMembership.findUniqueOrThrow({
+            where: { id: nativeMembership.id },
+            select: { role: true, provisionedIdentity: { select: { id: true } } },
+        })).resolves.toEqual({ role: "admin", provisionedIdentity: null });
+        await expect(db.teamGroupMembershipExternalContribution.findUnique({
+            where: {
+                teamGroupId_teamMembershipId_externalGroupBindingId: {
+                    teamGroupId: nativeGroup.id,
+                    teamMembershipId: nativeMembership.id,
+                    externalGroupBindingId: binding.id,
+                },
+            },
+        })).resolves.not.toBeNull();
+
+        // The person leaves that directory Group. The next complete run sees
+        // the identity and the Group but not the membership row, so the
+        // contribution goes and the natively owned Team membership stays.
+        await db.teamProvisionedIdentity.updateMany({
+            where: { directorySourceId: source.id },
+            data: { lastSeenReconcileRunId: "native-run-2" },
+        });
+        await db.teamDirectoryGroup.updateMany({
+            where: { directorySourceId: source.id },
+            data: { lastSeenReconcileRunId: "native-run-2" },
+        });
+        await db.teamDirectorySource.update({
+            where: { id: source.id },
+            data: {
+                state: "initializing",
+                activeReconcileRunId: "native-run-2",
+                activeReconcileStartedAt: new Date("2026-09-11T10:00:00.000Z"),
+            },
+        });
+        await expect(completeDirectoryProjection({
+            sourceId: source.id,
+            reconcileRunId: "native-run-2",
+            observedManualSyncRequestedAt: null,
+            completedAt: new Date("2026-09-11T12:00:00.000Z"),
+        })).resolves.toEqual({ applied: true });
+        await expect(db.teamGroupMembershipExternalContribution.count({
+            where: { externalGroupBindingId: binding.id },
+        })).resolves.toBe(0);
+        await expect(db.teamMembership.count({ where: { id: nativeMembership.id } })).resolves.toBe(1);
+    });
+
+    it("withdraws an inactive person's source contribution without touching a Team lifetime another owner keeps", async () => {
+        const team = await db.team.create({ data: { name: "Offboarding Team" } });
+        const provider = await db.identityProviderInstance.create({
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+        });
+        const connection = await db.teamIdentityConnection.create({
+            data: {
+                teamId: team.id,
+                providerInstanceId: provider.id,
+                externalReference: { v: 1 },
+                settings: { v: 1 },
+            },
+        });
+        const source = await db.teamDirectorySource.create({
+            data: {
+                teamId: team.id,
+                kind: "workos_directory",
+                state: "initializing",
+                displayName: "WorkOS",
+                externalSourceKey: `workos-offboarding:${team.id}`,
+                bindingConfig: { v: 1, kind: "workos_directory", workosDirectoryId: "offboarding" },
+                teamIdentityConnectionId: connection.id,
+                activeReconcileRunId: "offboarding-run",
+                activeReconcileStartedAt: new Date("2026-09-10T10:00:00.000Z"),
+                eventCursor: "event-0",
+            },
+        });
+        // Invited by hand before the directory existed: native owns this
+        // lifetime and the directory only contributes Group evidence.
+        const nativeAccount = await db.account.create({ data: { publicKey: `offboarding-native-${team.id}` } });
+        const nativeMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: nativeAccount.id, role: "member" },
+        });
+        // Admitted by this directory: it owns this lifetime.
+        const ownedAccount = await db.account.create({ data: { publicKey: `offboarding-owned-${team.id}` } });
+        const group = await db.teamGroup.create({
+            data: { teamId: team.id, name: "Offboarding Engineering", nameKey: "offboarding engineering" },
+        });
+        const binding = await db.teamExternalGroupBinding.create({
+            data: {
+                teamId: team.id,
+                teamGroupId: group.id,
+                directorySourceId: source.id,
+                externalGroupId: "engineering",
+                bindingMode: "native_target",
+            },
+        });
+
+        await expect(commitDirectoryProjectionPage({
+            sourceId: source.id,
+            reconcileRunId: "offboarding-run",
+            people: [
+                { externalUserId: "native-user", externalSubjectId: "subject-native", active: true },
+                { externalUserId: "owned-user", externalSubjectId: "subject-owned", active: true },
+            ],
+            groups: [{ externalGroupId: "engineering", displayName: "Engineering" }],
+            groupMembers: [
+                { externalGroupId: "engineering", externalUserId: "native-user" },
+                { externalGroupId: "engineering", externalUserId: "owned-user" },
+            ],
+        })).resolves.toEqual({ applied: true });
+        await expect(completeDirectoryProjection({
+            sourceId: source.id,
+            reconcileRunId: "offboarding-run",
+            observedManualSyncRequestedAt: null,
+            completedAt: new Date("2026-09-10T11:00:00.000Z"),
+        })).resolves.toEqual({ applied: true });
+        // Both people sign in through the real binder, which materializes this
+        // source's share of the complete projection for each of them.
+        for (const [account, subject] of [
+            [nativeAccount, "subject-native"],
+            [ownedAccount, "subject-owned"],
+        ] as const) {
+            await inTx(async (tx) => await bindDirectoryProvisionedIdentitiesInTx(tx, {
+                accountId: account.id,
+                teamId: team.id,
+                match: { kind: "workos_directory", teamIdentityConnectionId: connection.id, externalSubjectId: subject },
+            }));
+        }
+        const ownedMembership = await db.teamMembership.findUniqueOrThrow({
+            where: { teamId_accountId: { teamId: team.id, accountId: ownedAccount.id } },
+        });
+        const contributionFor = (teamMembershipId: string) => db.teamGroupMembershipExternalContribution.count({
+            where: { externalGroupBindingId: binding.id, teamMembershipId },
+        });
+        await expect(contributionFor(nativeMembership.id)).resolves.toBe(1);
+        await expect(contributionFor(ownedMembership.id)).resolves.toBe(1);
+
+        // WorkOS deactivates both people.
+        await expect(commitActiveWorkosProjectionEvent({
+            sourceId: source.id,
+            expectedPosition: { eventCursor: "event-0" },
+            eventId: "event-deactivate",
+            people: [
+                { externalUserId: "native-user", active: false, externalUpdatedAt: new Date("2026-09-11T10:00:00.000Z") },
+                { externalUserId: "owned-user", active: false, externalUpdatedAt: new Date("2026-09-11T10:00:00.000Z") },
+            ],
+        })).resolves.toEqual({ applied: true });
+
+        // child 05 §8: deactivation suspends/removes that source's Team AND
+        // Group facts only. The natively owned lifetime stays active and is not
+        // seized, but this source's Group grant for it is withdrawn.
+        await expect(db.teamMembership.findUniqueOrThrow({ where: { id: nativeMembership.id } }))
+            .resolves.toMatchObject({ status: "active" });
+        await expect(contributionFor(nativeMembership.id)).resolves.toBe(0);
+        await expect(db.teamGroupMembership.count({
+            where: { teamGroupId: group.id, teamMembershipId: nativeMembership.id },
+        })).resolves.toBe(0);
+        // The lifetime this source owns is suspended with its Group row and
+        // horizon retained, exactly as before.
+        await expect(db.teamMembership.findUniqueOrThrow({ where: { id: ownedMembership.id } }))
+            .resolves.toMatchObject({ status: "suspended" });
+        await expect(contributionFor(ownedMembership.id)).resolves.toBe(1);
+
+        // Reactivation restores the source's contribution for both.
+        await expect(commitActiveWorkosProjectionEvent({
+            sourceId: source.id,
+            expectedPosition: { eventCursor: "event-deactivate" },
+            eventId: "event-reactivate",
+            people: [
+                { externalUserId: "native-user", active: true, externalUpdatedAt: new Date("2026-09-12T10:00:00.000Z") },
+                { externalUserId: "owned-user", active: true, externalUpdatedAt: new Date("2026-09-12T10:00:00.000Z") },
+            ],
+        })).resolves.toEqual({ applied: true });
+        await expect(contributionFor(nativeMembership.id)).resolves.toBe(1);
+        await expect(db.teamMembership.findUniqueOrThrow({ where: { id: ownedMembership.id } }))
+            .resolves.toMatchObject({ status: "active" });
+        await expect(contributionFor(ownedMembership.id)).resolves.toBe(1);
+
+        // A source-only change — a new person nobody has bound yet — changes
+        // no native fact, but the mounted People list shows it, so the Team's
+        // readers are woken.
+        const seqBefore = (await db.account.findUniqueOrThrow({
+            where: { id: nativeAccount.id },
+            select: { seq: true },
+        })).seq;
+        await expect(commitActiveWorkosProjectionEvent({
+            sourceId: source.id,
+            expectedPosition: { eventCursor: "event-reactivate" },
+            eventId: "event-new-person",
+            people: [{ externalUserId: "new-user", displayName: "New person", active: true }],
+        })).resolves.toEqual({ applied: true });
+        await expect(db.teamProvisionedIdentity.count({
+            where: { directorySourceId: source.id, externalUserId: "new-user", boundAccountId: null },
+        })).resolves.toBe(1);
+        expect((await db.account.findUniqueOrThrow({
+            where: { id: nativeAccount.id },
+            select: { seq: true },
+        })).seq).toBeGreaterThan(seqBefore);
     });
 });

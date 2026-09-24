@@ -28,7 +28,10 @@ import {
     type WelcomeActionAdmission,
 } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { projectTeamAuthAction } from '@/components/teams/entry/teamAuthAction';
-import { presentTeamEntryUnavailableReason } from '@/components/teams/entry/teamAuthenticationFailure';
+import {
+    presentTeamEntryUnavailableReason,
+    presentTeamsDisabledOnHome,
+} from '@/components/teams/entry/teamAuthenticationFailure';
 import { resolveTeamJoinPresentation } from '@/components/teams/join/teamJoinOutcome';
 import { TeamInvitationPreviewDetails } from '@/components/teams/join/TeamInvitationPreviewDetails';
 import { useTeamInvitationPreview } from '@/hooks/teams/useTeamInvitationPreview';
@@ -785,6 +788,30 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                     />
                                 ) : null}
                                 {projection.actions.map((action, index) => {
+                                    if (action.kind === 'provider_unavailable') {
+                                        /*
+                                         * An accepted Team sign-in that cannot run right now is
+                                         * named with the Home's safe reason (teams-lane-03/01
+                                         * §10.2, TA-R17) instead of vanishing. Its one useful
+                                         * action is to ask the Home again.
+                                         */
+                                        const reasonCopy = action.reason === 'provider_disabled'
+                                            ? t('teams.entry.providerUnavailableDisabled')
+                                            : action.reason === 'provider_setup_incomplete'
+                                                ? t('teams.entry.providerUnavailableSetupIncomplete')
+                                                : t('teams.entry.providerUnavailableUnavailable');
+                                        return (
+                                            <WelcomeActionCard
+                                                key={`${action.origin}:${action.methodId}:unavailable`}
+                                                testID={`team-auth-entry-unavailable:${action.methodId}`}
+                                                primary={false}
+                                                title={t('teams.entry.providerUnavailableTitle', { method: action.presentation.displayName })}
+                                                subtitle={reasonCopy}
+                                                iconName={asIconName(action.presentation.iconHint) ?? 'cloud-slash'}
+                                                onPress={retry}
+                                            />
+                                        );
+                                    }
                                     if (action.kind !== 'authenticate') return null;
                                     /*
                                      * The card says which journey it starts with the same glyph
@@ -813,6 +840,7 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                             primary={index === 0 && accountServiceHref === null}
                                             title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
                                             {...(iconName ? { iconName } : {})}
+                                            accentColor={action.presentation.connectButtonColor}
                                             onPress={() => props.onSelectAction({
                                                 action,
                                                 teamId: projection.team.teamId,
@@ -872,9 +900,13 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
         const isIncompatible = loadState.kind === 'incompatible';
         const isOffline = loadState.kind === 'offline';
         // A Home that named its reason gets §10 copy that says what to do next;
-        // `entry_not_available` keeps the opaque card that reveals nothing.
+        // `entry_not_available` keeps the opaque card that reveals nothing —
+        // unless this Home's own invitation preview already declared that Teams
+        // are turned off here, which is a current Home stating an operator
+        // choice, not a missing Team.
         const named = loadState.kind === 'unavailable'
             ? presentTeamEntryUnavailableReason(loadState.reason)
+                ?? (previewState.kind === 'feature_unavailable' ? presentTeamsDisabledOnHome() : null)
             : null;
         content = (
             <SurfaceStateCard

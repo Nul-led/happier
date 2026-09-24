@@ -26,6 +26,7 @@ import { shadowLevelStyle } from '@/shadowElevation';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { useScrollViewWheelScrollTo } from '@/components/ui/scroll/useScrollViewWheelScrollTo';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 const secretRequirementSelectionMemory = new Map<string, 'machine' | 'saved' | 'once'>();
@@ -357,7 +358,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                     <Pressable
                         onPress={props.onClose}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                        style={({ pressed }) => ({ opacity: pressed ? motionTokens.press.opacity : 1 })}
                     >
                         <Icon name="x" size={20} color={theme.colors.text.secondary} />
                     </Pressable>
@@ -598,7 +599,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                             wrapInItemList={false}
                             secrets={props.secrets}
                             sharedEntries={savedSecretCatalog.sharedEntries}
-                            allowSharedSelection={variant !== 'defaultForProfile'}
+                            resolveSharedReference={savedSecretCatalog.resolveReference}
                             onCreatePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.create : undefined}
                             onRenamePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.rename : undefined}
                             onRotatePersonal={props.onChangeSecrets && savedSecretCatalog.personalMutationsAvailable ? savedSecretCatalog.personalMutations.rotate : undefined}
@@ -685,7 +686,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                                     style={({ pressed }) => [
                                         styles.primaryButton,
                                         {
-                                            opacity: sessionOnlyValue.length === 0 ? 0.5 : (pressed ? 0.85 : 1),
+                                            opacity: sessionOnlyValue.length === 0 ? 0.5 : (pressed ? motionTokens.press.opacitySubtle : 1),
                                             backgroundColor: theme.colors.button.primary.background,
                                         },
                                     ]}

@@ -12,6 +12,7 @@ import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { useActiveServerAccountScope, useProfile } from '@/sync/store/hooks';
 import { useSettingMutable, useSettings } from '@/sync/store/hooks';
+import { useApplySettings } from '@/sync/store/settingsWriters';
 import { Modal } from '@/modal';
 import { getLegacyConnectedServiceRegistryEntry } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import {
@@ -58,7 +59,10 @@ import {
 } from './model/presentConnectedServiceIndexDiagnostics';
 import { buildConnectedServiceQuotaSummaryCards } from './buildConnectedServiceQuotaSummaryCards';
 import { ConnectedServiceQuotaSummaryCardSection } from './ConnectedServiceQuotaSummaryCardSection';
-import { ConnectedServicesDefaultAuthRow } from './ConnectedServicesDefaultAuthRow';
+import {
+  ConnectedServicesDefaultAuthRow,
+  type ConnectedServicesAgentDefaultAuthWrite,
+} from './ConnectedServicesDefaultAuthRow';
 import { ConnectedServicesProviderStateSharingDefaultsGroup } from './ConnectedServicesProviderStateSharingSettings';
 import { Icon } from '@/components/ui/icons/Icon';
 import { TeamCredentialCatalogSettingsGroup } from '@/components/settings/teams/credentials/TeamCredentialCatalogSettingsGroup';
@@ -109,8 +113,12 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
   const settings = useSettings();
   const [providerStateSharingSettings, setProviderStateSharingSettings] =
     useSettingMutable('connectedServicesProviderStateSharingSettingsV1');
-  const [defaultAuthSettings, setDefaultAuthSettings] =
-    useSettingMutable('connectedServicesDefaultAuthByAgentIdV1');
+  const applySettings = useApplySettings();
+  // Agent default authentication has one owner (the purpose-binding store);
+  // each write also folds and retires the released service-keyed entry.
+  const setDefaultAuthSettings = React.useCallback((next: ConnectedServicesAgentDefaultAuthWrite) => {
+    applySettings(next);
+  }, [applySettings]);
   const [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey] =
     useSettingMutable('connectedServicesDefaultAuthPoolAdoptionDismissedByKey');
   const dismissPoolAdoptionSuggestion = React.useCallback((key: string) => {
@@ -505,14 +513,13 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
             <ConnectedServicesDefaultAuthRow
               key={agentEntry.agentId}
               agentId={agentEntry.agentId}
+              agentIdentity={agentEntry.identity}
               agentTitle={agentEntry.title}
               connectedAccountPurposes={connectedAccountPurposes}
               connectedAccountServiceKeys={declaredServices}
               connectedAccountsV4={qualifiedAccounts}
               connectedAccountGroupsV4={qualifiedGroups}
               accountGroupsEnabled={accountGroupsEnabled}
-              serverId={activeAccountScope?.serverId}
-              accountId={activeAccountScope?.accountId}
               teamCredentialResources={teamCredentialCatalog.resources}
               teamNameById={teamCredentialCatalog.teamNameById}
               currentTeamCredentialResourceKeys={teamCredentialCatalog.currentResourceKeys}
@@ -526,7 +533,8 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
               settings={{
                 connectedServicesProfileLabelByKey: settings.connectedServicesProfileLabelByKey,
                 connectedServicesDefaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId,
-                connectedServicesDefaultAuthByAgentIdV1: defaultAuthSettings,
+                connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
+                connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1,
               }}
               setDefaultAuthSettings={setDefaultAuthSettings}
               onOpenConnectedServicesSettings={openLegacyConnectedServiceSettings}

@@ -78,7 +78,6 @@ describe("Team credential recipient material", () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: "team-credential-recipient-material-",
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
             },
         });
@@ -550,6 +549,81 @@ describe("Team credential recipient material", () => {
             where: { resourceId_recipientAccountId_sourceMemberKey: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey } },
             select: { sourceVersion: true },
         })).resolves.toEqual({ sourceVersion });
+
+        // A rejection decided after the publication precondition must leave the
+        // published version alone: advancing it would strand every recipient
+        // whose still-valid row carries the previous one.
+        const publishedBefore = await db.teamCredentialResource.findUniqueOrThrow({
+            where: { id: resource.id },
+            select: { directSourceVersionsJson: true },
+        });
+        await expect(inTx(tx => upsertTeamCredentialRecipientMaterialInTx(tx, {
+            actorAccountId: custodian.id,
+            resourceId: resource.id,
+            recipientAccountId: recipient.id,
+            sourceMemberKey,
+            sourceVersion: "source-old",
+            recipientMode: "plain",
+            recipientContentPublicKeyFingerprint: null,
+            stored: storedFor("source-old", "stale"),
+            expectedResourceRevision: resource.revision,
+            expectedStoredSourceVersion: "stale-observation",
+            expectedPublishedSourceVersion: sourceVersion,
+        }))).resolves.toEqual({ ok: false, reason: "source_changed" });
+        await expect(db.teamCredentialResource.findUniqueOrThrow({
+            where: { id: resource.id },
+            select: { directSourceVersionsJson: true },
+        })).resolves.toEqual(publishedBefore);
+        await expect(db.teamCredentialRecipientMaterial.findUniqueOrThrow({
+            where: { resourceId_recipientAccountId_sourceMemberKey: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey } },
+            select: { sourceVersion: true },
+        })).resolves.toEqual({ sourceVersion });
+
+        // A recipient key that no longer matches is the same shape and must be
+        // just as inert.
+        await expect(inTx(tx => upsertTeamCredentialRecipientMaterialInTx(tx, {
+            actorAccountId: custodian.id,
+            resourceId: resource.id,
+            recipientAccountId: recipient.id,
+            sourceMemberKey,
+            sourceVersion: "provider-source-v2",
+            recipientMode: "plain",
+            recipientContentPublicKeyFingerprint: "content-key:v1:unexpected",
+            stored: storedFor("provider-source-v2", "rotated"),
+            expectedResourceRevision: resource.revision,
+            expectedStoredSourceVersion: sourceVersion,
+            expectedPublishedSourceVersion: sourceVersion,
+        }))).resolves.toEqual({ ok: false, reason: "invalid_material" });
+        await expect(db.teamCredentialResource.findUniqueOrThrow({
+            where: { id: resource.id },
+            select: { directSourceVersionsJson: true },
+        })).resolves.toEqual(publishedBefore);
+
+        // The same rotation with every precondition satisfied still commits
+        // publication and the accepted tuple together.
+        await expect(inTx(tx => upsertTeamCredentialRecipientMaterialInTx(tx, {
+            actorAccountId: custodian.id,
+            resourceId: resource.id,
+            recipientAccountId: recipient.id,
+            sourceMemberKey,
+            sourceVersion: "provider-source-v2",
+            recipientMode: "plain",
+            recipientContentPublicKeyFingerprint: null,
+            stored: storedFor("provider-source-v2", "rotated"),
+            expectedResourceRevision: resource.revision,
+            expectedStoredSourceVersion: sourceVersion,
+            expectedPublishedSourceVersion: sourceVersion,
+        }))).resolves.toMatchObject({ ok: true, sourceVersion: "provider-source-v2" });
+        await expect(db.teamCredentialResource.findUniqueOrThrow({
+            where: { id: resource.id },
+            select: { directSourceVersionsJson: true },
+        })).resolves.toEqual({
+            directSourceVersionsJson: JSON.stringify({ [sourceMemberKey]: "provider-source-v2" }),
+        });
+        await expect(db.teamCredentialRecipientMaterial.findUniqueOrThrow({
+            where: { resourceId_recipientAccountId_sourceMemberKey: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey } },
+            select: { sourceVersion: true },
+        })).resolves.toEqual({ sourceVersion: "provider-source-v2" });
     });
 
     it("accepts only a currently enabled member of the pinned Connected Service Pool", async () => {

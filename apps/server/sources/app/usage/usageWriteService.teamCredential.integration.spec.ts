@@ -1,5 +1,6 @@
 import type { UsageEventIngestRequest } from "@happier-dev/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eventRouter, type ClientConnection } from "@/app/events/eventRouter";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -547,5 +548,111 @@ describe("usageWriteService Team credential attribution", () => {
             "conflicting team credential usage admission fact",
         );
         expect(await db.usageEvent.count({ where: { source: "team_credential_admission" } })).toBe(2);
+    });
+
+    it("wakes only the resource's usage readers' app connections after each new immutable usage write", async () => {
+        const fixture = await createTeamFixture();
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const suspendedManager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        await db.teamMembership.create({ data: { teamId: fixture.team.id, accountId: manager.id, role: "admin" } });
+        await db.teamMembership.create({
+            data: { teamId: fixture.team.id, accountId: suspendedManager.id, role: "owner", status: "suspended" },
+        });
+        const connections: Array<Readonly<{ accountId: string; connection: ClientConnection }>> = [];
+        const listen = (accountId: string, connectionType: "user-scoped" | "machine-scoped") => {
+            const received: Array<Record<string, unknown>> = [];
+            // The socket is the transport boundary; routing, filters and audience stay real.
+            const socket = {
+                emit: (eventName: string, payload: Record<string, unknown>) => {
+                    if (eventName === "ephemeral" && payload.type === "team-credential-usage-changed") received.push(payload);
+                },
+            } as unknown as ClientConnection["socket"];
+            const connection: ClientConnection = connectionType === "user-scoped"
+                ? { connectionType, socket, userId: accountId }
+                : { connectionType, socket, userId: accountId, machineId: `machine-${accountId}` };
+            eventRouter.addConnection(accountId, connection);
+            connections.push({ accountId, connection });
+            return received;
+        };
+        try {
+            const custodianApp = listen(fixture.storageAccount.id, "user-scoped");
+            const managerApp = listen(manager.id, "user-scoped");
+            const managerDaemon = listen(manager.id, "machine-scoped");
+            const actorApp = listen(fixture.actorA.id, "user-scoped");
+            const otherMemberApp = listen(fixture.actorB.id, "user-scoped");
+            const suspendedManagerApp = listen(suspendedManager.id, "user-scoped");
+            const wake = { type: "team-credential-usage-changed", resourceId: fixture.resourceA.id };
+
+            const session = await db.session.create({
+                data: {
+                    accountId: fixture.storageAccount.id,
+                    tag: crypto.randomUUID(),
+                    encryptionMode: "e2ee",
+                    metadata: "ciphertext",
+                    active: true,
+                },
+            });
+            const turnId = "turn-usage-wake";
+            await db.sessionTurn.create({
+                data: {
+                    sessionId: session.id,
+                    turnId,
+                    status: "active",
+                    startedAt: 1n,
+                    updatedAt: 1n,
+                    usageActorAccountId: fixture.actorA.id,
+                    teamCredentialResourceId: fixture.resourceA.id,
+                    credentialDeliveryMode: "brokered",
+                },
+            });
+            const admit = () => inTx((tx) => recordTeamCredentialAdmissionUsageEventInTx(tx, {
+                accountId: fixture.storageAccount.id,
+                sessionId: session.id,
+                turnId,
+                observedAt: new Date("2026-09-08T12:00:00.000Z"),
+                externalKey: "wake-request-1",
+                authority: admissionAuthority({ actorAccountId: fixture.actorA.id, resourceId: fixture.resourceA.id }),
+            }));
+
+            await expect(admit()).resolves.toMatchObject({ created: true });
+            expect(custodianApp).toEqual([wake]);
+            expect(managerApp).toEqual([wake]);
+            expect(actorApp).toEqual([wake]);
+
+            // An idempotent replay records nothing new, so nothing is woken.
+            await expect(admit()).resolves.toMatchObject({ created: false });
+            expect(managerApp).toEqual([wake]);
+
+            // The Agent's terminal token/cost observation is the other immutable write.
+            await expect(recordUsageEvent(fixture.storageAccount.id, {
+                sessionId: session.id,
+                observedAt: Date.parse("2026-09-08T12:01:00.000Z"),
+                agentId: "claude",
+                backendMode: "remote",
+                modelId: "claude-sonnet",
+                projectKey: null,
+                workspaceId: null,
+                machineId: "worker-machine-1",
+                source: "claude_sdk",
+                scope: "turn_delta",
+                externalKey: "agent-observation-wake",
+                turnId,
+                isCumulative: false,
+                tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 2 },
+                cost: { reportedUsd: 0.01, estimatedUsd: 0, invoiceUsd: 0, costSource: "provider_reported", currency: "USD" },
+                context: { usedTokens: 2, windowTokens: 200_000 },
+            } satisfies UsageEventIngestRequest)).resolves.toMatchObject({ ok: true });
+            expect(custodianApp).toEqual([wake, wake]);
+            expect(managerApp).toEqual([wake, wake]);
+            expect(actorApp).toEqual([wake, wake]);
+
+            // A member reads only their own use; a suspended manager reads nothing;
+            // daemons do not render usage and must not rehydrate on it.
+            expect(otherMemberApp).toEqual([]);
+            expect(suspendedManagerApp).toEqual([]);
+            expect(managerDaemon).toEqual([]);
+        } finally {
+            for (const { accountId, connection } of connections) eventRouter.removeConnection(accountId, connection);
+        }
     });
 });

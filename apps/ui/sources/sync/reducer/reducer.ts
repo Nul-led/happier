@@ -763,15 +763,33 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
     const hasIncomingMessageActionReference = orderedIncomingMessages.some(
         (message) => message.messageActionReference !== undefined,
     );
-    const hasIncomingReferenceRetraction = orderedIncomingMessages.some((message) => {
+    // The reducer's own id indexes answer "which loaded row does this incoming
+    // row name". Resolving the batch once serves both the retraction question
+    // and the actor-change question below.
+    const readKnownRowForIncomingMessage = (message: NormalizedMessage): ReducerMessage | undefined => {
         const knownMessageId = state.messageIds.get(message.id)
             ?? (typeof message.localId === 'string' ? state.localIds.get(message.localId) : undefined);
-        return knownMessageId !== undefined
-            && state.messages.get(knownMessageId)?.messageActionReference !== undefined;
+        return knownMessageId === undefined ? undefined : state.messages.get(knownMessageId);
+    };
+    const hasIncomingReferenceRetraction = orderedIncomingMessages.some(
+        (message) => readKnownRowForIncomingMessage(message)?.messageActionReference !== undefined,
+    );
+    // A current server stamps `accountActor` — object OR explicit null — on
+    // every row of every page, so "the field is present" was true for every
+    // refresh and turned the reconciliation pass into an unconditional full
+    // scan of the loaded transcript. Ask the canonical actor owner whether the
+    // incoming actor would actually change the row we already hold, and stay
+    // on whenever the batch names a row this index cannot resolve to a loaded
+    // message (mode-switch and sidechain rows are indexed by their source id).
+    const hasIncomingAccountActorChange = orderedIncomingMessages.some((message) => {
+        if (message.accountActor === undefined) return false;
+        const known = readKnownRowForIncomingMessage(message);
+        if (!known) return true;
+        return applyTranscriptAccountActorMetadata({ accountActor: known.accountActor }, message);
     });
     const shouldReconcileUnchangedMessageReferences = hasIncomingMessageActionReference
         || hasIncomingReferenceRetraction
-        || orderedIncomingMessages.some((message) => message.accountActor !== undefined);
+        || hasIncomingAccountActorChange;
     const applyIncomingObservationMetadata = (message: ReducerMessage): boolean => {
         const source = (message.realID ? incomingObservationMetadataById.get(message.realID) : undefined)
             ?? (message.localId ? incomingObservationMetadataByLocalId.get(message.localId) : undefined);
@@ -964,6 +982,30 @@ function processUsageData(state: ReducerState, usage: UsageData, timestamp: numb
     }
 }
 
+
+/**
+ * Projects one committed sidechain's rows through the same conversion a
+ * tool-call parent uses for its `children`.
+ *
+ * A direct-start Run has no parent tool marker in the transcript, so its
+ * committed rows are reachable only by sidechain id. Reading them here keeps
+ * one conversion: a surface without the marker renders exactly the rows the
+ * marker branch would have rendered, rather than a second projection of the
+ * same store.
+ */
+export function projectSidechainMessages(
+    state: ReducerState,
+    sidechainId: string,
+): readonly Message[] {
+    const rows = state.sidechains.get(sidechainId);
+    if (!rows || rows.length === 0) return [];
+    const projected: Message[] = [];
+    for (const row of rows) {
+        const message = convertReducerMessageToMessage(row, state);
+        if (message) projected.push(message);
+    }
+    return projected;
+}
 
 function convertReducerMessageToMessage(
     reducerMsg: ReducerMessage,

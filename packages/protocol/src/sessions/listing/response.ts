@@ -21,6 +21,18 @@ export const SessionCurrentProjectionRecordV1Schema = V2SessionRecordSchema.and(
 export type SessionCurrentProjectionRecordV1 = Readonly<z.infer<typeof SessionCurrentProjectionRecordV1Schema>>;
 
 /**
+ * States how many rows this page selected but could not project because the
+ * owning Account has not yet migrated their Session metadata to the current
+ * layout. The rows are omitted individually so one unmigrated historical share
+ * cannot refuse a whole page; this count keeps that refusal visible instead of
+ * silently shrinking the page.
+ */
+export const SessionListMetadataUpgradeRequiredCountSchema = z
+  .number()
+  .int()
+  .nonnegative();
+
+/**
  * Closed V1 response envelope for filtered listing. Session rows retain the
  * established V2 projection policy; pagination authority stays explicit at
  * this boundary so consumers cannot lose either independent continuation.
@@ -33,6 +45,7 @@ export const SessionListQueryResponseV1Schema = z.object({
   hasNext: z.boolean(),
   attentionNextCursor: z.string().nullable(),
   attentionHasNext: z.boolean(),
+  metadataUpgradeRequiredCount: SessionListMetadataUpgradeRequiredCountSchema.optional(),
 }).strict();
 
 export type SessionListQueryResponseV1 = Readonly<z.infer<typeof SessionListQueryResponseV1Schema>>;

@@ -8,6 +8,7 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { isSocketIoAckTimeoutError } from '@/sync/runtime/socketIoAckTimeout';
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
+import { createScopedSocketConnectParams } from '@/sync/runtime/orchestration/serverScopedRpc/createScopedSocketConnectParams';
 import { resolveServerScopedContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedContext';
 import { resolveScopedMachineTransport } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcPool';
 import { delay } from '@/utils/timing/time';
@@ -38,7 +39,8 @@ import {
     MACHINE_RPC_TIMEOUT_ERROR_CODE,
 } from './machineRpcTimeoutError';
 import { scopedSocketEmitWithAck } from './scopedSocketEmitWithAck';
-import { resolveExpectedRunnerMachineContentKeyBindingV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
+import { resolveMachineRpcTargetServerId } from './resolveMachineRpcTargetServerId';
+import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 import { isTokenOnlyAuthCredentials } from '@/auth/storage/tokenStorage';
 
 const SCOPED_MACHINE_RPC_SESSION_WRITE_METHODS = new Set<string>([
@@ -292,9 +294,10 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             throw new Error('Expected scoped server RPC context');
         }
 
+        let carrierCustodyTransferred = false;
         try {
-            const expectedRunnerBinding = context.credentials
-                ? resolveExpectedRunnerMachineContentKeyBindingV1({
+            const runnerTrust = context.credentials
+                ? resolveRunnerMachineContentKeyTrustV1({
                     credentials: context.credentials,
                     homeServerIdentityId: context.targetServerId,
                     machineId: context.machineId,
@@ -307,6 +310,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                     serverId: context.targetServerId,
                     serverUrl: context.targetServerUrl,
                     ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
+                    ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
                     token: context.token,
                     machineId: context.machineId,
                     accountId: context.targetAccountId,
@@ -317,7 +321,10 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                                 : 'e2ee' as const,
                         }
                         : {}),
-                    ...(expectedRunnerBinding ? { expectedRunnerBinding } : {}),
+                    ...(runnerTrust ? { expectedRunnerBinding: runnerTrust.expectedRunnerBinding } : {}),
+                    ...(runnerTrust?.trustedMachineKind
+                        ? { trustedMachineKind: runnerTrust.trustedMachineKind }
+                        : {}),
                     timeoutMs,
                     ...(context.encryption
                         ? {
@@ -362,13 +369,15 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
         const socket = await timeoutBudget.runWithinTimeout(
             'scoped',
             async (timeoutMs) =>
-                await createEphemeralServerSocketClient({
-                    serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
-                    reachabilityServerUrl: context.targetServerUrl,
-                    ...(context.carrier ? { carrier: context.carrier } : {}),
-                    token: context.token,
-                    timeoutMs,
-                }),
+                await createEphemeralServerSocketClient(
+                    createScopedSocketConnectParams({
+                        ...context,
+                        timeoutMs,
+                    }, () => {
+                        carrierCustodyTransferred = true;
+                        return context.release;
+                    }),
+                ),
         );
         try {
             throwIfMachineRpcAborted(params.method, params.signal);
@@ -434,7 +443,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             socket.disconnect();
         }
         } finally {
-            await context.release?.();
+            if (!carrierCustodyTransferred) await context.release?.();
         }
     };
 
@@ -462,48 +471,55 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
 }
 
 export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachineRpcParams<A>): Promise<R> {
-    if (params.onIssued) {
-        return await machineRpcWithServerTransport<R, A>(params);
+    // Peer mediation, relay policy, and the server fallback must all use the
+    // Home that owns this execution. During a Home handoff, `serverRuntime`
+    // may already describe the next staged Home while the applied runtime
+    // still serves the incumbent.
+    const effectiveServerId = resolveMachineRpcTargetServerId(params.serverId);
+    const effectiveParams: ServerScopedMachineRpcParams<A> = {
+        ...params,
+        serverId: effectiveServerId || undefined,
+    };
+
+    if (effectiveParams.onIssued) {
+        return await machineRpcWithServerTransport<R, A>(effectiveParams);
     }
     return await withMachineRpcAbort(
-        params.method,
-        params.signal,
+        effectiveParams.method,
+        effectiveParams.signal,
         async () => await machineRpcWithPeerMediationRoute<R, A>({
-            serverId: params.serverId,
-            accountId: params.accountId,
-            machineId: params.machineId,
-            method: params.method,
-            payload: params.payload,
-            timeoutMs: params.timeoutMs,
-            authorization: params.authorization,
-            signal: params.signal,
+            serverId: effectiveParams.serverId,
+            accountId: effectiveParams.accountId,
+            machineId: effectiveParams.machineId,
+            method: effectiveParams.method,
+            payload: effectiveParams.payload,
+            timeoutMs: effectiveParams.timeoutMs,
+            authorization: effectiveParams.authorization,
+            signal: effectiveParams.signal,
             resolveDirectRoute: async (input) => await resolveProductionMachineRpcDirectRoute({
                 ...input,
-                timeoutMs: params.timeoutMs,
+                serverId: effectiveParams.serverId,
+                timeoutMs: effectiveParams.timeoutMs,
             }),
             postDirect: async (directInput) => await withMachineRpcAbort(
-                params.method,
-                params.signal,
+                effectiveParams.method,
+                effectiveParams.signal,
                 () => postProductionMachineRpcDirect(directInput),
             ),
             recordReceipt: recordMachineRpcPeerMediationReceipt,
             resolveRelayFallback: async (input) => await resolveProductionMachineRpcRelayFallbackForServer({
                 policy: input.policy,
-                serverId: input.serverId,
-                timeoutMs: params.timeoutMs,
+                serverId: effectiveParams.serverId,
+                timeoutMs: effectiveParams.timeoutMs,
             }),
             serverFallback: async (fallbackInput) => await machineRpcWithServerTransport<R, A>({
+                ...effectiveParams,
                 machineId: fallbackInput.machineId,
                 method: fallbackInput.method,
                 payload: fallbackInput.payload,
-                serverId: fallbackInput.serverId,
                 accountId: fallbackInput.accountId,
                 timeoutMs: fallbackInput.timeoutMs,
                 authorization: fallbackInput.authorization,
-                preferScoped: params.preferScoped,
-                skipTransferPolicyEvaluation: params.skipTransferPolicyEvaluation,
-                signal: params.signal,
-                onIssued: params.onIssued,
             }),
         }),
     );

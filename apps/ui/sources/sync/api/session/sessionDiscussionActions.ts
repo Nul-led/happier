@@ -46,6 +46,7 @@ import {
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import { randomUUID } from '@/platform/randomUUID';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
     openSessionStoredContent,
@@ -63,7 +64,7 @@ export async function listSessionDiscussionMentionCandidates(params: Readonly<{
     limit?: number;
     signal?: AbortSignal;
 }>): Promise<SessionResponsibilityCandidatesResponse> {
-    if (params.scope.serverId !== params.session.serverId) {
+    if (!areServerProfileIdentifiersEquivalent(params.scope.serverId, params.session.serverId)) {
         throw new Error('Discussion mention candidates require the exact Session Home');
     }
     return await listSessionResponsibilityMentionCandidates(params.scope, {
@@ -115,7 +116,11 @@ export function createSessionDiscussionActionAdapter(options: Readonly<{
         if (options.availability === 'unavailable') return failure('unsupported_action');
         const sessionId = typeof input === 'object' && input !== null && 'sessionId' in input && typeof input.sessionId === 'string'
             ? input.sessionId : context.defaultSessionId;
-        if (!sessionId || sessionId !== options.session.sessionId || (context.serverId && context.serverId !== options.session.serverId)) {
+        // A replay carries the origin's device-local profile id while the
+        // captured scope addresses the Session by the Home's scope id; the
+        // profile owner decides whether they name the same Home.
+        if (!sessionId || sessionId !== options.session.sessionId
+            || (context.serverId && !areServerProfileIdentifiersEquivalent(context.serverId, options.session.serverId))) {
             return failure('session_discussion_not_found');
         }
         let bound;

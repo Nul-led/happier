@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { HomeRoleV1 } from "@happier-dev/protocol";
+import type { AccountStatusV1, HomeRoleV1 } from "@happier-dev/protocol";
 import { HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 } from "@happier-dev/protocol/changes";
 
 import { db } from "@/storage/db";
@@ -27,6 +27,7 @@ async function createAccount(input: Readonly<{
     homeRole?: HomeRoleV1;
     username?: string | null;
     feedSeq?: bigint;
+    status?: AccountStatusV1;
 }> = {}): Promise<string> {
     const created = await db.account.create({
         data: {
@@ -34,6 +35,7 @@ async function createAccount(input: Readonly<{
             homeRole: input.homeRole ?? "member",
             username: input.username ?? null,
             ...(input.feedSeq === undefined ? {} : { feedSeq: input.feedSeq }),
+            ...(input.status === undefined ? {} : { status: input.status }),
         },
         select: { id: true },
     });
@@ -69,7 +71,6 @@ describe("Provider-reset Account replacement", () => {
             initEncrypt: false,
             initFiles: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
             },
         });
@@ -662,4 +663,39 @@ describe("Provider-reset Account replacement", () => {
         await expect(db.account.findUnique({ where: { id: replacementAccountId }, select: { id: true } }))
             .resolves.toBeNull();
     });
+
+    // A provider reset is a credential recovery, never a lifecycle recovery: a
+    // Home hold or a terminal retirement must survive it. Both inactive states
+    // are asserted because they fail differently today — a suspended source
+    // would be retired straight through, and a disabled one short-circuits the
+    // lifecycle owner as `unchanged`.
+    it.each<AccountStatusV1>(["suspended", "disabled"])(
+        "refuses to replace a %s Account before any mutation",
+        async (status) => {
+            const oldAccountId = await createAccount({ homeRole: "owner", username: "mal", status });
+            const membership = await createTeamWithMember({ accountId: oldAccountId });
+            const replacementAccountId = nextId("acc-replacement");
+            let retired = false;
+
+            const result = await inTx(async (tx) => await replaceAccountForProviderResetInTx(tx, {
+                oldAccountId,
+                replacement: { accountId: replacementAccountId, publicKey: nextId("replacement-key") },
+                desiredUsername: "mal",
+                retireReplacedAccountInTx: async () => { retired = true; },
+            }), { isolationLevel: "Serializable" });
+
+            expect(result).toEqual({ status: "rejected", code: "home_account_inactive" });
+            expect(retired).toBe(false);
+            await expect(db.account.findUnique({ where: { id: replacementAccountId }, select: { id: true } }))
+                .resolves.toBeNull();
+            await expect(db.account.findUniqueOrThrow({
+                where: { id: oldAccountId },
+                select: { username: true, status: true, homeRole: true },
+            })).resolves.toEqual({ username: "mal", status, homeRole: "owner" });
+            await expect(db.teamMembership.findUniqueOrThrow({
+                where: { id: membership.membershipId },
+                select: { accountId: true },
+            })).resolves.toEqual({ accountId: oldAccountId });
+        },
+    );
 });

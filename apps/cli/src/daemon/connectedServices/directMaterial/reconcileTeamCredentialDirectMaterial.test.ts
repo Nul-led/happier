@@ -45,14 +45,14 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
         homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
         source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
         sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion: 'source-v1',
-        recipients: [{ recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null }],
+        recipients: [{ recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null, storedTupleCurrent: false }],
         nextCursor: 'next',
       });
     const secondPage = TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
         homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
         source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
         sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion: 'source-v2',
-        recipients: [{ recipientAccountId: 'b', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: 'source-v1' }],
+        recipients: [{ recipientAccountId: 'b', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: 'source-v1', storedTupleCurrent: false }],
         nextCursor: null,
       });
     const fetchPreparation = vi.fn(async (input: Readonly<{
@@ -91,8 +91,8 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
       source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
       sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion,
       recipients: [
-        { recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null },
-        { recipientAccountId: 'b', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null },
+        { recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null, storedTupleCurrent: false },
+        { recipientAccountId: 'b', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null, storedTupleCurrent: false },
       ],
       nextCursor: null,
     });
@@ -109,6 +109,51 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
     })).resolves.toEqual({ ok: true, prepared: 2 });
     expect(upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({ expectedPublishedSourceVersion: null }));
     expect(upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({ expectedPublishedSourceVersion: 'source-v2' }));
+  });
+
+  // Child 06 L10D-R13: preparation reconciles only missing or stale tuples.
+  // Rewriting a tuple the Home already reports current for the snapshot's own
+  // source version would publish a Team change that restarts this reconciler.
+  it('prepares only recipients whose stored tuple is missing or stale for the current source version', async () => {
+    const page = TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
+      homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
+      source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
+      sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion: 'source-v2',
+      recipients: [
+        { recipientAccountId: 'current', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: 'source-v2', storedTupleCurrent: true },
+        { recipientAccountId: 'rekeyed', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: 'source-v2', storedTupleCurrent: false },
+        { recipientAccountId: 'missing', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null, storedTupleCurrent: false },
+      ],
+      nextCursor: null,
+    });
+    const upsert = vi.fn(async (_item: Readonly<{ recipientAccountId: string }>) => ({ ok: true as const }));
+
+    await expect(reconcileTeamCredentialDirectMaterial({
+      teamId: 'team', resourceId: 'resource', sourceMemberKey,
+      fetchPreparation: vi.fn(async () => page),
+      resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
+      upsert,
+    })).resolves.toEqual({ ok: true, prepared: 2 });
+    expect(upsert.mock.calls.map(([item]) => item.recipientAccountId)).toEqual(['rekeyed', 'missing']);
+
+    // The same Home-current tuple is stale once the source itself moved on.
+    // The Home publishes the new version with the first accepted tuple, so the
+    // fake Home answers every later preparation read with it.
+    let published = 'source-v2';
+    const rotatedUpsert = vi.fn(async (item: Readonly<{ recipientAccountId: string; sourceVersion: string }>) => {
+      published = item.sourceVersion;
+      return { ok: true as const };
+    });
+    await expect(reconcileTeamCredentialDirectMaterial({
+      teamId: 'team', resourceId: 'resource', sourceMemberKey,
+      fetchPreparation: vi.fn(async () => ({ ...page, publishedSourceVersion: published })),
+      resolveSourceSnapshot: vi.fn(async () => ({
+        ...sourceSnapshot,
+        currentness: { ...sourceSnapshot.currentness, sourceVersion: 'source-v3' },
+      })),
+      upsert: rotatedUpsert,
+    })).resolves.toEqual({ ok: true, prepared: 3 });
+    expect(rotatedUpsert.mock.calls.map(([item]) => item.recipientAccountId)).toEqual(['current', 'rekeyed', 'missing']);
   });
 
   it('fails closed when the preparation source member differs from the canonical snapshot', async () => {

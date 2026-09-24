@@ -1040,4 +1040,57 @@ describe("directory source administration", () => {
             actorAccountId: f.owner.id,
         })).resolves.toMatchObject({ ok: true, value: { status: "already_absent" } });
     });
+
+    it("refuses Resume without resetting the source when its full-scan request cannot be recorded", async () => {
+        const f = await createFixture();
+        await expect(setDirectorySourcePausedForActor({
+            teamId: f.team.id,
+            sourceId: f.source.id,
+            actorAccountId: f.owner.id,
+            paused: true,
+        })).resolves.toMatchObject({ ok: true, value: { state: "paused" } });
+
+        const allowedKinds = (kinds: string[]) => db.homeGovernancePolicy.update({
+            where: { id: "home" },
+            data: {
+                teamProviderPolicy: {
+                    v: 1,
+                    allowedTeamProviderKinds: kinds,
+                    teamJitAllowed: false,
+                    approvedGitHubEnterpriseOrigins: [],
+                },
+            },
+        });
+        // child 05 §10.1/:498: Resume atomically records the full-scan request.
+        // A Home that no longer allows the provider kind refuses that request,
+        // so Resume must refuse too rather than advertise a repair that never
+        // starts.
+        await allowedKinds(["github_app_identity"]);
+        try {
+            await expect(setDirectorySourcePausedForActor({
+                teamId: f.team.id,
+                sourceId: f.source.id,
+                actorAccountId: f.owner.id,
+                paused: false,
+                now: new Date("2026-09-07T10:00:00.000Z"),
+            })).resolves.toEqual({ ok: false, error: "team_identity_not_allowed" });
+            await expect(db.teamDirectorySource.findUniqueOrThrow({ where: { id: f.source.id } }))
+                .resolves.toMatchObject({ state: "paused", manualSyncRequestedAt: null });
+        } finally {
+            await allowedKinds(["workos_sso", "github_app_identity"]);
+        }
+
+        await expect(setDirectorySourcePausedForActor({
+            teamId: f.team.id,
+            sourceId: f.source.id,
+            actorAccountId: f.owner.id,
+            paused: false,
+            now: new Date("2026-09-07T10:05:00.000Z"),
+        })).resolves.toMatchObject({ ok: true, value: { state: "initializing" } });
+        await expect(db.teamDirectorySource.findUniqueOrThrow({ where: { id: f.source.id } }))
+            .resolves.toMatchObject({
+                state: "initializing",
+                manualSyncRequestedAt: new Date("2026-09-07T10:05:00.000Z"),
+            });
+    });
 });

@@ -12,7 +12,10 @@ import type {
   ForegroundAgentRuntimeSessionOptionsRequestV1,
   ForegroundAgentRuntimeSessionOptionsResponseV1,
 } from '@/daemon/agentRuntime/foregroundAdmissionContract';
-import { type ProviderErrorV1 } from '@happier-dev/protocol';
+import {
+  pluginSourceCustodyV1Equal,
+  type ProviderErrorV1,
+} from '@happier-dev/protocol';
 import type { AgentSessionRunnerBindingV1 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import type {
   RunnerManagedDependencyRetentionV1,
@@ -21,6 +24,7 @@ import type { AgentRuntimeDaemonServiceRequestV1 } from '@/agent/runtime/session
 import type {
   RunnerAgentInvocationContext,
 } from '@/daemon/types';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import type { AgentCliSessionCommandBuildInputV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { ProviderSessionRuntimePreferences } from '@/agent/catalog/types';
 import { normalizeAgentCliSessionCommandOptions } from '@/plugins/projection/registry/agentCatalogEntryHooks';
@@ -29,6 +33,8 @@ type Cleanup = () => void | Promise<void>;
 
 export type PreparedForegroundAgentRuntimeAdmission = Readonly<{
   authorization: ForegroundAgentRuntimeBootstrapAuthorization;
+  /** Session Team slot bindings the foreground Session must be created with. */
+  teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
   reservedEnvironmentVariableNames: readonly string[];
   profileSecretRequirementNamesMissingBinding: readonly string[];
   nativeHomeSourceEnvironmentKey?: string;
@@ -322,6 +328,9 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
               prepared.authorization.authorityFilePath,
             descriptor: prepared.authorization.descriptor,
           },
+          ...(prepared.teamCredentialBindings
+            ? { sessionCreation: { teamCredentialBindings: [...prepared.teamCredentialBindings] } }
+            : {}),
           launchPolicy: {
             reservedEnvironmentVariableNames:
               [...admission.reservedEnvironmentVariableNames],
@@ -398,7 +407,11 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
           !== claimRequest.foregroundPid
         || descriptor?.pluginId !== claimRequest.pluginId
         || descriptor.agentId !== claimRequest.agentId
-        || descriptor.generation !== claimRequest.generation
+        || descriptor.occurrenceId !== claimRequest.occurrenceId
+        || !pluginSourceCustodyV1Equal(
+          descriptor.sourceCustody,
+          claimRequest.sourceCustody,
+        )
         || !verifyAgentRuntimeSessionBridgeToken({
           providedToken: claimRequest.capability,
           expectedTokenHash: admission.authorization.capabilityHash,
@@ -494,8 +507,10 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
             && retainedAgent.localAgentId
               !== descriptor.agentDeclaration.definition.id
           )
-          || retainedAgent.immutableGenerationId
-            !== (descriptor.immutableGenerationId ?? descriptor.generation)
+          || !pluginSourceCustodyV1Equal(
+            retainedAgent.sourceCustody,
+            descriptor.sourceCustody,
+          )
         ) {
           await releaseAdmission(admission);
           throw new Error(

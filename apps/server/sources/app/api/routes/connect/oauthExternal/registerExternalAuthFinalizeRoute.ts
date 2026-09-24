@@ -55,7 +55,11 @@ import {
     prepareSameServiceHomeEntry,
 } from "@/app/accountDirectory/accountDirectoryService";
 import { oauthExternalFinalizeErrorHandler } from "./oauthExternalFinalizeErrorHandler";
-import { requireCurrentOAuthPendingRuntime, requireCurrentOAuthPendingRuntimeInTx } from "./oauthSecurityBinding";
+import {
+    isTeamOwnedConnectionAdmission,
+    requireCurrentOAuthPendingRuntime,
+    requireCurrentOAuthPendingRuntimeInTx,
+} from "./oauthSecurityBinding";
 import { requireTeamOAuthAdmissionInTx, TeamOAuthAdmissionAbort } from "@/app/teams/memberships/teamOAuthAdmission";
 import { readOAuthAuthenticationEvidenceInTx } from "@/app/auth/authenticationEvidence";
 import { upsertVerifiedMailboxEvidenceInTx } from "@/app/auth/verifiedMailboxEvidence";
@@ -256,9 +260,13 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         let refreshToken: string | undefined;
         let pendingProfile: unknown;
         try {
-            const tokenBytes = privacyKit.decodeBase64(parsedValue.accessTokenEnc);
-            accessToken =
-                pendingFormat === "v2" && !isKeyedAccountDirectory
+            // An identity-proof-only provider persists no token in the continuation.
+            const tokenBytes = parsedValue.accessTokenEnc
+                ? privacyKit.decodeBase64(parsedValue.accessTokenEnc)
+                : null;
+            accessToken = tokenBytes === null
+                ? ""
+                : pendingFormat === "v2" && !isKeyedAccountDirectory
                     ? decryptString(["auth", "external", providerId, "pending_v2", pendingKey, "token"], tokenBytes)
                     : decryptString(["auth", "external", providerId, "pending", pendingKey, publicKeyHex], tokenBytes);
             if (typeof parsedValue.refreshTokenEnc === "string" && parsedValue.refreshTokenEnc.trim()) {
@@ -462,7 +470,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 | Readonly<{ status: "replaced"; token: string }>
                 | Readonly<{
                     status: "rejected";
-                    code: "home_account_not_found" | "team_membership_transfer_conflict";
+                    code: "home_account_not_found" | "home_account_inactive" | "team_membership_transfer_conflict";
                     details?: Readonly<{ teamIds: readonly string[] }>;
                 }>;
             try {
@@ -555,6 +563,14 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             }
 
             if (replacementOutcome.status === "rejected") {
+                // The Home's hold on the replaced Account, answered only after
+                // complete proof of a verified provider identity, in the same
+                // shape every other inactive-Account refusal on this route
+                // already takes. The one-shot pending stays intact: its
+                // transaction rolled back, so a lifted suspension can retry.
+                if (replacementOutcome.code === "home_account_inactive") {
+                    return reply.code(403).send({ error: "account-disabled" });
+                }
                 if (replacementOutcome.code === "team_membership_transfer_conflict") {
                     return reply.code(409).send({
                         error: "team_membership_transfer_conflict",
@@ -770,12 +786,14 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     ) {
                         return { status: "provider_disabled" as const };
                     }
-                    if (!isAccountDirectory && !isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
-                        methodId: providerId,
-                        actionId: "provision",
-                        mode: "keyed",
-                    })) return { status: "provider_disabled" as const };
+                    if (!isAccountDirectory
+                        && !isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
+                        && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                            env: process.env,
+                            methodId: providerId,
+                            actionId: "provision",
+                            mode: "keyed",
+                        })) return { status: "provider_disabled" as const };
                     const invitationSource = isTeamAdmission
                         && parsedValue.securityBinding?.admission?.kind === "team_invitation"
                         ? parsedValue.securityBinding.admission

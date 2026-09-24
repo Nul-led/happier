@@ -22,8 +22,16 @@ export const emailPasswordAuthMethodModule: AuthMethodModule = Object.freeze({
     resolveAuthMethod: ({ env }) => {
         const featureEnv = readAuthEmailPasswordFeatureEnv(env);
         const allowedModes = resolveAllowedAccountProvisionModes(env);
-        const mode: AuthMethodActionMode =
+        // Account-mode policy decides which Accounts may be *constructed*. An
+        // Account that already exists keeps its stored mode, so stamping the
+        // narrowed mode on `login`/`connect` would strand every Plain password
+        // Account the moment the deployment turns keyless accounts off. This is
+        // the same rule the persisted Home-policy narrowing already applies in
+        // `narrowAuthMethodDecisionForHomePolicy`; keyed password login keeps its
+        // own Key-Challenge dependency narrowing in that owner.
+        const provisionMode: AuthMethodActionMode =
             allowedModes.length === 2 ? "either" : allowedModes[0] === "plain" ? "keyless" : "keyed";
+        const existingAccountMode: AuthMethodActionMode = "either";
         const enabled = featureEnv.enabled;
         return {
             id: EMAIL_PASSWORD_AUTH_METHOD_ID,
@@ -31,13 +39,13 @@ export const emailPasswordAuthMethodModule: AuthMethodModule = Object.freeze({
                 {
                     id: "login",
                     enabled,
-                    mode,
+                    mode: existingAccountMode,
                     ...(enabled ? {} : { reason: "method_not_enabled" as const }),
                 },
                 {
                     id: "provision",
                     enabled: enabled && featureEnv.provisionEnabled,
-                    mode,
+                    mode: provisionMode,
                     ...(enabled
                         ? featureEnv.provisionEnabled
                             ? {}
@@ -47,7 +55,7 @@ export const emailPasswordAuthMethodModule: AuthMethodModule = Object.freeze({
                 {
                     id: "connect",
                     enabled,
-                    mode,
+                    mode: existingAccountMode,
                     ...(enabled ? {} : { reason: "method_not_enabled" as const }),
                 },
             ],

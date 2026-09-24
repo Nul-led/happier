@@ -348,6 +348,26 @@ describe("Account erasure ordering against Home ownership", () => {
         })).resolves.toEqual({ seq: ownerSeqBefore + 2 });
     });
 
+    it("completes a Home owner's erasure of their own People row after Phase A revokes them", async () => {
+        const { accountId: survivingOwnerId } = await createAccountWithBlob({ homeRole: "owner" });
+        const { accountId, path } = await createAccountWithBlob({ homeRole: "owner" });
+
+        // Home People always names the verified actor, including when that
+        // actor is the target. Phase A retires and revokes the target on
+        // purpose, so rechecking the actor's Home authority in Phase C would
+        // refuse the self-erasure it already admitted — after the blobs are
+        // irreversibly gone.
+        await expect(deleteAccountForErasure({
+            accountId,
+            actor: { kind: "home_administration", actorAccountId: accountId },
+        })).resolves.toEqual({ status: "deleted" });
+
+        expect(blobCalls).toEqual([{ path, accountStatusAtCall: "disabled" }]);
+        expect(await db.account.findUnique({ where: { id: accountId } })).toBeNull();
+        await expect(db.account.findUniqueOrThrow({ where: { id: survivingOwnerId }, select: { status: true } }))
+            .resolves.toEqual({ status: "active" });
+    });
+
     it("refuses to finish an administrative erasure whose actor lost authority mid-flight", async () => {
         const { accountId: ownerId } = await createAccountWithBlob({ homeRole: "owner" });
         await createAccountWithBlob({ homeRole: "owner" });

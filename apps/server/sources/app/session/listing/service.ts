@@ -11,6 +11,8 @@ import { inTx, type Tx } from "@/storage/inTx";
 import { fetchSessionOrganizationPinnedSessionIds } from "@/app/session/organization/organizationQueries";
 import { buildSessionAccessWhere, createApplicableAudienceWhere, resolveEffectiveSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isSessionCollaborationEnabled } from "@/app/session/access/sessionAccess";
+import { hasSessionTranscriptPublicationLiveFacts } from "@/app/session/sessionTranscriptPublicationPolicy";
 import {
     createSessionPersonalAttentionQueryInTx,
     createSessionListScopeWhere,
@@ -198,7 +200,7 @@ async function listSessionRowsForAccount(params: Readonly<{
             params.observedAttentionDiscussionFacts,
         );
         const otherNamedCollaboratorFacts = await readSessionListOtherNamedCollaboratorFacts(rows, userId, params.readSource?.discussionReader);
-        return timing.measure("page", () => ({ sessions: mapV2SessionListRows({
+        return timing.measure("page", () => ({ ...mapV2SessionListRows({
             rows, userId, ownerAccountModes, discussionFacts, otherNamedCollaboratorFacts,
             qualifiedTeamIds: params.readSource?.qualifiedTeamIds,
             accessMode: params.readSource?.accessMode,
@@ -240,7 +242,7 @@ async function listSessionRowsForAccount(params: Readonly<{
         );
         const otherNamedCollaboratorFacts = await readSessionListOtherNamedCollaboratorFacts(page.rows, userId, params.readSource?.discussionReader);
         return {
-            sessions: mapV2SessionListRows({
+            ...mapV2SessionListRows({
                 rows: page.rows, userId, ownerAccountModes, discussionFacts, otherNamedCollaboratorFacts,
                 qualifiedTeamIds: params.readSource?.qualifiedTeamIds,
                 accessMode: params.readSource?.accessMode,
@@ -315,7 +317,7 @@ async function listSessionRowsForAccount(params: Readonly<{
     );
     const otherNamedCollaboratorFacts = await readSessionListOtherNamedCollaboratorFacts(page.rows, userId, params.readSource?.discussionReader);
     return timing.measure("page", () => ({
-        sessions: mapV2SessionListRows({
+        ...mapV2SessionListRows({
             rows: page.rows, userId, ownerAccountModes, discussionFacts, otherNamedCollaboratorFacts,
             qualifiedTeamIds: params.readSource?.qualifiedTeamIds,
             accessMode: params.readSource?.accessMode,
@@ -355,7 +357,7 @@ async function listFilteredSessionsForAccount(params: Readonly<{
         throw new SessionListUnavailableQueryError("following");
     }
     if (query.audiences.some((audience) => audience.kind !== "outside_teams")
-        && !isServerFeatureEnabledForRequest("sessions.collaboration", process.env)) {
+        && !isSessionCollaborationEnabled()) {
         throw new SessionListUnavailableQueryError("audience");
     }
 
@@ -400,12 +402,18 @@ async function listFilteredSessionsForAccount(params: Readonly<{
             ? admitAttentionRows
             : !query.includeInactive
                 ? async (rows) => {
-                    const inactiveRows = rows.filter((row) => !row.active);
+                    // Publication decides liveness, not the raw stored column:
+                    // a row that projects `active: false` must earn its place
+                    // through attention like any other inactive row.
+                    const isPublishedActive = (row: typeof rows[number]) => (
+                        row.active && hasSessionTranscriptPublicationLiveFacts(row)
+                    );
+                    const inactiveRows = rows.filter((row) => !isPublishedActive(row));
                     if (inactiveRows.length === 0) return rows;
                     const admittedInactiveIds = new Set(
                         (await admitAttentionRows(inactiveRows)).map((row) => row.id),
                     );
-                    return rows.filter((row) => row.active || admittedInactiveIds.has(row.id));
+                    return rows.filter((row) => isPublishedActive(row) || admittedInactiveIds.has(row.id));
                 }
                 : undefined;
         const baseWhere = createFilteredSessionListWhere({
@@ -449,6 +457,9 @@ async function listFilteredSessionsForAccount(params: Readonly<{
             hasNext: page.hasNext ?? false,
             attentionNextCursor: page.attentionNextCursor ?? null,
             attentionHasNext: page.attentionHasNext ?? false,
+            ...(page.metadataUpgradeRequiredCount !== undefined
+                ? { metadataUpgradeRequiredCount: page.metadataUpgradeRequiredCount }
+                : {}),
         });
     });
 }

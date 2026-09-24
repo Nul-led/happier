@@ -27,7 +27,14 @@ const executionRunInfoCardSpy = vi.fn();
 const messageDetailsSpy = vi.fn();
 const browserContextState = vi.hoisted(() => ({ current: null as null | { marker: string } }));
 const participantComposerSpy = vi.fn();
+const participantComposerMountSpy = vi.hoisted(() => vi.fn());
+const participantComposerUnmountSpy = vi.hoisted(() => vi.fn());
 const pendingBlockSpy = vi.fn();
+const chainTranscriptSpy = vi.fn();
+const sidechainMessagesState = vi.hoisted(() => ({ current: [] as any[] }));
+const targetPendingState = vi.hoisted(() => ({
+    current: { messages: [] as any[], discarded: [] as any[], isLoaded: true },
+}));
 const exactSessionState = vi.hoisted(() => ({
     current: {
         id: 's1',
@@ -137,10 +144,18 @@ installSessionExecutionRunDetailsCommonModuleMocks({
             useSessionMessages: () => ({ messages: sessionMessagesState.messages, isLoaded: sessionMessagesState.isLoaded }),
             useResolvedSessionMessageRouteId: () => 'tool-msg-1',
             useMessage: () => sessionMessagesState.messages[0] ?? null,
-            useSessionPendingMessages: () => ({ messages: [], discarded: [], isLoaded: true }),
+            useSessionPendingMessages: () => targetPendingState.current,
+            useSessionSidechainMessages: () => sidechainMessagesState.current,
         });
     },
 });
+
+vi.mock('@/components/sessions/transcript/ChainTranscriptList', () => ({
+    ChainTranscriptList: (props: any) => {
+        chainTranscriptSpy(props);
+        return React.createElement('ChainTranscriptList', props);
+    },
+}));
 
 vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
     useSessionViewShellSession: () => exactSessionState.current,
@@ -209,6 +224,12 @@ vi.mock('@/components/sessions/transcript/details/SessionMessageDetailsView', ()
 vi.mock('@/components/sessions/participants/composer/SessionParticipantComposer', () => ({
     SessionParticipantComposer: (props: any) => {
         participantComposerSpy(props);
+        // Mount identity, not render count: a destructive reload replaces the
+        // loaded tree with a spinner and remounts this composer from scratch.
+        React.useEffect(() => {
+            participantComposerMountSpy();
+            return () => participantComposerUnmountSpy();
+        }, []);
         return React.createElement('SessionParticipantComposer', props);
     },
 }));
@@ -274,7 +295,12 @@ describe('SessionExecutionRunDetailsView', () => {
         executionRunInfoCardSpy.mockClear();
         messageDetailsSpy.mockClear();
         participantComposerSpy.mockClear();
+        participantComposerMountSpy.mockClear();
+        participantComposerUnmountSpy.mockClear();
         pendingBlockSpy.mockClear();
+        chainTranscriptSpy.mockClear();
+        sidechainMessagesState.current = [];
+        targetPendingState.current = { messages: [], discarded: [], isLoaded: true };
         browserContextState.current = null;
         exactSessionState.current = {
             id: 's1',
@@ -409,6 +435,36 @@ describe('SessionExecutionRunDetailsView', () => {
         tree = screen.tree;
 
         expect(screen.findAllHostsByTestId('session-run-details-latest-tool-result')).toHaveLength(1);
+    });
+
+    /**
+     * The result region is not a JSON dump. The incumbent structured projection
+     * owns a recognizable payload, and the arbitrary payload a trusted plugin may
+     * return stays reachable one tap away instead of being the primary content.
+     */
+    it('projects a recognizable tool result and keeps the raw payload subordinate', async () => {
+        getRunSpy.mockImplementation(async () => ({
+            ...createExecutionRunGetResponse(),
+            latestToolResult: { stdout: 'built 3 targets', exitCode: 0, marker: 'plugin-private-field' },
+        }));
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+
+        // The projection renders the result's own readable content...
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('built 3 targets');
+        // ...while the raw payload is behind its own disclosure, not above the transcript.
+        expect(screen.findAllHostsByTestId('session-run-details-latest-tool-result-raw')).toHaveLength(0);
+        await screen.pressByTestIdAsync('session-run-details-latest-tool-result-raw-toggle');
+        expect(screen.findAllHostsByTestId('session-run-details-latest-tool-result-raw')).toHaveLength(1);
+        // Nothing is removed: the plugin-private field the projection ignores is
+        // still reachable in the raw payload.
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('plugin-private-field');
     });
 
     it('hides the latest tool result only when the run reported no result at all', async () => {
@@ -707,6 +763,170 @@ describe('SessionExecutionRunDetailsView', () => {
             { serverId: 'server-route', accountId: 'account-1' },
             { kind: 'execution_run', runId: 'run_1' },
         );
+    });
+
+    it('renders the committed direct-start Run transcript with its exact pending queue and one composer', async () => {
+        sessionMessagesState.messages = [];
+        sidechainMessagesState.current = [
+            { id: 'sc-user', kind: 'user-text', localId: null, createdAt: 1, text: 'Start the run' },
+            { id: 'sc-agent', kind: 'agent-text', localId: null, createdAt: 2, text: 'Working on it' },
+        ];
+        targetPendingState.current = {
+            messages: [{ localId: 'queued-1', recipient: { kind: 'execution_run', runId: 'run_1' } }],
+            discarded: [],
+            isLoaded: true,
+        };
+        getRunSpy.mockResolvedValue(createExecutionRunGetResponse({
+            runClass: 'long_lived',
+            retentionPolicy: 'resumable',
+            status: 'running',
+            interaction: RETAINED_INTERACTION,
+        }));
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            serverId="server-route"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+
+        // No parent tool marker exists for a Run its profile never materializes,
+        // so the committed rows arrive by sidechain id through the shared list.
+        expect(messageDetailsSpy).not.toHaveBeenCalled();
+        expect(chainTranscriptSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 's1',
+            serverId: 'server-route',
+            messages: [
+                expect.objectContaining({ id: 'sc-user' }),
+                expect.objectContaining({ id: 'sc-agent' }),
+            ],
+            pendingMessages: targetPendingState.current.messages,
+            pendingRecipient: { kind: 'execution_run', runId: 'run_1' },
+        }));
+        // One transcript projection owns the pending-to-committed crossover.
+        expect(pendingBlockSpy).not.toHaveBeenCalled();
+        expect(screen.root.findAllByType('SessionParticipantComposer' as never)).toHaveLength(1);
+
+        await screen.update(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            serverId="server-route"
+            presentation="panel"
+        />);
+        expect(screen.root.findAllByType('SessionParticipantComposer' as never)).toHaveLength(1);
+    });
+
+    it('applies live Run state from the canonical activity bus without unmounting the loaded surface', async () => {
+        sessionMessagesState.messages = [];
+        getRunSpy.mockResolvedValue(createExecutionRunGetResponse({
+            runClass: 'long_lived',
+            retentionPolicy: 'resumable',
+            status: 'running',
+            interaction: RETAINED_INTERACTION,
+        }));
+        const { notifyExecutionRunActivity } = await import('@/sync/runtime/executionRuns/executionRunActivityBus');
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            serverId="server-route"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+        expect(getRunSpy).toHaveBeenCalledTimes(1);
+        expect(participantComposerMountSpy).toHaveBeenCalledTimes(1);
+
+        // Neither another Session nor another Run of this Session is this surface.
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 'other-session' }, { runId: 'run_1' });
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 's1' }, { runId: 'run_other' });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        expect(getRunSpy).toHaveBeenCalledTimes(1);
+
+        // A still-sendable refresh must leave the mounted composer completely alone:
+        // a destructive reload would unmount it and remount it from scratch.
+        getRunSpy.mockResolvedValue(createExecutionRunGetResponse({
+            runClass: 'long_lived',
+            retentionPolicy: 'resumable',
+            status: 'running',
+            interaction: RETAINED_INTERACTION,
+            inputTurns: {
+                occurrenceId: 'occurrence-1',
+                current: { turnId: 'turn-1', inputIds: ['input-1'], state: 'active' },
+            },
+        }));
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(getRunSpy).toHaveBeenCalledTimes(2);
+        expect(executionRunInfoCardSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            run: expect.objectContaining({
+                inputTurns: expect.objectContaining({ occurrenceId: 'occurrence-1' }),
+            }),
+        }));
+        expect(participantComposerMountSpy).toHaveBeenCalledTimes(1);
+        expect(participantComposerUnmountSpy).not.toHaveBeenCalled();
+
+        // Terminal completion arrives on the same signal and updates the Run. Live
+        // delivery is correctly retired with it — but the surface is never remounted,
+        // which is exactly what a `status: 'loading'` reload would have done.
+        getRunSpy.mockResolvedValue(createExecutionRunGetResponse({
+            runClass: 'long_lived',
+            retentionPolicy: 'resumable',
+            status: 'completed',
+            interaction: RETAINED_INTERACTION,
+        }));
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(getRunSpy).toHaveBeenCalledTimes(3);
+        expect(executionRunInfoCardSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            run: expect.objectContaining({ status: 'completed' }),
+        }));
+        expect(participantComposerMountSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a Run response that resolves after a newer one', async () => {
+        sessionMessagesState.messages = [];
+        getRunSpy.mockResolvedValue(createExecutionRunGetResponse({ status: 'running' }));
+        const { notifyExecutionRunActivity } = await import('@/sync/runtime/executionRuns/executionRunActivityBus');
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+            sessionId="s1"
+            runId="run_1"
+            serverId="server-route"
+            presentation="panel"
+        />);
+        tree = screen.tree;
+
+        let resolveOlder: ((value: unknown) => void) | null = null;
+        const olderResponse = new Promise((resolve) => { resolveOlder = resolve as (value: unknown) => void; });
+        getRunSpy.mockImplementationOnce(() => olderResponse as Promise<any>);
+
+        await act(async () => {
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+
+            getRunSpy.mockResolvedValue(createExecutionRunGetResponse({ status: 'completed' }));
+            notifyExecutionRunActivity({ serverId: 'server-route', sessionId: 's1' }, { runId: 'run_1' });
+            await flushHookEffects({ cycles: 1, turns: 1 });
+
+            resolveOlder?.(createExecutionRunGetResponse({ status: 'queued' }));
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(executionRunInfoCardSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            run: expect.objectContaining({ status: 'completed' }),
+        }));
     });
 
     it('does not expose Run input from an ambient same-ID Session when the exact Home Session is unavailable', async () => {

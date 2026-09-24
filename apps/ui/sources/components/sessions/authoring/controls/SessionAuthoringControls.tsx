@@ -27,6 +27,7 @@ import {
 import { SessionAuthoringConnectedServicesField } from './SessionAuthoringConnectedServicesField';
 import { SessionAuthoringMcpSelectionField } from './SessionAuthoringMcpSelectionField';
 import { useSessionAuthoringControls } from './useSessionAuthoringControls';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The standalone, controlled Session-authoring controls.
@@ -73,7 +74,7 @@ const styles = StyleSheet.create((theme) => ({
         gap: 6,
     },
     chipPressed: {
-        opacity: 0.7,
+        opacity: motionTokens.press.opacity,
     },
     chipText: {
         ...Typography.default('semiBold'),
@@ -216,6 +217,7 @@ function SessionAuthoringFieldControl(props: Readonly<{
             return (
                 <SessionAuthoringConnectedServicesField
                     agentId={control.agentId}
+                    agentIdentity={control.agentIdentity}
                     connectedAccounts={control.connectedAccounts}
                     context={control.context}
                     value={values.connectedServices}

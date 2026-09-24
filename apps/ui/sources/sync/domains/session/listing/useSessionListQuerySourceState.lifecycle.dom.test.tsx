@@ -164,6 +164,7 @@ vi.mock('./sessionListQueryController', async (importOriginal) => {
                 }),
                 refresh: vi.fn(async () => undefined),
                 invalidate: vi.fn(),
+                retire: vi.fn(),
                 loadNext: vi.fn(async () => undefined),
                 dispose: disposeSpy,
             } satisfies HarnessController;
@@ -176,6 +177,7 @@ vi.mock('./sessionListQueryController', async (importOriginal) => {
 vi.mock('@/sync/domains/state/storage', () => ({
     useMachineListByServerId: () => ({}),
     useMachineListStatusByServerId: () => ({}),
+    useOrdinarySessionListMembershipByServerId: () => ({}),
     useSessionListRowsByServerId: () => ({}),
     useSettings: () => ({
         sessionListActiveGroupingV1: 'project',
@@ -211,7 +213,14 @@ vi.mock('@/hooks/server/useFeatureLocalPolicySettings', () => ({
 
 vi.mock('./sessionListQueryRuntime', () => ({
     fetchSessionListQueryPageForHome: vi.fn(),
+    getSessionListQueryHomeAvailability: () => 'online',
     isSessionListQueryHomeOnline: () => true,
+    // No incumbent runtime owns these Homes' ordinary corpus, so every corpus
+    // keeps its controller.
+    resolveOrdinarySessionListHomeOwner: () => null,
+    loadNextOrdinarySessionListPage: vi.fn(async () => undefined),
+    readOrdinarySessionListHomeState: vi.fn(),
+    refreshOrdinarySessionList: vi.fn(async () => undefined),
     retrySessionListQueryHome: queryRuntimeHarness.retryHome,
 }));
 

@@ -226,7 +226,8 @@ describe('shipped Happier Runner composition', () => {
           dependencies: dependencies as unknown as Awaited<ReturnType<typeof createProductionEphemeralRunnerApplication>>['dependencies'],
           ui: {
             selectDirectory: vi.fn(async () => '/workspace/project'),
-            reviewAndRequestConsent: vi.fn(async () => true),
+            requestRegistryProfile: vi.fn(async () => null),
+            reviewAndRequestConsent: vi.fn(async () => ({ allow: true as const, optionalSelections: [] })),
             confirmActiveClose: vi.fn(async () => 'stop' as const),
             requestFailureRecovery: vi.fn(async () => 'exit' as const),
             bindControls: vi.fn(() => () => undefined),
@@ -332,8 +333,9 @@ describe('shipped Happier Runner composition', () => {
 
     // Leg 4: the bundled and external kinds take the identical endpoint path
     // and differ only in this result, so no install block reaches consent.
+    if ('kind' in acquisition) throw new Error('A bundled Agent needs no registry selection');
     expect(acquisition.review).toBeNull();
-    await expect(acquisition.apply({ signal: new AbortController().signal })).resolves.toBeUndefined();
+    await expect(acquisition.apply({ signal: new AbortController().signal, optionalSelections: [] })).resolves.toBeUndefined();
     await expect(acquisition.release()).resolves.toBeUndefined();
   });
 

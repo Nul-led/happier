@@ -64,6 +64,7 @@ import {
 } from '@/agent/executionRuns/profiles/intentRegistry';
 import { createExecutionRunBridgeRuntime } from './createExecutionRunBridgeRuntime';
 import type { ExecutionRunTeamCredentialProviderBindingPreparer } from './runtime/providerLaunch';
+import type { ExecutionRunConnectedServicesSelectionReport } from './runtime/create';
 import { withExecutionRunHostRuntimeCleanup } from './hostRuntime/cleanup';
 import {
   createExecutionRunSnapshotLease,
@@ -87,6 +88,7 @@ import { finishExecutionRun } from './finishExecutionRun';
 import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
 import {
   createExecutionRunOccurrenceWitnessRegistry,
+  projectExecutionRunInputTurns,
   type ExecutionRunOccurrenceWitnessReaderV1,
 } from './runOccurrenceWitness';
 import { createExecutionRunPendingInputConsumer } from './pending/executionRunPendingInputConsumer';
@@ -243,7 +245,12 @@ async function prepareExecutionRunManagerStartParams(
   cwd: string,
   profileCatalog: ExecutionRunProfileContributionCatalog,
 ): Promise<ExecutionRunManagerStartParams> {
-  const profile = resolveExecutionRunIntentProfileFromCatalog(profileCatalog, params.intent, params.profileId);
+  const profile = resolveExecutionRunIntentProfileFromCatalog(
+    profileCatalog,
+    params.intent,
+    params.profileId,
+    params.profileSourceCustody,
+  );
   const startProfilePatch = await profile.prepareStartParams?.({
     request: params as unknown as ExecutionRunStartRequest,
     cwd,
@@ -399,28 +406,43 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     if (run.status !== 'running') return deny('terminal');
     const controller = this.controllers.get(run.runId);
     if (!controller || controller.cancelled) return deny('runtime_unavailable');
+    // The Run's own accepted provider-model selection; null when it selected
+    // nothing and inherits its parent Session's. One derivation serves the
+    // direct-material expectation below and the broker attestation returned.
+    const ownTeamCredentialModel = run.launch?.teamCredentialModel
+      ? {
+        resourceId: run.launch.teamCredentialModel.resourceId,
+        deliveryMode: run.launch.teamCredentialModel.deliveryMode,
+      }
+      : null;
     if (request.expectedDirectMaterialUse) {
       const expectedDirectMaterialUse = request.expectedDirectMaterialUse;
       if (expectedDirectMaterialUse.slot.kind === 'provider_model') {
         if (
-          run.launch?.teamCredentialModel?.resourceId !== expectedDirectMaterialUse.resourceId
-          || run.launch.teamCredentialModel.deliveryMode !== 'direct'
+          ownTeamCredentialModel?.resourceId !== expectedDirectMaterialUse.resourceId
+          || ownTeamCredentialModel.deliveryMode !== 'direct'
         ) {
           return deny('identity_mismatch');
         }
       } else {
         if (!('disclosedMember' in expectedDirectMaterialUse)) return deny('identity_mismatch');
+        // The registration once materialization returned; before that, the
+        // exact selection this Run reported for the materialization now asking.
         const registration = run.launch?.connectedServicesRegistration;
+        const attested = registration
+          ? { bindings: registration.connectedServicesBindings, agent: registration.agentContribution ?? null }
+          : run.launch?.connectedServicesSelection && run.launch.connectedServicesSelectionAgent
+            ? { bindings: run.launch.connectedServicesSelection, agent: run.launch.connectedServicesSelectionAgent }
+            : null;
         const serviceId = buildQualifiedPluginContributionKey(
           expectedDirectMaterialUse.disclosedMember.service,
         );
-        const selection = registration?.connectedServicesBindings.bindingsByServiceId[serviceId];
+        const selection = attested?.bindings.bindingsByServiceId[serviceId];
         const purpose = expectedDirectMaterialUse.slot.purpose;
         if (
-          !registration
-          || !registration.agentContribution
-          || registration.agentContribution.pluginId !== purpose.consumer.pluginId
-          || registration.agentContribution.localId !== purpose.consumer.localId
+          !attested?.agent
+          || attested.agent.pluginId !== purpose.consumer.pluginId
+          || attested.agent.localId !== purpose.consumer.localId
           || selection?.source !== 'team_resource'
           || selection.resourceId !== expectedDirectMaterialUse.resourceId
           || selection.deliveryMode !== 'direct'
@@ -464,6 +486,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       intent: run.intent,
       runtimeState,
       activeTurnId,
+      teamCredentialProviderModel: ownTeamCredentialModel,
     };
   }
 
@@ -1038,6 +1061,29 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
           : null;
         return sessionOwnedRunScope ? { sessionOwnedRunScope } : {};
       })(),
+      ...(opts.runId
+        ? {
+            // Recorded before materialization, beside the registration hook
+            // below: the Home asks this owner to attest the Run's own direct
+            // Team material while that materialization is still running.
+            onConnectedServicesSelection: (selection: ExecutionRunConnectedServicesSelectionReport) => {
+              const run = this.runs.get(opts.runId!);
+              if (!run || run.status !== 'running') {
+                throw new Error('Execution-run connected-services selection has no live run owner');
+              }
+              this.runs.set(run.runId, {
+                ...run,
+                launch: {
+                  ...(run.launch ?? {}),
+                  connectedServicesSelection: selection.connectedServicesBindings,
+                  ...(selection.agentContribution
+                    ? { connectedServicesSelectionAgent: selection.agentContribution }
+                    : {}),
+                },
+              });
+            },
+          }
+        : {}),
       ...(opts.onConnectedServicesRegistration
         ? { onConnectedServicesRegistration: opts.onConnectedServicesRegistration }
         : opts.runId
@@ -1252,16 +1298,13 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       const run = this.runs.get(runId);
       if (!run) return { settled: true, observation: null };
       const controller = this.controllers.get(runId);
-      const occurrenceId = controller?.kind === 'backend'
-        ? controller.inputTurnOccurrenceId ?? run.inputTurns?.occurrenceId
-        : run.inputTurns?.occurrenceId;
-      const turn = controller?.kind === 'backend'
-        ? [controller.currentInputTurn, controller.lastInputTurn]
-            .find((candidate) => candidate?.inputIds.includes(localInputId))
-        : [run.inputTurns?.current, run.inputTurns?.last]
-            .find((candidate) => candidate?.inputIds.includes(localInputId));
-      if (turn !== undefined && turn.state !== 'active' && occurrenceId) {
-        return { settled: true, observation: { occurrenceId, turn } };
+      // The same projection public state exposes, so a blocking exact wait can
+      // never disagree with `getPublic` over one live controller.
+      const inputTurns = this.projectInputTurns(run, controller);
+      const turn = [inputTurns?.current, inputTurns?.last]
+        .find((candidate) => candidate?.inputIds.includes(localInputId));
+      if (turn !== undefined && turn.state !== 'active' && inputTurns) {
+        return { settled: true, observation: { occurrenceId: inputTurns.occurrenceId, turn } };
       }
       if (run.status !== 'running') return { settled: true, observation: null };
       // A live exact-turn result can only be observed from the current backend
@@ -1280,10 +1323,22 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     }
   }
 
+  private projectInputTurns(
+    run: ExecutionRunState,
+    controller: ExecutionRunController | undefined,
+  ): ExecutionRunState['inputTurns'] {
+    return projectExecutionRunInputTurns({
+      runId: run.runId,
+      retained: run.inputTurns,
+      controller,
+      reader: this.runOccurrenceWitnesses.reader,
+    });
+  }
+
   private buildPublicState(run: ExecutionRunState): ExecutionRunPublicState {
     const ctrl = this.controllers.get(run.runId) ?? null;
     const lifecycle = resolveExecutionRunLifecycle(run, ctrl).projection;
-    const occurrence = this.runOccurrenceWitnesses.reader.readCurrentRunOccurrence(run.runId);
+    const inputTurns = this.projectInputTurns(run, ctrl ?? undefined);
     const availableActionIds = getExecutionRunAvailableActionIds(run, ctrl, this.executionRunProfileCatalog);
     const requestedConfiguration = projectExecutionRunRequestedConfiguration({
       modelId: run.launch?.modelSelection?.modelId ?? run.launch?.modelId,
@@ -1304,17 +1359,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       ioMode: run.ioMode,
       status: run.status,
       ...(ctrl?.kind === 'backend' ? { turnInFlight: ctrl.turnInFlight } : {}),
-      ...(ctrl?.kind === 'backend' && occurrence
-          ? {
-              inputTurns: {
-                occurrenceId: occurrence.occurrenceId,
-                ...(ctrl.currentInputTurn ? { current: ctrl.currentInputTurn } : {}),
-                ...(ctrl.lastInputTurn ? { last: ctrl.lastInputTurn } : {}),
-              },
-            }
-          : run.inputTurns
-            ? { inputTurns: run.inputTurns }
-            : {}),
+      ...(inputTurns ? { inputTurns } : {}),
       // Only a live controller's actual retained adapter supplies this. A
       // transcript-only or reconstructed run has no controller and therefore
       // stays read-only for clients.

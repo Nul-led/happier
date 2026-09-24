@@ -121,7 +121,6 @@ describe("Session listing predicate composition (SQLite)", () => {
     });
 
     it("uses effective Team access when the V2 list has no precompiled source", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const viewer = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const team = await db.team.create({ data: { name: `listing-team-${randomUUID()}` } });
@@ -260,7 +259,6 @@ describe("Session listing predicate composition (SQLite)", () => {
     });
 
     it("keeps every strict-query dependent read on the listing transaction reader", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "true");
         const { viewer, shared } = await fixture();
         const team = await db.team.create({ data: { name: `snapshot-team-${randomUUID()}` } });
         await db.teamMembership.create({
@@ -453,7 +451,6 @@ describe("Session listing predicate composition (SQLite)", () => {
     });
 
     it("finds a tagged assigned row below 205 newer nonmatches and continues once across overlapping grants", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "true");
         const { viewer, owner } = await fixture();
         const tag = await db.sessionOrganizationTag.create({
             data: {
@@ -592,7 +589,6 @@ describe("Session listing predicate composition (SQLite)", () => {
     });
 
     it("counts requested Accounts together without turning broad Team access into a badge", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const teamReader = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const team = await db.team.create({ data: { name: `badge-team-${randomUUID()}` } });
@@ -717,6 +713,50 @@ describe("Session listing predicate composition (SQLite)", () => {
             reasons: ["unread"],
         });
         expect(page.sessions.some(session => session.id === inactiveRead.id)).toBe(false);
+    });
+
+    it("treats a stored-active row whose transcript is not hosted as inactive for includeInactive:false", async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const create = (currentStorageState: string, activityAt: number) => db.session.create({ data: {
+            accountId: owner.id,
+            tag: randomUUID(),
+            metadata: "{}",
+            encryptionMode: "plain",
+            active: true,
+            seq: 5,
+            currentStorageState,
+            meaningfulActivityAt: new Date(activityAt),
+        } });
+        const hosted = await create("hosted", 3_000);
+        const machineOnly = await create("machine_only", 2_000);
+        await db.accountSessionReadState.createMany({ data: [
+            { accountId: owner.id, sessionId: hosted.id, lastViewedSessionSeq: 5 },
+            { accountId: owner.id, sessionId: machineOnly.id, lastViewedSessionSeq: 5 },
+        ] });
+
+        const page = await listSessionsForAccount({
+            userId: owner.id,
+            authentication,
+            source: { kind: "query", query: {
+                v: 1,
+                storage: "active",
+                includeInactive: false,
+                scope: "all_accessible",
+                attention: "any",
+                audiences: [],
+                tagIds: [],
+                limit: 50,
+            } },
+            rowRepresentabilityWhere: {},
+            timing: createV2SessionListServerTiming({}),
+        });
+
+        if (!page) {
+            throw new Error("Expected an active Session listing page");
+        }
+        // Selection and projection must state one liveness: a row this page would
+        // render `active: false` must not be admitted by "Hide inactive".
+        expect(page.sessions.map(session => session.id)).toEqual([hosted.id]);
     });
 
     it("admits tracked discussion unread and mentions to attention and badge, and stays quiet otherwise", async () => {
@@ -933,7 +973,7 @@ describe("Session listing predicate composition (SQLite)", () => {
                 attention.observedDiscussionFacts,
             );
             expect(attention.observedDiscussionFacts?.size).toBe(1);
-            return mapV2SessionListRows({ rows, userId: owner.id, discussionFacts });
+            return mapV2SessionListRows({ rows, userId: owner.id, discussionFacts }).sessions;
         });
 
         expect(projected.map((session) => session.id)).toEqual([match.id]);
@@ -944,7 +984,6 @@ describe("Session listing predicate composition (SQLite)", () => {
     });
 
     it("projects 50- and 200-row viewer pages without per-row relation queries or transcript reads", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const viewer = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const collectiveCollaborator = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         // Several distinct owners, so a per-row owner-Account read would be
@@ -1014,7 +1053,7 @@ describe("Session listing predicate composition (SQLite)", () => {
                     ownerAccountModes: await readSessionListOwnerAccountModes(rows, reader),
                     discussionFacts: await readSessionListViewerDiscussionFacts(rows, viewer.id, reader),
                     otherNamedCollaboratorFacts: await readSessionListOtherNamedCollaboratorFacts(rows, viewer.id, reader),
-                });
+                }).sessions;
             });
             return { limit, sessions, counts, elapsedMs: performance.now() - startedAt };
         };

@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import type { ChangeEvidenceSource, SessionChangeSet, TurnChangeSet } from '@happier-dev/protocol';
+import { compareTurnChangeSetChronology, type SessionChangeSet, type TurnChangeSet } from '@happier-dev/protocol';
 
 import { useSession, useSessionMessages } from '@/sync/domains/state/storage';
 import { readStoredSessionMessagesForAddress } from '@/sync/domains/messages/readStoredSessionMessagesForAddress';
@@ -26,32 +26,9 @@ type UseDerivedSessionChangeSetResult = Readonly<{
     providerDiffByPath: ReadonlyMap<string, string> | null;
 }>;
 
-const AGENT_REPORTED_TURN_SOURCES = new Set<ChangeEvidenceSource>([
-    'provider_native',
-    'provider_tool',
-    'canonical_diff_tool',
-    'canonical_patch_tool',
-]);
-
 function buildDiffByPath(changeSet: SessionChangeSet | null): ReadonlyMap<string, string> | null {
     if (!changeSet) return null;
     const entries = changeSet.files
-        .map((file) => {
-            const diff = typeof file.unifiedDiff === 'string' ? file.unifiedDiff.trim() : '';
-            if (!diff) return null;
-            return [file.filePath, diff] as const;
-        })
-        .filter((entry): entry is readonly [string, string] => entry !== null);
-    return entries.length > 0 ? new Map(entries) : null;
-}
-
-function buildTurnDiffByPath(
-    turn: TurnChangeSet | null,
-    acceptSource: (source: ChangeEvidenceSource) => boolean,
-): ReadonlyMap<string, string> | null {
-    if (!turn) return null;
-    const entries = turn.files
-        .filter((file) => acceptSource(file.source))
         .map((file) => {
             const diff = typeof file.unifiedDiff === 'string' ? file.unifiedDiff.trim() : '';
             if (!diff) return null;
@@ -91,8 +68,11 @@ export function useDerivedSessionChangeSet(address: SessionAddress | null): UseD
     }, [messages]);
 
     const latestTurnChangeSet = React.useMemo(() => {
-        if (turnChangeSets.length === 0) return null;
-        return turnChangeSets[turnChangeSets.length - 1] ?? null;
+        // "Latest" is canonical turn identity, not transcript arrival order: a turn's evidence can
+        // be published after a later turn's, and the presented scope must still be the later turn.
+        return turnChangeSets.reduce<TurnChangeSet | null>((latest, turn) => (
+            latest === null || compareTurnChangeSetChronology(latest, turn) <= 0 ? turn : latest
+        ), null);
     }, [turnChangeSets]);
 
     const sessionChangeSet = React.useMemo(() => {
@@ -121,12 +101,20 @@ export function useDerivedSessionChangeSet(address: SessionAddress | null): UseD
     }, [latestTurnScopedChangeSet]);
 
     const latestTurnAgentReportedDiffByPath = React.useMemo<ReadonlyMap<string, string> | null>(() => {
-        return buildTurnDiffByPath(latestTurnChangeSet, (source) => AGENT_REPORTED_TURN_SOURCES.has(source));
-    }, [latestTurnChangeSet]);
+        return buildDiffByPath(deriveLatestTurnScopedChangeSet({
+            sessionId,
+            latestTurnChangeSet,
+            evidenceScope: 'agent_reported',
+        }));
+    }, [latestTurnChangeSet, sessionId]);
 
     const latestTurnCheckpointDiffByPath = React.useMemo<ReadonlyMap<string, string> | null>(() => {
-        return buildTurnDiffByPath(latestTurnChangeSet, (source) => source === 'scm_checkpoint');
-    }, [latestTurnChangeSet]);
+        return buildDiffByPath(deriveLatestTurnScopedChangeSet({
+            sessionId,
+            latestTurnChangeSet,
+            evidenceScope: 'checkpoint',
+        }));
+    }, [latestTurnChangeSet, sessionId]);
 
     const providerDiffByPath = React.useMemo<ReadonlyMap<string, string> | null>(() => {
         return buildDiffByPath(sessionChangeSet);

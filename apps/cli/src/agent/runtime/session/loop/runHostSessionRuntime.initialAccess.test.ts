@@ -45,7 +45,7 @@ it.each([
 ])('carries native host launch access, Team context $primaryTeamId and optional Pool origin to HTTP before any Agent runtime opens', async ({ primaryTeamId, placementOrigin }) => {
   vi.restoreAllMocks();
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-    features: { sessions: { enabled: true, collaboration: { enabled: true } }, sharing: { session: { enabled: true } } },
+    features: { sessions: { enabled: true }, sharing: { session: { enabled: true } } },
     capabilities: {
       accountStoredContentCompatibility: {
         v: 1, minimumProtocolVersion: 2, currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
@@ -58,8 +58,8 @@ it.each([
     mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
     recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
   } });
-  const refusal = { kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required' };
-  vi.spyOn(axios, 'post').mockRejectedValue({ isAxiosError: true, response: { status: 409, data: { error: 'update_required', ...refusal } } });
+  const refusal = { code: 'session_access_sharing_unavailable', status: 409, retryable: false };
+  vi.spyOn(axios, 'post').mockRejectedValue({ isAxiosError: true, response: { status: 409, data: { error: 'session_access_sharing_unavailable' } } });
   const initialAccess = { grants: [{ subject: { kind: 'team' as const, teamId: 'team-1' }, accessLevel: 'view' as const, canApprovePermissions: false }] };
   const file = await createSessionInitialAccessFile(home, initialAccess);
   const partition = partitionProviderSessionArgs({

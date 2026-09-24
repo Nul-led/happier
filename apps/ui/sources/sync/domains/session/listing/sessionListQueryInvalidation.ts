@@ -1,8 +1,10 @@
 import type { HomeAccountChangeEvent } from '@/sync/runtime/orchestration/homeAccountChange';
 import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 type SessionListQueryInvalidationTarget = Readonly<{
     invalidate(): Promise<void>;
+    retire(sessionId: string): void;
 }>;
 
 type SessionListQueryInvalidationReader = () => ReadonlyMap<string, SessionListQueryInvalidationTarget>;
@@ -22,6 +24,20 @@ export function invalidateSessionListQueryHome(serverId: string): Promise<void> 
         if (target) pending.push(target.invalidate());
     }
     return Promise.all(pending).then(() => undefined);
+}
+
+/**
+ * Retires one committed-deleted/revoked Session from the mounted filtered-list
+ * membership of exactly that Home (every Home when the retirement addressed none),
+ * leaving a same-id Session on another Home untouched.
+ */
+export function retireSessionListQueryAddress(serverId: string | null, sessionId: string): void {
+    for (const readControllers of mountedSessionListQueryReaders) {
+        for (const [controllerServerId, target] of readControllers()) {
+            if (serverId && !areServerProfileIdentifiersEquivalent(controllerServerId, serverId)) continue;
+            target.retire(sessionId);
+        }
+    }
 }
 
 /**

@@ -14,6 +14,7 @@ import { resolveCLIProxyAPIManagedPurposeFamily } from '@happier-dev/plugins-cli
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { SavedSecretCatalogResourceInputV1 } from '@/settings/secrets/savedSecretCatalog';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import type { ManagedProviderEndpointAccessProjection } from '@/plugins/runtime/invocation/services/managedServicesAdapter';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import type {
@@ -31,6 +32,7 @@ import { resolveRuntimeProviderCredential } from '@/providers/spawn/runtimeCrede
 import type { TeamCredentialBrokerSourceOpenInput } from './teamCredentialBrokerSourceOwner';
 import {
   isCLIProxyAPIBrokerApplication,
+  providerConnectionBrokerSourceMember,
   teamCredentialBrokerPlacementAcceptsMachine,
 } from './teamCredentialBrokerSourceOwner';
 
@@ -285,6 +287,48 @@ export function resolveProviderConnectionDirectSourceSnapshot(input: Readonly<{
     endpointTemplateId: endpoint.endpointTemplateId,
     protocol: endpoint.protocol,
   });
+}
+
+/**
+ * Direct-material preparation is an operation boundary: it admits the source's
+ * Saved Secret against the Home (teams-lane-10 08 §5.8) and resolves the
+ * source from the admitted Account snapshot, so a revocation whose
+ * AccountChange hint was missed is never prepared for recipients. An unchanged
+ * catalog publishes nothing, so this admission cannot wake the reconciler
+ * that called it.
+ */
+export async function resolveAdmittedProviderConnectionDirectSourceSnapshot(input: Readonly<{
+  source: ProviderConnectionSource;
+  machineId: string;
+  expectedScopeKey: string;
+  registry: ProviderContributionRegistryView;
+  dnsEvidenceByEndpointUrl: ProviderEndpointDnsEvidence;
+  getAccountSettingsSnapshot: () => ActiveAccountSettingsSnapshot | null;
+  signal?: AbortSignal;
+}>): Promise<ResolveResult> {
+  const resolveFrom = (snapshot: ActiveAccountSettingsSnapshot) => resolveProviderConnectionDirectSourceSnapshot({
+    source: input.source,
+    machineId: input.machineId,
+    accountSettings: snapshot.settings,
+    ...(snapshot.savedSecretResources ? { savedSecretResources: snapshot.savedSecretResources } : {}),
+    registry: input.registry,
+    dnsEvidenceByEndpointUrl: input.dnsEvidenceByEndpointUrl,
+  });
+  const current = input.getAccountSettingsSnapshot();
+  if (!current) return fail('provider_authorization_changed', input.source, input.machineId);
+  const resolved = resolveFrom(current);
+  if (!resolved.ok || resolved.snapshot.credentialRef.reference.kind !== 'apiKey') return resolved;
+  let admitted: ActiveAccountSettingsSnapshot;
+  try {
+    admitted = await refreshSavedSecretCatalogForOperation({
+      expectedScopeKey: input.expectedScopeKey,
+      references: [{ ref: resolved.snapshot.credentialRef.reference.secretId }],
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  } catch {
+    return fail('provider_secret_missing', input.source, input.machineId);
+  }
+  return resolveFrom(admitted);
 }
 
 function sameSnapshot(
@@ -594,9 +638,10 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
       if (signal.aborted) return false;
       try {
         const resource = await input.readResource(request.resourceId, signal);
+        // Enabled, placement and source identity; never the policy revision,
+        // which the Home rechecks per request (`04-private-iroh-broker-transport.md:272`).
         return resource !== null
           && resource.enabled
-          && resource.revision === request.resourceRevision
           && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
           && sameSource(resource.source, request.source);
       } catch {
@@ -779,11 +824,7 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
       projection,
       retire: projection.retire,
       sourceCurrentness: Object.freeze({
-        sourceMember: Object.freeze({
-          kind: 'provider_credential_slot' as const,
-          connectionId: request.source.connectionId,
-          credentialSlotId: request.source.credentialSlotId,
-        }),
+        sourceMember: providerConnectionBrokerSourceMember(request.source),
         isCurrent,
       }),
     });

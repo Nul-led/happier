@@ -25,6 +25,10 @@ import {
 import { RunnerActivationCreateRequestV1Schema } from '@happier-dev/protocol/ephemeralRunner/activation';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import { SessionDraftAddressV1Schema } from '@happier-dev/protocol';
+import {
+    TeamCredentialProviderModelSelectionV1Schema,
+    type TeamCredentialProviderModelSelectionV1,
+} from '@happier-dev/protocol/teams';
 import { RunnerActivationProjectionV1Schema, runnerActivationProjectionBindingV1 } from '@happier-dev/protocol/ephemeralRunner/projection';
 import type { AttachmentsUploadFileSource } from '@/sync/domains/attachments/attachmentsUploadFileSource';
 import { isRunnerArtifactAcquisitionCustodyHandle } from './package/runnerArtifactAcquisitionSink';
@@ -81,6 +85,12 @@ type StoredAttachmentStagingCustodyV1 = Readonly<{
 type StoredCreatorLaunchCustodyV1 = Readonly<{
     v: 1;
     preparedAuthoring?: RunnerPreparedAuthoringV1;
+    /**
+     * The exact Team model the creator submitted with this package. Review
+     * binds this frozen choice (revalidated against the current catalog), never
+     * whatever the composer shows later.
+     */
+    submittedTeamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     attachmentStaging?: StoredAttachmentStagingCustodyV1;
     attachmentUpload?: StoredAttachmentUploadCustodyV1;
     binding?: RunnerReviewCustodyV1['binding'];
@@ -394,7 +404,10 @@ function parseStored(raw: string | null): StoredCreatorLaunchCustodyV1 {
         if (value.attachmentStaging !== undefined) throw new Error('invalid prepared custody');
         const attachmentUpload = parseAttachmentUploadCustody(value.attachmentUpload, preparedAuthoring);
         const acceptedBinding = value.binding === undefined ? undefined : RunnerActivationBindingV1Schema.parse(value.binding);
-        if (!value.reviewed) return { v: 1, preparedAuthoring, binding: acceptedBinding, attachmentUpload };
+        const submittedTeamCredentialModel = value.submittedTeamCredentialModel === undefined
+            ? undefined
+            : TeamCredentialProviderModelSelectionV1Schema.parse(value.submittedTeamCredentialModel);
+        if (!value.reviewed) return { v: 1, preparedAuthoring, submittedTeamCredentialModel, binding: acceptedBinding, attachmentUpload };
         const binding = RunnerActivationBindingV1Schema.parse(value.reviewed.binding);
         const launchManifest = RunnerLaunchManifestV1Schema.parse(value.reviewed.launchManifest);
         const review = RunnerActivationReviewV1Schema.parse(value.reviewed.review);
@@ -412,7 +425,7 @@ function parseStored(raw: string | null): StoredCreatorLaunchCustodyV1 {
             ? undefined
             : RunnerMaterializationRequestV1Schema.parse(value.materializationRequest);
         if (materializationRequest && materializationRequest.activationId !== binding.activationId) throw new Error('materialization binding mismatch');
-        return { v: 1, preparedAuthoring, binding: acceptedBinding, attachmentUpload, reviewed: { binding, launchManifest, review, machineContentKeyBase64Url: encoded }, materializationRequest };
+        return { v: 1, preparedAuthoring, submittedTeamCredentialModel, binding: acceptedBinding, attachmentUpload, reviewed: { binding, launchManifest, review, machineContentKeyBase64Url: encoded }, materializationRequest };
     } catch {
         throw new RunnerCreatorLaunchCustodyUnavailableError();
     }
@@ -547,9 +560,17 @@ export async function writePreparedRunnerCreatorLaunchCustody(input: Readonly<{
     scope: ServerAccountScope;
     activationId: string;
     preparedAuthoring: RunnerPreparedAuthoringV1;
+    /**
+     * The Team model admitted at Send. Absent means none was frozen, and review
+     * then fails closed as unselected rather than reading the composer.
+     */
+    submittedTeamCredentialModel?: TeamCredentialProviderModelSelectionV1 | null;
     attachmentUpload?: StoredAttachmentUploadCustodyV1;
 }>): Promise<void> {
     const preparedAuthoring = RunnerPreparedAuthoringV1Schema.parse(input.preparedAuthoring);
+    const submittedTeamCredentialModel = input.submittedTeamCredentialModel == null
+        ? undefined
+        : TeamCredentialProviderModelSelectionV1Schema.parse(input.submittedTeamCredentialModel);
     await registerRunnerCreatorCustodyActivation(input.scope, input.activationId);
     const key = await storageKey(input.scope, input.activationId);
     await runCustodyMutation(key, async () => {
@@ -575,6 +596,7 @@ export async function writePreparedRunnerCreatorLaunchCustody(input: Readonly<{
         await writeAndVerify(input.scope, input.activationId, {
             v: 1,
             preparedAuthoring,
+            submittedTeamCredentialModel,
             attachmentUpload,
         }, raw);
     });
@@ -612,11 +634,13 @@ export async function writeReviewedRunnerCreatorLaunchCustody(input: Readonly<{
         || createCanonicalJsonSigningInput(binding) !== createCanonicalJsonSigningInput(input.custody.launchManifest.binding)) {
         throw new RunnerCreatorLaunchCustodyUnavailableError();
     }
+    const stored = parseStored(await readDeviceLocalStorageString(await storageKey(input.scope, input.activationId)));
     await writeAndVerify(input.scope, input.activationId, {
         v: 1,
         binding,
         preparedAuthoring: input.custody.preparedAuthoring,
-        attachmentUpload: parseStored(await readDeviceLocalStorageString(await storageKey(input.scope, input.activationId))).attachmentUpload,
+        submittedTeamCredentialModel: stored.submittedTeamCredentialModel,
+        attachmentUpload: stored.attachmentUpload,
         reviewed: {
             binding: input.custody.binding,
             launchManifest: input.custody.launchManifest,
@@ -632,6 +656,21 @@ export async function readPreparedRunnerCreatorLaunchCustody(scope: ServerAccoun
     const key = await storageKey(scope, activationId);
     await awaitCustodyMutation(key);
     return requirePreparedAuthoring(parseStored(await readDeviceLocalStorageString(key)));
+}
+
+/**
+ * The Team model frozen with the submitted package, or `null` when the package
+ * was prepared without one (review then reports the model unselected).
+ */
+export async function readSubmittedRunnerCreatorTeamCredentialModel(
+    scope: ServerAccountScope,
+    activationId: string,
+): Promise<TeamCredentialProviderModelSelectionV1 | null> {
+    const key = await storageKey(scope, activationId);
+    await awaitCustodyMutation(key);
+    const stored = parseStored(await readDeviceLocalStorageString(key));
+    requirePreparedAuthoring(stored);
+    return stored.submittedTeamCredentialModel ?? null;
 }
 
 export async function readRunnerCreatorAttachmentUploadCustody(

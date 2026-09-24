@@ -376,8 +376,8 @@ export function createPackedTestConnectedAccountsRuntime(params: Readonly<{
           service: runtimeLease.ref,
           descriptor: mode,
           modeId: mode.id,
-          generation: runtimeLease.generation,
-          immutableGenerationId: runtimeLease.immutableGenerationId,
+          occurrenceId: runtimeLease.occurrenceId,
+          sourceCustody: runtimeLease.sourceCustody,
         }),
         operation: Object.freeze({
           kind: 'submitManual' as const,

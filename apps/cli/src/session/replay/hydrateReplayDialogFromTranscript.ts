@@ -50,6 +50,7 @@ export async function hydrateReplayDialogFromTranscript(params: Readonly<{
   if (encryptionMode === 'plain') {
     const slice = decryptTranscriptReplaySlice({
       rows,
+      crypto: { mode: 'plain', ctx: null },
       maxTextChars: params.maxTextChars,
       maxDialogItems: params.limit,
     });
@@ -66,8 +67,7 @@ export async function hydrateReplayDialogFromTranscript(params: Readonly<{
 
   const slice = decryptTranscriptReplaySlice({
     rows,
-    encryptionKey: ctx.encryptionKey,
-    encryptionVariant: ctx.encryptionVariant,
+    crypto: { mode: 'e2ee', ctx },
     maxTextChars: params.maxTextChars,
     maxDialogItems: params.limit,
   });

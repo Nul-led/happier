@@ -6,10 +6,14 @@ import { auth } from "@/app/auth/auth";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import tweetnacl from "tweetnacl";
 import {
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     MACHINE_PLAIN_DATA_KEY_MARKER,
+    signRunnerClaimV1,
 } from "@happier-dev/protocol";
+import { encodeBase64 } from "@happier-dev/protocol/crypto/base64";
+import { signMachineInstallationProof } from "@happier-dev/protocol/machines/identity/installationIdentity";
 
 import { machinesRoutes } from "./machinesRoutes";
 
@@ -39,6 +43,9 @@ describe("machinesRoutes API-token admission (integration)", () => {
 
     afterEach(async () => {
         harness.resetEnv();
+        // An activation references both the Account and its Runner Machine, so
+        // it retires before either of them.
+        await db.ephemeralRunnerActivation.deleteMany();
         await db.machine.deleteMany();
         await db.account.deleteMany();
     });
@@ -115,8 +122,9 @@ describe("machinesRoutes API-token admission (integration)", () => {
                 revokedAt: 1234,
                 replacedByMachineId: "machine-2",
                 kind: "persistent",
-                // Persistent Machine content and install state still do not
-                // cross this seam.
+                // Persistent Machine content, install state and Session
+                // correspondence still do not cross this seam.
+                runnerClaim: null,
                 installationId: null,
                 dataEncryptionKey: null,
                 runnerContentKeyBinding: null,
@@ -162,6 +170,68 @@ describe("machinesRoutes API-token admission (integration)", () => {
                 runnerContentKeyBinding: binding,
             },
         ] });
+        // The Runner was activated for exactly one Session, and a
+        // Session-targeted protected request must select the same content key
+        // a Machine-targeted one does. The correspondence crosses this seam as
+        // the activation's persisted, activation-signed claim, never as a bare
+        // Session id the Home could author.
+        const activationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(1));
+        const installationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(2));
+        const activationSigningPublicKey = encodeBase64(activationSigning.publicKey, "base64url");
+        const artifact = { product: "happier-runner", version: "0.3.0", target: "linux-x64", sha256: "c".repeat(64) } as const;
+        const claim = signRunnerClaimV1({
+            activationSecretKey: activationSigning.secretKey,
+            payload: {
+                v: 1,
+                purpose: "happier.ephemeral-session-runner.claim",
+                binding: {
+                    activationId: "00000000-0000-4000-8000-000000000001",
+                    homeServerIdentityId: "srv_home_1",
+                    creatorAccountId: account.id,
+                    creatorTokenEpoch: 0,
+                    activationExpiresAt: null,
+                    workspace: { kind: "choose_on_endpoint" },
+                    sessionId: "session-runner-1",
+                    machineId: "runner-1",
+                    activationSigningPublicKey,
+                    authoringCommitment: encodeBase64(new Uint8Array(32).fill(4), "base64url"),
+                    artifact,
+                    endpointFactsRecipient: { mode: "plain", creatorAccountId: account.id },
+                },
+                runnerBoxPublicKey: encodeBase64(
+                    tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(3)).publicKey,
+                    "base64url",
+                ),
+                installation: {
+                    installationId: "installation-1",
+                    publicKey: encodeBase64(installationSigning.publicKey, "base64url"),
+                    proof: signMachineInstallationProof({
+                        payload: { version: 1, installationId: "installation-1", machineId: "runner-1", accountId: account.id },
+                        privateKey: installationSigning.secretKey,
+                    }),
+                },
+                protocolEpoch: 1,
+            },
+        });
+        await db.ephemeralRunnerActivation.create({
+            data: {
+                id: "00000000-0000-4000-8000-000000000001",
+                creatorAccountId: account.id,
+                creatorTokenEpoch: 0,
+                draftId: "runner-draft-1",
+                sessionId: "session-runner-1",
+                machineId: "runner-1",
+                state: "materialized",
+                workspacePolicy: "choose_on_endpoint",
+                activationExpiresAt: null,
+                homeServerIdentityId: "srv_home_1",
+                activationSigningPublicKey,
+                authoringCommitment: encodeBase64(new Uint8Array(32).fill(4), "base64url"),
+                artifact,
+                endpointFactsRecipient: { mode: "plain", creatorAccountId: account.id },
+                claim,
+            },
+        });
         const pat = await auth.createApiToken({
             accountId: account.id,
             tokenId: crypto.randomUUID(),
@@ -186,12 +256,14 @@ describe("machinesRoutes API-token admission (integration)", () => {
                 revokedAt: null,
                 replacedByMachineId: null,
                 kind: "ephemeral_session_runner",
+                runnerClaim: claim,
                 installationId: "installation-1",
                 dataEncryptionKey: Buffer.from(sealedEnvelope).toString("base64"),
                 runnerContentKeyBinding: binding,
             });
             expect(rows.find((row) => row.id === "persistent-1")).toMatchObject({
                 kind: "persistent",
+                runnerClaim: null,
                 installationId: null,
                 dataEncryptionKey: null,
                 runnerContentKeyBinding: null,

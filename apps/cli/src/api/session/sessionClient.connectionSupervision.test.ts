@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { HttpStatusError } from '@/api/client/httpStatusError';
 
-import { classifySessionTransportErrorToProbeResult } from './sessionClient';
+import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTransportErrorToProbeResult';
 
 describe('ApiSessionClient connection supervision', () => {
     it('classifies terminal pre-socket auth failures as auth_failed for the session supervisor', () => {
-        expect(classifySessionTransportErrorToProbeResult(new HttpStatusError(401, 'expired token'))).toEqual({
+        expect(classifyTransportErrorToProbeResult(new HttpStatusError(401, 'expired token'))).toEqual({
             status: 'auth_failed',
             statusCode: 401,
             errorMessage: 'expired token',
@@ -14,7 +14,7 @@ describe('ApiSessionClient connection supervision', () => {
     });
 
     it('ignores non-auth transport failures so the supervisor can keep retry policy ownership', () => {
-        expect(classifySessionTransportErrorToProbeResult(new Error('socket timeout'))).toBeNull();
+        expect(classifyTransportErrorToProbeResult(new Error('socket timeout'))).toBeNull();
     });
 
     it('keeps account-storage upgrade results operation-scoped', () => {
@@ -28,11 +28,11 @@ describe('ApiSessionClient connection supervision', () => {
                 },
             },
         });
-        expect(classifySessionTransportErrorToProbeResult(error)).toBeNull();
+        expect(classifyTransportErrorToProbeResult(error)).toBeNull();
     });
 
     it('does not turn an operation-scoped RPC upgrade result into a connection failure', () => {
-        expect(classifySessionTransportErrorToProbeResult({
+        expect(classifyTransportErrorToProbeResult({
             type: 'register',
             error: 'client-upgrade-required',
             requirement: {

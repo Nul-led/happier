@@ -409,9 +409,10 @@ describe("enterprise identity sync worker", () => {
             .resolves.toMatchObject({
                 state: "needs_attention",
                 activeReconcileRunId: null,
-                // A failed claim must not consume a durable manual request.
-                // The non-retryable error excludes this source until an
-                // explicit repair clears the error.
+                // A failed claim must not clear a durable manual request, but
+                // it is the attempt that consumed it: the non-retryable error
+                // keeps this source out of due selection until a new press,
+                // which the request owner refuses for a mismatched binding.
                 manualSyncRequestedAt: new Date("2026-09-05T10:00:00.000Z"),
                 lastErrorCode: "directory_source_identity_mismatch",
             });

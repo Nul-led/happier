@@ -2,10 +2,11 @@ import type { AuthCredentialLifecycleResult, HomeCredentialTarget } from '@/auth
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { SecretKeyBackupModal } from '@/components/account/SecretKeyBackupModal';
 import { Modal } from '@/modal';
+import { HappyError } from '@/utils/errors/errors';
 
 import type { EmailPasswordAuthOutcome } from './EmailPasswordAuthPanel';
 
-type CompletionResult = 'completed' | 'retired' | 'credential_persistence_incomplete';
+type CompletionResult = 'completed' | 'retired';
 
 async function discloseProvisionedRecoveryKey(
     recoverySecret: Uint8Array,
@@ -68,7 +69,9 @@ async function discloseProvisionedRecoveryKey(
  * until the canonical recovery-key modal records Saved or Later. Process loss
  * does not invent durable secret custody: the exact existing credentials stay
  * stored, the reminder remains available, and this invocation does not finish
- * a stale destination.
+ * a stale destination. A credential lifecycle that does not complete raises a
+ * typed refusal rather than returning a value both hosts would have to branch
+ * on identically; `retired` is the one outcome a host may ignore.
  */
 export async function completeEmailPasswordAuthentication(params: Readonly<{
     outcome: EmailPasswordAuthOutcome;
@@ -90,8 +93,23 @@ export async function completeEmailPasswordAuthentication(params: Readonly<{
         throw cause;
     }
     if (persistence.kind !== 'completed') {
-        params.outcome.recoverySecret?.fill(0);
-        return 'credential_persistence_incomplete';
+        // The Account exists; only this device's credential lifecycle did not
+        // complete. The recovery key is the one process-held handle to it, so
+        // it is disclosed here — the terminal disposition — instead of being
+        // discarded, and the refusal is then raised so the mounted host keeps
+        // its flow open and presents it. A silent fall-through would navigate
+        // away from an Account this device cannot sign in to.
+        if (params.outcome.recoverySecret) {
+            await TokenStorage.setRecoveryKeyReminderDismissed(false, params.target).catch(() => false);
+            await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, params.target);
+        }
+        throw new HappyError('Native credentials did not complete their lifecycle on this device', false, {
+            kind: 'auth',
+            // The Home applied the change and this device cannot confirm it is
+            // usable here: the shared unconfirmed-outcome presentation, which
+            // also re-reads the Account, is exactly that statement.
+            code: 'operation_failed',
+        });
     }
 
     if (params.outcome.recoverySecret) {

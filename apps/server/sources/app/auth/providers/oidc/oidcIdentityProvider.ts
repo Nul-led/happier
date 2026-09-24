@@ -1,5 +1,5 @@
 import { prepareIdentityLink, unlinkIdentity, refreshIdentity } from "../accountIdentityLifecycle";
-import { evaluateOidcEligibility } from "./oidcEligibility";
+import { evaluateOidcIdentityEligibility } from "./oidcEligibility";
 import type { IdentityProvider } from "@/app/auth/providers/identityProviders/types";
 import type { Context } from "@/context";
 import type { AuthPolicy } from "@/app/auth/authPolicy";
@@ -53,9 +53,11 @@ function isEligible(params: {
     additionalAllow?: OidcAuthProviderInstanceConfig["allow"];
 }): { ok: boolean } {
     return {
-        ok: evaluateOidcEligibility(params.instance.allow, params.claims).status === "eligible"
-            && (!params.additionalAllow
-                || evaluateOidcEligibility(params.additionalAllow, params.claims).status === "eligible"),
+        ok: evaluateOidcIdentityEligibility({
+            allow: params.instance.allow,
+            ...(params.additionalAllow ? { additionalAllow: params.additionalAllow } : {}),
+            claims: params.claims,
+        }).status === "eligible",
     };
 }
 
@@ -196,6 +198,13 @@ export function createOidcIdentityProvider(
 
             let refreshedClaims: NormalizeOidcIdentityClaimsResult | null = null;
             let refreshedTokenBytes = new Uint8Array(identity.token!);
+            /**
+             * A grant may issue a replacement refresh token and revoke the presented one
+             * (RFC 6749 §6). Once the issuer has done that the stored token is dead, so every
+             * exit below persists the rotation — otherwise the next refresh fails
+             * `invalid_grant` and offboards a legitimate Account.
+             */
+            let rotatedTokenBytes: ReturnType<typeof encryptString> | null = null;
 
             try {
                 const refreshToken = decryptString(
@@ -205,6 +214,13 @@ export function createOidcIdentityProvider(
                 const cfg = await discoverOidcConfiguration(instance, runtimeFingerprint, networkPolicy);
 
                 const tokens = await oidcClient.refreshTokenGrant(cfg, refreshToken);
+                // Capture the replacement before any further fallible claim/UserInfo work: the
+                // issuer may already have revoked the presented token (RFC 6749 §6).
+                const newRefreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
+                if (newRefreshToken) {
+                    rotatedTokenBytes = encryptString(["user", accountId, providerId, "refresh_token"], newRefreshToken);
+                    refreshedTokenBytes = rotatedTokenBytes;
+                }
                 const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
                 const idTokenClaims = tokens.claims?.();
                 if (idTokenClaims !== undefined) {
@@ -230,10 +246,6 @@ export function createOidcIdentityProvider(
                     });
                 }
 
-                const newRefreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
-                if (newRefreshToken) {
-                    refreshedTokenBytes = encryptString(["user", accountId, providerId, "refresh_token"], newRefreshToken);
-                }
                 if (!refreshedClaims && restrictionsConfigured && params.policy.offboarding.strict) {
                     throw new Error("oidc_refresh_claims_missing");
                 }
@@ -245,6 +257,7 @@ export function createOidcIdentityProvider(
                     await refreshIdentity({
                         accountId, provider: providerId, identityId: identity.id,
                         data: {
+                            ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                             eligibilityStatus: "ineligible",
                             eligibilityReason: "eligibility-refresh-invalid-grant",
                             eligibilityCheckedAt: now,
@@ -258,6 +271,7 @@ export function createOidcIdentityProvider(
                     await refreshIdentity({
                         accountId, provider: providerId, identityId: identity.id,
                         data: {
+                            ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                             eligibilityStatus: "unknown",
                             eligibilityReason: "eligibility-refresh-error",
                             eligibilityCheckedAt: now,
@@ -271,6 +285,7 @@ export function createOidcIdentityProvider(
                 await refreshIdentity({
                     accountId, provider: providerId, identityId: identity.id,
                     data: {
+                        ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                         eligibilityCheckedAt: now,
                         eligibilityNextCheckAt: new Date(now.getTime() + params.policy.offboarding.intervalSeconds * 1000),
                     },
@@ -282,6 +297,7 @@ export function createOidcIdentityProvider(
                 await refreshIdentity({
                     accountId, provider: providerId, identityId: identity.id,
                     data: {
+                        ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                         eligibilityCheckedAt: now,
                         eligibilityNextCheckAt: new Date(now.getTime() + params.policy.offboarding.intervalSeconds * 1000),
                     },
@@ -298,6 +314,7 @@ export function createOidcIdentityProvider(
                 await refreshIdentity({
                     accountId, provider: providerId, identityId: identity.id,
                     data: {
+                        ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                         eligibilityStatus: "ineligible",
                         eligibilityReason: subjectFailure ? "eligibility-refresh-sub-mismatch" : "not-eligible",
                         eligibilityCheckedAt: now,
@@ -311,6 +328,7 @@ export function createOidcIdentityProvider(
                 await refreshIdentity({
                     accountId, provider: providerId, identityId: identity.id,
                     data: {
+                        ...(rotatedTokenBytes ? { token: rotatedTokenBytes } : {}),
                         eligibilityStatus: "ineligible",
                         eligibilityReason: "eligibility-refresh-sub-mismatch",
                         eligibilityCheckedAt: now,

@@ -79,9 +79,15 @@ export function resolveSessionActivityRemoteAlertDisposition(
     event: SessionPersonalEventKindV1,
     committedMessage?: ActivityRemoteAlertCommittedMessageV2,
     committedTurnId?: string,
+    committedRequestId?: string,
 ): SessionActivityRemoteAlertDisposition {
     if (event === "directly_shared") return PERSONAL_ONLY_DISPOSITION;
-    const alertEvent = resolveActivityRemoteAlertEventForPersonalEventV2(event, committedMessage, committedTurnId);
+    const alertEvent = resolveActivityRemoteAlertEventForPersonalEventV2(
+        event,
+        committedMessage,
+        committedTurnId,
+        committedRequestId,
+    );
     return alertEvent ? { kind: "alert", event: alertEvent } : NO_ALERT_EVENT_DISPOSITION;
 }
 
@@ -92,6 +98,12 @@ export type SubmitSessionActivityRemoteAlertsParams = Readonly<{
     committedMessage?: ActivityRemoteAlertCommittedMessageV2;
     /** Required for committed terminal turn events. */
     committedTurnId?: string;
+    /**
+     * The Agent-allocated request id of a committed permission/user-action
+     * request. It carries the cross-leg identity a recipient device uses to show
+     * exactly one alert for one request, whichever leg observed it first.
+     */
+    committedRequestId?: string;
     /** One-shot targets established by the committed semantic mutation owner. */
     targetAccountIds?: readonly string[];
     /** True only when this committed assignment inserted the recipient's automatic Follow. */
@@ -130,6 +142,7 @@ export async function submitSessionActivityRemoteAlerts(
         params.event,
         params.committedMessage,
         params.committedTurnId,
+        params.committedRequestId,
     );
     if (disposition.kind !== "alert") return [];
     const alertEvent = disposition.event;

@@ -46,6 +46,7 @@ import {
 import type { SessionBoardBinding } from './observeSessionBoard';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { useSessionBoardMutationApproval } from './sessionBoardMutationApproval';
+import type { SessionBoardPlacementPrimaryMountResolver } from './sessionBoardHostVisibility';
 
 export type MountedSessionBoardController = Readonly<{
     address: SessionAddress;
@@ -65,8 +66,12 @@ export type MountedSessionBoardController = Readonly<{
      * result, not a second arbiter: nothing here stores, leases or decides it, and
      * a shell that publishes none answers `null`, which every host reads as "this
      * placement does not run the item".
+     *
+     * The owner adds the one fact only it knows — whether its selected Board view
+     * draws the item — so a host outside the Board (the Companion rail) is never
+     * told that a Board tab runs an item that tab does not draw.
      */
-    resolvePrimaryHost: SessionBoardPrimaryMountResolver;
+    resolvePrimaryHost: SessionBoardPlacementPrimaryMountResolver;
     /** Registers the real workspace tab hosts consumed by Board removal dialogs. */
     onViewFocusTargetChange: (viewId: string, target: FocusReturnTarget) => void;
     /** Registers the workspace's surviving Board-view action control fallback. */
@@ -167,7 +172,7 @@ export function SessionBoardControllerProvider(props: React.PropsWithChildren<Re
      * below the provider (the mobile Cockpit resolves per surface), and those
      * simply publish no executable placement to deep consumers.
      */
-    resolvePrimaryHost?: SessionBoardPrimaryMountResolver;
+    resolvePrimaryHost?: SessionBoardPlacementPrimaryMountResolver;
 }>>): React.ReactElement {
     const existingOwner = React.useContext(SessionBoardControllerContext);
     const address = React.useMemo(
@@ -201,7 +206,7 @@ export function SessionBoardControllerProvider(props: React.PropsWithChildren<Re
 function SessionBoardControllerRuntimeOwner(props: React.PropsWithChildren<Readonly<{
     address: SessionAddress;
     pluginRuntime?: SessionPluginRuntimeState;
-    resolvePrimaryHost?: SessionBoardPrimaryMountResolver;
+    resolvePrimaryHost?: SessionBoardPlacementPrimaryMountResolver;
 }>>): React.ReactElement {
     const boardFeatureEnabled = useSessionBoardFeatureEnabled(props.address.serverId);
     const binding = useSessionBoardSnapshot({
@@ -390,7 +395,7 @@ export function SessionBoardControllerOwner(props: React.PropsWithChildren<Reado
     pluginRuntime: SessionPluginRuntimeState;
     callerHostedHtmlRuntime: CallerHostedHtmlRuntime | null;
     installedWidgetCandidates?: readonly SessionWidgetCandidate[];
-    resolvePrimaryHost?: SessionBoardPrimaryMountResolver;
+    resolvePrimaryHost?: SessionBoardPlacementPrimaryMountResolver;
     onViewFocusTargetChange?: (viewId: string, target: FocusReturnTarget) => void;
     onViewActionsFocusTargetChange?: (target: FocusReturnTarget) => void;
     viewActionsFocusTargetRef?: FocusReturnRef;
@@ -403,7 +408,27 @@ export function SessionBoardControllerOwner(props: React.PropsWithChildren<Reado
         installedWidgetsAvailable: installedWidgetCandidates.length > 0,
     }), [installedWidgetCandidates, props.input]);
     const controller = useSessionBoardController(controllerInput);
-    const resolvePrimaryHost = props.resolvePrimaryHost ?? NO_PRIMARY_MOUNT;
+    const shellResolvePrimaryHost: SessionBoardPlacementPrimaryMountResolver = props.resolvePrimaryHost
+        ?? NO_PRIMARY_MOUNT;
+    // Every generic Board host draws exactly this set: the selected view's placements
+    // plus the unplaced recovery items. Keyed by content so an equivalent projection
+    // does not hand every consumer a new resolver.
+    const selectedViewItemKey = [
+        ...(controller.activeView?.placements ?? []).map((placement) => placement.itemId),
+        ...controller.recoveredItemIds,
+    ].join('\u001f');
+    const selectedViewItemIds = React.useMemo(
+        () => new Set(selectedViewItemKey.length > 0 ? selectedViewItemKey.split('\u001f') : []),
+        [selectedViewItemKey],
+    );
+    const resolvePrimaryHost = React.useCallback<SessionBoardPlacementPrimaryMountResolver>(
+        (itemId, destination, boardView) => shellResolvePrimaryHost(
+            itemId,
+            destination,
+            boardView ?? { drawnBySelectedBoardView: selectedViewItemIds.has(itemId) },
+        ),
+        [selectedViewItemIds, shellResolvePrimaryHost],
+    );
     const value = React.useMemo<MountedSessionBoardController>(() => ({
         address: props.address,
         controller,

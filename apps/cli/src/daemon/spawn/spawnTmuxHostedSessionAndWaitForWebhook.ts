@@ -50,6 +50,8 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
   options: SpawnSessionOptions;
   trackedSpawnOptions: SpawnSessionOptions;
   normalizedExistingSessionId: string;
+  /** Creation outcome of a Session the daemon committed before launch; its attaching runner reports none. */
+  sessionCreationOutcome?: TrackedSession['sessionCreationOutcome'];
   effectiveResume: string;
   effectiveBackendTargetV2: BackendTargetRefV2;
   sessionControlArgs: readonly string[];
@@ -243,6 +245,9 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
       params.normalizedExistingSessionId || `PID-${tmuxPid}`,
     pid: tmuxPid,
     spawnOptions: params.trackedSpawnOptions,
+    ...(params.sessionCreationOutcome
+        ? { sessionCreationOutcome: params.sessionCreationOutcome }
+        : {}),
     acceptedSpawnMarkerGate,
     ...(params.runnerAgentSessionBootstrapAuthorization ? {
       agentRuntimeDaemonServiceAuthorityFilePath:

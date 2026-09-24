@@ -14,12 +14,10 @@ import { sessionRoutes } from "./sessionRoutes";
 describe("Session access HTTP and initial creation (SQLite integration)", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         vi.stubEnv("HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED", "1");
         harness = await createLightSqliteHarness({
             tempDirPrefix: "happier-session-access-http-", initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
@@ -372,9 +370,39 @@ describe("Session access HTTP and initial creation (SQLite integration)", () => 
         });
     });
 
-    it("returns the canonical update-required outcome before creating access-bearing sessions when collaboration is disabled", async () => {
+    it("serves collaboration wherever Session sharing is enabled; the retired collaboration switch no longer withdraws it", async () => {
         const { owner, team } = await fixture();
+        // The server-only `sessions.collaboration` bit is retired: its env switch
+        // is not read any more, so setting it cannot close the routes.
         vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "0");
+        try {
+            await withAuthenticatedTestApp(sessionRoutes, async (app) => {
+                const created = await app.inject({
+                    method: "POST",
+                    url: "/v1/sessions",
+                    headers: headers(owner.id),
+                    payload: {
+                        ...body("collaboration-switch-retired"),
+                        initialAccess: { grants: [{ subject: { kind: "team", teamId: team.id }, accessLevel: "view", canApprovePermissions: false }] },
+                        primaryTeamId: team.id,
+                    },
+                });
+                expect(created.statusCode, created.body).toBe(200);
+                const session = await db.session.findUniqueOrThrow({ where: { accountId_tag: { accountId: owner.id, tag: "collaboration-switch-retired" } } });
+                const listed = await app.inject({ method: "POST", url: "/v2/sessions/access-grants/list", headers: headers(owner.id), payload: { sessionId: session.id } });
+                expect(listed.statusCode, listed.body).toBe(200);
+                expect(SessionAccessGrantsListResponseV1Schema.parse(listed.json()).grants.map((row) => row.grant.subject))
+                    .toEqual([{ kind: "team", teamId: team.id }]);
+            });
+        } finally {
+            vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "");
+        }
+    });
+
+    it("refuses access-bearing creation and withdraws the grant routes when Session sharing is denied", async () => {
+        const { owner, team } = await fixture();
+        const session = await db.session.create({ data: { accountId: owner.id, tag: "existing", encryptionMode: "plain", metadata: "{}", currentStorageState: "hosted" } });
+        vi.stubEnv("HAPPIER_BUILD_FEATURES_DENY", "sharing.session");
         try {
             await withAuthenticatedTestApp(sessionRoutes, async (app) => {
                 const response = await app.inject({
@@ -382,29 +410,20 @@ describe("Session access HTTP and initial creation (SQLite integration)", () => 
                     url: "/v1/sessions",
                     headers: headers(owner.id),
                     payload: {
-                        ...body("collaboration-disabled"),
-                        initialAccess: {
-                            grants: [{
-                                subject: { kind: "team", teamId: team.id },
-                                accessLevel: "view",
-                                canApprovePermissions: false,
-                            }],
-                        },
+                        ...body("sharing-denied"),
+                        initialAccess: { grants: [{ subject: { kind: "team", teamId: team.id }, accessLevel: "view", canApprovePermissions: false }] },
                         primaryTeamId: team.id,
                     },
                 });
                 expect(response.statusCode, response.body).toBe(409);
-                expect(response.json()).toEqual({
-                    error: "update_required",
-                    kind: "update_required",
-                    operation: "session.spawn_new",
-                    component: "server",
-                    reason: "session_initial_access_update_required",
-                });
+                // The cause is the Home's own sharing decision, not an older component.
+                expect(response.json()).toEqual({ error: "session_access_sharing_unavailable" });
+                const listed = await app.inject({ method: "POST", url: "/v2/sessions/access-grants/list", headers: headers(owner.id), payload: { sessionId: session.id } });
+                expect(listed.statusCode, listed.body).toBe(404);
             });
-            expect(await db.session.findUnique({ where: { accountId_tag: { accountId: owner.id, tag: "collaboration-disabled" } } })).toBeNull();
+            expect(await db.session.findUnique({ where: { accountId_tag: { accountId: owner.id, tag: "sharing-denied" } } })).toBeNull();
         } finally {
-            vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
+            vi.stubEnv("HAPPIER_BUILD_FEATURES_DENY", "");
         }
     });
 

@@ -217,7 +217,7 @@ export type PluginsFeatureEnv = Readonly<{
   uiEnabled: boolean;
   // Plugin UI tier kill-switches (server-represented + default-ALLOW per §4.1/§13.5.3). These are
   // coarse server/build kill-switches only; per-plugin install/enable/trust/runtime derivation
-  // (5.1/5.2) governs actual availability. The finer devHotReload tier stays client + fail-closed.
+  // (5.1/5.2) governs actual availability.
   uiHostedWebEnabled: boolean;
   uiReactNativeBundlesEnabled: boolean;
   // Operator infrastructure limits. Missing or incoherent values leave artifact hosting unavailable.
@@ -663,14 +663,6 @@ export function readSessionFollowingFeatureEnv(env: NodeJS.ProcessEnv): SessionF
   };
 }
 
-export function readSessionCollaborationFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ enabled: boolean }> {
-  return {
-    // Direct sharing remains available independently of this capability; the
-    // catalog dependency on `sharing.session` is what closes it, not a default.
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsCollaborationEnabled], true),
-  };
-}
-
 export function readSessionConversationsFeatureEnv(env: NodeJS.ProcessEnv): SessionConversationsFeatureEnv {
   return {
     conversationsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsConversationsEnabled], true),
@@ -1018,7 +1010,7 @@ export function readPluginsFeatureEnv(env: NodeJS.ProcessEnv): PluginsFeatureEnv
   // Core plugin platform + UI projection default to allow (server is the gate). The plugin UI tiers
   // are also server-represented + default-ALLOW kill-switches (§4.1/§13.5.3): the server/build can
   // disable a tier for its users, but per-plugin install/enable/trust/runtime derivation (5.1/5.2)
-  // governs actual render. The finer reactNativeBundles.devHotReload tier stays client/fail-closed.
+  // governs actual render.
   return {
     enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsEnabled], true),
     webhooksEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsWebhooksEnabled], false),

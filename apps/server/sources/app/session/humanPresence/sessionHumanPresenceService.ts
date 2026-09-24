@@ -72,6 +72,37 @@ interface AccessChangeListener {
 }
 const accessChangeListeners = new Set<AccessChangeListener>();
 
+/** Anything that can reach the other API nodes' server-side event handlers. */
+export interface SessionHumanPresenceClusterPublisher {
+    serverSideEmit(eventName: string, payload: unknown): unknown;
+}
+
+function publishSessionHumanPresenceAccessChanged(
+    publisher: SessionHumanPresenceClusterPublisher,
+    sessionId: string,
+): void {
+    publisher.serverSideEmit(SESSION_HUMAN_PRESENCE_ACCESS_CHANGED_SERVER_EVENT, { v: 1, sessionId });
+}
+
+/**
+ * Publication-only registration for a process that owns no Socket.IO server —
+ * the worker role, whose directory reconciliation commits real access
+ * transitions. It publishes the same Session-only transition an API node's
+ * presence service publishes, and the API nodes' presence owners recheck their
+ * rooms on receipt. The `all` and `api` roles publish through their presence
+ * service instead, so a process never registers both.
+ */
+export function registerSessionHumanPresenceAccessChangePublisher(
+    publisher: SessionHumanPresenceClusterPublisher,
+): () => void {
+    const listener: AccessChangeListener = {
+        sessionChanged: () => {},
+        publishSessionChanged: (sessionId) => publishSessionHumanPresenceAccessChanged(publisher, sessionId),
+    };
+    accessChangeListeners.add(listener);
+    return () => { accessChangeListeners.delete(listener); };
+}
+
 /**
  * Synchronous afterTx seam. Each live local Socket.IO owner queues its own
  * projection, and one cluster-enabled owner publishes the Session-only
@@ -446,10 +477,7 @@ export function createSessionHumanPresenceService(input: Readonly<{
                 // Socket.IO server-side emission targets the other API nodes.
                 // Local owners were scheduled above, and receivers schedule
                 // directly rather than calling this listener, preventing echoes.
-                io.serverSideEmit(
-                    SESSION_HUMAN_PRESENCE_ACCESS_CHANGED_SERVER_EVENT,
-                    { v: 1, sessionId },
-                );
+                publishSessionHumanPresenceAccessChanged(io, sessionId);
             },
         } : {}),
     };

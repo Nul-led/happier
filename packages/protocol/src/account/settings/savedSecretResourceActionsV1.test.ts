@@ -7,6 +7,7 @@ import {
   SharedSavedSecretDeleteInputV1Schema,
   SharedSavedSecretGrantsSetInputV1Schema,
   SharedSavedSecretPromoteInputV1Schema,
+  SharedSavedSecretUpdateInputV1Schema,
 } from './savedSecretResourceActionsV1.js';
 
 describe('shared Saved Secret complete audience inputs', () => {
@@ -70,5 +71,36 @@ describe('shared Saved Secret complete audience inputs', () => {
       resourceId: '',
       expectedRevision: -4,
     }).success).toBe(true);
+  });
+
+  // Plan 10.08 §10.5/§11.0: an explicit mode conversion is an arm of the one
+  // update intent, not a separate Action.
+  it('carries an explicit mode conversion on the existing update input', () => {
+    const encryptedDataKey = Buffer.alloc(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES).toString('base64');
+    const base = {
+      resourceId: 'resource-convert',
+      expectedRevision: 3,
+      displayName: 'Shared token',
+      kind: 'token' as const,
+      storedContent: { t: 'encrypted' as const, c: Buffer.alloc(40).toString('base64') },
+    };
+
+    expect(SharedSavedSecretUpdateInputV1Schema.safeParse(base).success).toBe(true);
+    expect(SharedSavedSecretUpdateInputV1Schema.safeParse({
+      ...base,
+      toMode: 'e2ee',
+      keyEnvelopes: [{
+        recipientAccountId: 'owner-a',
+        encryptedDataKey,
+        recipientContentPublicKeyFingerprint: 'fingerprint-owner-a',
+      }],
+    }).success).toBe(true);
+    expect(SharedSavedSecretUpdateInputV1Schema.safeParse({
+      ...base,
+      toMode: 'plain',
+      storedContent: { t: 'plain', v: { v: 1, name: 'Shared token', kind: 'token', value: 'value' } },
+    }).success).toBe(true);
+    expect(SharedSavedSecretUpdateInputV1Schema.safeParse({ ...base, toMode: 'managed' }).success).toBe(false);
+    expect(SharedSavedSecretUpdateInputV1Schema.safeParse({ ...base, encryptionMode: 'plain' }).success).toBe(false);
   });
 });

@@ -85,6 +85,19 @@ describe('prepareSessionFollowSourceKey', () => {
             serverId: 'home-a', sourceSessionId: 'source-a', destinationSessionId: 'destination-a',
         }, unavailableKey)).resolves.toEqual({ kind: 'waiting', reason: 'source_key_unavailable' });
 
+        // A historical owner Session reads through the Account-scoped reader; that is never a DEK to hand over.
+        const historicalOwnerReader = createDeps({
+            resolveContext: vi.fn(async () => ({
+                scope: 'scoped' as const,
+                serverId: 'home-a', accountId: 'account-a', release: vi.fn(async () => undefined),
+                resolveSourceCrypto: vi.fn(async () => ({ encryptionMode: 'legacy_fallback' as const, sessionDataKey: null })),
+            })),
+        });
+        await expect(prepareSessionFollowSourceKey({
+            serverId: 'home-a', sourceSessionId: 'source-a', destinationSessionId: 'destination-a',
+        }, historicalOwnerReader)).resolves.toEqual({ kind: 'waiting', reason: 'source_key_unavailable' });
+        expect(historicalOwnerReader.callMachine).not.toHaveBeenCalled();
+
         const offlineRunner = createDeps({ resolveDestination: vi.fn(() => null) });
         await expect(prepareSessionFollowSourceKey({
             serverId: 'home-a', sourceSessionId: 'source-a', destinationSessionId: 'destination-a',

@@ -1,5 +1,6 @@
 import {
   evaluateActionInputPredicate,
+  readActionCliDerivedDefault,
   readActionInputPath,
   type ActionCliBindContext,
   type ActionCliBindInput,
@@ -41,12 +42,19 @@ function describeSchemaIssues(error: z.ZodError): string {
     .join('; ');
 }
 
-/** A schema's declared fields, through Zod's public object shape. */
+/**
+ * A schema's declared fields, through Zod's public object shape. An Action whose
+ * canonical input first normalizes a friendlier spelling (`z.preprocess`) is a
+ * pipe into that object: its fields are the object's, and the normalization
+ * still runs once on the merged input through the canonical schema itself.
+ */
 function readObjectShape(schema: z.ZodTypeAny): Record<string, z.ZodTypeAny> | null {
   const shape: unknown = (schema as { shape?: unknown }).shape;
-  return shape !== null && typeof shape === 'object' && !Array.isArray(shape)
-    ? shape as Record<string, z.ZodTypeAny>
-    : null;
+  if (shape !== null && typeof shape === 'object' && !Array.isArray(shape)) {
+    return shape as Record<string, z.ZodTypeAny>;
+  }
+  const def = (schema as { _zod?: { def?: { type?: unknown; out?: unknown } } })._zod?.def;
+  return def?.type === 'pipe' && def.out ? readObjectShape(def.out as z.ZodTypeAny) : null;
 }
 
 /**
@@ -59,13 +67,18 @@ function readObjectShape(schema: z.ZodTypeAny): Record<string, z.ZodTypeAny> | n
  * set would reject exactly the composition the precedence rule promises. Field
  * membership is still enforced, which is what keeps a surface schema's omitted
  * fields (a public caller may not author plugin source or attachments)
- * unreachable. Cross-field rules are deliberately not evaluated here — they
- * cannot be decided from a partial source, and the canonical schema owns the
- * same rules and validates the merged input once at the end.
+ * unreachable.
+ *
+ * The schema's own object-level rules still run over what this source supplied
+ * (see {@link readObjectLevelChecks}). They are the friendly vocabulary's
+ * cross-field rules — `--active` cannot be combined with a Team query — and a
+ * binder may discard one of the conflicting fields while projecting, after
+ * which the canonical schema can no longer see the conflict at all.
  */
 function parsePartialInputFields(
   shape: Readonly<Record<string, z.ZodTypeAny>>,
   supplied: Readonly<Record<string, unknown>>,
+  schema?: z.ZodTypeAny,
 ): Readonly<Record<string, unknown>> | ActionCliParseFailure {
   const parsed: Record<string, unknown> = {};
   const issues: string[] = [];
@@ -84,7 +97,32 @@ function parsePartialInputFields(
       }));
     }
   }
-  return issues.length > 0 ? failure(issues.slice(0, 4).join('; ')) : Object.freeze(parsed);
+  if (issues.length > 0) return failure(issues.slice(0, 4).join('; '));
+  const checks = schema ? readObjectLevelChecks(schema) : [];
+  if (checks.length > 0) {
+    const partialShape = Object.fromEntries(Object.entries(shape).map(([field, fieldSchema]) => (
+      [field, fieldSchema.optional()]
+    )));
+    const refined = z.object(partialShape).check(...checks).safeParse(parsed);
+    if (!refined.success) return failure(describeSchemaIssues(refined.error));
+  }
+  return Object.freeze(parsed);
+}
+
+/**
+ * The object-level refinements a caller or whole-input schema declares.
+ *
+ * Zod runs an object's refinements only once every required field is present
+ * and refuses `.partial()` on a refined object, so a partial source cannot be
+ * checked by the schema as-is. The rules are the schema's own check objects
+ * (Zod's documented `_zod.def.checks` extension point); re-attaching them to an
+ * all-optional copy of the same shape evaluates exactly those rules against the
+ * fields this source supplied. A rule that needs a field this source did not
+ * supply sees it absent, as the rule's own optional-field handling expects.
+ */
+function readObjectLevelChecks(schema: z.ZodTypeAny): readonly z.core.$ZodCheck<Record<string, unknown>>[] {
+  const checks: unknown = (schema as { _zod?: { def?: { checks?: unknown } } })._zod?.def?.checks;
+  return Array.isArray(checks) ? checks as z.core.$ZodCheck<Record<string, unknown>>[] : [];
 }
 
 /**
@@ -126,6 +164,9 @@ export function composeActionCliInput(params: Readonly<{
       }
       baseRecord = whole.data as Readonly<Record<string, unknown>>;
     } else {
+      // The canonical schema's own cross-field rules are decided once, on the
+      // merged input below; only the friendly overlay can lose a conflicting
+      // field to its binder, so only the overlay's rules run on a partial source.
       const partialBase = parsePartialInputFields(baseShape, params.parsed.canonicalBase);
       if (isParseFailure(partialBase)) return partialBase;
       baseRecord = partialBase;
@@ -142,7 +183,7 @@ export function composeActionCliInput(params: Readonly<{
       if (!whole.success) return failure(describeSchemaIssues(whole.error));
       callerValue = whole.data;
     } else {
-      const overlay = parsePartialInputFields(callerShape, params.parsed.callerOverlay);
+      const overlay = parsePartialInputFields(callerShape, params.parsed.callerOverlay, params.callerSchema);
       if (isParseFailure(overlay)) return overlay;
       callerValue = overlay;
     }
@@ -166,21 +207,21 @@ export function composeActionCliInput(params: Readonly<{
 
   // A binder is a projection of what the caller typed. Over a canonical base
   // the overlay is partial, so an absent caller field surfaces as `undefined`
-  // and is not a contribution at all. Of what remains, a key the caller named
-  // — or that the binder normalized out of a named field into a different
-  // canonical name — is a caller source and must be rejected rather than
-  // silently merged when the base already carries it. A key that is itself a
-  // declared caller field the caller did not type is the binder's own default,
-  // and §6.4 requires it to preserve, not overwrite, an already valid
-  // canonical field.
-  const callerFieldNames = new Set(Object.keys(readObjectShape(params.callerSchema) ?? {}));
-  const overlayFieldNames = new Set(Object.keys(params.parsed.callerOverlay));
+  // and is not a contribution at all. A value the binder marks as its own
+  // derived default (an intent-derived run shape, a generated local id) is not
+  // a caller source: §6.4 requires it to preserve, not overwrite, an already
+  // valid canonical field. Everything else the binder returned came from what
+  // the caller typed — under its own name or normalized into a different
+  // canonical name — and is rejected rather than silently merged when the base
+  // already carries it. Provenance is the binder's statement, never inferred
+  // from how a canonical key happens to be spelled.
   const contributed: Record<string, unknown> = {};
   const binderDefaults: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(boundOverlay)) {
     if (value === undefined) continue;
-    if (overlayFieldNames.has(field) || !callerFieldNames.has(field)) contributed[field] = value;
-    else binderDefaults[field] = value;
+    const derived = readActionCliDerivedDefault(value);
+    if (derived) binderDefaults[field] = derived.value;
+    else contributed[field] = value;
   }
   // The parser already refused a field the caller spelled both ways. What is
   // left to decide here is the binder's own renaming: a caller field the binder
@@ -210,6 +251,22 @@ export function composeActionCliInput(params: Readonly<{
       ? callerValue as Readonly<Record<string, unknown>>
       : Object.freeze({}),
   };
+}
+
+/**
+ * Field-by-field validation of a caller source before it is complete, with the
+ * caller schema's own object-level rules — the same check composition applies to
+ * a partial overlay. A retained workflow uses it to refuse a malformed Action
+ * field before it reads credentials or resolves its own workflow-owned fields.
+ */
+export function validateActionCliCallerFields(
+  callerSchema: z.ZodTypeAny,
+  supplied: Readonly<Record<string, unknown>>,
+): ActionCliParseFailure | null {
+  const shape = readObjectShape(callerSchema);
+  if (shape === null) return null;
+  const checked = parsePartialInputFields(shape, supplied, callerSchema);
+  return isParseFailure(checked) ? checked : null;
 }
 
 /**

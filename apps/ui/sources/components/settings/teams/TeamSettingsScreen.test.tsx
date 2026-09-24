@@ -28,6 +28,7 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerBack = vi.hoisted(() => vi.fn());
+const routerPush = vi.hoisted(() => vi.fn());
 const pickImages = vi.hoisted(() => vi.fn());
 
 vi.mock('@/utils/files/nativePickImages', () => ({
@@ -48,11 +49,11 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 
@@ -71,7 +72,7 @@ vi.mock('expo-file-system', () => ({
 
 installSettingsViewCommonModuleMocks({
     router: async () => ({
-        useRouter: () => ({ push: vi.fn(), back: routerBack }),
+        useRouter: () => ({ push: routerPush, back: routerBack }),
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
     }),
@@ -823,6 +824,42 @@ describe('TeamSettingsScreen', () => {
         // Restore is legitimate *because* the Team is archived, so it is not
         // gated on the ordinary-write rule that archiving withdraws.
         expect(harness.requestsFor(TEAM_UPDATE_PATH)).toHaveLength(0);
+    });
+
+    it('routes a Team-authentication refusal to the exact-Home Team sign-in instead of a dead end', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'account-ada',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, { status: 403, body: { error: 'team_authentication_required' } });
+
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-authentication-required');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-unavailable');
+
+        routerPush.mockClear();
+        await screen.pressByTestIdAsync('team-sign-in');
+        // The canonical explicit-Home Team entry, addressed by this route's own
+        // Home rather than by whichever Home is focused.
+        expect(routerPush).toHaveBeenCalledWith(`/teams/team-1/sign-in?serverId=${encodeURIComponent(serverId)}`);
+    });
+
+    it('keeps an ordinary permission refusal a settled denial without a sign-in offer', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'account-ada',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, { status: 403, body: { error: 'team_forbidden' } });
+
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-unavailable');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-sign-in');
     });
 
     it('explains an unreachable Home instead of showing an empty Team', async () => {

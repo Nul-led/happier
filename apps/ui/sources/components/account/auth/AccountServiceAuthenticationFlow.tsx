@@ -25,6 +25,11 @@ export type AccountServiceAuthenticationFlowProps = Readonly<{
     returnTo: string;
     accountEntryReturnTo?: string;
     onResult: (result: AccountDirectoryKeyLoginOutcome) => Promise<void> | void;
+    /**
+     * The host adopts a key sign-in's post-auth card as its own continuation
+     * step, so the card's Done/Back and the step indicator belong to the host.
+     */
+    onPostAuthContinuation: (input: AccountPostAuthInput, result: AccountPostAuthResult) => void;
     onExternalAuthStarted: () => Promise<void> | void;
     onBack: () => void;
     onReauthenticate?: (input: AccountPostAuthInput) => void | Promise<void>;
@@ -65,6 +70,7 @@ export function AccountServiceAuthenticationFlow(props: AccountServiceAuthentica
             mode={keySelection}
             transport={props.service.transport}
             onResult={props.onResult}
+            onPostAuthContinuation={props.onPostAuthContinuation}
             onBack={() => setKeySelection(null)}
             onReauthenticate={props.onReauthenticate}
             onOpenHomeAuthentication={props.onOpenHomeAuthentication}
@@ -93,7 +99,8 @@ export function AccountServiceAuthenticationFlow(props: AccountServiceAuthentica
                     ? t('welcome.signUpWithProvider', { provider: providerName })
                     : props.service.displayName;
             return <WelcomeActionCard key={testID} testID={testID} title={title}
-                subtitle={subtitle} iconName={execution.kind === 'oauth' ? 'sign-in' : 'key'} onPress={async () => {
+                subtitle={subtitle} iconName={execution.kind === 'oauth' ? 'sign-in' : 'key'}
+                accentColor={method.presentation?.connectButtonColor} onPress={async () => {
                     if (execution.kind === 'key_entry' || execution.kind === 'generated_key') {
                         setKeySelection(execution.kind === 'generated_key' ? 'provision' : 'login');
                         return;
@@ -131,6 +138,6 @@ export function AccountServiceAuthenticationFlow(props: AccountServiceAuthentica
                     }
                 }} />;
         })}
-        <WelcomeActionCard testID="account-service-auth-back" title={t('common.back')} iconName="arrow-left" onPress={props.onBack} />
+        <WelcomeActionCard testID="account-service-auth-back" title={t('common.back')} iconName="arrow-left" escape onPress={props.onBack} />
     </WelcomeActionList>;
 }

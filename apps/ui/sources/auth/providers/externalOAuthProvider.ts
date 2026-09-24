@@ -170,6 +170,91 @@ export function createExternalOAuthProvider(params: {
         };
     }
 
+    async function getConnectUrl(credentials: AuthCredentials): Promise<string>;
+    async function getConnectUrl(
+        credentials: AuthCredentials,
+        context: TeamOAuthRequestContext,
+    ): Promise<TeamOAuthStart>;
+    async function getConnectUrl(
+        credentials: AuthCredentials,
+        context?: TeamOAuthRequestContext,
+    ): Promise<string | TeamOAuthStart> {
+        return await backoff(async () => {
+            // Team admission is finalized by the authenticated connect finalizer, so
+            // the server pins that finalization itself; the ordinary link start still
+            // asks for it explicitly.
+            const query = context
+                ? [
+                    'purpose=team_admission',
+                    `teamId=${encodeURIComponent(context.teamId)}`,
+                    `origin=${encodeURIComponent(context.origin)}`,
+                ].join('&')
+                : 'connectFinalization=credential_adoption_v1';
+            const request = context?.request ?? serverFetch;
+            const response = await request(
+                `/v1/connect/external/${encodeURIComponent(providerId)}/params?${query}`,
+                {
+                    method: 'GET',
+                    headers: {
+                        Authorization: `Bearer ${credentials.token}`,
+                        'Content-Type': 'application/json',
+                        ...(context?.invitationToken
+                            ? { 'x-happier-team-invitation': context.invitationToken }
+                            : {}),
+                    },
+                },
+                { includeAuth: false },
+            );
+
+            if (!response.ok) {
+                if (response.status === 400) {
+                    let message = `${providerName} OAuth is not configured on this server.`;
+                    try {
+                        const error = await response.json();
+                        if (error?.error === OAUTH_NOT_CONFIGURED_ERROR) {
+                            message = `${providerName} OAuth is not configured on this server.`;
+                        } else if (error?.error) {
+                            message = String(error.error);
+                        }
+                    } catch {
+                        // ignore
+                    }
+                    throw new HappyError(message, false, { status: 400, kind: 'config' });
+                }
+                if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+                    let message = `Failed to get ${providerName} OAuth params`;
+                    try {
+                        const error = await response.json();
+                        if (error?.error) message = String(error.error);
+                    } catch {
+                        // ignore
+                    }
+                    throw new HappyError(message, false, {
+                        status: response.status,
+                        kind: response.status === 401 || response.status === 403 ? 'auth' : 'config',
+                    });
+                }
+                throw new Error(`Failed to get ${providerName} OAuth params: ${response.status}`);
+            }
+
+            const data = (await response.json()) as any;
+            if (context) {
+                const parsed = ExternalOAuthParamsResponseSchema.safeParse(data);
+                if (!parsed.success
+                    || !('purpose' in parsed.data)
+                    || parsed.data.purpose !== 'team_admission'
+                    || parsed.data.teamId !== context.teamId) {
+                    throw new Error('external-auth-unavailable');
+                }
+                return parsed.data;
+            }
+            if (!data?.url) {
+                throw new HappyError(`Failed to get ${providerName} OAuth params`, false, { status: 500, kind: 'config' });
+            }
+            return String(data.url);
+        });
+    }
+
     return Object.freeze({
         id: providerId,
         displayName: providerName,
@@ -186,61 +271,15 @@ export function createExternalOAuthProvider(params: {
                 };
             },
         getExternalAuthUrl,
-        getConnectUrl: async (credentials: AuthCredentials) => {
+        getConnectUrl,
+        finalizeConnect: async (
+            credentials: AuthCredentials,
+            payload: { pending: string; username: string },
+            context?: HomeOAuthRequestContext,
+        ) => {
             return await backoff(async () => {
-                const response = await serverFetch(
-                    `/v1/connect/external/${encodeURIComponent(providerId)}/params?connectFinalization=credential_adoption_v1`,
-                    {
-                        method: 'GET',
-                        headers: {
-                            Authorization: `Bearer ${credentials.token}`,
-                            'Content-Type': 'application/json',
-                        },
-                    },
-                    { includeAuth: false },
-                );
-
-                if (!response.ok) {
-                    if (response.status === 400) {
-                        let message = `${providerName} OAuth is not configured on this server.`;
-                        try {
-                            const error = await response.json();
-                            if (error?.error === OAUTH_NOT_CONFIGURED_ERROR) {
-                                message = `${providerName} OAuth is not configured on this server.`;
-                            } else if (error?.error) {
-                                message = String(error.error);
-                            }
-                        } catch {
-                            // ignore
-                        }
-                        throw new HappyError(message, false, { status: 400, kind: 'config' });
-                    }
-                    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-                        let message = `Failed to get ${providerName} OAuth params`;
-                        try {
-                            const error = await response.json();
-                            if (error?.error) message = String(error.error);
-                        } catch {
-                            // ignore
-                        }
-                        throw new HappyError(message, false, {
-                            status: response.status,
-                            kind: response.status === 401 || response.status === 403 ? 'auth' : 'config',
-                        });
-                    }
-                    throw new Error(`Failed to get ${providerName} OAuth params: ${response.status}`);
-                }
-
-                const data = (await response.json()) as any;
-                if (!data?.url) {
-                    throw new HappyError(`Failed to get ${providerName} OAuth params`, false, { status: 500, kind: 'config' });
-                }
-                return String(data.url);
-            });
-        },
-        finalizeConnect: async (credentials: AuthCredentials, payload: { pending: string; username: string }) => {
-            return await backoff(async () => {
-                const response = await serverFetch(
+                const request = context?.request ?? serverFetch;
+                const response = await request(
                     `/v1/connect/external/${encodeURIComponent(providerId)}/finalize`,
                     {
                         method: 'POST',
@@ -254,6 +293,14 @@ export function createExternalOAuthProvider(params: {
                 );
 
                 if (!response.ok) {
+                    if (response.status === 403 || response.status === 503) {
+                        // A Team-admission connect answers with the Home's typed Team
+                        // outcome; carry the code so the return route presents it.
+                        const json = await response.json().catch(() => ({}));
+                        if (typeof json?.error === 'string' && json.error) {
+                            throw new HappyError(json.error, false, { status: response.status, kind: 'auth' });
+                        }
+                    }
                     if (response.status === 409) {
                         const json = await response.json().catch(() => ({}));
                         if (json?.error === 'username-taken') {
@@ -284,12 +331,13 @@ export function createExternalOAuthProvider(params: {
                 return result.data.token ? { token: result.data.token } : {};
             });
         },
-        cancelConnectPending: async (credentials: AuthCredentials, pending: string) => {
+        cancelConnectPending: async (credentials: AuthCredentials, pending: string, context?: HomeOAuthRequestContext) => {
             const key = pending.trim();
             if (!key) return;
 
             await backoff(async () => {
-                const response = await serverFetch(
+                const request = context?.request ?? serverFetch;
+                const response = await request(
                     `/v1/connect/external/${encodeURIComponent(providerId)}/pending/${encodeURIComponent(key)}`,
                     {
                         method: 'DELETE',

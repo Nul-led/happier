@@ -42,7 +42,6 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   sessionsFilteredListingEnabled: 'HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED',
   sessionsBoardEnabled: 'HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED',
   sessionsFollowingEnabled: 'HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED',
-  sessionsCollaborationEnabled: 'HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED',
   sessionsConversationsEnabled: 'HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED',
   sessionsUsageLimitRecoveryEnabled: 'HAPPIER_FEATURE_SESSIONS_USAGE_LIMIT_RECOVERY__ENABLED',
   machinesTransferDirectPeerEnabled: 'HAPPIER_FEATURE_MACHINES_TRANSFER_DIRECT_PEER__ENABLED',
@@ -137,8 +136,7 @@ export const FEATURE_ENV_KEYS = Object.freeze({
 
   // Core plugin platform + UI projection gates (server-represented + default-allow). The plugin UI
   // tiers below are server-represented + default-ALLOW kill-switches (§4.1/§13.5.3): per-plugin
-  // install/enable/trust/runtime derivation (5.1/5.2) governs actual availability. devHotReload
-  // stays client + fail-closed (CLI/UI policy owns it).
+  // install/enable/trust/runtime derivation (5.1/5.2) governs actual availability.
   pluginsEnabled: 'HAPPIER_FEATURE_PLUGINS__ENABLED',
   pluginsWebhooksEnabled: 'HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED',
   pluginsWebhooksProcessMaxRequests: 'HAPPIER_FEATURE_PLUGINS_WEBHOOKS__PROCESS_MAX_REQUESTS',

@@ -40,17 +40,21 @@ describe('prepareDiscussionSelectionHandoff', () => {
             resolveAccountLabel: (accountId) => labels.get(accountId) ?? null,
             format: 'markdown_labeled',
             roleLabels: { user: 'User', assistant: 'Assistant' },
+            agentAttributionLabel: 'Via Agent',
         });
 
+        // A trusted Agent-posted row is a collaborator row with attribution, not
+        // assistant output and not an excluded row.
         expect(result).toEqual({
-            text: '**Alice Example:**\n\nFirst\n\n**Bob Example:**\n\nHi @Carol Example',
+            text: '**Alice Example:**\n\nFirst\n\n**Alice Example · Via Agent:**\n\nagent\n\n**Bob Example:**\n\nHi @Carol Example',
             source: {
                 kind: 'session_discussion',
                 sessionId: 'session-a',
                 discussionId: 'discussion-a',
-                messageIds: ['m1', 'm3'],
+                messageIds: ['m1', 'agent', 'm3'],
             },
         });
+        expect(result?.text).not.toContain('Assistant');
         expect(result?.source).not.toHaveProperty('draftCorrelationId');
     });
 
@@ -61,6 +65,7 @@ describe('prepareDiscussionSelectionHandoff', () => {
             selectedMessageIds: ['m1'],
             format: 'plain' as const,
             roleLabels: { user: 'User', assistant: 'Assistant' },
+            agentAttributionLabel: 'Via Agent',
         };
         expect(prepareDiscussionSelectionHandoff({
             ...base,

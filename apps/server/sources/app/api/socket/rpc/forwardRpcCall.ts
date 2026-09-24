@@ -303,6 +303,18 @@ export async function forwardRpcCall(params: Readonly<{
                 }),
             })
             : { status: "current" as const, value: await operation() };
+        if (guarded.status === "refused") {
+            // The guard proved a typed refusal, not an absent target: answer with
+            // its exact envelope so the caller keeps the stated recovery.
+            if (requestSubmitted) params.onSubmittedUnknown?.();
+            recordRpcCallFailure(params.method, "forbidden");
+            observeRpcCall({
+                method: params.method,
+                durationMs: Date.now() - callStartedAt,
+                result: "error",
+            });
+            return guarded.response;
+        }
         if (guarded.status === "unavailable") {
             if (requestSubmitted) {
                 params.onSubmittedUnknown?.();

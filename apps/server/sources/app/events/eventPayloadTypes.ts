@@ -394,6 +394,13 @@ export type EphemeralEvent = {
     tokens: Record<string, number>;
     cost: Record<string, number>;
     timestamp: number;
+} | {
+    /**
+     * Content-free invalidation: a new immutable usage fact was recorded for this
+     * Team credential resource. Readers re-query the authorized usage projection.
+     */
+    type: 'team-credential-usage-changed';
+    resourceId: string;
 } | ActionOperationRevisionEphemeralV1 | {
     type: 'machine-status';
     machineId: string;

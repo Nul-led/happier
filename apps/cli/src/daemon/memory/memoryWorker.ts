@@ -342,7 +342,9 @@ export async function startMemoryWorker(params: Readonly<{
           args.signal?.throwIfAborted();
 
           return decryptTranscriptRows({
-            ctx: cryptoContext.ctx,
+            // The whole crypto context, not just the key: memory ingests only rows
+            // the Session's established mode can authenticate.
+            crypto: cryptoContext,
             rows: [
               ...roleFiltered.messages,
               ...legacy.messages.filter(isLegacyUnclassifiedTranscriptRow),

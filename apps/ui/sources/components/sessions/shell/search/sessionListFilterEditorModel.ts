@@ -303,9 +303,78 @@ function parseQualifiedKey(value: string): readonly string[] | null {
     }
 }
 
+export type SessionListFilterEditorSelectionContext = Readonly<{
+    /**
+     * Audience selectors this host pins (the parent Team inside Team Sessions).
+     * A pinned Team is the corpus the person is browsing, so choosing one of its
+     * Groups narrows that corpus instead of adding a selector the wire contract
+     * would immediately drop as subsumed.
+     */
+    fixedAudienceKeys?: ReadonlySet<string>;
+}>;
+
+function reduceAudienceSelection(
+    filters: SessionListViewFilters,
+    audience: QualifiedAudienceSelection,
+    context: SessionListFilterEditorSelectionContext | undefined,
+): SessionListViewFilters {
+    const key = buildQualifiedAudienceSelectionKey(audience);
+    const exists = filters.audiences.some((candidate) => buildQualifiedAudienceSelectionKey(candidate) === key);
+    const pinnedTeamKey = audience.kind === 'group'
+        ? buildQualifiedAudienceSelectionKey({
+            serverId: audience.serverId,
+            kind: 'team',
+            teamId: audience.teamId,
+          })
+        : null;
+    const narrowsPinnedTeam = pinnedTeamKey !== null
+        && context?.fixedAudienceKeys?.has(pinnedTeamKey) === true;
+
+    if (!exists && narrowsPinnedTeam) {
+        return normalizeSessionListViewFilters({
+            ...filters,
+            audiences: [
+                ...filters.audiences.filter(
+                    (candidate) => buildQualifiedAudienceSelectionKey(candidate) !== pinnedTeamKey,
+                ),
+                audience,
+            ],
+        });
+    }
+
+    const remaining = filters.audiences.filter(
+        (candidate) => buildQualifiedAudienceSelectionKey(candidate) !== key,
+    );
+    if (exists && narrowsPinnedTeam && audience.kind === 'group') {
+        const keepsAnotherGroup = remaining.some((candidate) => (
+            candidate.kind === 'group'
+            && candidate.serverId === audience.serverId
+            && candidate.teamId === audience.teamId
+        ));
+        // Clearing the last Group narrowing restores the Team-wide corpus this
+        // host pins, so the list never loses its audience entirely.
+        return normalizeSessionListViewFilters({
+            ...filters,
+            audiences: keepsAnotherGroup
+                ? remaining
+                : [...remaining, {
+                    serverId: audience.serverId,
+                    kind: 'team' as const,
+                    teamId: audience.teamId,
+                  }],
+        });
+    }
+
+    return normalizeSessionListViewFilters({
+        ...filters,
+        audiences: exists ? remaining : [...filters.audiences, audience],
+    });
+}
+
 export function reduceSessionListFilterEditorSelection(
     filters: SessionListViewFilters,
     optionId: string,
+    context?: SessionListFilterEditorSelectionContext,
 ): SessionListViewFilters {
     if (optionId.startsWith('scope:')) {
         const scope = optionId.slice('scope:'.length) as SessionListScopeV1;
@@ -351,14 +420,7 @@ export function reduceSessionListFilterEditorSelection(
                     ? { serverId: parts[0]!, kind: 'group', teamId: parts[2]!, groupId: parts[3]! }
                     : null;
         if (!audience) return filters;
-        const key = buildQualifiedAudienceSelectionKey(audience);
-        const exists = filters.audiences.some((candidate) => buildQualifiedAudienceSelectionKey(candidate) === key);
-        return normalizeSessionListViewFilters({
-            ...filters,
-            audiences: exists
-                ? filters.audiences.filter((candidate) => buildQualifiedAudienceSelectionKey(candidate) !== key)
-                : [...filters.audiences, audience],
-        });
+        return reduceAudienceSelection(filters, audience, context);
     }
     return filters;
 }
@@ -367,11 +429,12 @@ export function resolveSessionListFilterEditorSelectionChange(
     filters: SessionListViewFilters,
     includeInactive: boolean,
     optionId: string,
+    context?: SessionListFilterEditorSelectionContext,
 ): Readonly<{ filters: SessionListViewFilters; includeInactive: boolean }> {
     if (optionId === 'inactive:show') return { filters, includeInactive: true };
     if (optionId === 'inactive:hide') return { filters, includeInactive: false };
     return {
-        filters: reduceSessionListFilterEditorSelection(filters, optionId),
+        filters: reduceSessionListFilterEditorSelection(filters, optionId, context),
         includeInactive,
     };
 }

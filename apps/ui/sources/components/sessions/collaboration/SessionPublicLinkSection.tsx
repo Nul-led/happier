@@ -90,6 +90,18 @@ export function SessionPublicLinkSection(props: Readonly<{
                     onPress={controller.canOpen ? () => { void controller.openEditor(triggerRef); } : undefined}
                 />
             ) : null}
+            {controller.pendingApproval ? (
+                // The change waits on its approval where it is decided; nothing
+                // is published until the approval executes.
+                <Item
+                    testID="session-public-link-approval"
+                    title={t('approvals.title')}
+                    subtitle={t('approvals.status.open')}
+                    accessibilityLiveRegion="polite"
+                    onPress={controller.openPendingApproval}
+                    showChevron={false}
+                />
+            ) : null}
             {controller.error ? (
                 <Item
                     testID="session-public-link-retry"

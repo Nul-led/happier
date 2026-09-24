@@ -383,9 +383,11 @@ describe("sessionRoutes v1 sessions snapshot", () => {
         });
     });
 
-    it("GET /v1/sessions fails a layout-zero shared projection closed", async () => {
+    it("GET /v1/sessions omits one unmigrated layout-zero share and keeps the rest of the page", async () => {
         const now = new Date(1);
-        sessionFindMany.mockResolvedValue([]);
+        sessionFindMany.mockResolvedValue([
+            v1ListSessionRow("owned-current", now.getTime(), { active: true }),
+        ]);
         sessionShareFindMany.mockResolvedValue([
             {
                 accessLevel: "view",
@@ -409,11 +411,16 @@ describe("sessionRoutes v1 sessions snapshot", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v1/sessions");
         const { reply, response: res } = await route.invoke();
 
-        expect(reply.statusCode).toBe(409);
-        expect(res).toEqual({
-            error: "Session metadata privacy upgrade required",
-            code: "metadata_privacy_upgrade_required",
-        });
+        // One unmigrated historical share degrades per row: the reader's other rows
+        // stay usable and the refusal stays visible through the count instead of
+        // silently shrinking the page.
+        expect(reply.statusCode).toBe(200);
+        const payload = res as {
+            sessions: ReadonlyArray<{ id: string }>;
+            metadataUpgradeRequiredCount?: number;
+        };
+        expect(payload.sessions.map((session) => session.id)).toEqual(["owned-current"]);
+        expect(payload.metadataUpgradeRequiredCount).toBe(1);
         expect(sessionShareFindMany).toHaveBeenCalledWith(
             expect.objectContaining({
                 select: expect.objectContaining({

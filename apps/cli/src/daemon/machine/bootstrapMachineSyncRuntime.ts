@@ -76,7 +76,7 @@ import {
 import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/profiles/service';
 import { createNpmRegistryProfileProbe } from '@/plugins/distribution/npm/profiles/probe';
 import { triggerLegacyProfileMigration as triggerLegacyProfileMigrationRuntime } from '@/providers/migrations/runtime';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import {
   PeerLoopbackEndpointCandidateV1Schema,
   type FeaturesResponse,
@@ -270,12 +270,6 @@ function normalizeNonEmptyString(value: string | null | undefined): string | nul
   return normalized ? normalized : null;
 }
 
-function resolveAccountIdFromCredentials(credentials: StoredCredentials | undefined): string | null {
-  if (!credentials) return null;
-  const payload = decodeJwtPayload(credentials.token);
-  return typeof payload?.sub === 'string' ? normalizeNonEmptyString(payload.sub) : null;
-}
-
 function readUsageLimitRecoveryResultStatus(result: unknown): string | null {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
   const status = (result as Record<string, unknown>).status;
@@ -385,7 +379,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   const serverFeatures = await resolvePeerMediationMachineRpcServerFeatures(params.config);
   if (!serverFeatures) return null;
   const accountId = normalizeNonEmptyString(params.config?.accountId)
-    ?? resolveAccountIdFromCredentials(params.credentials);
+    ?? (params.credentials ? readAccountIdFromToken(params.credentials.token) : null);
   if (!accountId) return null;
   const accountSigningSeed = resolveAccountSigningSeed({
     config: params.config,
@@ -468,7 +462,7 @@ async function resolvePeerTcpTunnelRelayBootstrapContext(params: Readonly<{
   if (!serverFeatures) return null;
   if (readServerEnabledBit(serverFeatures, 'machines.tunnel.serverRouted') !== true) return null;
   const accountId = normalizeNonEmptyString(params.config?.accountId)
-    ?? resolveAccountIdFromCredentials(params.credentials);
+    ?? (params.credentials ? readAccountIdFromToken(params.credentials.token) : null);
   if (!accountId) return null;
   return { accountId, serverFeatures };
 }
@@ -605,6 +599,7 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   requestShutdown: (source: 'happier-app', errorMessage?: string) => void;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
   prepareWorkspaceSyncSeedExport?: NonNullable<import('@/api/machine/rpcHandlers.workspaceSync').MachineWorkspaceSyncRpcService['prepareSourceSeedExport']>;
+  prepareWorkspaceSyncResolutionExport?: NonNullable<import('@/api/machine/rpcHandlers.workspaceSync').MachineWorkspaceSyncRpcService['prepareConflictResolutionExport']>;
   machineIrohRuntime?: DaemonMachineIrohRuntime;
   prepareServerTransportForReconnect?: () => Promise<ReadinessProbeResult>;
   acquireWorkspaceSyncMachineIngress?: (input: Readonly<{
@@ -690,6 +685,10 @@ export async function bootstrapMachineSyncRuntime(
     };
   }
 
+  // ApiMachineClient discards a persisted endpoint before it can connect.
+  // Retain the withdrawal fact until the reconnect publisher has removed the
+  // old server-side daemon state as well.
+  let needsPersistedIrohEndpointWithdrawal = Boolean(params.machine.daemonState?.peerMediation?.iroh);
   const connectedApiMachine = await params.createConnectedApiMachine(params.machine);
   const workflowRecoveryTriggers = params.recoverWorkflowRuns
     ? createWorkflowRecoveryTriggers(params.recoverWorkflowRuns)
@@ -814,6 +813,9 @@ export async function bootstrapMachineSyncRuntime(
                 contentPolicy: WorkspaceContentPolicyV1;
               }>
             | Readonly<{
+                t: 'workspace_sync_resolution_v1';
+              } & import('@happier-dev/protocol').WorkspaceSyncTargetConflictStageV1>
+            | Readonly<{
                 t: 'composer_media_stage_inspect_v1';
                 handle: ComposerContentHandleV1;
                 offset: number;
@@ -823,6 +825,23 @@ export async function bootstrapMachineSyncRuntime(
           if (input.t === 'workspace_sync_seed_v1') {
             if (!params.prepareWorkspaceSyncSeedExport) throw new Error('Workspace sync source seed is unavailable');
             const prepared = await params.prepareWorkspaceSyncSeedExport(input);
+            const published = await directPeerServerLifecycle.publishTransferWhenReady({
+              transferId: input.operationId,
+              payloadSource: prepared.payloadSource,
+              onDemandScope: prepared.onDemandScope,
+            });
+            return {
+              transferId: published.transferId,
+              endpointCandidates: published.endpointCandidates,
+              expiresAt: published.expiresAt,
+              ...(prepared.payloadSource.sizeBytes === undefined ? {} : { sizeBytes: prepared.payloadSource.sizeBytes }),
+              ...(prepared.payloadSource.manifestHash === undefined ? {} : { manifestHash: prepared.payloadSource.manifestHash }),
+            };
+          }
+          if (input.t === 'workspace_sync_resolution_v1') {
+            if (!params.prepareWorkspaceSyncResolutionExport) throw new Error('Reviewed workspace conflict export is unavailable');
+            const { t: _transferKind, ...request } = input;
+            const prepared = await params.prepareWorkspaceSyncResolutionExport(request);
             const published = await directPeerServerLifecycle.publishTransferWhenReady({
               transferId: input.operationId,
               payloadSource: prepared.payloadSource,
@@ -1003,7 +1022,7 @@ export async function bootstrapMachineSyncRuntime(
     voiceInferenceWorker = await params.startVoiceInferenceWorkerForMachine(
       params.machineId,
       normalizeNonEmptyString(params.peerMediationMachineRpc?.accountId)
-        ?? resolveAccountIdFromCredentials(params.credentials),
+        ?? (params.credentials ? readAccountIdFromToken(params.credentials.token) : null),
     );
     const providerFeatureGate = {
       isEnabled: (featureId: 'providers' | 'providers.localDiscovery' | 'providers.localModelManagement') => {
@@ -1238,6 +1257,9 @@ export async function bootstrapMachineSyncRuntime(
                     executionRunId: input.executionRunId,
                     ...(input.expectedIntent !== undefined ? { expectedIntent: input.expectedIntent } : {}),
                     expectedOccurrenceId: input.expectedOccurrenceId,
+                    ...(input.expectedDirectMaterialUse
+                      ? { expectedDirectMaterialUse: input.expectedDirectMaterialUse }
+                      : {}),
                   },
                 };
                 const response = target.mode === 'plain'
@@ -1698,21 +1720,24 @@ export async function bootstrapMachineSyncRuntime(
         }
 
         const activePeerMediationLoopback = peerMediationLoopback;
-        if (activePeerMediationLoopback) {
+        if (activePeerMediationLoopback || needsPersistedIrohEndpointWithdrawal || params.machine.daemonState?.peerMediation?.iroh) {
           const outcome = await connectedApiMachine
             .updateDaemonState((state) => reconcileMachineIrohEndpoint(
-              mergePeerMediationLoopbackEndpoint(
-                state,
-                activePeerMediationLoopback.endpoint,
-                activePeerMediationLoopback.activeFlows,
-              ),
+              activePeerMediationLoopback
+                ? mergePeerMediationLoopbackEndpoint(
+                    state,
+                    activePeerMediationLoopback.endpoint,
+                    activePeerMediationLoopback.activeFlows,
+                  )
+                : state ?? { status: 'running' },
               activeMachineIrohRuntime,
             ))
             .catch((error) => {
-              logger.warn('[DAEMON RUN] Failed to publish peer mediation loopback endpoint', error);
+              logger.warn('[DAEMON RUN] Failed to reconcile peer mediation endpoints', error);
               return null;
             });
           if (outcome === 'suppressed' || params.isShuttingDown()) return;
+          if (outcome === 'published') needsPersistedIrohEndpointWithdrawal = false;
         }
 
         if (activeAutomationWorker) {

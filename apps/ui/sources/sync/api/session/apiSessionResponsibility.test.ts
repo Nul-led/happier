@@ -41,13 +41,33 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
     createEncryptionFromAuthCredentials: createEncryptionFromAuthCredentialsMock,
 }));
 
-import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
-import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION } from '@happier-dev/protocol';
+import {
+    adoptHomeProfile,
+    resolveServerProfileScopeIdForIdentifier,
+    setActiveServerId,
+    upsertServerProfile,
+} from '@/sync/domains/server/serverProfiles';
+import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
 import { storage } from '@/sync/domains/state/storage';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/sync/http/client';
 
 import { setSessionResponsibleAccount, listSessionResponsibilityCandidates } from './apiSessionResponsibility';
 import { listSessionDiscussionMentionCandidates } from './sessionDiscussionActions';
+
+/**
+ * Assignment confirmation is required by default on the app
+ * (teams-lane-04/11-responsible-assignment.md §7.1). Tests of the direct
+ * transport outcome therefore use the user's canonical Actions waiver.
+ */
+const ASSIGNMENT_CONFIRMATION_WAIVED_SETTINGS = settingsParse({
+    ...settingsDefaults,
+    actionsSettingsV1: {
+        v: 1,
+        actions: {},
+        approvalWaivedSurfaces: { 'session.responsibility.set': ['ui'] },
+    },
+});
 
 function tokenForSub(sub: string): string {
     return `e30.${globalThis.btoa(JSON.stringify({ sub }))}.signature`;
@@ -103,7 +123,7 @@ describe('responsibility exact Account authority', () => {
         const result = await listSessionDiscussionMentionCandidates({
             scope: { serverId: home.id, accountId: 'account-1' },
             session: { serverId: home.id, sessionId: 'session-1' },
-            availability: 'full_collaboration',
+            availability: 'available',
             query: 'bo',
         });
 
@@ -116,6 +136,55 @@ describe('responsibility exact Account authority', () => {
             purpose: 'mention',
             query: 'bo',
         });
+    });
+
+    it('serves mention candidates for a Session addressed by its profile id on an identity-bearing Home', async () => {
+        // A Home that publishes a portable identity is scoped by that identity,
+        // while a Session route may still carry the device-local profile id.
+        const home = await adoptHomeProfile({
+            descriptor: {
+                serverUrl: 'https://responsibility-identity.example',
+                homeServerIdentityId: 'srv_responsibility-home',
+                displayName: 'Home',
+            },
+            source: 'manual',
+            suggestedName: 'Home',
+        });
+        await setActiveServerId(home.id, { scope: 'device' });
+        const scope = { serverId: resolveServerProfileScopeIdForIdentifier(home.id), accountId: 'account-1' };
+        expect(scope.serverId).not.toBe(home.id);
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account-1'), secret: 'secret' });
+        storage.getState().applySettingsForScope(scope, settingsDefaults, 1);
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            if (String(input).includes('/v1/account/encryption')) {
+                return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }), { status: 200 });
+            }
+            return new Response(JSON.stringify({
+                candidates: [{
+                    accountId: 'account-2',
+                    profile: { firstName: 'Bob', lastName: null, username: 'bob', avatarUrl: null },
+                }],
+                nextCursor: null,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        const result = await listSessionDiscussionMentionCandidates({
+            scope,
+            session: { serverId: home.id, sessionId: 'session-1' },
+            availability: 'available',
+            query: 'bo',
+        });
+        expect(result.candidates[0]?.accountId).toBe('account-2');
+
+        // A different Home is still refused before any candidate request.
+        runtimeFetchMock.mockClear();
+        await expect(listSessionDiscussionMentionCandidates({
+            scope,
+            session: { serverId: 'another-home', sessionId: 'session-1' },
+            availability: 'available',
+        })).rejects.toThrow('Discussion mention candidates require the exact Session Home');
+        expect(runtimeFetchMock.mock.calls.some(([input]) =>
+            String(input).includes('/v2/sessions/responsibility/'))).toBe(false);
     });
 
     it('distinguishes the canonical feature-gate 404 from a typed missing Session', async () => {
@@ -142,12 +211,12 @@ describe('responsibility exact Account authority', () => {
         });
 
         await expect(listSessionResponsibilityCandidates(scope, { sessionId: 'session-1' }, {
-            availability: 'full_collaboration',
+            availability: 'available',
         })).rejects.toMatchObject({ failure: 'unsupported' });
 
         error = 'session_access_session_not_found';
         await expect(listSessionResponsibilityCandidates(scope, { sessionId: 'session-1' }, {
-            availability: 'full_collaboration',
+            availability: 'available',
         })).rejects.toMatchObject({ failure: 'not-found' });
     });
 
@@ -155,7 +224,7 @@ describe('responsibility exact Account authority', () => {
         const home = await upsertServerProfile({ serverUrl: 'https://responsibility.example', name: 'Home' });
         await setActiveServerId(home.id, { scope: 'device' });
         getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account-1'), secret: 'secret' });
-        storage.getState().applySettingsForScope({ serverId: home.id, accountId: 'account-1' }, settingsDefaults, 1);
+        storage.getState().applySettingsForScope({ serverId: home.id, accountId: 'account-1' }, ASSIGNMENT_CONFIRMATION_WAIVED_SETTINGS, 1);
         const scope = { serverId: home.id, accountId: 'account-1' };
         let error: string | undefined = 'session_responsibility_assignee_unavailable';
         runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -174,26 +243,26 @@ describe('responsibility exact Account authority', () => {
         await expect(setSessionResponsibleAccount(scope, {
             sessionId: 'session-1',
             responsibleAccountId: 'account-2',
-        }, { availability: 'full_collaboration' })).rejects.toMatchObject({ failure: 'assignee-unavailable' });
+        }, { availability: 'available' })).rejects.toMatchObject({ failure: 'assignee-unavailable' });
 
         error = 'some_other_conflict';
         await expect(setSessionResponsibleAccount(scope, {
             sessionId: 'session-1',
             responsibleAccountId: 'account-2',
-        }, { availability: 'full_collaboration' })).rejects.toMatchObject({ failure: 'unknown' });
+        }, { availability: 'available' })).rejects.toMatchObject({ failure: 'unknown' });
 
         error = undefined;
         await expect(setSessionResponsibleAccount(scope, {
             sessionId: 'session-1',
             responsibleAccountId: 'account-2',
-        }, { availability: 'full_collaboration' })).rejects.toMatchObject({ failure: 'unknown' });
+        }, { availability: 'available' })).rejects.toMatchObject({ failure: 'unknown' });
     });
 
     it('preserves canonical Team authentication failures for mutation and candidate requests', async () => {
         const home = await upsertServerProfile({ serverUrl: 'https://responsibility.example', name: 'Home' });
         await setActiveServerId(home.id, { scope: 'device' });
         getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account-1'), secret: 'secret' });
-        storage.getState().applySettingsForScope({ serverId: home.id, accountId: 'account-1' }, settingsDefaults, 1);
+        storage.getState().applySettingsForScope({ serverId: home.id, accountId: 'account-1' }, ASSIGNMENT_CONFIRMATION_WAIVED_SETTINGS, 1);
         const scope = { serverId: home.id, accountId: 'account-1' };
         let status = 403;
         let error = 'session_access_authentication_required';
@@ -213,16 +282,67 @@ describe('responsibility exact Account authority', () => {
         await expect(setSessionResponsibleAccount(scope, {
             sessionId: 'session-1',
             responsibleAccountId: 'account-2',
-        }, { availability: 'full_collaboration' })).rejects.toMatchObject({
+        }, { availability: 'available' })).rejects.toMatchObject({
             failure: 'session_access_authentication_required',
         });
 
         status = 503;
         error = 'session_access_authentication_unavailable';
         await expect(listSessionResponsibilityCandidates(scope, { sessionId: 'session-1' }, {
-            availability: 'full_collaboration',
+            availability: 'available',
         })).rejects.toMatchObject({
             failure: 'session_access_authentication_unavailable',
         });
+    });
+
+    it('routes an assignment to approval by default, as a typed pending outcome, never a committed assignment', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://responsibility.example', name: 'Home' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account-1'), secret: 'secret' });
+        // No explicit require: the canonical Actions default alone creates the approval.
+        storage.getState().applySettingsForScope({ serverId: home.id, accountId: 'account-1' }, settingsDefaults, 1);
+        const scope = { serverId: home.id, accountId: 'account-1' };
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/auth/ping')) {
+                return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (url.includes('/v1/account/encryption')) {
+                return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }), { status: 200 });
+            }
+            if (url.endsWith('/v1/features') || url.includes('/v1/features/')) {
+                // A plain-Account Artifact write asks the canonical stored-content
+                // compatibility owner first, so the probe answers as a current Home.
+                return new Response(JSON.stringify({
+                    features: {},
+                    capabilities: {
+                        accountStoredContentCompatibility: {
+                            v: 1,
+                            minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                            declarationTransport: 'http-header-and-socket-auth-v1',
+                        },
+                    },
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (url.includes('/v1/artifacts')) {
+                return new Response(JSON.stringify({
+                    id: 'artifact-1', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        // The deferred Action has not committed anything: the caller must learn
+        // that, keep the approval identity, and never parse the custody result
+        // as an authoritative assignment.
+        await expect(setSessionResponsibleAccount(scope, {
+            sessionId: 'session-1',
+            responsibleAccountId: 'account-2',
+        }, { availability: 'available' })).rejects.toMatchObject({
+            failure: 'approval-pending',
+        });
+        expect(runtimeFetchMock.mock.calls.some(([input]) =>
+            String(input).includes('/v2/sessions/responsibility/'))).toBe(false);
     });
 });

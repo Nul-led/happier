@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import {
   decideMarketplaceListingInstallV1,
+  readMarketplaceListingRegistryProfileRequirementV1,
   type MarketplaceIndexItemV1,
   type MarketplaceIndexQueryResultV1,
   type MarketplaceListingInstallBlockV1,
@@ -13,6 +14,8 @@ import {
 } from '@happier-dev/protocol/marketplace/internal';
 
 import { requestUserPluginChange, type UserPluginChangeResult } from '@/plugins/daemon/changeClient';
+import type { PluginRegistryProfileRequirement } from '@/plugins/daemon/changeContract';
+import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/profiles/service';
 
 import {
   createMarketplaceIndexService,
@@ -106,6 +109,12 @@ export async function resolveExactMarketplaceListingForInstall(
 ): Promise<
   | Readonly<{ ok: true; resolution: ExactMarketplaceListingResolution }>
   | Readonly<{ ok: false; code: 'install_unavailable' | 'source_changed'; message: string }>
+  | Readonly<{
+      ok: false;
+      code: 'registry_profile_required';
+      message: string;
+      requirement: PluginRegistryProfileRequirement;
+    }>
 > {
   const sourceId = params.sourceId.trim();
   const pluginId = params.pluginId.trim();
@@ -135,7 +144,15 @@ export async function resolveExactMarketplaceListingForInstall(
   }
   const availability = readMarketplaceInstallAvailability(listing);
   if (!availability.ok) {
-    return { ok: false, code: 'install_unavailable', message: availability.message };
+    // Only when artifact access is the one remaining block does a registry
+    // selection make the listing installable; the Protocol rule owns that.
+    const requirement = readMarketplaceListingRegistryProfileRequirementV1(
+      listing,
+      (await createNpmRegistryProfileService({ happyHomeDir: params.happyHomeDir }).snapshot()).profiles,
+    );
+    return requirement
+      ? { ok: false, code: 'registry_profile_required', message: availability.message, requirement }
+      : { ok: false, code: 'install_unavailable', message: availability.message };
   }
   const approvedListing = availability.listing;
   const registryProfileId = approvedListing.artifactAccess.state === 'available'
@@ -157,6 +174,12 @@ export type ExactMarketplaceInstallResult =
       ok: false;
       code: 'install_unavailable' | 'source_changed';
       message: string;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'registry_profile_required';
+      message: string;
+      requirement: PluginRegistryProfileRequirement;
     }>;
 
 export async function requestExactMarketplaceInstall(
@@ -179,9 +202,7 @@ export async function requestExactMarketplaceInstall(
     pluginId: params.pluginId,
     ...(params.packageName ? { packageName: params.packageName } : {}),
   }, dependencies.marketplaceIndexService);
-  if (!resolution.ok) {
-    return { ok: false, code: resolution.code, message: resolution.message };
-  }
+  if (!resolution.ok) return resolution;
   const { listing: approvedListing, registryProfileId } = resolution.resolution;
 
   const change = await (dependencies.requestChange ?? requestUserPluginChange)({

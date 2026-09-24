@@ -4,6 +4,7 @@ import { act } from 'react-test-renderer';
 import type { SessionInitialAccessDraftV1 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { t } from '@/text';
 import { reconcileSessionAccessDraftForHome } from '@/sync/domains/session/access/sessionAccessDraftReconciliation';
 
 import { useNewSessionAccessDraftController } from './useNewSessionAccessDraftController';
@@ -23,14 +24,13 @@ const runTeamActionMock = vi.hoisted(() => vi.fn(
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     runTeamAction: runTeamActionMock,
 }));
-vi.mock('@/sync/api/session/sessionAccessLegacyAdapter', () => ({ searchSessionAccessAccounts: vi.fn(async () => []) }));
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeResolution: (serverId: string | null) => serverId
         ? { kind: 'bound', scope: { serverId, accountId: 'creator' } }
         : { kind: 'unbound' },
 }));
 vi.mock('@/hooks/session/useSessionCollaborationAvailability', () => ({
-    useSessionCollaborationAvailability: () => 'full_collaboration',
+    useSessionCollaborationAvailability: () => 'available',
 }));
 // This suite exercises the real draft/currentness and editor-controller
 // owners. Keep their presentation leaf inert so unrelated Markdown/plugin
@@ -62,6 +62,8 @@ function Probe(props: Readonly<{
     initialPrimaryTeamId?: string | null;
     homeReconciled?: boolean;
     availability: SessionCollaborationAvailability;
+    /** Mirrors an open editor presentation; the composer's closed chip does not demand candidates. */
+    demanded?: boolean;
     onReady: (controller: Controller, access: SessionInitialAccessDraftV1 | null, primaryTeamId: string | null) => void;
 }>) {
     const [access, setAccess] = React.useState(props.initial);
@@ -69,6 +71,7 @@ function Probe(props: Readonly<{
     const controller = useNewSessionAccessDraftController({
         scope, access, primaryTeamId, availability: props.availability,
         homeReconciled: props.homeReconciled === true,
+        demanded: props.demanded !== false,
         onChange: setAccess, onPrimaryTeamIdChange: setPrimaryTeamId,
     });
     props.onReady(controller, access, primaryTeamId);
@@ -78,7 +81,7 @@ function Probe(props: Readonly<{
 describe('useNewSessionAccessDraftController', () => {
     it('surfaces a Home-change reconciliation instead of silently dropping access choices', async () => {
         let latest: Controller | null = null;
-        await renderScreen(<Probe initial={null} availability="full_collaboration" homeReconciled
+        await renderScreen(<Probe initial={null} availability="available" homeReconciled
             onReady={(controller) => { latest = controller; }} />);
 
         expect(latest!.model.notice).toMatchObject({
@@ -98,7 +101,7 @@ describe('useNewSessionAccessDraftController', () => {
         // Read through a typed accessor so the assertions keep the draft's real
         // union instead of the `null` its initializer narrows to.
         const readDraft = (): SessionInitialAccessDraftV1 | null => draft;
-        await renderScreen(<Probe initial={null} availability="full_collaboration" onReady={(controller, access) => { latest = controller; draft = access; }} />);
+        await renderScreen(<Probe initial={null} availability="available" onReady={(controller, access) => { latest = controller; draft = access; }} />);
 
         await act(async () => { latest!.actions.addPrincipal({ kind: 'account', accountId: 'alice' }); });
         expect(draft).toEqual({
@@ -131,16 +134,16 @@ describe('useNewSessionAccessDraftController', () => {
         expect(latest!.model.grants).toHaveLength(0);
     });
 
-    it('refuses to author access on a Home without the collaboration vertical and explains why', async () => {
+    it('refuses to author access on a Home that does not share Sessions and explains why', async () => {
         let latest: Controller | null = null;
         let draft: SessionInitialAccessDraftV1 | null = null;
         const seeded: SessionInitialAccessDraftV1 = {
             grants: [{ subject: { kind: 'team', teamId: 'acme' }, accessLevel: 'view', canApprovePermissions: false }],
         };
-        await renderScreen(<Probe initial={seeded} availability="direct_only" onReady={(controller, access) => { latest = controller; draft = access; }} />);
+        await renderScreen(<Probe initial={seeded} availability="unavailable" onReady={(controller, access) => { latest = controller; draft = access; }} />);
 
         expect(latest!.model.accessMode).toBe('read_only');
-        expect(latest!.model.notice?.message).toBeTruthy();
+        expect(latest!.model.notice).toMatchObject({ message: t('session.collaboration.accessUnavailableReason'), action: 'clear_access' });
         expect(latest!.model.directory.sections).toHaveLength(0);
 
         await act(async () => { latest!.actions.addPrincipal({ kind: 'account', accountId: 'alice' }); });
@@ -166,7 +169,7 @@ describe('useNewSessionAccessDraftController', () => {
         let latest: Controller | null = null;
         await renderScreen(<Probe
             initial={null}
-            availability="full_collaboration"
+            availability="available"
             onReady={(controller) => { latest = controller; }}
         />);
         const groups = latest!.model.directory.sections.find((section) => section.kind === 'group');
@@ -189,7 +192,7 @@ describe('useNewSessionAccessDraftController', () => {
         } as never);
         let latest: Controller | null = null;
         let draft: SessionInitialAccessDraftV1 | null = null;
-        await renderScreen(<Probe initial={null} availability="full_collaboration" onReady={(controller, access) => {
+        await renderScreen(<Probe initial={null} availability="available" onReady={(controller, access) => {
             latest = controller;
             draft = access;
         }} />);
@@ -222,7 +225,7 @@ describe('useNewSessionAccessDraftController', () => {
         let draft: SessionInitialAccessDraftV1 | null = null;
         // A restored draft carries the Team context without ever passing through
         // the in-editor context change that used to be the only seed.
-        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-required" availability="full_collaboration"
+        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-required" availability="available"
             onReady={(controller, access) => { latest = controller; draft = access; }} />);
 
         await vi.waitFor(() => expect(latest!.model.grants).toHaveLength(1));
@@ -246,7 +249,7 @@ describe('useNewSessionAccessDraftController', () => {
         }] };
         let latest: Controller | null = null;
         let draft: SessionInitialAccessDraftV1 | null = credentialSeeded;
-        await renderScreen(<Probe initial={credentialSeeded} initialPrimaryTeamId="team-required" availability="full_collaboration"
+        await renderScreen(<Probe initial={credentialSeeded} initialPrimaryTeamId="team-required" availability="available"
             onReady={(controller, access) => { latest = controller; draft = access; }} />);
 
         await vi.waitFor(() => expect(draft?.grants[0]?.accessLevel).toBe('edit'));
@@ -263,7 +266,7 @@ describe('useNewSessionAccessDraftController', () => {
         } as never);
         let latest: Controller | null = null;
         let draft: SessionInitialAccessDraftV1 | null = null;
-        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-default" availability="full_collaboration"
+        await renderScreen(<Probe initial={null} initialPrimaryTeamId="team-default" availability="available"
             onReady={(controller, access) => { latest = controller; draft = access; }} />);
 
         await vi.waitFor(() => expect(latest!.model.context?.options).toEqual(expect.arrayContaining([
@@ -283,7 +286,7 @@ describe('useNewSessionAccessDraftController', () => {
         let latest: Controller | null = null;
         let draft: SessionInitialAccessDraftV1 | null = null;
         let primaryTeamId: string | null = null;
-        await renderScreen(<Probe initial={null} availability="full_collaboration" onReady={(controller, access, teamId) => {
+        await renderScreen(<Probe initial={null} availability="available" onReady={(controller, access, teamId) => {
             latest = controller;
             draft = access;
             primaryTeamId = teamId;
@@ -323,7 +326,7 @@ describe('useNewSessionAccessDraftController', () => {
                 }], nextCursor: null },
             } as never);
         let latest: Controller | null = null;
-        await renderScreen(<Probe initial={null} availability="full_collaboration" onReady={(controller) => { latest = controller; }} />);
+        await renderScreen(<Probe initial={null} availability="available" onReady={(controller) => { latest = controller; }} />);
         await vi.waitFor(() => expect(latest!.model.context?.options).toEqual(expect.arrayContaining([
             expect.objectContaining({ teamId: 'team-first' }),
         ])));
@@ -346,7 +349,7 @@ describe('useNewSessionAccessDraftController', () => {
             subject: { kind: 'team', teamId: 'team-required' }, accessLevel: 'edit', canApprovePermissions: false,
         }] };
         let latest: Controller | null = null;
-        await renderScreen(<Probe initial={seeded} initialPrimaryTeamId="team-required" availability="full_collaboration"
+        await renderScreen(<Probe initial={seeded} initialPrimaryTeamId="team-required" availability="available"
             onReady={(controller) => { latest = controller; }} />);
         await vi.waitFor(() => expect(latest!.model.context?.options[0]?.blockedReason).toBeDefined());
 
@@ -365,6 +368,8 @@ function AccessDraftProbe(props: Readonly<{
     sourceAccessConflict?: boolean;
     sourcePrimaryTeamConflict?: boolean;
     useScreenHost?: boolean;
+    /** Mounts the composer popover exactly as the chip host does when it opens. */
+    popoverOpen?: boolean;
     onReady: (state: NewSessionAccessDraftState) => void;
 }>) {
     const state = useNewSessionAccessDraft({
@@ -377,7 +382,10 @@ function AccessDraftProbe(props: Readonly<{
         useScreenHost: props.useScreenHost ?? false,
     });
     props.onReady(state);
-    return null;
+    const popoverContent = props.popoverOpen ? state.chip?.popoverContent : null;
+    return typeof popoverContent === 'function'
+        ? <>{popoverContent({ requestClose: () => {}, maxHeight: 420 })}</>
+        : popoverContent ?? null;
 }
 
 function accessDraftEditor(state: NewSessionAccessDraftState, requestClose: () => void = () => {}) {
@@ -462,7 +470,9 @@ describe('useNewSessionAccessDraft repository currentness', () => {
             }], nextCursor: null },
         } as never);
         let latest: NewSessionAccessDraftState | null = null;
-        const screen = await renderScreen(<AccessDraftProbe serverId="home-one" sourceRevision={1}
+        // Team candidates are picker detail, so this case drives the open
+        // presentation the person picks a context in.
+        const screen = await renderScreen(<AccessDraftProbe serverId="home-one" sourceRevision={1} popoverOpen
             sourceAccess={alice} sourcePrimaryTeamId={null} onReady={(state) => { latest = state; }} />);
         await vi.waitFor(() => expect(accessDraftEditor(latest!).model.context?.options).toEqual(expect.arrayContaining([
             expect.objectContaining({ teamId: 'team-local' }),
@@ -472,15 +482,15 @@ describe('useNewSessionAccessDraft repository currentness', () => {
 
         // An unrelated repository revision still carries the previous Team
         // context. It must not erase this newer device edit.
-        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={2}
+        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={2} popoverOpen
             sourceAccess={bob} sourcePrimaryTeamId={null} onReady={(state) => { latest = state; }} />);
         expect(latest!.access).toEqual(bob);
         expect(latest!.primaryTeamId).toBe('team-local');
 
         // Once its exact echo is observed, a later Use-synced choice may replace it.
-        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={3}
+        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={3} popoverOpen
             sourceAccess={bob} sourcePrimaryTeamId="team-local" onReady={(state) => { latest = state; }} />);
-        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={4}
+        await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={4} popoverOpen
             sourceAccess={bob} sourcePrimaryTeamId="team-synced" onReady={(state) => { latest = state; }} />);
         expect(latest!.primaryTeamId).toBe('team-synced');
     });
@@ -682,5 +692,49 @@ describe('useNewSessionAccessDraft repository currentness', () => {
         await screen.update(<AccessDraftProbe serverId="home-one" sourceRevision={3}
             sourceAccess={bob} sourcePrimaryTeamId="team-synced" onReady={(state) => { latest = state; }} />);
         expect(latest).toMatchObject({ access: null, primaryTeamId: null });
+    });
+
+    it('reaches the Home directory only once an editor presentation is open', async () => {
+        runTeamActionMock.mockClear();
+        let latest: NewSessionAccessDraftState | null = null;
+        const probe = (popoverOpen: boolean) => (
+            <AccessDraftProbe serverId="home-one" sourceRevision={1} sourceAccess={null}
+                sourcePrimaryTeamId={null} popoverOpen={popoverOpen}
+                onReady={(state) => { latest = state; }} />
+        );
+        const screen = await renderScreen(probe(false));
+        await act(async () => {});
+
+        // The collapsed chip is projected from authored grants alone, so the
+        // composer must not spend a Team page on a picker nobody opened.
+        expect(latest!.chip).not.toBeNull();
+        expect(runTeamActionMock).not.toHaveBeenCalled();
+
+        await screen.update(probe(true));
+        await vi.waitFor(() => expect(runTeamActionMock).toHaveBeenCalled());
+        const teamPageCalls = () => runTeamActionMock.mock.calls
+            .filter(([request]) => (request as unknown as { actionId?: string }).actionId === 'teams.list').length;
+        expect(teamPageCalls()).toBe(1);
+
+        // Closing releases the demand without discarding the acquired page, and
+        // reopening does not buy a second one.
+        await screen.update(probe(false));
+        await act(async () => {});
+        await screen.update(probe(true));
+        await act(async () => {});
+        expect(teamPageCalls()).toBe(1);
+    });
+
+    it('still resolves the create-time Team policy for a draft that already names a context', async () => {
+        // The required-grant floor a named Team imposes is carried into
+        // creation whether or not a picker is ever opened, so deferring
+        // candidate discovery must not defer the policy that decides it.
+        runTeamActionMock.mockClear();
+        let latest: NewSessionAccessDraftState | null = null;
+        await renderScreen(<AccessDraftProbe serverId="home-one" sourceRevision={1} sourceAccess={null}
+            sourcePrimaryTeamId="team-local" popoverOpen={false}
+            onReady={(state) => { latest = state; }} />);
+        await vi.waitFor(() => expect(runTeamActionMock).toHaveBeenCalled());
+        expect(latest!.primaryTeamId).toBe('team-local');
     });
 });

@@ -9,6 +9,7 @@ import { recordTeamCredentialActivityInTx, type TeamCredentialActivityActor } fr
 import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
 import { readTeamCredentialBrokerPlacement, resolveTeamCredentialBrokerPoolForSaveInTx } from "./brokerPlacementResolver";
 import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
+import { retainEntitledTeamCredentialRecipientMaterialInTx } from "./recipientMaterial";
 import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
 import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
 
@@ -285,15 +286,13 @@ export async function setTeamCredentialAudienceInTx(
     if (input.memberGrants.length > 0) {
         await tx.teamCredentialMemberGrant.createMany({ data: input.memberGrants.map(grant => ({ resourceId: resource.id, ...grant })) });
     }
-    // Recipient material is a derived projection of the complete audience.
-    // Replacing that audience must erase the old projection in the same
-    // transaction; the source custodian can rebuild only the newly entitled
-    // recipients from the canonical source after this revision commits.
-    await tx.teamCredentialRecipientMaterial.deleteMany({ where: { resourceId: resource.id } });
-    await tx.teamCredentialResource.update({
-        where: { id: resource.id },
-        data: { directSourceVersionsJson: null },
-    });
+    // Recipient material is a projection of who may receive directly, per
+    // recipient — not of the audience as a whole. Replacing the audience ends
+    // it for exactly the recipients the new audience no longer entitles, and
+    // the entitlement owner decides that. The source is unchanged by an
+    // audience edit, so the published source versions are unchanged too and a
+    // retained recipient keeps working while the custodian is offline.
+    await retainEntitledTeamCredentialRecipientMaterialInTx(tx, { resourceId: resource.id });
     await recordTeamCredentialActivityInTx(tx, {
         teamId: resource.teamId, resourceId: resource.id, kind: "audience_changed",
         actor: { kind: "account", accountId: params.actorAccountId }, subjectDisplayName: resource.displayName,

@@ -5,6 +5,10 @@ import { sync } from '@/sync/sync';
 import {
     fetchConcurrentSessionListQueryPage,
     getConcurrentSessionListQueryHomeAvailability,
+    isConcurrentOrdinarySessionListHome,
+    loadNextConcurrentOrdinarySessionListPage,
+    readConcurrentOrdinarySessionListLifecycle,
+    refreshConcurrentOrdinarySessionList,
     retryConcurrentSessionListQueryHome,
 } from '@/sync/runtime/orchestration/concurrentSessionCache';
 import {
@@ -65,13 +69,30 @@ export function isSyncOwnedOrdinarySessionListHome(serverIdRaw: string): boolean
         && areServerProfileIdentifiersEquivalent(serverId, getAppliedActiveServerSnapshot().serverId);
 }
 
+export type OrdinarySessionListHomeOwner = 'sync' | 'concurrent';
+
 /**
- * Sync's ordinary frontier for this Home, projected onto the per-Home query state.
+ * Which runtime owns this Home's ordinary `/v2/sessions` corpus, if any.
  *
- * The filter reads this instead of opening a second paginator over the same corpus,
- * so one cursor advances and one membership is canonical.
+ * One answer for every Home: Sync owns the applied active Home, the concurrent
+ * cache owns every other managed Home. A filter whose corpus is ordinary reads
+ * the incumbent frontier through this seam rather than mounting a controller
+ * that would paginate and `replace` the same membership behind a second cursor.
  */
-export function readSyncOrdinarySessionListHomeState(input: Readonly<{
+export function resolveOrdinarySessionListHomeOwner(
+    serverIdRaw: string,
+): OrdinarySessionListHomeOwner | null {
+    const serverId = String(serverIdRaw ?? '').trim();
+    if (!serverId) return null;
+    if (isSyncOwnedOrdinarySessionListHome(serverId)) return 'sync';
+    return isConcurrentOrdinarySessionListHome(serverId) ? 'concurrent' : null;
+}
+
+/**
+ * The incumbent ordinary frontier for this Home, projected onto the per-Home query
+ * state, so one cursor advances and one membership is canonical.
+ */
+export function readOrdinarySessionListHomeState(input: Readonly<{
     serverId: string;
     requestedQueryKey: string;
     online: boolean | null;
@@ -82,19 +103,29 @@ export function readSyncOrdinarySessionListHomeState(input: Readonly<{
         requestedQueryKey: input.requestedQueryKey,
         sessionIds: state.ordinarySessionListMembershipByServerId?.[input.serverId] ?? [],
         observation: state.concurrentSessionListCacheByServerId?.[input.serverId]?.listObservation ?? null,
-        lifecycle: sync.readOrdinarySessionListLifecycle(),
+        lifecycle: resolveOrdinarySessionListHomeOwner(input.serverId) === 'sync'
+            ? sync.readOrdinarySessionListLifecycle()
+            : readConcurrentOrdinarySessionListLifecycle(input.serverId),
         online: input.online,
     });
 }
 
-/** Advance Sync's ordinary frontier. There is no second cursor to advance. */
-export async function loadNextSyncOrdinarySessionListPage(): Promise<void> {
-    await sync.fetchMoreSessions();
+/** Advance this Home's incumbent ordinary frontier. There is no second cursor to advance. */
+export async function loadNextOrdinarySessionListPage(serverIdRaw: string): Promise<void> {
+    if (resolveOrdinarySessionListHomeOwner(serverIdRaw) === 'sync') {
+        await sync.fetchMoreSessions();
+        return;
+    }
+    await loadNextConcurrentOrdinarySessionListPage(serverIdRaw);
 }
 
-/** Replace Sync's ordinary corpus from page one. */
-export async function refreshSyncOrdinarySessionList(): Promise<void> {
-    await sync.refreshSessions();
+/** Replace this Home's ordinary corpus from page one. */
+export async function refreshOrdinarySessionList(serverIdRaw: string): Promise<void> {
+    if (resolveOrdinarySessionListHomeOwner(serverIdRaw) === 'sync') {
+        await sync.refreshSessions();
+        return;
+    }
+    await refreshConcurrentOrdinarySessionList(serverIdRaw);
 }
 
 export async function fetchSessionListQueryPageForHome(

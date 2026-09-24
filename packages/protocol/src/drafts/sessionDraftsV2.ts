@@ -184,163 +184,12 @@ export const NewSessionDraftDocumentV2Schema = z.object({
 });
 export type NewSessionDraftDocumentV2 = z.infer<typeof NewSessionDraftDocumentV2Schema>;
 
-const SUPPORTED_PREDECESSOR_SUCCESSOR_NEW_SESSION_FIELD_IDS = new Set([
-  'executionTarget',
-  'organizationPlacement',
-  'agentTarget',
-  'modelSelection',
-  'runtimeDescriptorV1',
-]);
-const SupportedPredecessorSuccessorNewSessionFieldIdSchema = z.enum([
-  'executionTarget',
-  'organizationPlacement',
-  'agentTarget',
-  'modelSelection',
-  'runtimeDescriptorV1',
-]);
-
-const SupportedPredecessorNewSessionDraftDocumentV1Schema = z.object({
-  v: z.literal(1),
-  composer: SessionDraftDocumentV1Schema.shape.composer,
-  target: z.object({
-    kind: z.literal('newSession'),
-    authoring: z.partialRecord(
-      z.union([SyncedSessionAuthoringFieldIdV1Schema, SupportedPredecessorSuccessorNewSessionFieldIdSchema]),
-      DraftFieldV1Schema,
-    ),
-  }).strict(),
-  extensions: SessionDraftDocumentV1Schema.shape.extensions,
-}).strict().superRefine((document, context) => {
-  for (const [fieldId, field] of Object.entries(document.target.authoring)) {
-    if (SUPPORTED_PREDECESSOR_SUCCESSOR_NEW_SESSION_FIELD_IDS.has(fieldId)) continue;
-    const predecessorSchema = SyncedSessionAuthoringValueV1Schema.shape[
-      fieldId as keyof typeof SyncedSessionAuthoringValueV1Schema.shape
-    ];
-    if (!predecessorSchema?.safeParse(field?.value).success) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['target', 'authoring', fieldId, 'value'],
-        message: `Invalid supported-predecessor authoring value for ${fieldId}`,
-      });
-    }
-  }
-  const extensionFields = Object.values(document.extensions)
-    .reduce((count, fields) => count + Object.keys(fields).length, 0);
-  if (3 + Object.keys(document.target.authoring).length + extensionFields > SESSION_DRAFT_MAX_FIELDS) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Draft field count exceeds the supported boundary' });
-  }
-});
-
-const SupportedPredecessorNewSessionDraftPrivatePayloadV1Schema = z.object({
-  v: z.literal(1),
-  address: SessionDraftAddressV1Schema.options[0],
-  document: SupportedPredecessorNewSessionDraftDocumentV1Schema,
-}).strict().superRefine((payload, context) => {
-  if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > SESSION_DRAFT_MAX_PRIVATE_PAYLOAD_BYTES) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Draft private payload exceeds the supported boundary' });
-  }
-});
-
-/**
- * Exact lossless projection accepted by the moving supported 0.2 Home.
- *
- * The predecessor's strict V1 document deliberately preserves the five named
- * successor fields as opaque DraftFieldV1 values without treating them as
- * execution authority. Incumbent V1 fields must still satisfy their released
- * value schemas. Any other current field keeps the write on V2.
- */
-export type SupportedPredecessorNewSessionDraftDocumentV1 = z.infer<
-  typeof SupportedPredecessorNewSessionDraftDocumentV1Schema
->;
-
-export type SupportedPredecessorNewSessionDraftPrivatePayloadV1 = z.infer<
-  typeof SupportedPredecessorNewSessionDraftPrivatePayloadV1Schema
->;
-
-export type SupportedPredecessorNewSessionDraftContentV1 =
-  | Readonly<{ t: 'plain'; v: SupportedPredecessorNewSessionDraftPrivatePayloadV1 }>
-  | Readonly<{ t: 'encrypted'; c: string }>;
-
-export function projectNewSessionDraftDocumentToSupportedPredecessorV1(
-  document: NewSessionDraftDocumentV2,
-): SupportedPredecessorNewSessionDraftDocumentV1 | null {
-  const parsed = NewSessionDraftDocumentV2Schema.safeParse(document);
-  if (!parsed.success) return null;
-  const executionTarget = parsed.data.target.authoring.executionTarget;
-  const parsedExecutionTarget = executionTarget
-    ? SessionAuthoringExecutionTargetV2Schema.nullable().safeParse(executionTarget.value)
-    : null;
-  if (parsedExecutionTarget && !parsedExecutionTarget.success) return null;
-  const executionTargetValue = parsedExecutionTarget?.data ?? null;
-  if (executionTargetValue?.kind === 'temporary_computer') return null;
-  for (const [fieldId, field] of Object.entries(parsed.data.target.authoring)) {
-    if (SUPPORTED_PREDECESSOR_SUCCESSOR_NEW_SESSION_FIELD_IDS.has(fieldId)) continue;
-    const predecessorSchema = SyncedSessionAuthoringValueV1Schema.shape[
-      fieldId as keyof typeof SyncedSessionAuthoringValueV1Schema.shape
-    ];
-    if (!predecessorSchema || !predecessorSchema.safeParse(field?.value).success) return null;
-  }
-  const projected = SupportedPredecessorNewSessionDraftDocumentV1Schema.safeParse({
-    ...parsed.data,
-    v: 1,
-    target: {
-      ...parsed.data.target,
-      authoring: {
-        ...parsed.data.target.authoring,
-        ...(executionTarget ? {
-          serverId: {
-            mutationId: executionTarget.mutationId,
-            value: executionTargetValue?.kind === 'machine'
-              ? executionTargetValue.target.serverId
-              : null,
-          },
-          machineId: {
-            mutationId: executionTarget.mutationId,
-            value: executionTargetValue?.kind === 'machine'
-              ? executionTargetValue.target.machineId
-              : null,
-          },
-        } : {}),
-      },
-    },
-  });
-  return projected.success ? projected.data : null;
-}
-
-export function createSupportedPredecessorNewSessionDraftPrivatePayloadV1(
-  address: SessionDraftAddressV2,
-  document: SessionDraftDocumentV2,
-): SupportedPredecessorNewSessionDraftPrivatePayloadV1 | null {
-  if (address.kind !== 'newSession') return null;
-  const parsedDocument = NewSessionDraftDocumentV2Schema.safeParse(document);
-  if (!parsedDocument.success) return null;
-  const projected = projectNewSessionDraftDocumentToSupportedPredecessorV1(parsedDocument.data);
-  if (!projected) return null;
-  const parsedPayload = SupportedPredecessorNewSessionDraftPrivatePayloadV1Schema.safeParse({
-    v: 1,
-    address,
-    document: projected,
-  });
-  return parsedPayload.success ? parsedPayload.data : null;
-}
-
 export const SessionDraftDocumentV2Schema = z.union([
   SessionDraftDocumentV1Schema,
   NewSessionDraftDocumentV2Schema,
   SessionDiscussionDraftDocumentV2Schema,
 ]);
 export type SessionDraftDocumentV2 = z.infer<typeof SessionDraftDocumentV2Schema>;
-
-/**
- * Current readers lift the supported bare exact-Machine V1 field into the
- * catalog's V2 target. Mutation identities and every other field are retained.
- */
-export function normalizeSessionDraftDocumentV2(document: SessionDraftDocumentV2): SessionDraftDocumentV2 {
-  // V1 is the released closed payload, so it never carries successor
-  // `executionTarget` content to normalize. New targets are authored as V2 at
-  // the repository boundary and stay unavailable to V1 readers.
-  return document;
-}
 
 function readManualRecipientRunId(document: SessionDraftDocumentV1): string | null {
   if (document.target.kind !== 'session') return null;
@@ -405,92 +254,6 @@ export const SessionDraftPrivatePayloadV2Schema = z.union([
 export type SessionDraftPrivatePayloadV2 = z.infer<typeof SessionDraftPrivatePayloadV2Schema>;
 
 /**
- * Lifts the supported predecessor's V1 wrapper around preserved successor
- * new-Session fields back into the canonical V2 document. Known retired V1
- * display fields may be present after a predecessor edit; they are validated
- * but the preserved successor selection remains authoritative.
- */
-export function restoreSupportedPredecessorNewSessionDraftPayloadV2(
-  value: unknown,
-): SessionDraftPrivatePayloadV2 | null {
-  const parsedPredecessor = SupportedPredecessorNewSessionDraftPrivatePayloadV1Schema.safeParse(value);
-  if (!parsedPredecessor.success) return null;
-  const payload = parsedPredecessor.data;
-  const document = payload.document;
-  const targetRecord = document.target;
-  const authoring = targetRecord.authoring;
-  const restoredAuthoring: Record<string, unknown> = {};
-  let hasPreservedSuccessorField = false;
-  for (const [fieldId, field] of Object.entries(authoring)) {
-    if (SUPPORTED_PREDECESSOR_SUCCESSOR_NEW_SESSION_FIELD_IDS.has(fieldId)) {
-      hasPreservedSuccessorField = true;
-      restoredAuthoring[fieldId] = field;
-      continue;
-    }
-    // A predecessor edit can re-project its retired flat display fields beside
-    // the preserved successor selection. Validate those bytes, then retain only
-    // fields owned by the current V2 catalog; the preserved successor field is
-    // the execution authority.
-    if (Object.prototype.hasOwnProperty.call(SyncedSessionAuthoringValueV2Schema.shape, fieldId)) {
-      restoredAuthoring[fieldId] = field;
-    }
-  }
-  if (!hasPreservedSuccessorField) return null;
-  const executionTarget = authoring.executionTarget;
-  if (executionTarget) {
-    const parsedExecutionTarget = DraftFieldV1Schema.safeParse(executionTarget);
-    const parsedServerId = DraftFieldV1Schema.safeParse(authoring.serverId);
-    const parsedMachineId = DraftFieldV1Schema.safeParse(authoring.machineId);
-    if (!parsedExecutionTarget.success || !parsedServerId.success || !parsedMachineId.success) return null;
-    const baseline = SyncedSessionAuthoringValueV2Schema.shape.executionTarget.safeParse(
-      parsedExecutionTarget.data.value,
-    );
-    const serverId = SyncedSessionAuthoringValueV1Schema.shape.serverId.safeParse(parsedServerId.data.value);
-    const machineId = SyncedSessionAuthoringValueV1Schema.shape.machineId.safeParse(parsedMachineId.data.value);
-    if (!baseline.success || !serverId.success || !machineId.success || baseline.data?.kind === 'temporary_computer') {
-      return null;
-    }
-    const baselineMutationId = parsedExecutionTarget.data.mutationId;
-    const machineWasEdited = parsedMachineId.data.mutationId !== baselineMutationId;
-    const serverWasEdited = parsedServerId.data.mutationId !== baselineMutationId;
-    if (!machineWasEdited) {
-      const expectedServerId = baseline.data?.kind === 'machine' ? baseline.data.target.serverId : null;
-      const expectedMachineId = baseline.data?.kind === 'machine' ? baseline.data.target.machineId : null;
-      if (serverWasEdited || serverId.data !== expectedServerId || machineId.data !== expectedMachineId) return null;
-    } else if (machineId.data === null) {
-      restoredAuthoring.executionTarget = {
-        mutationId: parsedMachineId.data.mutationId,
-        value: null,
-      };
-    } else {
-      if (serverId.data === null) return null;
-      const baselineServerId = baseline.data?.kind === 'machine' ? baseline.data.target.serverId : null;
-      if (!serverWasEdited && serverId.data !== baselineServerId) return null;
-      restoredAuthoring.executionTarget = {
-        mutationId: parsedMachineId.data.mutationId,
-        value: {
-          kind: 'machine',
-          target: { serverId: serverId.data, machineId: machineId.data },
-        },
-      };
-    }
-  } else if (authoring.serverId !== undefined || authoring.machineId !== undefined) {
-    return null;
-  }
-  const candidate = {
-    ...payload,
-    v: 2,
-    document: {
-      ...document,
-      v: 2,
-      target: { ...targetRecord, authoring: restoredAuthoring },
-    },
-  };
-  const parsed = SessionDraftPrivatePayloadV2Schema.safeParse(candidate);
-  return parsed.success ? parsed.data : null;
-}
-
-/**
  * A lossless Machine-only projection retains ordinary V1 interoperability.
  * Successor fields, selection provenance and Temporary computer cannot be
  * dropped by this projection: the strict V1 parser instead selects V2.
@@ -509,10 +272,7 @@ export function createSessionDraftPrivatePayloadV2(
 export const SessionDraftStoredContentEnvelopeV2Schema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('plain'),
-    v: z.union([
-      SessionDraftPrivatePayloadV2Schema,
-      SupportedPredecessorNewSessionDraftPrivatePayloadV1Schema,
-    ]),
+    v: SessionDraftPrivatePayloadV2Schema,
   }).strict(),
   z.object({
     t: z.literal('encrypted'),

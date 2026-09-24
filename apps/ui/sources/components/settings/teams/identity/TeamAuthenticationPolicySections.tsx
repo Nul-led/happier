@@ -503,12 +503,28 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                         );
                     })}
                     {retainedHomeMethods.map((reference) => (
+                        // A retained reference is preserved, not frozen: the Home
+                        // stopped offering this method, and a restricted policy
+                        // that still accepts it is refused on save, so the one
+                        // recovery is to deselect it here. It stays a real
+                        // selection — removing it drops it from the draft, and
+                        // because the Home no longer offers it, it cannot come
+                        // back — rather than an inert row whose only escape is
+                        // abandoning the whole policy for inheritance.
                         <Item
                             key={acceptedKey(reference)}
                             testID={`team-authentication-policy-home-method:${reference.methodId}`}
-                            mode="info"
                             title={reference.methodId}
                             subtitle={`${t('teams.authentication.policy.connectionOwnerHome')} · ${t('teams.authentication.policy.homeMethodRetained')}`}
+                            accessibilityLabel={`${reference.methodId}, ${t('teams.authentication.policy.connectionOwnerHome')}, ${t('teams.authentication.policy.homeMethodRetained')}`}
+                            accessibilityRole="checkbox"
+                            webRole="checkbox"
+                            selected
+                            accessibilityChecked
+                            disabled={!editable}
+                            onPress={editable
+                                ? () => toggleAccepted({ kind: 'home_method', methodId: reference.methodId })
+                                : undefined}
                             showChevron={false}
                         />
                     ))}

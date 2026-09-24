@@ -39,7 +39,7 @@ afterEach(() => {
 
 function primeCollaboration(serverId: string): void {
     const features = createRootLayoutFeaturesResponse();
-    for (const feature of ['sharing.session', 'sessions.collaboration'] as const) {
+    for (const feature of ['sharing.session'] as const) {
         if (!tryWriteServerEnabledBitInPlace(features, feature, true)) {
             throw new Error(`Unable to enable ${feature}`);
         }
@@ -103,6 +103,12 @@ describe('classifyTeamMemberEncryptionDiscoveryFailure', () => {
 
     it('does not offer retry for an unsupported membership-history resource', () => {
         expect(classifyTeamMemberEncryptionDiscoveryFailure(new SessionAccessApiError('unsupported_action'))).toEqual({
+            kind: 'unavailable',
+            reason: 'unsupported',
+            retryable: false,
+        });
+        // A Home whose Session sharing is off withholds the same resource.
+        expect(classifyTeamMemberEncryptionDiscoveryFailure(new SessionAccessApiError('session_access_sharing_unavailable'))).toEqual({
             kind: 'unavailable',
             reason: 'unsupported',
             retryable: false,

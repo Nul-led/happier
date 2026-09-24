@@ -8,7 +8,11 @@ import {
   type QualifiedConnectedAccountGroupV4,
   type QualifiedConnectedAccountProfileV4,
   type QualifiedConnectedAccountPurposeBindingTargetV1,
+  type TeamResourceConnectedServiceSelectionV2,
 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
+
+import { areTeamResourceConnectedServiceSelectionsEqual } from './connectedServicesAgentOptionStateBindings';
 
 function sameService(
   left: PluginContributionIdentityV1,
@@ -85,4 +89,29 @@ export function resolveConnectedAccountPurposeTargetEligibility(input: Readonly<
     now,
   });
   return activeAccount ? 'usable' : 'unusable';
+}
+
+/**
+ * A Team resource purpose default is usable only while the viewer's entitled
+ * Team catalog still offers this exact selection on an available resource of
+ * the declared service. Absence (catalog not supplied, resource withdrawn) is
+ * never a personal fallback (lane 10 child 02 §11.6).
+ */
+export function resolveConnectedAccountPurposeTeamResourceEligibility(input: Readonly<{
+  teamResource: Readonly<{ teamId: string; selection: TeamResourceConnectedServiceSelectionV2 }>;
+  service: PluginContributionIdentityV1;
+  teamResources: readonly TeamCredentialResourceCatalogEntryV1[];
+}>): ConnectedAccountPurposeTargetEligibility {
+  const { teamResource } = input;
+  const resource = input.teamResources.find((candidate) => (
+    candidate.id === teamResource.selection.resourceId && candidate.teamId === teamResource.teamId
+  ));
+  return resource?.readiness.kind === 'available'
+    && resource.sourcePresentation?.kind === 'connected_service'
+    && sameService(resource.sourcePresentation.service, input.service)
+    && resource.connectedServiceSelections.some((selection) => (
+      areTeamResourceConnectedServiceSelectionsEqual(selection, teamResource.selection)
+    ))
+    ? 'usable'
+    : 'unusable';
 }

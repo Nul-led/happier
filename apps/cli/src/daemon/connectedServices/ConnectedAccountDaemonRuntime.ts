@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { PluginContributionRef } from '@happier-dev/plugin-sdk';
 import {
     PluginJsonValueV2Schema,
+    pluginSourceCustodyV1Equal,
     sameQualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 import type {
@@ -20,6 +21,7 @@ import type {
 } from '@happier-dev/protocol';
 
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import {
     createConnectedAccountAuthenticationAttemptOwner,
     type ConnectedAccountAttemptProviderInvocation,
@@ -89,7 +91,7 @@ export type ConnectedAccountDaemonPersistence = Readonly<{
             service: PluginContributionRef,
         ): Promise<readonly QualifiedConnectedAccountProfileV4[]>;
     }>;
-    configuration: Omit<ConfigurationOwnerParams, 'isGenerationCurrent'>;
+    configuration: Omit<ConfigurationOwnerParams, 'isRuntimeCurrent'>;
     attempts: Pick<
         AttemptOwnerParams,
         'accounts' | 'oauth' | 'settlement'
@@ -128,21 +130,21 @@ export function createConnectedAccountDaemonConfigurationOwner(params: Readonly<
     reloadController: Pick<PluginReloadController, 'tryAcquireRuntimeRegistry'>;
     persistence: ConnectedAccountDaemonPersistence['configuration'];
 }>): ConnectedAccountConfigurationOwner {
-    const isPluginGenerationCurrent = async (input: Readonly<{
+    const isPluginRuntimeCurrent = async (input: Readonly<{
         pluginId: string;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<boolean> => {
         const lease = params.reloadController.tryAcquireRuntimeRegistry();
         if (!lease) return false;
         try {
-            if (String(lease.registry.generation) !== input.generation) return false;
             // Currentness is a host fact the cold projection already carries; asking it
             // must not boot the plugin whose currentness is in question.
             const entry = lease.registry.connectedAccountContributions?.list()
                 .find((candidate) => candidate.ref.pluginId === input.pluginId);
             if (!entry) return false;
-            return entry.immutableGenerationId === input.immutableGenerationId
+            return entry.occurrenceId === input.occurrenceId
+                && pluginSourceCustodyV1Equal(entry.sourceCustody, input.sourceCustody)
                 && entry.isCurrent();
         } catch {
             return false;
@@ -152,7 +154,7 @@ export function createConnectedAccountDaemonConfigurationOwner(params: Readonly<
     };
     return createConnectedAccountConfigurationOwner({
         ...params.persistence,
-        isGenerationCurrent: isPluginGenerationCurrent,
+        isRuntimeCurrent: isPluginRuntimeCurrent,
     });
 }
 
@@ -223,8 +225,8 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
                             === 1
                             ? 'single' as const
                             : 'multiple' as const,
-                    generation: contribution.generation,
-                    immutableGenerationId: contribution.immutableGenerationId,
+                    occurrenceId: contribution.occurrenceId,
+                    sourceCustody: contribution.sourceCustody,
                 });
             } finally {
                 await registryLease.release();
@@ -242,8 +244,11 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
                     ) ?? null;
                 return Boolean(
                     contribution
-                    && contribution.generation === admission.generation
-                    && contribution.immutableGenerationId === admission.immutableGenerationId
+                    && contribution.occurrenceId === admission.occurrenceId
+                    && pluginSourceCustodyV1Equal(
+                        contribution.sourceCustody,
+                        admission.sourceCustody,
+                    )
                     && contribution.isCurrent(),
                 );
             } catch {
@@ -311,8 +316,8 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
     type ControlBasis = Readonly<{
         target: ConnectedAccountConfigurationTarget;
         mode: PluginConnectedAccountAuthenticationModeV2;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>;
 
     async function resolveControlBasis(
@@ -357,7 +362,7 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
             if (!params.reloadController.isRuntimeRegistryCurrent(lease.registry)) {
                 return null;
             }
-            // A control basis is an authentication-mode descriptor plus the generation
+            // A control basis is an authentication-mode descriptor plus the runtime
             // identity to fence on. Both are cold facts the contribution projection
             // already holds, and `readConfiguration` never reaches the plugin at all —
             // so resolving the executable runtime here would boot a plugin to answer a
@@ -379,8 +384,8 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
             return Object.freeze({
                 target: normalizedTarget,
                 mode,
-                generation: contribution.generation,
-                immutableGenerationId: contribution.immutableGenerationId,
+                occurrenceId: contribution.occurrenceId,
+                sourceCustody: contribution.sourceCustody,
             });
         } finally {
             await lease.release();
@@ -513,9 +518,8 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
                             status: 'described' as const,
                             service: Object.freeze({ ...contribution.ref }),
                             descriptor: contribution.descriptor,
-                            generation: contribution.generation,
-                            immutableGenerationId:
-                                contribution.immutableGenerationId,
+                            occurrenceId: contribution.occurrenceId,
+                            sourceCustody: contribution.sourceCustody,
                             accounts: Object.freeze([...accounts]),
                             ...(operationTransport
                                 ? { operationTransport }
@@ -839,6 +843,7 @@ ConnectedAccountDaemonPersistence {
             }),
             destroyAttempt: async () => undefined,
             secrets: Object.freeze({
+                admit: async () => undefined,
                 has: async () => false,
                 read: async () => null,
             }),

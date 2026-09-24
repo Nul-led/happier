@@ -81,11 +81,11 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -759,6 +759,76 @@ describe('TeamAuthenticationPolicySections', () => {
         // must not replace it.
         expect(written.authenticationPolicy?.accepted)
             .toContainEqual({ kind: 'team_connection', connectionId: 'connection-okta' });
+    });
+
+    it('lets an administrator remove a retained method the Home no longer offers', async () => {
+        // A stored restricted policy may name a Home method the Home has since
+        // stopped offering. The server refuses any restricted policy holding an
+        // unavailable choice, so if the retained row is inert the administrator
+        // can open the editor, change nothing that matters, and never save
+        // again — the only escape being to abandon the policy for inheritance.
+        const team = teamSummaryFixture({
+            capabilities: teamCapabilitiesFixture({ manageAuthentication: true }),
+            policy: teamPolicyFixture({
+                authenticationPolicy: {
+                    v: 1,
+                    mode: 'restricted',
+                    accepted: [
+                        { kind: 'home_method', methodId: 'email_password' },
+                        { kind: 'home_method', methodId: 'legacy_sso' },
+                    ],
+                },
+                authenticationPolicyStatus: 'available',
+            }),
+        });
+        const serverId = await addHomeWithTeam(team);
+        harness.answer(serverId, TEAM_POLICY_PATH, { body: team });
+        // The Home still offers `email_password`; `legacy_sso` is gone.
+        const features = createRootLayoutFeaturesResponse({
+            capabilities: {
+                auth: {
+                    methods: [{
+                        id: 'email_password',
+                        actions: [
+                            { id: 'login', enabled: true, mode: 'either' },
+                            { id: 'provision', enabled: true, mode: 'either' },
+                        ],
+                        ui: { displayName: 'Email and password' },
+                    }],
+                },
+            },
+        });
+        if (!tryWriteServerEnabledBitInPlace(features, 'teams', true)) {
+            throw new Error('The teams feature bit could not be written by its own writer');
+        }
+        harness.answer(serverId, '/v1/features', { body: features });
+        harness.answer(serverId, '/v1/features/authenticated', { body: features });
+        primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
+
+        const screen = await renderAuthentication(serverId);
+        const retainedTestId = 'team-authentication-policy-home-method:legacy_sso';
+        await waitForPressable(screen, retainedTestId);
+
+        const retainedRow = screen.findAllByTestId(retainedTestId)
+            .find((node) => typeof node.props?.accessibilityRole === 'string');
+        expect(retainedRow?.props.accessibilityRole).toBe('checkbox');
+        expect(retainedRow?.props.accessibilityChecked).toBe(true);
+
+        await screen.pressByTestIdAsync(retainedTestId);
+        await waitForTestId(screen, 'team-authentication-policy-save');
+        await screen.pressByTestIdAsync('team-authentication-policy-save');
+
+        await vi.waitFor(() => expect(harness.requestsFor(TEAM_POLICY_PATH)).toHaveLength(1));
+        const written = harness.requestsFor(TEAM_POLICY_PATH)[0]?.input as {
+            authenticationPolicy?: { mode?: string; accepted?: readonly Record<string, unknown>[] };
+        };
+        // Still a restricted policy over the method that remains: removing an
+        // unavailable choice is not a reset to Home inheritance.
+        expect(written.authenticationPolicy?.mode).toBe('restricted');
+        expect(written.authenticationPolicy?.accepted)
+            .toEqual([{ kind: 'home_method', methodId: 'email_password' }]);
+        // The Home does not offer it, so it cannot be selected again.
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain(retainedTestId);
     });
 
     it('names the exact connection when two share a provider display name', async () => {

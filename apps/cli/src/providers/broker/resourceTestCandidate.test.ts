@@ -11,6 +11,7 @@ import {
   resolveTeamCredentialBrokerEligibility,
   resolveTeamCredentialResourceCatalogApplications,
   resolveTeamCredentialResourceTestCandidate,
+  resolveTeamCredentialSourceModelCatalog,
 } from './resourceTestCandidate';
 
 const parsedSource = TeamCredentialSourceBindingV1Schema.parse({
@@ -298,5 +299,50 @@ describe('resolveTeamCredentialResourceCatalogApplications', () => {
     });
 
     expect(result.map(({ protocol }) => protocol)).toEqual(['openai-chat', 'openai-responses']);
+  });
+});
+
+describe('resolveTeamCredentialSourceModelCatalog', () => {
+  const application = {
+    agentTargetKey: 'agent:acme.example/responses',
+    implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+    endpointTemplateId: 'cliproxyapi-openai-responses',
+    protocol: 'openai-responses' as const,
+  };
+
+  it('serves the broker from its own source projection, with no recipient catalog in the path', async () => {
+    const projectModels = vi.fn(async (request: DaemonProviderModelProjectionRequestV1) =>
+      projection(request.agentTargetKey, 'source-model'));
+    const catalog = await resolveTeamCredentialSourceModelCatalog({
+      machineId: 'broker-machine', teamId: 'team-1', resourceId: 'resource-1', resourceRevision: 4,
+      source, application, projectModels,
+    });
+
+    expect(projectModels).toHaveBeenCalledWith({
+      machineId: 'broker-machine',
+      agentTargetKey: application.agentTargetKey,
+      providerConnection: {
+        connectionId: source.connectionId,
+        expectedConnectionSecurityFingerprint: source.connectionSecurityFingerprint,
+      },
+      mode: 'picker',
+    });
+    expect(catalog).toMatchObject({
+      resourceId: 'resource-1',
+      resourceRevision: 4,
+      sourceRevision: 'source-revision',
+      application,
+    });
+    expect(catalog?.rows.map((row) => row.descriptor.id)).toEqual(['source-model']);
+    expect(catalog?.resolveCanonicalModelId('source-model')).toBe('source-model');
+  });
+
+  it('is unavailable when the source serves no row for that exact application', async () => {
+    await expect(resolveTeamCredentialSourceModelCatalog({
+      machineId: 'broker-machine', teamId: 'team-1', resourceId: 'resource-1', resourceRevision: 4,
+      source,
+      application: { ...application, endpointTemplateId: 'cliproxyapi-openai-chat', protocol: 'openai-chat' },
+      projectModels: async (request) => projection(request.agentTargetKey, 'source-model'),
+    })).resolves.toBeNull();
   });
 });

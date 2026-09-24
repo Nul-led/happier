@@ -9,7 +9,7 @@ import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient'
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { verifyExternalActionExecutionAuthorizationCurrent } from '@/api/externalActionExecutionAuthorization';
 import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { resolveAvailableAccountSettings } from '@/settings/accountSettings/resolveAvailableAccountSettings';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
@@ -17,6 +17,7 @@ import { resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents'
 import type {
   AccountApiTokensListActionOutputV1,
   ApprovalExecutionOriginV1,
+  PluginSourceCustodyV1,
   SessionAgentSpawnPolicyV1,
 } from '@happier-dev/protocol';
 import {
@@ -25,6 +26,7 @@ import {
   SignedRootActionIdSchema,
   resolveEffectivePermissionMode,
   verifyExternalActionApprovalInputV1,
+  pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
 
@@ -52,10 +54,10 @@ type CurrentMachineExecutionOrigin = Readonly<{
   machineId: string;
 }>;
 
-async function readCurrentPluginImmutableGenerationId(pluginId: string): Promise<string | null> {
+async function readCurrentPluginSourceCustody(pluginId: string): Promise<PluginSourceCustodyV1 | null> {
   const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
   try {
-    return await lease.registry.resolveCurrentPluginImmutableGenerationId?.(pluginId) ?? null;
+    return lease.registry.readPluginSourceCustody?.(pluginId) ?? null;
   } finally {
     await lease.release();
   }
@@ -85,11 +87,25 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
     target: NonNullable<ApprovalExecutionOriginV1['target']>;
     signal?: AbortSignal;
   }>) => Promise<boolean>;
-  resolveCurrentPluginImmutableGenerationId?: (pluginId: string) => Promise<string | null>;
+  resolveCurrentPluginSourceCustody?: (pluginId: string) => Promise<PluginSourceCustodyV1 | null>;
   isAutomationRunCurrent?: (caller: Extract<
     ApprovalExecutionOriginV1['caller'],
     Readonly<{ kind: 'automationRun' }>
   >) => Promise<boolean> | boolean;
+  /**
+   * The live Workflow admission owner's own accepted-authorization currentness
+   * check, reused verbatim for replay. Its parameter shape is the daemon
+   * Workflow runtime's `WorkflowAcceptedAuthorizationCurrentness`, so the same
+   * function answers both the live and the replayed question rather than a
+   * second principal recheck growing beside it.
+   */
+  isWorkflowRunAuthorizationCurrent?: (input: Readonly<{
+    authorization: Extract<
+      ApprovalExecutionOriginV1['caller'],
+      Readonly<{ kind: 'workflowRun' }>
+    >['authorization'];
+    signal?: AbortSignal;
+  }>) => Promise<boolean> | boolean;
   resolveCurrentPermissionMode?: (
     origin: ApprovalExecutionOriginV1,
     signal?: AbortSignal,
@@ -157,12 +173,12 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
           ...(signal ? { signal } : {}),
         })) return false;
         if (origin.caller.kind === 'plugin') {
-          const currentGenerationId = await (
-            input.resolveCurrentPluginImmutableGenerationId
-            ?? readCurrentPluginImmutableGenerationId
+          const sourceCustody = await (
+            input.resolveCurrentPluginSourceCustody
+            ?? readCurrentPluginSourceCustody
           )(origin.caller.pluginId);
-          return currentGenerationId !== null
-            && origin.caller.immutableGenerationId === currentGenerationId;
+          return sourceCustody !== null
+            && pluginSourceCustodyV1Equal(origin.caller.sourceCustody, sourceCustody);
         }
         return true;
       }
@@ -192,12 +208,12 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
       }
 
       if (origin.caller.kind === 'plugin') {
-        const currentGenerationId = await (
-          input.resolveCurrentPluginImmutableGenerationId
-          ?? readCurrentPluginImmutableGenerationId
+        const sourceCustody = await (
+          input.resolveCurrentPluginSourceCustody
+          ?? readCurrentPluginSourceCustody
         )(origin.caller.pluginId);
-        if (!currentGenerationId) return false;
-        if (origin.caller.immutableGenerationId !== currentGenerationId) {
+        if (!sourceCustody) return false;
+        if (!pluginSourceCustodyV1Equal(origin.caller.sourceCustody, sourceCustody)) {
           return false;
         }
       }
@@ -207,11 +223,32 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
         if (!await input.isAutomationRunCurrent(origin.caller)) return false;
       }
 
+      // A Workflow Run's durable origin carries the exact accepted
+      // authorization its live admission already opened, so replay rechecks the
+      // same principal through the same owner. Without that owner the principal
+      // cannot be rechecked at all, which fails closed exactly like the
+      // Automation arm beside it.
+      if (origin.caller.kind === 'workflowRun') {
+        if (!input.isWorkflowRunAuthorizationCurrent) return false;
+        if (!await input.isWorkflowRunAuthorizationCurrent({
+          authorization: origin.caller.authorization,
+          ...(signal ? { signal } : {}),
+        })) return false;
+      }
+
       if (origin.callerPermissionMode !== undefined || origin.causalPermissionAuthority !== undefined) {
         if (origin.causalPermissionAuthority && !origin.callerPermissionMode) return false;
         if (origin.callerPermissionMode !== undefined) {
-          if (origin.callerPermissionMode === null || !input.resolveCurrentPermissionMode) return false;
-          const currentPermissionMode = await input.resolveCurrentPermissionMode(origin, signal);
+          if (origin.callerPermissionMode === null) return false;
+          // A Workflow Run has no Session whose mode can change: its current
+          // permission is the immutable ceiling of the accepted authorization
+          // that the Workflow owner has just rechecked above, exactly the mode
+          // its live admission stamped as caller permission.
+          const currentPermissionMode = origin.caller.kind === 'workflowRun'
+            ? origin.caller.authorization.admittedPermissionCeiling
+            : input.resolveCurrentPermissionMode
+              ? await input.resolveCurrentPermissionMode(origin, signal)
+              : null;
           if (!currentPermissionMode) return false;
           if (origin.causalPermissionAuthority) {
             const admittedPermissionCeiling = origin.causalPermissionAuthority.admittedPermissionCeiling;
@@ -307,6 +344,7 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
   serverId: string;
   serverApiUrl: string;
   isAutomationRunCurrent?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isAutomationRunCurrent'];
+  isWorkflowRunAuthorizationCurrent?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isWorkflowRunAuthorizationCurrent'];
   resolveCurrentPermissionMode?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['resolveCurrentPermissionMode'];
   resolveCurrentSessionAgentSpawnPolicyV1?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['resolveCurrentSessionAgentSpawnPolicyV1'];
   resolveServerFeaturesSnapshot?: () =>
@@ -314,8 +352,7 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
     | undefined
     | Promise<CliServerFeaturesSnapshot | undefined>;
 }>): ReturnType<typeof createDaemonApprovalExecutionOriginCurrentness> | undefined {
-  const payload = decodeJwtPayload(input.credentials.token);
-  const accountId = readNonEmptyString(payload?.sub);
+  const accountId = readAccountIdFromToken(input.credentials.token);
   if (!accountId) return undefined;
   const accountServerActionDeps = createAccountServerActionDeps({
     token: input.credentials.token,
@@ -380,6 +417,9 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
         }
       : {}),
     ...(input.isAutomationRunCurrent ? { isAutomationRunCurrent: input.isAutomationRunCurrent } : {}),
+    ...(input.isWorkflowRunAuthorizationCurrent
+      ? { isWorkflowRunAuthorizationCurrent: input.isWorkflowRunAuthorizationCurrent }
+      : {}),
     resolveCurrentPermissionMode: input.resolveCurrentPermissionMode ?? (async (origin, signal) => {
       const session = await readCurrentSession(origin, signal);
       if (!session) return null;

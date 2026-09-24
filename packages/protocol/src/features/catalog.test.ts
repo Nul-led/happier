@@ -220,6 +220,7 @@ describe('feature catalog', () => {
     expect(isFeatureId('machines.transfer.serverRouted')).toBe(true);
     expect(isFeatureId('machines.transfer.directPeer')).toBe(true);
     expect(isFeatureId('machines.transfer.directPeer.transportRns')).toBe(false);
+    expect(FEATURE_CATALOG['machines.transfer.directPeer']?.dependencies).toEqual(['machines.transfer']);
   });
 
   it('includes session folders as a server-represented session feature', () => {
@@ -330,7 +331,7 @@ describe('feature catalog', () => {
     expect(isFeatureId('plugins.ui')).toBe(true);
     expect(isFeatureId('plugins.ui.hostedWeb')).toBe(true);
     expect(isFeatureId('plugins.ui.reactNativeBundles')).toBe(true);
-    expect(isFeatureId('plugins.ui.reactNativeBundles.devHotReload')).toBe(true);
+    expect(isFeatureId('plugins.ui.reactNativeBundles.devHotReload')).toBe(false);
     expect(isFeatureId('plugins.ui.structuredMessages')).toBe(false);
     expect(isFeatureId('plugins.webhooks')).toBe(true);
     // Core plugin platform + UI projection gates are server-represented + default-allow.
@@ -345,13 +346,8 @@ describe('feature catalog', () => {
     // §4.1/§13.5.3: the plugin UI tiers are server-represented + default-ALLOW kill-switches; the
     // per-plugin install/enable/trust/runtime derivation (5.1/5.2) governs actual availability.
     expect(FEATURE_CATALOG['plugins.ui.reactNativeBundles']?.dependencies).toEqual(['plugins.ui']);
-    expect(FEATURE_CATALOG['plugins.ui.reactNativeBundles.devHotReload']?.dependencies).toEqual([
-      'plugins.ui.reactNativeBundles',
-    ]);
     expect(FEATURE_CATALOG['plugins.ui.hostedWeb']?.representation).toBe('server');
     expect(FEATURE_CATALOG['plugins.ui.reactNativeBundles']?.representation).toBe('server');
-    // The finer dev-only hot-reload tier stays client + fail-closed (author affordance, §4.1).
-    expect(FEATURE_CATALOG['plugins.ui.reactNativeBundles.devHotReload']?.representation).toBe('client');
   });
 
   it('includes simulator preview feature ids', () => {
@@ -375,6 +371,13 @@ describe('feature catalog', () => {
     expect(FEATURE_CATALOG['sharing.pendingDeliveryState']?.representation).toBe('server');
     expect(FEATURE_CATALOG['sharing.pendingDeliveryState']?.dependencies).toEqual(['sharing.pendingQueueV2']);
     expect(FEATURE_CATALOG['sharing.pendingDeliveryState']?.defaultFailMode).toBe('fail_closed');
+  });
+
+  it('serves Session collaboration from the sharing decision without a server-only collaboration bit', () => {
+    // The retired `sessions.collaboration` bit had no user toggle; Team/Group
+    // access, responsibility and conversations follow `sharing.session`.
+    expect(isFeatureId('sessions.collaboration')).toBe(false);
+    expect(FEATURE_CATALOG['sessions.conversations']?.dependencies).toEqual(['sessions', 'sharing.session']);
   });
 
   it('includes voice agent feature id', () => {
@@ -461,5 +464,9 @@ describe('feature catalog', () => {
     for (const entry of Object.values(FEATURE_CATALOG)) {
       expect(entry.defaultFailMode).toBe('fail_closed');
     }
+  });
+
+  it('does not advertise the retired plugin UI dev-server hot-reload tier', () => {
+    expect(FEATURE_CATALOG).not.toHaveProperty('plugins.ui.reactNativeBundles.devHotReload');
   });
 });

@@ -9,6 +9,7 @@ import { resolveManagedProviderPurposeBindingSnapshot } from '@/providers/manage
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import type { TeamCredentialBrokerSourceOpenInput } from './teamCredentialBrokerSourceOwner';
+import { acquireBrokerSourceOperation } from './brokerSourceOperationAcquisition';
 import {
   isCLIProxyAPIBrokerApplication,
   teamCredentialBrokerPlacementAcceptsMachine,
@@ -25,6 +26,72 @@ type ConnectedOpenInput = TeamCredentialBrokerSourceOpenInput & Readonly<{
 
 function sameSource(left: TeamCredentialSourceBindingV1 | null, right: ConnectedSource): boolean {
   return left !== null && JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * The default signal for reads that answer the *operation's* authority rather
+ * than one caller's stream. It never aborts: an operation outlives the stream
+ * that created it, so a closed stream must not make the retained operation
+ * permanently non-current. Callers pass their own signal explicitly where the
+ * read genuinely belongs to them.
+ */
+const OPERATION_AUTHORITY_SIGNAL = new AbortController().signal;
+
+type ConnectedSelectionInput = Pick<ConnectedOpenInput, 'source' | 'application' | 'signal'>;
+
+/**
+ * The one current Connected Account/Pool choice for a broker source: the
+ * CLIProxyAPI purpose family the signed application needs, and the member the
+ * canonical purpose-binding owner selects for it. A pure read — it neither
+ * starts nor joins managed custody — so the Home can attribute and admit a
+ * request before anything is materialized, and acquisition re-enters the same
+ * selector.
+ */
+async function resolveConnectedServicesBrokerSelection(
+  resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'],
+  request: ConnectedSelectionInput,
+) {
+  const family = resolveCLIProxyAPIManagedPurposeFamily({
+    endpointTemplateId: request.application.endpointTemplateId,
+    protocol: request.application.protocol,
+  });
+  if (
+    !family
+    || !isCLIProxyAPIBrokerApplication(request.application)
+    || (
+      request.source.target.kind === 'account'
+        ? request.source.target.account.service.pluginId !== family.connectedAccount.service.pluginId
+          || request.source.target.account.service.localId !== family.connectedAccount.service.localId
+        : request.source.target.service.pluginId !== family.connectedAccount.service.pluginId
+          || request.source.target.service.localId !== family.connectedAccount.service.localId
+    )
+  ) return null;
+  const purpose = {
+    consumer: request.application.implementationIdentity,
+    purpose: family.purpose,
+  };
+  const selection = await resolveBindingIntentSelection({
+    purpose,
+    target: request.source.target,
+    serviceRefs: [family.connectedAccount.service],
+    signal: request.signal,
+  }).catch(() => null);
+  if (!selection) return null;
+  const sourceMember: TeamCredentialSourceMemberV1 = Object.freeze({
+    kind: 'connected_account' as const,
+    service: Object.freeze({ ...selection.resolved.account.service }),
+    connectedAccountId: selection.resolved.account.accountId,
+  });
+  return { family, purpose, selection, sourceMember };
+}
+
+/** Selects the current source member without acquiring anything. */
+export function createConnectedServicesBrokerSourceMemberSelect(input: Readonly<{
+  resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'];
+}>): (request: ConnectedSelectionInput) => Promise<TeamCredentialSourceMemberV1 | null> {
+  return async (request) => (
+    await resolveConnectedServicesBrokerSelection(input.resolveBindingIntentSelection, request)
+  )?.sourceMember ?? null;
 }
 
 /**
@@ -49,50 +116,29 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
   retire(): Promise<void>;
 }> | null> {
   return async (request) => {
-    const family = resolveCLIProxyAPIManagedPurposeFamily({
-      endpointTemplateId: request.application.endpointTemplateId,
-      protocol: request.application.protocol,
-    });
-    if (
-      !family
-      || !isCLIProxyAPIBrokerApplication(request.application)
-      || (
-        request.source.target.kind === 'account'
-          ? request.source.target.account.service.pluginId !== family.connectedAccount.service.pluginId
-            || request.source.target.account.service.localId !== family.connectedAccount.service.localId
-          : request.source.target.service.pluginId !== family.connectedAccount.service.pluginId
-            || request.source.target.service.localId !== family.connectedAccount.service.localId
-      )
-    ) return null;
-
     const readsResourceCurrent = async (
-      signal: AbortSignal = request.signal,
+      signal: AbortSignal = OPERATION_AUTHORITY_SIGNAL,
     ): Promise<boolean> => {
       if (signal.aborted) return false;
       try {
         const resource = await input.readResource(request.resourceId, signal);
+        // Source currentness is enabled, placement and source identity. The
+        // revision is a policy fact the Home rechecks per request, so a policy
+        // edit is not a source replacement (`04-private-iroh-broker-transport.md:272`).
         return resource !== null
           && resource.enabled
-          && resource.revision === request.resourceRevision
           && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
           && sameSource(resource.source, request.source);
       } catch {
         return false;
       }
     };
-    if (!await readsResourceCurrent()) return null;
-
-    const purpose = {
-      consumer: request.application.implementationIdentity,
-      purpose: family.purpose,
-    };
-    const selection = await input.resolveBindingIntentSelection({
-      purpose,
-      target: request.source.target,
-      serviceRefs: [family.connectedAccount.service],
-      signal: request.signal,
-    }).catch(() => null);
-    if (!selection) return null;
+    const chosen = await resolveConnectedServicesBrokerSelection(
+      input.resolveBindingIntentSelection,
+      request,
+    );
+    if (!chosen || !await readsResourceCurrent(request.signal)) return null;
+    const { family, purpose, selection, sourceMember } = chosen;
     const exactTarget = Object.freeze({
       kind: 'account' as const,
       account: Object.freeze({
@@ -122,67 +168,30 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
       }),
       signal: request.signal,
     }).catch(() => null);
-    if (!purposeBindings || !await readsResourceCurrent()) return null;
+    if (!purposeBindings || !await readsResourceCurrent(request.signal)) return null;
 
-    let authorizationCurrent = true;
-    const isAuthorizationCurrent = (): boolean => (
-      authorizationCurrent && !request.signal.aborted
-    );
-    const revalidateAuthorization = async (): Promise<boolean> => {
-      authorizationCurrent = isAuthorizationCurrent()
-        && await readsResourceCurrent()
-        && await selection.isCurrent();
-      return authorizationCurrent;
-    };
-    const operationClaim = {
-      kind: 'providerBroker' as const,
-      operation: request.operation,
-    };
-    const retire = async (): Promise<void> => {
-      await input.custody.retire({
-        identity: request.application.implementationIdentity,
-        operationClaim,
-      });
-    };
-    const revalidateOperationAuthorization =
-      request.revalidateOperationAuthorization;
-    const projection = await input.custody.acquire({
-      contributionKey: `${request.application.implementationIdentity.pluginId}/${request.application.implementationIdentity.localId}`,
+    const acquired = await acquireBrokerSourceOperation({
+      custody: input.custody,
       identity: request.application.implementationIdentity,
-      request: {
-        reason: 'explicitStartLocal',
-        endpointTemplateIds: [request.application.endpointTemplateId],
-      },
+      contributionKey: `${request.application.implementationIdentity.pluginId}/${request.application.implementationIdentity.localId}`,
+      endpointTemplateId: request.application.endpointTemplateId,
+      operationClaim: { kind: 'providerBroker', operation: request.operation },
       purposeBindings,
-      isAuthorizationCurrent,
-      revalidateAuthorization,
-      ...(revalidateOperationAuthorization
-        ? {
-            revalidateRetainedCurrentness: async (signal) => (
-              await readsResourceCurrent(signal)
-              && await revalidateOperationAuthorization(signal)
-            ),
-          }
+      isSourceCurrent: async (signal) => (
+        await readsResourceCurrent(signal) && await selection.isCurrent()
+      ),
+      ...(request.revalidateOperationAuthorization
+        ? { revalidateOperationAuthorization: request.revalidateOperationAuthorization }
         : {}),
-      operationClaim,
-      signal: request.signal,
+      callerSignal: request.signal,
     });
-    if (!projection || !await revalidateAuthorization()) {
-      if (projection) {
-        await retire().catch(() => undefined);
-        await Promise.resolve(projection.cleanup()).catch(() => undefined);
-      }
-      return null;
-    }
+    if (!acquired) return null;
+    const { projection, retire, revalidateAuthorization } = acquired;
     return Object.freeze({
       projection,
       retire,
       sourceCurrentness: Object.freeze({
-        sourceMember: Object.freeze({
-          kind: 'connected_account' as const,
-          service: Object.freeze({ ...selection.resolved.account.service }),
-          connectedAccountId: selection.resolved.account.accountId,
-        }),
+        sourceMember,
         isCurrent: revalidateAuthorization,
       }),
     });

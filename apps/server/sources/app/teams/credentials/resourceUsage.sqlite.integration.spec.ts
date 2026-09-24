@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db } from '@/storage/db';
 import { inTx } from '@/storage/inTx';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
 import { queryTeamCredentialUsage } from './resourceUsage';
 import { removeTeamMemberForActorInTx } from '../memberships/memberAdministration';
+import { recordTeamCredentialDirectDeliveryActivityInTx } from './resourceActivity';
 
 const TEST_AUTHENTICATION = {
   env: process.env,
@@ -372,6 +374,67 @@ describe('Team credential resource usage query', () => {
     });
   });
 
+  it('never reports a direct-deliverable or once-disclosed resource as completely counted from row absence', async () => {
+    const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
+    const member = await db.account.create({ data: { encryptionMode: 'plain' } });
+    const team = await db.team.create({ data: { name: 'Direct exposure coverage team' } });
+    await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: 'admin' } });
+    await db.teamMembership.create({ data: { teamId: team.id, accountId: member.id, role: 'member' } });
+    const directOnly = await db.teamCredentialResource.create({ data: {
+      teamId: team.id, custodianAccountId: manager.id, displayName: 'Direct only',
+      disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}',
+      allMembersDeliveryMode: 'direct',
+    } });
+    const onceDisclosed = await db.teamCredentialResource.create({ data: {
+      teamId: team.id, custodianAccountId: manager.id, displayName: 'Brokered after disclosure',
+      disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}',
+      allMembersDeliveryMode: 'brokered',
+    } });
+    const brokeredOnly = await db.teamCredentialResource.create({ data: {
+      teamId: team.id, custodianAccountId: manager.id, displayName: 'Brokered only',
+      disclosureCeiling: 'brokered_only', sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}',
+      allMembersDeliveryMode: 'brokered',
+    } });
+    // The retained disclosure witness the recipient-material read writes on a
+    // real first direct open — long before the queried range.
+    await inTx((tx) => recordTeamCredentialDirectDeliveryActivityInTx(tx, {
+      teamId: team.id, resourceId: onceDisclosed.id, recipientAccountId: member.id, subjectDisplayName: 'Member',
+    }));
+    const observedAt = new Date();
+    await db.usageEvent.create({ data: {
+      accountId: member.id, observedAt, agentId: 'team_credential_broker', source: 'team_credential_admission',
+      scope: 'turn_delta', requestCount: 1, teamCredentialResourceId: onceDisclosed.id,
+      teamCredentialActorAccountId: member.id, credentialDeliveryMode: 'brokered',
+    } });
+    const range = { startMs: observedAt.getTime() - 1_000, endMs: observedAt.getTime() + 1_000, granularity: 'day' as const, costMode: 'auto' as const };
+    const coverageOf = async (accountId: string, resourceId: string) => {
+      const result = await queryTeamCredentialUsage(accountId, { resourceId, ...range }, TEST_AUTHENTICATION);
+      if ('ok' in result) throw new Error(`expected usage result, received ${result.error}`);
+      return result.coverage;
+    };
+
+    // An empty window of a direct-only resource is not a complete zero.
+    expect(await coverageOf(manager.id, directOnly.id)).toMatchObject({
+      directRecordedUseOnly: true, requestCountCoverage: 'brokered_only',
+    });
+    expect(await coverageOf(member.id, directOnly.id)).toMatchObject({
+      directRecordedUseOnly: true, requestCountCoverage: 'brokered_only',
+    });
+    // Material disclosed earlier stays usable outside Happier, so brokered
+    // rows alone cannot make the resource's count complete.
+    expect(await coverageOf(manager.id, onceDisclosed.id)).toMatchObject({
+      directRecordedUseOnly: true, requestCountCoverage: 'brokered_only',
+    });
+    expect(await coverageOf(member.id, onceDisclosed.id)).toMatchObject({
+      directRecordedUseOnly: true, requestCountCoverage: 'brokered_only',
+    });
+    // A resource that was never directly deliverable keeps its complete count,
+    // including an empty window.
+    expect(await coverageOf(manager.id, brokeredOnly.id)).toMatchObject({
+      directRecordedUseOnly: false, requestCountCoverage: 'complete',
+    });
+  });
+
   it('returns typed cost-limit unavailability instead of throwing from the query', async () => {
     const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
     const team = await db.team.create({ data: { name: 'Unavailable cost query team' } });
@@ -622,5 +685,114 @@ describe('Team credential resource usage query', () => {
       .toEqual({ ok: false, error: 'not_found_or_not_visible' });
     const managerView = await queryTeamCredentialUsage(manager.id, { resourceId: resource.id, ...range }, TEST_AUTHENTICATION);
     expect('ok' in managerView).toBe(false);
+  });
+  it('sums each contribution\'s effective cost instead of applying precedence to merged columns', async () => {
+    const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
+    const team = await db.team.create({ data: { name: 'Mixed provenance team' } });
+    await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: 'admin' } });
+    const resource = await db.teamCredentialResource.create({ data: {
+      id: 'usage-mixed-provenance-resource', teamId: team.id, custodianAccountId: manager.id,
+      displayName: 'Mixed provenance provider', disclosureCeiling: 'brokered_only',
+      sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}', allMembersDeliveryMode: 'brokered',
+    } });
+    const observedAt = new Date();
+    const base = {
+      accountId: manager.id,
+      observedAt,
+      agentId: 'codex',
+      source: 'codex_app_server',
+      scope: 'turn_delta',
+      teamCredentialResourceId: resource.id,
+      teamCredentialActorAccountId: manager.id,
+      credentialDeliveryMode: 'brokered',
+      machineId: 'mixed-provenance-worker',
+    } as const;
+    await db.usageEvent.createMany({ data: [
+      { ...base, reportedCostUsd: 2, costSource: 'provider_reported' },
+      { ...base, estimatedCostUsd: 3, costSource: 'pricing_estimate' },
+    ] });
+    const input = {
+      resourceId: resource.id,
+      startMs: observedAt.getTime() - 1,
+      endMs: observedAt.getTime() + 1,
+      granularity: 'day' as const,
+      costMode: 'auto' as const,
+      breakdown: 'worker_machine' as const,
+    };
+
+    const automatic = await queryTeamCredentialUsage(manager.id, input, TEST_AUTHENTICATION);
+    if ('ok' in automatic) throw new Error('expected usage result');
+    expect(automatic.totals.cost.effectiveUsd).toBe(5);
+    expect(automatic.series[0]?.totals.cost.effectiveUsd).toBe(5);
+    expect(automatic.breakdown?.[0]?.totals.cost.effectiveUsd).toBe(5);
+
+    const reportedOnly = await queryTeamCredentialUsage(manager.id, { ...input, costMode: 'reported' }, TEST_AUTHENTICATION);
+    if ('ok' in reportedOnly) throw new Error('expected usage result');
+    expect(reportedOnly.totals.cost.effectiveUsd).toBe(2);
+    const estimatedOnly = await queryTeamCredentialUsage(manager.id, { ...input, costMode: 'estimated' }, TEST_AUTHENTICATION);
+    if ('ok' in estimatedOnly) throw new Error('expected usage result');
+    expect(estimatedOnly.totals.cost.effectiveUsd).toBe(3);
+
+    const invoiceResource = await db.teamCredentialResource.create({ data: {
+      id: 'usage-invoice-provenance-resource', teamId: team.id, custodianAccountId: manager.id,
+      displayName: 'Invoice provenance provider', disclosureCeiling: 'brokered_only',
+      sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}', allMembersDeliveryMode: 'brokered',
+    } });
+    await db.usageEvent.createMany({ data: [
+      { ...base, teamCredentialResourceId: invoiceResource.id, invoiceCostUsd: 1, costSource: 'invoice' },
+      { ...base, teamCredentialResourceId: invoiceResource.id, reportedCostUsd: 2, costSource: 'provider_reported' },
+    ] });
+    const invoiceView = await queryTeamCredentialUsage(manager.id, { ...input, resourceId: invoiceResource.id }, TEST_AUTHENTICATION);
+    if ('ok' in invoiceView) throw new Error('expected usage result');
+    expect(invoiceView.totals.cost.effectiveUsd).toBe(3);
+  });
+
+  it('pages a breakdown whose keys and resource id have realistic widths', async () => {
+    const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
+    const team = await db.team.create({ data: { name: 'Wide cursor team' } });
+    await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: 'admin' } });
+    const resource = await db.teamCredentialResource.create({ data: {
+      id: randomUUID(), teamId: team.id, custodianAccountId: manager.id,
+      displayName: 'Wide cursor provider', disclosureCeiling: 'brokered_only',
+      sessionUsePolicy: 'personal_allowed', sourceBindingJson: '{}', allMembersDeliveryMode: 'brokered',
+    } });
+    const observedAt = new Date();
+    await db.usageEvent.createMany({ data: Array.from({ length: 52 }, (_, index) => ({
+      accountId: manager.id,
+      observedAt,
+      agentId: 'codex',
+      source: 'codex_app_server',
+      scope: 'turn_delta',
+      totalTokens: 52 - index,
+      inputTokens: 52 - index,
+      teamCredentialResourceId: resource.id,
+      teamCredentialActorAccountId: manager.id,
+      credentialDeliveryMode: 'brokered',
+      modelId: `anthropic/claude-sonnet-4-2025051${String(index).padStart(2, '0')}`,
+    })) });
+    const input = {
+      resourceId: resource.id,
+      startMs: observedAt.getTime() - 1,
+      endMs: observedAt.getTime() + 1,
+      granularity: 'day' as const,
+      costMode: 'auto' as const,
+      breakdown: 'model' as const,
+    };
+
+    const first = await queryTeamCredentialUsage(manager.id, input, TEST_AUTHENTICATION);
+    if ('ok' in first) throw new Error('expected first usage page');
+    expect(first.breakdown).toHaveLength(50);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const second = await queryTeamCredentialUsage(manager.id, { ...input, cursor: first.nextCursor ?? undefined }, TEST_AUTHENTICATION);
+    if ('ok' in second) throw new Error('expected second usage page');
+    expect(new Set(
+      [...(first.breakdown ?? []), ...(second.breakdown ?? [])].map((entry) => entry.key),
+    ).size).toBe(52);
+
+    const foreignQuery = await queryTeamCredentialUsage(manager.id, {
+      ...input, breakdown: 'worker_machine', cursor: first.nextCursor ?? undefined,
+    }, TEST_AUTHENTICATION);
+    expect(foreignQuery).toEqual({ ok: false, error: 'invalid_resource_input' });
   });
 });

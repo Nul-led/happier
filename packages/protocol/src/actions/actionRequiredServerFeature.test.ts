@@ -27,8 +27,8 @@ describe('getActionRequiredServerFeatureId', () => {
     expect(getActionRequiredServerFeatureId('teams.invitations.create')).toBe('teams');
     expect(getActionRequiredServerFeatureId('session.follow.set')).toBe('sessions.following');
     expect(getActionRequiredServerFeatureId('session.follow.sources.list')).toBe('sessions.following');
-    expect(getActionRequiredServerFeatureId('session.access.grant.set')).toBe('sessions.collaboration');
-    expect(getActionRequiredServerFeatureId('session.responsibility.set')).toBe('sessions.collaboration');
+    expect(getActionRequiredServerFeatureId('session.access.grant.set')).toBe('sharing.session');
+    expect(getActionRequiredServerFeatureId('session.responsibility.set')).toBe('sharing.session');
     expect(getActionRequiredServerFeatureId('session.public_link.create')).toBe('sharing.public');
     expect(getActionRequiredServerFeatureId('machines.pools.create')).toBe('machines.pools');
     expect(getActionRequiredServerFeatureId('sessions.runner.activation.create'))

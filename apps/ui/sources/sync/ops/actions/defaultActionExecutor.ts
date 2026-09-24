@@ -11,12 +11,12 @@ import {
   PluginWebhookActionHttpPathsV1,
   type PluginWebhookPresentUserActionIdV1,
   projectPluginFailureText,
+  requiresExactDaemonApprovalReplay,
   SessionModelTransitionRequestV1Schema,
   SessionModelTransitionResultV1Schema,
   type ActionExecutorContext,
   type ActionExecutorDeps,
   type ActionExecuteResult,
-  type ActionDefinitionV1,
   type ActionId,
   type ApprovalRequest,
   type SessionModelTransitionRequestV1,
@@ -64,9 +64,10 @@ import {
     sessionStopWithServerScope,
 } from '@/sync/ops/sessions';
 import {
-  preflightSessionHandoffTargetReplacement,
+  preflightWorkspaceDestinationReplacement,
   startSessionHandoff as startSessionHandoffOp,
 } from '@/sync/ops/sessionHandoffs';
+import { createWorkspaceSyncRelationshipOnController } from '@/sync/ops/workspaceSyncRelationshipCreateRpc';
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
 import {
   sendSessionMessageWithServerScope,
@@ -98,7 +99,7 @@ import {
 import type { ArtifactHeader } from '@/sync/domains/artifacts/artifactTypes';
 import { openSessionForVoiceTool } from '@/voice/tools/actionImpl/openSession';
 import { resolveVoiceActionSessionReference } from '@/voice/tools/actionImpl/resolveVoiceActionSessionReference';
-import { readAdmittedSessionReferenceCorpusOptions } from '@/voice/tools/actionImpl/admittedSessionReferenceCorpus';
+import { acquireAdmittedSessionReferenceCorpusOptions } from '@/voice/tools/actionImpl/admittedSessionReferenceCorpus';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { setPrimaryActionSessionId, setTrackedSessionIds } from '@/voice/tools/actionImpl/sessionTargets';
 import { listSessionsForVoiceTool } from '@/voice/tools/actionImpl/sessionList';
@@ -131,11 +132,14 @@ import { sessionFollowAction } from '@/sync/api/session/sessionFollowApi';
 import { prepareSessionFollowSourceKey } from '@/components/sessions/follow/prepareSessionFollowSourceKey';
 import { sessionReadStateAction } from '@/sync/api/session/sessionReadStateAction';
 import { createSessionBoardActionAdapter } from '@/sync/api/session/sessionBoardActions';
-import { machineContributionRegistryProjectionDescribe } from '@/sync/ops/machineContributionRegistryProjection';
+import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { EMPTY_PLUGIN_UI_PROJECTION, resolvePluginUiProjectionState } from '@/sync/domains/plugins/ui/projection';
 import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { resolveRuntimeFeatureDecisionFromSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { sync } from '@/sync/sync';
+import { createHomeDomainActionExecutorForScope } from '@/sync/api/home/homeDomainActions';
+import { resolveSessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
+import { writeApprovalRequestArtifact } from './approvalArtifactWriter';
 import { publishAcpSessionModeOverrideToMetadata } from '@/sync/state/acpSessionModeOverridePublish';
 import { updatePromptDoc } from '@/sync/ops/promptLibrary/promptDocs';
 import { updateSkillPromptBundle } from '@/sync/ops/promptLibrary/promptBundles';
@@ -251,17 +255,12 @@ export function isApprovalExecutionOriginCurrentForAccountContext(input: Readonl
   return areServerProfileIdentifiersEquivalent(input.origin.serverId, input.accountServerId);
 }
 
-export function requiresExactDaemonApprovalReplay(approval: ApprovalRequest): boolean {
-  if (approval.v !== 2) return false;
-  const origin = approval.executionOriginV1;
-  return origin.surface === 'api'
-    || origin.surface === 'agent'
-    || origin.surface === 'rpc'
-    || origin.surface === 'mcp'
-    || origin.surface === 'cli'
-    || origin.caller.kind === 'plugin'
-    || origin.caller.kind === 'automationRun';
-}
+/**
+ * Re-exported from the Protocol owner of `ApprovalExecutionOriginV1`: the list
+ * of origin facts this client cannot verify belongs beside the schema that
+ * introduces them, not in a hand-maintained consumer-side enumeration.
+ */
+export { requiresExactDaemonApprovalReplay };
 
 export function resolveApprovalReplayRoute(approval: ApprovalRequest | null): ApprovalReplayRoute | null {
   if (approval?.v !== 2) return null;
@@ -344,7 +343,8 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
   resolveServerNameForSessionId?: (sessionId: string) => string | null;
   openSession?: (sessionId: string, options?: OpenSessionOptions) => void | Promise<void>;
   runtimeActions?: CreateDefaultRuntimeActionExecutorInput;
-  listContributedActionDefinitions?: () => readonly ActionDefinitionV1[];
+  listContributedActionDefinitions?: NonNullable<ActionExecutorDeps['listContributedActionDefinitions']>;
+  readContributedActionSchemas?: NonNullable<ActionExecutorDeps['readContributedActionSchemas']>;
   /** Optional surface-local policy composed with the canonical Action settings policy. */
   isActionEnabled?: NonNullable<ActionExecutorDeps['isActionEnabled']>;
   /** Optional delivery leaf used by a surface that needs specialized ingress semantics. */
@@ -397,6 +397,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
   const executePluginPermissionGrantAction = createPluginPermissionGrantHttpActionExecutor(accountContext ? { request: accountContext.request } : undefined);
   const executePluginWebhookAction = createPluginWebhookEndpointHttpActionExecutor(accountContext ? { request: accountContext.request } : undefined);
   const approvalCoordinator = getSharedBlockingApprovalCoordinator();
+  const capturedFamilyPorts = accountContext ? createCapturedScopeFamilyPorts(accountContext) : null;
 
   const deps: ActionExecutorDeps = {
     ...(opts?.workflowAction
@@ -406,19 +407,24 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
         : {}),
     resolveSessionReference: opts?.resolveSessionReference ?? (async ({ sessionId, sessionTitle, context, signal }) => {
       // An exact tuple needs no corpus. A bare id or title is resolved against the one admitted
-      // corpus — the focused data-active Sessions pane's membership and its own completeness — so
-      // every host answers unique/ambiguous/incomplete/none from the same evidence instead of
+      // corpus — a mounted pane's membership when one owns it, otherwise one acquired through the
+      // canonical row-only `session.list` read — so every host answers
+      // unique/ambiguous/incomplete/none from the same evidence instead of
       // failing closed forever for want of one (Lane 07.1 §3).
       const currentState = storage.getState();
       const options = normalizeSessionAddress(context.serverId, sessionId)
         ? null
-        : readAdmittedSessionReferenceCorpusOptions(currentState);
+        : await acquireAdmittedSessionReferenceCorpusOptions(
+            currentState,
+            signal ? { signal } : undefined,
+          );
       return await resolveVoiceActionSessionReference({
         ...(sessionId ? { sessionId } : {}),
         ...(sessionTitle ? { sessionTitle } : {}),
         ...(context.serverId ? { serverId: context.serverId } : {}),
         ...(signal ? { signal } : {}),
-      }, options ? { state: currentState, options } : null);
+        // The acquisition hydrated the admitted rows; resolve on the store after it.
+      }, options ? { state: storage.getState(), options } : null);
     }),
     isApprovalExecutionOriginCurrent: async ({ origin }) => {
       if (!accountContext) return false;
@@ -495,11 +501,14 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
             if (!runtime.isCurrent()) return null;
             const target = readMachineControlTargetForSession({ ...session, accountId: runtime.scope.accountId });
             if (!target) return null;
-            const described = await machineContributionRegistryProjectionDescribe(target.machineId, { serverId: session.serverId, signal });
-            if (!runtime.isCurrent() || !described.supported) return null;
+            const projection = (await loadDaemonMergedProjectionInputs({
+              machineId: target.machineId,
+              serverId: session.serverId,
+            }))?.pluginProjectionV2;
+            if (signal?.aborted || !runtime.isCurrent() || !projection) return null;
             const currentTarget = readMachineControlTargetForSession({ ...session, accountId: runtime.scope.accountId });
             if (currentTarget?.machineId !== target.machineId) return null;
-            return resolvePluginUiProjectionState(EMPTY_PLUGIN_UI_PROJECTION, described.projection);
+            return resolvePluginUiProjectionState(EMPTY_PLUGIN_UI_PROJECTION, projection);
           },
           capabilities: { readTranscript: access.capabilities.readTranscript, editSessionRecords: access.capabilities.editSessionRecords },
         })(args);
@@ -514,6 +523,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       });
     },
     listContributedActionDefinitions: opts?.listContributedActionDefinitions,
+    readContributedActionSchemas: opts?.readContributedActionSchemas,
     isActionEnabled: (actionId: ActionId, ctx) =>
       {
         if (opts?.isActionEnabled && !opts.isActionEnabled(actionId, ctx)) {
@@ -759,15 +769,36 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       targetMachineId,
       targetPath,
       workspaceAction,
+      activatesExactMirror,
+      destinationIntent,
       serverId,
       operationId,
       signal,
-    }) => await preflightSessionHandoffTargetReplacement({
+    }) => await preflightWorkspaceDestinationReplacement({
       targetMachineId,
       targetPath: targetPath ?? '',
       serverId: serverId ?? '',
       operationId,
       workspaceAction: workspaceAction ?? { kind: 'none' },
+      ...(activatesExactMirror === undefined ? {} : { activatesExactMirror }),
+      ...(destinationIntent ? { destinationIntent } : {}),
+      ...(signal ? { signal } : {}),
+    }),
+
+    workspaceSyncRelationshipCreate: async ({
+      input,
+      operationId,
+      serverId,
+      targetReplacementApproval,
+      targetReplacementApprovalReceiptId,
+      signal,
+    }) => await createWorkspaceSyncRelationshipOnController({
+      input,
+      operationId,
+      serverId: serverId ?? null,
+      ...(targetReplacementApproval && targetReplacementApprovalReceiptId
+        ? { targetReplacementApproval, targetReplacementApprovalReceiptId }
+        : {}),
       ...(signal ? { signal } : {}),
     }),
 
@@ -892,13 +923,22 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
     pluginPermissionGrantAction: async ({ actionId, input, signal }) => signal
       ? await executePluginPermissionGrantAction(actionId, input, { signal })
       : await executePluginPermissionGrantAction(actionId, input),
-    // Session access: only a mounted surface knows the exact Account scope,
-    // collaboration availability and staleness lifetime, so it supplies the port
-    // and the executor keeps admission, settings, approval and result validation.
-    ...(opts?.sessionAccessAction ? { sessionAccessAction: opts.sessionAccessAction } : {}),
-    ...(opts?.sessionDiscussionAction ? { sessionDiscussionAction: opts.sessionDiscussionAction } : {}),
-    // Home governance and Teams require a captured scope; focus cannot supply it.
-    ...(opts?.homeDomainAction ? { homeDomainAction: opts.homeDomainAction } : {}),
+    // Session access, discussions, Home governance and Teams require an exact
+    // Account scope; focus can never supply it. A mounted surface supplies its
+    // own port (it also owns the staleness lifetime). Without one, the ports
+    // come from the captured exact Home/Account scope of this invocation, which
+    // an approval replay has matched to its immutable origin before any effect
+    // (`isApprovalExecutionOriginCurrent` above) — so Approval Detail, the Prompt
+    // Card and the Inbox reach the same family owner as the originating surface.
+    ...(opts?.sessionAccessAction ?? capturedFamilyPorts?.sessionAccessAction
+      ? { sessionAccessAction: opts?.sessionAccessAction ?? capturedFamilyPorts!.sessionAccessAction }
+      : {}),
+    ...(opts?.sessionDiscussionAction ?? capturedFamilyPorts?.sessionDiscussionAction
+      ? { sessionDiscussionAction: opts?.sessionDiscussionAction ?? capturedFamilyPorts!.sessionDiscussionAction }
+      : {}),
+    ...(opts?.homeDomainAction ?? capturedFamilyPorts?.homeDomainAction
+      ? { homeDomainAction: opts?.homeDomainAction ?? capturedFamilyPorts!.homeDomainAction }
+      : {}),
     ...(opts?.workspaceSyncConflictResolve ? { workspaceSyncConflictResolve: opts.workspaceSyncConflictResolve } : {}),
     // Personal Machine Pools use the same captured Account/Home transport, feature decision,
     // enablement and approval lifetime as every other immediate scoped Action.
@@ -1326,7 +1366,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
     sessionTargetTrackedSet: async (targets) => await setTrackedSessionIds({
         ...('sessionAddresses' in targets ? { sessionAddresses: targets.sessionAddresses } : { sessionIds: targets.sessionIds }),
         serverId: targets.context.serverId,
-        corpus: readAdmittedSessionReferenceCorpusOptions(storage.getState()) ?? undefined,
+        corpus: await acquireAdmittedSessionReferenceCorpusOptions(storage.getState()) ?? undefined,
     }),
     sessionList: listSessionsForVoiceTool,
     sessionActivityGet: async (params) => await getSessionActivityForVoiceTool(params),
@@ -1476,15 +1516,33 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
     },
 
     approvalsUpdate: async ({ artifactId, request }) => {
-      const header: ArtifactHeader = buildApprovalRequestArtifactHeaderV1(request);
-
-      if (accountContext) {
-        await accountContext.updateArtifact(artifactId, header, JSON.stringify(request));
-      } else {
-        await sync.updateArtifactWithHeader(artifactId, header, JSON.stringify(request));
-      }
-      approvalCoordinator.notifyApprovalUpdated({ artifactId, request });
-      return { ok: true };
+      const written = await writeApprovalRequestArtifact({
+        artifactId,
+        request,
+        read: async (id) => await (accountContext ? accountContext.fetchArtifact(id) : sync.fetchArtifactWithBody(id)),
+        write: async (basis, header, body) => {
+          if (accountContext) {
+            await accountContext.updateArtifact(artifactId, header, body, basis);
+            return;
+          }
+          // The focused-sync writer takes its expected versions from the cached
+          // row synchronously when called; seed it with the validated read and
+          // call it in the same tick so that read stays the CAS basis.
+          storage.getState().updateArtifact(basis);
+          try {
+            await sync.updateArtifactWithHeader(artifactId, header, body);
+          } catch (error) {
+            // A lost CAS means another writer committed after that read. Put the
+            // durable row back in the cache the executor rereads, so the loser
+            // observes the winner's claim or terminal result, never its own basis.
+            const latest = await sync.fetchArtifactWithBody(artifactId);
+            if (latest) storage.getState().updateArtifact(latest);
+            throw error;
+          }
+        },
+      });
+      if (written.ok) approvalCoordinator.notifyApprovalUpdated({ artifactId, request });
+      return written;
     },
 
     approvalsResolveBlockingDecision: async ({ artifactId, request, decision }) =>
@@ -1602,6 +1660,90 @@ export function isActionAccountScopeChangedError(error: unknown): boolean {
  * Runs an immediate Action and its synchronous result consumer inside one captured Account/Home
  * lifetime. Deferred preparation deliberately retains its separate runPrepared custody below.
  */
+/**
+ * The Session-access, Session-discussion and Home family ports bound to one
+ * captured exact Home/Account scope. They reuse each family's existing
+ * transport owner — its authorization, feature, encryption and freshness
+ * checks stay there — and only add the currentness of the captured scope.
+ */
+function createCapturedScopeFamilyPorts(account: ActionAccountContext): Readonly<{
+  sessionAccessAction: NonNullable<ActionExecutorDeps['sessionAccessAction']>;
+  sessionDiscussionAction: NonNullable<ActionExecutorDeps['sessionDiscussionAction']>;
+  homeDomainAction: NonNullable<ActionExecutorDeps['homeDomainAction']>;
+}> {
+  const scope = { serverId: account.serverId, accountId: account.accountId };
+  const isCurrent = (): boolean => {
+    try {
+      account.assertCurrent();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const readCollaborationAvailability = async () => {
+    const snapshot = await getServerFeaturesSnapshot({ serverId: scope.serverId });
+    const settings = storage.getState().settings;
+    return resolveSessionCollaborationAvailability(resolveRuntimeFeatureDecisionFromSnapshot({
+      featureId: 'sharing.session',
+      settings,
+      snapshot,
+      scope: { scopeKind: 'spawn', serverId: scope.serverId },
+    })?.state === 'enabled');
+  };
+  const homeDomainAction = createHomeDomainActionExecutorForScope(scope);
+  return {
+    homeDomainAction: async (args) => {
+      account.assertCurrent();
+      return await homeDomainAction(args);
+    },
+    sessionAccessAction: async (args) => {
+      account.assertCurrent();
+      const { executeSessionAccessHttpAction, SessionAccessApiError } = await import('@/sync/api/session/sessionAccessApi');
+      try {
+        return await executeSessionAccessHttpAction({
+          scope,
+          availability: await readCollaborationAvailability(),
+          isCurrent,
+          actionId: args.actionId,
+          input: args.input,
+          ...(args.signal ? { signal: args.signal } : {}),
+        });
+      } catch (error) {
+        // The family leaf reports typed refusals by throwing; the executor's
+        // port contract is the failure envelope.
+        if (error instanceof SessionAccessApiError) {
+          return { ok: false as const, errorCode: error.code, error: error.code };
+        }
+        throw error;
+      }
+    },
+    sessionDiscussionAction: async (args) => {
+      account.assertCurrent();
+      const sessionId = typeof (args.input as { sessionId?: unknown } | null)?.sessionId === 'string'
+        ? (args.input as { sessionId: string }).sessionId
+        : args.context.defaultSessionId;
+      if (!sessionId) return { ok: false as const, errorCode: 'session_discussion_not_found', error: 'session_discussion_not_found' };
+      const session = { serverId: scope.serverId, sessionId };
+      const availability = await readCollaborationAvailability();
+      const { createSessionDiscussionActionAdapter } = await import('@/sync/api/session/sessionDiscussionActions');
+      const result = await sync.withSessionSystemRecordRuntime(session, async (runtime) => {
+        if (runtime.scope.accountId !== scope.accountId || !isCurrent()) {
+          return { ok: false as const, errorCode: 'action_account_scope_changed', error: 'action_account_scope_changed' };
+        }
+        return await createSessionDiscussionActionAdapter({
+          request: runtime.request,
+          contentContext: runtime.contentContext,
+          session,
+          availability,
+        })(args);
+      });
+      return result.status === 'ok'
+        ? result.value
+        : { ok: false as const, errorCode: result.status, error: result.status };
+    },
+  };
+}
+
 export async function withDefaultActionExecuteContext<TResult>(
   opts: DefaultActionExecutorOptions,
   context: DefaultActionExecuteContext,

@@ -228,8 +228,10 @@ describe('SessionHostBridge current custom Agent (integration)', () => {
           subscribeRuntimeEvents(listener: (event: Readonly<{ kind?: string; turnId?: string }>) => void): (() => void) | void;
           prepareRunTeamCredentialProviderBinding?(request: Readonly<{
             runId: string;
+            agentId: string;
             resourceId: string;
             modelId: string;
+            selection?: import('@happier-dev/protocol').TeamCredentialProviderModelSelectionV1;
           }>): Promise<unknown>;
           resetOrDisposeRuntime(): Promise<void>;
         }> }>).operations;
@@ -246,6 +248,7 @@ describe('SessionHostBridge current custom Agent (integration)', () => {
         }));
         await expect(operations.prepareRunTeamCredentialProviderBinding?.({
           runId: 'run-1',
+          agentId: SAMPLE_PLUGIN_BACKEND_ID,
           resourceId: 'resource-1',
           modelId: 'team-model',
         })).resolves.toMatchObject({
@@ -260,6 +263,35 @@ describe('SessionHostBridge current custom Agent (integration)', () => {
           agentTargetKey: `agent:${SAMPLE_PLUGIN_ID}/${SAMPLE_PLUGIN_BACKEND_ID}`,
           modelId: 'team-model',
           consumer: { kind: 'execution_run', executionRunId: 'run-1' },
+          executionRunAgentId: SAMPLE_PLUGIN_BACKEND_ID,
+          signal: expect.any(AbortSignal),
+        });
+        // An attached Run that independently selected a direct resource for
+        // another Agent opens its own selection for its own Agent.
+        await operations.prepareRunTeamCredentialProviderBinding?.({
+          runId: 'run-direct',
+          agentId: 'run-agent',
+          resourceId: 'resource-direct',
+          modelId: 'direct-model',
+          selection: {
+            kind: 'team_credential_provider_model',
+            resourceId: 'resource-direct',
+            teamId: 'team-direct',
+            expectedResourceRevision: 9,
+            deliveryMode: 'direct',
+            agentTargetKey: 'agent:other.plugin/run-agent' as never,
+            modelId: 'direct-model' as never,
+          },
+        });
+        expect(prepareTeamCredentialProviderBinding).toHaveBeenLastCalledWith({
+          sessionId: 'runner-session-1',
+          resourceId: 'resource-direct',
+          expectedResourceRevision: 9,
+          agentTargetKey: 'agent:other.plugin/run-agent',
+          modelId: 'direct-model',
+          consumer: { kind: 'execution_run', executionRunId: 'run-direct' },
+          executionRunSelection: { teamId: 'team-direct', deliveryMode: 'direct' },
+          executionRunAgentId: 'run-agent',
           signal: expect.any(AbortSignal),
         });
         unsubscribe?.();

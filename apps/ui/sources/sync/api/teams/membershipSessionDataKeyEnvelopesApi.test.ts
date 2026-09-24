@@ -103,7 +103,7 @@ describe('membership history envelope exact-Account transport', () => {
             scope: { serverId: env.target.id, accountId: 'target-account' },
             address: { serverId: env.target.id, teamId: TEAM_ID },
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration' as const,
+            availability: 'available' as const,
             isCurrent: () => true,
         };
         env.request.mockImplementation(async () => new Response(JSON.stringify({
@@ -147,12 +147,12 @@ describe('membership history envelope exact-Account transport', () => {
             recipientAccountId: 'recipient-1',
             isCurrent: () => true,
         };
-        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'direct_only' })
-            .fetchPage(null)).rejects.toMatchObject({ code: 'unsupported_action' });
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'unavailable' })
+            .fetchPage(null)).rejects.toMatchObject({ code: 'session_access_sharing_unavailable' });
         expect(env.request).not.toHaveBeenCalled();
 
         env.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
-        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' })
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'available' })
             .fetchPage(null)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
         expect(env.request.mock.calls).toHaveLength(1);
 
@@ -160,7 +160,7 @@ describe('membership history envelope exact-Account transport', () => {
             JSON.stringify({ error: 'membership_not_found' }),
             { status: 404 },
         ));
-        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' })
+        await expect(createMembershipSessionDataKeyEnvelopeClient({ ...args, availability: 'available' })
             .fetchPage(null)).rejects.toMatchObject({ code: 'membership_not_found', status: 404 });
     });
 });
@@ -188,7 +188,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: TEAM_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration' as const,
+            availability: 'available' as const,
         };
 
         const first = prepareMembershipHistoryEnvelopesDetached(options);
@@ -258,7 +258,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: TEAM_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => true,
             onProgress,
         });
@@ -314,7 +314,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: TEAM_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'recipient_changed', preparedCount: 0 });
     });
@@ -357,7 +357,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: TEAM_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'recipient_changed', preparedCount: 0 });
     });
@@ -398,7 +398,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: GROUP_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'membership_changed', preparedCount: 0 });
     });
@@ -437,7 +437,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: GROUP_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => current,
             onProgress,
         })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
@@ -452,7 +452,7 @@ describe('membership history preparation host', () => {
             address: { serverId: env.target.id, teamId: TEAM_ID },
             target: TEAM_TARGET,
             recipientAccountId: 'recipient-1',
-            availability: 'full_collaboration',
+            availability: 'available',
             isCurrent: () => true,
         })).rejects.toMatchObject({ code: 'session_data_key_unavailable' });
         expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);

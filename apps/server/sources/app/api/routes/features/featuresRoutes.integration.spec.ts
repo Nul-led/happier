@@ -10,6 +10,7 @@ import {
     createSimpleCacheHomeConnectionDescriptorContinuityStore,
     type HomeConnectionDescriptorContinuityStore,
 } from '@/app/features/homeConnectionDescriptorContinuity';
+import { resetHomeConnectionDescriptorRevisionOwnerForTests } from '@/app/features/homeConnectionDescriptorPublication';
 
 import { applyEnvValues, createEnvReset } from "../../testkit/env";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -20,6 +21,7 @@ import {
     resolveCachedPublicServerUrl,
     resetPublicServerUrlInferenceCacheForTests,
 } from "@/app/integrations/publicUrl/publicServerUrlInference";
+import { resolveFeaturesFromEnv } from '@/app/features/registry';
 
 let databaseEnv: Record<string, string | undefined> = {};
 
@@ -175,6 +177,7 @@ describe("featuresRoutes", () => {
     beforeEach(async () => {
         serverIdentityOverride.value = null;
         resetPublicServerUrlInferenceCacheForTests();
+        resetHomeConnectionDescriptorRevisionOwnerForTests();
         resetEnv();
         descriptorContinuityDir = await mkdtemp(join(tmpdir(), "features-descriptor-"));
     });
@@ -249,8 +252,57 @@ describe("featuresRoutes", () => {
                 ?.actions.every((action: { enabled: boolean }) => !action.enabled)).toBe(true);
             expect(auth.login.methods.find((method: { id: string }) => method.id === 'key_challenge'))
                 .toEqual({ id: 'key_challenge', enabled: false });
-            expect(auth.methods.map((method: { id: string }) => method.id)).not.toContain('email_password');
+            // R-COMPAT (2026-09-22): no released 0.2 client reads this payload
+            // any more, so the Home's effective email/password decision is
+            // published like every other method.
+            expect(auth.methods.find((method: { id: string }) => method.id === 'email_password')
+                ?.actions.find((action: { id: string }) => action.id === 'login'))
+                .toMatchObject({ id: 'login', enabled: true });
         });
+    });
+
+    it('omits the structured catalog and fails legacy actions closed when Home auth policy is unreadable', async () => {
+        process.env.AUTH_REQUIRED_LOGIN_PROVIDERS = '';
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = '1';
+        const priorSignup = resolveFeaturesFromEnv(process.env).capabilities.auth.signup;
+        const { featuresRoutes } = await import('./featuresRoutes');
+        await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+            await db.homeGovernancePolicy.create({
+                data: {
+                    id: 'home',
+                    authenticationPolicy: { v: 999, enabledMethodIds: ['key_challenge'] },
+                },
+            });
+            const response = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(response.statusCode, response.body).toBe(200);
+            const auth = response.json().capabilities.auth;
+            expect(auth).not.toHaveProperty('methods');
+            expect(auth.signup).toEqual(priorSignup);
+            expect(auth.login.methods.every((method: { enabled: boolean }) => !method.enabled)).toBe(true);
+        });
+    });
+
+    it('keeps public features available and omits auth methods when the policy store is unavailable', async () => {
+        const originalTransaction = db.$transaction;
+        db.$transaction = (async () => {
+            throw new Error('database unavailable');
+        }) as typeof db.$transaction;
+        try {
+            const priorSignup = resolveFeaturesFromEnv(process.env).capabilities.auth.signup;
+            const { featuresRoutes } = await import('./featuresRoutes');
+            await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+                const logError = vi.spyOn(app.log, 'error');
+                const response = await app.inject({ method: 'GET', url: '/v1/features' });
+                expect(response.statusCode, response.body).toBe(200);
+                const auth = response.json().capabilities.auth;
+                expect(auth).not.toHaveProperty('methods');
+                expect(auth.signup).toEqual(priorSignup);
+                expect(auth.login.methods.every((method: { enabled: boolean }) => !method.enabled)).toBe(true);
+                expect(logError).toHaveBeenCalledOnce();
+            });
+        } finally {
+            db.$transaction = originalTransaction;
+        }
     });
 
     it('publishes the persisted Home sign-in-service narrowing instead of the deployment value', async () => {
@@ -440,7 +492,10 @@ describe("featuresRoutes", () => {
         });
 
         it("publishes the full identity-bound descriptor only from the authenticated features route", async () => {
-            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome" });
+            resetEnv({
+                HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome",
+                HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test",
+            });
             const { featuresRoutes } = await import("./featuresRoutes");
             const route = createRouteTestBuilder({
                 method: "GET",
@@ -448,7 +503,9 @@ describe("featuresRoutes", () => {
                 registerRoutes(app) {
                     app.authenticate.mockImplementation(async (request: any) => {
                         request.userId = "account_1";
-                        request.authTokenKind = "account";
+                        request.authTokenKind = request.headers.authorization === "Bearer restricted-runner-token"
+                            ? "ephemeral_session_runner"
+                            : "account";
                     });
                     featuresRoutes(app as any, {
                         resolveHomeIrohEndpointState: activeState,
@@ -479,10 +536,28 @@ describe("featuresRoutes", () => {
             });
             expect(route.app.authenticate).toHaveBeenCalledTimes(1);
             expect(reply.headers["Cache-Control"]).toBe("no-store");
+
+            const restricted = await route.invoke({
+                headers: { authorization: "Bearer restricted-runner-token" },
+            });
+            expect((restricted.response as any).homeConnectionDescriptor).toMatchObject({
+                homeServerIdentityId: "srv_routeIrohHome",
+                endpoints: [{
+                    kind: "iroh",
+                    endpointId: "a".repeat(64),
+                    relayUrls: ["https://relay.example.test"],
+                }],
+            });
+            expect((restricted.response as any).homeConnectionDescriptor.endpoints[0])
+                .not.toHaveProperty("directAddresses");
+            expect(route.app.authenticate).toHaveBeenCalledTimes(2);
         });
 
         it("binds an authenticated descriptor to the current server identity", async () => {
-            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_differentHome" });
+            resetEnv({
+                HAPPIER_SERVER_IDENTITY_ID: "srv_differentHome",
+                HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test",
+            });
             const { featuresRoutes } = await import("./featuresRoutes");
             const route = createRouteTestBuilder({
                 method: "GET",
@@ -540,6 +615,10 @@ describe("featuresRoutes", () => {
         });
 
         it("reads endpoint state at request time and never serves a stale descriptor", async () => {
+            resetEnv({
+                HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome",
+                HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test",
+            });
             let state: HomeIrohEndpointState = activeState();
             const { featuresRoutes } = await import("./featuresRoutes");
             const route = createRouteTestBuilder({

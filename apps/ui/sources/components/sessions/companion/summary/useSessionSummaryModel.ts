@@ -19,6 +19,7 @@ import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/ser
 import type { Session } from '@/sync/domains/state/storageTypes';
 import {
     useOpenApprovalArtifactsForSession,
+    useSession,
     useSessionProjectScmSnapshot,
     useSessionUsage,
 } from '@/sync/domains/state/storage';
@@ -39,7 +40,7 @@ const REALM_UNAVAILABLE_SUMMARY: SessionSummaryCardModel = Object.freeze({
     scope: 'realm_unavailable',
     title: null,
     agentLabel: null,
-    operational: null,
+    status: null,
     stale: false,
     availability: 'locked',
     encryption: 'unknown',
@@ -109,9 +110,22 @@ export function useSessionSummaryModel(input: Readonly<{
     // freshness moving even when the normalized Session object is referentially
     // stable, without adding a Summary-owned timer or clock.
     const awarenessNowMs = useSessionListRelativeNowMs(true);
+    // The Session shell hands every child a deliberately stabilised Session whose signature
+    // omits `activeAt`, `thinkingAt`, `runtimeActivity*` and `encryptedContentAvailability` —
+    // exactly the facts the awareness adapter consumes. Projecting from that object makes the
+    // Summary age while heartbeats keep arriving, so this surface subscribes to the live row
+    // itself. That is below the memoized shell, so the shell's own subscription locality and
+    // its narrow rerender signature are unchanged.
+    const liveSession = useSession(session.id);
+    const awarenessSource = liveSession !== null
+        && (!liveSession.serverId
+            || !session.serverId
+            || areServerProfileIdentifiersEquivalent(liveSession.serverId, session.serverId))
+        ? liveSession
+        : session;
     const awareness = React.useMemo(
-        () => projectUiSessionAwareness(session, awarenessNowMs),
-        [awarenessNowMs, session],
+        () => projectUiSessionAwareness(awarenessSource, awarenessNowMs),
+        [awarenessNowMs, awarenessSource],
     );
     const scm = React.useMemo(() => buildScmStatusSummaryFromSnapshot(scmSnapshot), [scmSnapshot]);
     const usageFacts = React.useMemo(() => readUsageFacts(usage), [usage]);

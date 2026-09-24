@@ -220,11 +220,15 @@ vi.mock('@/components/sessions/board/SessionBoardPane', async () => {
         },
     };
 });
-vi.mock('@/components/sessions/board/SessionBoardControllerProvider', async () => {
+vi.mock('@/components/sessions/board/SessionBoardControllerProvider', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/sessions/board/SessionBoardControllerProvider')>();
     const { SessionBoardContinuityProvider } = await import(
         '@/components/sessions/board/SessionBoardContinuity'
     );
     return {
+        // The presented-surface target reads the real mounted-controller hook; this
+        // stand-in provider mounts no controller, so the real hook answers null.
+        ...actual,
         SessionBoardControllerProvider: ({ children, sessionId, serverId }: React.PropsWithChildren<Readonly<{
             sessionId: string;
             serverId?: string | null;
@@ -955,7 +959,7 @@ describe('SessionCockpitSurfaceScreen collaboration surface', () => {
         const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
         const { tryWriteServerEnabledBitInPlace } = await import('@happier-dev/protocol');
         const features = createRootLayoutFeaturesResponse();
-        for (const feature of ['sharing.session', 'sessions.collaboration'] as const) {
+        for (const feature of ['sharing.session'] as const) {
             if (!tryWriteServerEnabledBitInPlace(features, feature, enabled)) {
                 throw new Error(`The ${feature} bit could not be written by its own writer`);
             }

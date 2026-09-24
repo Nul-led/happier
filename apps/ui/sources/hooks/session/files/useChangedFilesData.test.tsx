@@ -149,7 +149,16 @@ describe('useChangedFilesData', () => {
                 }],
             },
             checkpointDiff: {
-                success: true, kind: 'diff', baseRefSource: 'turn_start', contentConfidence: 'exact',
+                success: true,
+                baseRef: {
+                    scopeId: 's1:/repo', encodedScope: 's1-repo', phase: 'turn-start',
+                    checkpointId: 'turn-composed', ref: 'refs/happier/start',
+                },
+                finalRef: {
+                    scopeId: 's1:/repo', encodedScope: 's1-repo', phase: 'turn-final',
+                    checkpointId: 'turn-composed', ref: 'refs/happier/final',
+                },
+                baseRefSource: 'turn_start', contentConfidence: 'exact',
                 attributionScope: 'shared_worktree', receipts: [{ id: 'checkpoint.diff_computed' }],
                 files: [{
                     filePath: 'src/a.ts', changeKind: 'modified', unifiedDiff: 'checkpoint diff', binary: false,
@@ -168,15 +177,16 @@ describe('useChangedFilesData', () => {
         };
         const turns = deriveTurnChangeSetsFromMessages([message]);
         const sessionChangeSet = mergeTurnChangeSets({ sessionId: 's1', turns });
-        let latest: UseChangedFilesDataResult | null = null;
+        const result: { latest?: UseChangedFilesDataResult } = {};
         function Test() {
-            latest = useChangedFilesData({
+            result.latest = useChangedFilesData({
                 sessionId: 's1', scmSnapshot: makeSnapshot(), workspaceTouchedPaths: [], searchQuery: '',
                 showAllRepositoryFiles: false, latestTurnEvidence: turns[0], sessionChangeSet,
             });
             return null;
         }
         const screen = await renderScreen(<Test />);
+        const latest = result.latest;
         if (!latest) throw new Error('Expected hook result');
 
         // These are the actual non-directory adapters used by the mounted list, review, and right panel.
@@ -686,6 +696,70 @@ describe('useChangedFilesData', () => {
         const result: UseChangedFilesDataResult = latest;
         expect(result.showTurnViewToggle).toBe(true);
         expect(result.turnAttributedFiles.map((entry) => entry.file.fullPath)).toEqual(['src/agent-only.ts']);
+
+        act(() => {
+            root.unmount();
+        });
+    });
+
+    it('keeps the evidence recorded at a renamed file\'s previous path in its disclosure', async () => {
+        let latest: UseChangedFilesDataResult | null = null;
+        const renameTurn: TurnChangeSet = {
+            ...makeMixedTurnChangeSet(),
+            files: [
+                {
+                    filePath: 'src/old.ts',
+                    changeKind: 'modified',
+                    source: 'provider_native',
+                    confidence: 'best_effort',
+                    provider: 'codex',
+                    unifiedDiff: 'edit before the rename',
+                },
+                {
+                    filePath: 'src/a.ts',
+                    previousFilePath: 'src/old.ts',
+                    changeKind: 'renamed',
+                    source: 'provider_tool',
+                    confidence: 'strong',
+                    provider: 'codex',
+                    unifiedDiff: 'rename evidence',
+                },
+                {
+                    filePath: 'src/copy.ts',
+                    previousFilePath: 'src/a.ts',
+                    changeKind: 'copied',
+                    source: 'provider_tool',
+                    confidence: 'strong',
+                    provider: 'codex',
+                    unifiedDiff: 'copy evidence',
+                },
+            ],
+        };
+
+        function Test() {
+            latest = useChangedFilesData({
+                sessionId: 's1',
+                scmSnapshot: makeSnapshot(),
+                workspaceTouchedPaths: [],
+                searchQuery: '',
+                showAllRepositoryFiles: false,
+                latestTurnEvidence: renameTurn,
+            });
+            return null;
+        }
+
+        const root = (await renderScreen(<Test />)).tree;
+
+        expect(latest).not.toBeNull();
+        if (!latest) throw new Error('Expected hook result');
+        const result: UseChangedFilesDataResult = latest;
+        const renamed = result.turnAttributedFiles.find((entry) => entry.file.fullPath === 'src/a.ts');
+        expect(renamed?.evidence.map((entry) => entry.unifiedDiff)).toEqual([
+            'edit before the rename',
+            'rename evidence',
+        ]);
+        const copied = result.turnAttributedFiles.find((entry) => entry.file.fullPath === 'src/copy.ts');
+        expect(copied?.evidence.map((entry) => entry.unifiedDiff)).toEqual(['copy evidence']);
 
         act(() => {
             root.unmount();

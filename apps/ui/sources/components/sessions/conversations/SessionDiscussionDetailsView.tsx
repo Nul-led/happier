@@ -15,6 +15,7 @@ import { requestRegisteredSessionComposerFocus } from '@/components/sessions/pre
 import { createDiscussionSelectionInteractiveExecutionRunDraftDetailsTab } from '@/components/sessions/runs/launcher/executionRunLauncherModel';
 import { SessionDraftConflictResolution } from '@/components/sessions/drafts/SessionDraftConflictResolution';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import { isSessionWriteKnownDenied } from '@/utils/sessions/deriveTranscriptInteraction';
 import { publishInteractiveExecutionRunDraftNavigationIntent } from '@/components/sessions/runs/launcher/interactiveExecutionRunDraftNavigationIntent';
 import { SelectMessageButton } from '@/components/sessions/transcript/messageSelection/SelectMessageButton';
 import { TranscriptMessageSelectionBoundary } from '@/components/sessions/transcript/messageSelection/TranscriptMessageSelectionContext';
@@ -52,17 +53,19 @@ import { useSessionDiscussionRepositorySnapshot } from '@/sync/ops/sessionDiscus
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { formatSessionPresenceViewerNames } from '@/components/sessions/collaboration/sessionPresenceNames';
 import { useDeviceType } from '@/utils/platform/responsive';
 import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 import { SessionDiscussionAgentActivityReference } from './SessionDiscussionAgentActivityReference';
 import { useOpenSessionAgentConversation } from './useOpenSessionAgentConversation';
-import { buildSessionDiscussionTimelineItems, type SessionDiscussionTimelineItem } from './sessionDiscussionTimelineProjection';
-import { prepareDiscussionSelectionHandoff } from './prepareDiscussionSelectionHandoff';
+import { buildSessionDiscussionTimelineItems, resolveReadableVisibleDiscussionSeqs, type SessionDiscussionTimelineItem } from './sessionDiscussionTimelineProjection';
+import { isSelectableDiscussionMessage, prepareDiscussionSelectionHandoff } from './prepareDiscussionSelectionHandoff';
 import { sendDiscussionSelectionToSession } from './sendDiscussionSelectionToSession';
 import { SessionDiscussionComposer } from './SessionDiscussionComposer';
 import { buildSessionDiscussionContent, resolveSessionDiscussionCreationTitle } from './discussionComposerDocument';
 import { useSessionDiscussionDraft } from './useSessionDiscussionDraft';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
@@ -218,7 +221,7 @@ function useRepository(
     address: SessionAddress,
     accountLifetime: ServerCredentialAccountScopeBinding,
 ): readonly [SessionDiscussionRepository, ReturnType<SessionDiscussionRepository['getSnapshot']>] {
-    const client = React.useMemo(() => createSessionDiscussionClient({ session: address, availability: 'full_collaboration' }), [address]);
+    const client = React.useMemo(() => createSessionDiscussionClient({ session: address, availability: 'available' }), [address]);
     const repository = React.useMemo(() => getSessionDiscussionRepository({
         scope,
         address,
@@ -230,21 +233,39 @@ function useRepository(
     return [repository, snapshot];
 }
 
-export function SessionDiscussionDetailsView(props: Readonly<{ target: SessionDiscussionDetailsTarget; active: boolean; onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void; onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>): React.ReactElement {
+export function SessionDiscussionDetailsView(props: Readonly<{
+    target: SessionDiscussionDetailsTarget;
+    /** True only while this Details surface is the one actually on screen (active tab, focused route). */
+    active: boolean;
+    /**
+     * The host is itself the visible surface (the standalone mobile Discussion route),
+     * so `active` alone states visibility. A Session-hosted Details pane leaves this
+     * unset: it is visible only while its Session surface is.
+     */
+    standaloneSurface?: boolean;
+    onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void;
+    onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void;
+}>): React.ReactElement {
     const requestedServerIds = React.useMemo(() => [props.target.address.serverId], [props.target.address.serverId]);
     const bindings = useServerCredentialAccountScopeBindings(requestedServerIds);
     const binding = React.useMemo(() => [...bindings.values()][0] ?? null, [bindings]);
     const availability = useSessionCollaborationAvailability(props.target.address.serverId);
     const enabled = useFeatureEnabled('sessions.conversations', { scopeKind: 'spawn', serverId: props.target.address.serverId });
-    if (!enabled || availability !== 'full_collaboration' || !binding) return <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.unavailable')}</Text></View>;
+    if (!enabled || availability !== 'available' || !binding) return <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.unavailable')}</Text></View>;
     return props.target.kind === 'new'
         ? <NewDiscussion target={props.target} scope={binding.scope} accountLifetime={binding} onCreated={props.onCreated} />
-        : <Discussion target={props.target} scope={binding.scope} accountLifetime={binding} active={props.active} onOpened={props.onOpened} />;
+        : <Discussion target={props.target} scope={binding.scope} accountLifetime={binding} active={props.active} standaloneSurface={props.standaloneSurface === true} onOpened={props.onOpened} />;
 }
 
 function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'new' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>) {
     const draftAddress = React.useMemo(() => ({ kind: 'newDiscussion' as const, sessionId: props.target.address.sessionId }), [props.target.address.sessionId]);
     const draft = useSessionDiscussionDraft({ scope: props.scope, address: draftAddress });
+    // Only a stated refusal from the exact Session's own access projection
+    // annotates this flow; an unloaded Session or an absent projection keeps it
+    // usable with the server as the authority. A write downgrade is not access
+    // loss, so the private draft is retained rather than purged.
+    const session = useSessionViewShellSession(props.target.address.sessionId, props.target.address.serverId);
+    const createDenied = isSessionWriteKnownDenied(session);
     const [repository, snapshot] = useRepository(props.scope, props.target.address, props.accountLifetime);
     const restoredAttempt = draft.pendingMutationAttempt?.kind === 'create' ? draft.pendingMutationAttempt : null;
     const ids = React.useRef({
@@ -263,18 +284,20 @@ function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetail
     const repositoryUnavailable = snapshot.lists.active.status === 'offline'
         || snapshot.lists.active.status === 'locked'
         || snapshot.lists.active.status === 'error';
-    const createDisabled = composerBlocked || draftUnavailable || repositoryUnavailable;
-    const createUnavailableLabel = draft.status === 'offline' || snapshot.lists.active.status === 'offline'
-        ? t('session.collaboration.discussion.offline')
-        : snapshot.lists.active.status === 'locked'
-            ? t('session.access.preparing')
-            // The draft is retained locally and the conversation still works:
-            // the only lost capability is syncing this draft to other devices.
-            : draft.status === 'unsupported'
-                ? t('sessionDrafts.status.unsupported')
-                : draft.status === 'error' || snapshot.lists.active.status === 'error'
-                    ? t('session.collaboration.discussion.loadError')
-                    : null;
+    const createDisabled = composerBlocked || draftUnavailable || repositoryUnavailable || createDenied;
+    const createUnavailableLabel = createDenied
+        ? t('session.collaboration.discussion.postDenied')
+        : draft.status === 'offline' || snapshot.lists.active.status === 'offline'
+            ? t('session.collaboration.discussion.offline')
+            : snapshot.lists.active.status === 'locked'
+                ? t('session.access.preparing')
+                // The draft is retained locally and the conversation still works:
+                // the only lost capability is syncing this draft to other devices.
+                : draft.status === 'unsupported'
+                    ? t('sessionDrafts.status.unsupported')
+                    : draft.status === 'error' || snapshot.lists.active.status === 'error'
+                        ? t('session.collaboration.discussion.loadError')
+                        : null;
     React.useEffect(() => {
         if (accessRevoked) void draft.purgePresentation();
     }, [accessRevoked, draft]);
@@ -334,10 +357,10 @@ function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetail
         await repository.create({ ...ids.current, title, content, mentionedAccountIds: [...new Set(draft.mentions.map((item) => item.accountId))], draftSubmission });
     }, [composerBlocked, dismissRefusal, draft, mutation, repository]);
     if (accessRevoked) return <View style={styles.center} testID="session-discussion-details-empty-state"><Text style={styles.error}>{t('session.access.removedTitle')}</Text></View>;
-    return <View style={styles.root} testID="session-discussion-new-details"><View style={styles.body}><TextInput testID="session-discussion-title" style={styles.input} value={draft.title} onChangeText={(title) => { draft.setTitle(title); if (title.trim()) setTitleRequired(false); }} placeholder={t('session.collaboration.discussion.titlePlaceholder')} accessibilityLabel={t('session.collaboration.discussion.titlePlaceholder')} aria-invalid={titleRequired} autoFocus />{titleRequired ? <Text testID="session-discussion-title-required" accessibilityLiveRegion="polite" style={styles.fieldHint}>{t('session.collaboration.discussion.titleRequired')}</Text> : null}{mutation?.content ? <View style={styles.message}><View style={styles.messageBody}><Text testID={`session-discussion-message-content-${mutation.messageLocalId}`}>{textOf(mutation.content)}</Text>{mutationStatusLabel(mutation) ? <Text testID={`session-discussion-message-status-${mutation.messageLocalId}`} accessibilityLiveRegion="polite" style={mutation.status === 'failed' ? styles.error : styles.deliveryStatus}>{mutationStatusLabel(mutation)}</Text> : null}<MutationRecovery mutation={mutation} onRetry={() => void repository.retry(activeCreationLocalId)} onDismiss={dismissRefusal} /></View></View> : null}</View>{draft.conflict ? <SessionDraftConflictResolution scope={props.scope} address={draftAddress} conflict={draft.conflict} /> : null}{createUnavailableLabel ? <Text style={styles.banner}>{createUnavailableLabel}</Text> : null}<SessionDiscussionComposer scope={props.scope} address={props.target.address} availability="full_collaboration" value={{ text: draft.text, mentions: draft.mentions }} onChange={draft.setComposer} disabled={createDisabled} onSend={(content) => void submit(content)} /></View>;
+    return <View style={styles.root} testID="session-discussion-new-details"><View style={styles.body}><TextInput testID="session-discussion-title" style={styles.input} value={draft.title} onChangeText={(title) => { draft.setTitle(title); if (title.trim()) setTitleRequired(false); }} placeholder={t('session.collaboration.discussion.titlePlaceholder')} accessibilityLabel={t('session.collaboration.discussion.titlePlaceholder')} aria-invalid={titleRequired} autoFocus />{titleRequired ? <Text testID="session-discussion-title-required" accessibilityLiveRegion="polite" style={styles.fieldHint}>{t('session.collaboration.discussion.titleRequired')}</Text> : null}{mutation?.content ? <View style={styles.message}><View style={styles.messageBody}><Text testID={`session-discussion-message-content-${mutation.messageLocalId}`}>{textOf(mutation.content)}</Text>{mutationStatusLabel(mutation) ? <Text testID={`session-discussion-message-status-${mutation.messageLocalId}`} accessibilityLiveRegion="polite" style={mutation.status === 'failed' ? styles.error : styles.deliveryStatus}>{mutationStatusLabel(mutation)}</Text> : null}<MutationRecovery mutation={mutation} onRetry={() => void repository.retry(activeCreationLocalId)} onDismiss={dismissRefusal} /></View></View> : null}</View>{draft.conflict ? <SessionDraftConflictResolution scope={props.scope} address={draftAddress} conflict={draft.conflict} /> : null}{createUnavailableLabel ? <Text style={styles.banner}>{createUnavailableLabel}</Text> : null}<SessionDiscussionComposer scope={props.scope} address={props.target.address} availability="available" value={{ text: draft.text, mentions: draft.mentions }} onChange={draft.setComposer} disabled={createDisabled} onSend={(content) => void submit(content)} /></View>;
 }
 
-function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'discussion' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; active: boolean; onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>) {
+function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'discussion' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; active: boolean; standaloneSurface: boolean; onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>) {
     const router = useRouter();
     const device = useDeviceType();
     const session = useSessionViewShellSession(props.target.address.sessionId, props.target.address.serverId);
@@ -353,10 +376,14 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         discussionId: props.target.discussionId,
     }), [props.target.address.serverId, props.target.address.sessionId, props.target.discussionId]);
     const presence = useSessionHumanPresence(presenceTarget);
-    const presenceLabel = React.useMemo(() => presence.viewers.map((viewer) => {
-        const name = formatAccountDisplayName(viewer.account) ?? t('session.collaboration.unnamed');
-        return viewer.typing ? `${name} ${t('session.collaboration.typing')}` : name;
-    }).join(', '), [presence.viewers]);
+    // The one presence-name owner, as in the facepile and Viewing now: a retained
+    // last-known observation keeps its names, says so, and makes no typing claim.
+    const presenceStale = presence.status === 'stale';
+    const presenceLabel = React.useMemo(() => {
+        if (presence.viewers.length === 0 || (presence.status !== 'live' && !presenceStale)) return '';
+        const names = formatSessionPresenceViewerNames(presence.viewers, { stale: presenceStale });
+        return presenceStale ? `${names} · ${t('session.collaboration.stale')}` : names;
+    }, [presence.status, presence.viewers, presenceStale]);
     const transcriptBulkCopyFormat = useSetting('transcriptBulkCopyFormat');
     const sendTemplate = useSetting('transcriptMessageSendToSessionTemplate');
     const draftAddress = React.useMemo(() => ({ kind: 'discussion' as const, sessionId: props.target.address.sessionId, discussionId: props.target.discussionId }), [props.target.address.sessionId, props.target.discussionId]);
@@ -390,7 +417,7 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         return viewer ? formatAccountDisplayName(viewer.account) ?? t('session.collaboration.unnamed') : null;
     }, [historicalActorLabels, presence.viewers]);
     const selectableMessages = React.useMemo<readonly TranscriptSelectionToolbarMessage[]>(() => messages
-        .filter((message) => message.producerV1 === null && message.authorAccountId !== null && message.content !== null)
+        .filter(isSelectableDiscussionMessage)
         .sort((left, right) => left.seq - right.seq || left.id.localeCompare(right.id))
         .map((message) => ({ id: message.id, role: 'user' as const, text: textOf(message.content, resolveAccountLabel) })), [messages, resolveAccountLabel]);
     const prepareSelection = React.useCallback((selected: ReadonlyArray<TranscriptSelectionToolbarMessage>) => prepareDiscussionSelectionHandoff({
@@ -401,6 +428,7 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         resolveAccountLabel,
         format: transcriptBulkCopyFormat,
         roleLabels: { user: t('session.collaboration.discussion.collaborator'), assistant: t('voiceActivity.format.assistant') },
+        agentAttributionLabel: t('session.collaboration.discussion.viaAgent'),
     }), [messages, props.target.address.sessionId, props.target.discussionId, resolveAccountLabel, transcriptBulkCopyFormat]);
     const [localId, setLocalId] = React.useState<string | null>(null);
     const clearingLocalId = React.useRef<string | null>(null);
@@ -605,17 +633,28 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         writeCursor: (seq) => repository.setReadState(props.target.discussionId, seq),
     }), [props.target.discussionId, repository]);
     React.useEffect(() => read.updateEligibility({
-        activeAndVisible: props.active && hostViewed && surfaceVisible,
+        activeAndVisible: props.active && hostViewed && (props.standaloneSurface || surfaceVisible),
         lastReadSeq: discussion?.lastReadSeq ?? null,
-    }), [discussion?.lastReadSeq, hostViewed, props.active, read, surfaceVisible, thread?.status]);
-    const canonicalMessageIds = React.useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
-    const onVisible = React.useCallback((info: Readonly<{ viewableItems: readonly ViewToken<SessionDiscussionTimelineItem>[] }>) => read.observeVisibleMessageSeqs(info.viewableItems.flatMap((token) => (
-        token.isViewable !== false
-        && token.item?.kind === 'human_message'
-        && canonicalMessageIds.has(token.item.message.id)
-            ? [token.item.message.seq]
-            : []
-    ))), [canonicalMessageIds, read]);
+    }), [discussion?.lastReadSeq, hostViewed, props.active, props.standaloneSurface, read, surfaceVisible, thread?.status]);
+    // The rows the list last reported on screen. Readability can change while a row
+    // stays visible (a locked placeholder opens once the Session key arrives), which
+    // produces no new viewability callback, so admission is re-evaluated from here.
+    const [visibleMessageIds, setVisibleMessageIds] = React.useState<ReadonlySet<string>>(() => new Set());
+    const onVisible = React.useCallback((info: Readonly<{ viewableItems: readonly ViewToken<SessionDiscussionTimelineItem>[] }>) => {
+        setVisibleMessageIds(new Set(info.viewableItems.flatMap((token) => (
+            token.isViewable !== false && token.item?.kind === 'human_message' ? [token.item.message.id] : []
+        ))));
+    }, []);
+    const readableVisibleSeqs = React.useMemo(
+        () => resolveReadableVisibleDiscussionSeqs({ messages, visibleMessageIds, lastReadSeq: discussion?.lastReadSeq ?? null }),
+        [discussion?.lastReadSeq, messages, visibleMessageIds],
+    );
+    // Also re-observed when the surface itself becomes visible: rows already on screen
+    // at that moment are seen then, although the list reports no new viewability.
+    React.useEffect(
+        () => read.observeVisibleMessageSeqs(readableVisibleSeqs),
+        [hostViewed, props.active, props.standaloneSurface, read, readableVisibleSeqs, surfaceVisible],
+    );
     if (accessRevoked) return <View style={styles.center} testID="session-discussion-details-empty-state"><Text style={styles.error}>{t('session.access.removedTitle')}</Text></View>;
     if (!thread || thread.status === 'idle' || (thread.status === 'loading' && !discussion)) return <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.loading')}</Text></View>;
     if (!discussion) {
@@ -630,11 +669,11 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         const retryable = status === 'offline' || status === 'error' || status === undefined;
         return <View style={styles.center} testID="session-discussion-details-empty-state"><Text style={status === 'error' ? styles.error : styles.status}>{label}</Text>{retryable ? <Pressable testID="session-discussion-details-retry" style={styles.retry} accessibilityRole="button" accessibilityLabel={t('session.collaboration.discussion.retry')} onPress={() => void repository.refreshDiscussion(props.target.discussionId)}><Text style={styles.retryText}>{t('session.collaboration.discussion.retry')}</Text></Pressable> : null}</View>;
     }
-    return <TranscriptMessageSelectionBoundary sessionId={dataKey} eligibleMessageIdsInOrder={selectableMessages.map((message) => message.id)}><View style={styles.root} testID="session-discussion-details"><View style={styles.toolbar}>{rename !== null ? <TextInput testID="session-discussion-rename-input" style={[styles.input, { flex: 1 }]} value={rename} onChangeText={setRename} accessibilityLabel={t('session.collaboration.discussion.rename')} autoFocus /> : <View style={styles.titleBlock}><Text testID="session-discussion-heading" accessibilityRole="header" style={styles.title} numberOfLines={1}>{discussion.title ?? t('session.collaboration.discussion.encryptedTitle')}</Text>{presenceLabel ? <Text testID="session-discussion-presence" accessibilityLiveRegion="polite" style={styles.headerMeta} numberOfLines={1}>{presenceLabel}</Text> : null}</View>}{rename !== null ? <Action label={t('common.save')} disabled={!rename.trim() || mutationsDisabled} onPress={() => void lifecycle('rename')} /> : <RecentDiscussionAuthors messages={displayMessages} />}{rename === null && lifecycleActions.length > 0 ? <DropdownMenu open={lifecycleMenuOpen} onOpenChange={setLifecycleMenuOpen} items={lifecycleActions} onSelect={(itemId) => { setLifecycleMenuOpen(false); if (itemId === 'rename') setRename(discussion.title ?? ''); else if (itemId === 'archive' || itemId === 'restore') void lifecycle(itemId); }} matchTriggerWidth={false} maxWidthCap={260} placement="bottom" popoverAnchorAlign="end" trigger={({ toggle }) => <Pressable testID="session-discussion-actions-menu" accessibilityRole="button" accessibilityLabel={t('common.moreActions')} accessibilityHint={t('common.moreActionsHint')} onPress={toggle} style={({ pressed }) => [styles.overflowAction, { opacity: pressed ? 0.7 : 1 }]}><Icon name="dots-three" size={ICON_SIZE.md} /></Pressable>} /> : null}</View>{lifecycleError || detailsNotice ? <Text style={styles.banner}>{lifecycleError ? t('session.collaboration.discussion.loadError') : detailsNotice}</Text> : null}{draft.conflict ? <SessionDraftConflictResolution scope={props.scope} address={draftAddress} conflict={draft.conflict} /> : null}<View style={styles.messages}><TranscriptListShell<SessionDiscussionTimelineItem> key={dataKey} dataKey={dataKey} data={items} frame={frame} webDomObservation={observation} keyExtractor={(item) => item.kind === 'human_message' ? `message:${item.message.localId ?? item.message.id}` : `run:${item.entry.runId ?? item.subagent.id}`} onViewableItemsChanged={onVisible} viewabilityConfig={VIEWABILITY} onStartReached={thread.hasMoreOlder ? () => void repository.loadOlderMessages(props.target.discussionId) : undefined} onStartReachedThreshold={0.2} header={thread.hasMoreOlder ? <Pressable style={styles.retry} accessibilityRole="button" accessibilityLabel={t('session.collaboration.discussion.loadOlder')} onPress={() => void repository.loadOlderMessages(props.target.discussionId)}><Text style={styles.retryText}>{t('session.collaboration.discussion.loadOlder')}</Text></Pressable> : null} footer={items.length === 0 ? <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.emptyActive')}</Text></View> : null} renderItem={({ item }) => {
+    return <TranscriptMessageSelectionBoundary sessionId={dataKey} eligibleMessageIdsInOrder={selectableMessages.map((message) => message.id)}><View style={styles.root} testID="session-discussion-details"><View style={styles.toolbar}>{rename !== null ? <TextInput testID="session-discussion-rename-input" style={[styles.input, { flex: 1 }]} value={rename} onChangeText={setRename} accessibilityLabel={t('session.collaboration.discussion.rename')} autoFocus /> : <View style={styles.titleBlock}><Text testID="session-discussion-heading" accessibilityRole="header" style={styles.title} numberOfLines={1}>{discussion.title ?? t('session.collaboration.discussion.encryptedTitle')}</Text>{presenceLabel ? <Text testID="session-discussion-presence" accessibilityLiveRegion="polite" style={styles.headerMeta} numberOfLines={1}>{presenceLabel}</Text> : null}</View>}{rename !== null ? <Action label={t('common.save')} disabled={!rename.trim() || mutationsDisabled} onPress={() => void lifecycle('rename')} /> : <RecentDiscussionAuthors messages={displayMessages} />}{rename === null && lifecycleActions.length > 0 ? <DropdownMenu open={lifecycleMenuOpen} onOpenChange={setLifecycleMenuOpen} items={lifecycleActions} onSelect={(itemId) => { setLifecycleMenuOpen(false); if (itemId === 'rename') setRename(discussion.title ?? ''); else if (itemId === 'archive' || itemId === 'restore') void lifecycle(itemId); }} matchTriggerWidth={false} maxWidthCap={260} placement="bottom" popoverAnchorAlign="end" trigger={({ toggle }) => <Pressable testID="session-discussion-actions-menu" accessibilityRole="button" accessibilityLabel={t('common.moreActions')} accessibilityHint={t('common.moreActionsHint')} onPress={toggle} style={({ pressed }) => [styles.overflowAction, { opacity: pressed ? motionTokens.press.opacity : 1 }]}><Icon name="dots-three" size={ICON_SIZE.md} /></Pressable>} /> : null}</View>{lifecycleError || detailsNotice ? <Text style={styles.banner}>{lifecycleError ? t('session.collaboration.discussion.loadError') : detailsNotice}</Text> : null}{draft.conflict ? <SessionDraftConflictResolution scope={props.scope} address={draftAddress} conflict={draft.conflict} /> : null}<View style={styles.messages}><TranscriptListShell<SessionDiscussionTimelineItem> key={dataKey} dataKey={dataKey} data={items} frame={frame} webDomObservation={observation} keyExtractor={(item) => item.kind === 'human_message' ? `message:${item.message.localId ?? item.message.id}` : `run:${item.entry.runId ?? item.subagent.id}`} onViewableItemsChanged={onVisible} viewabilityConfig={VIEWABILITY} onStartReached={thread.hasMoreOlder ? () => void repository.loadOlderMessages(props.target.discussionId) : undefined} onStartReachedThreshold={0.2} header={thread.hasMoreOlder ? <Pressable style={styles.retry} accessibilityRole="button" accessibilityLabel={t('session.collaboration.discussion.loadOlder')} onPress={() => void repository.loadOlderMessages(props.target.discussionId)}><Text style={styles.retryText}>{t('session.collaboration.discussion.loadOlder')}</Text></Pressable> : null} footer={items.length === 0 ? <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.emptyActive')}</Text></View> : null} renderItem={({ item }) => {
         if (item.kind === 'agent_activity_reference') return <SessionDiscussionAgentActivityReference entry={item.entry} subagent={item.subagent} onPress={() => openRun(item)} />;
         const startsGroup = messageGroupStarts.has(item.message.id);
-        return <View testID={`session-discussion-message-group-${startsGroup ? 'start' : 'continuation'}-${item.message.id}`} style={[styles.message, !startsGroup ? styles.messageGroupContinuation : null, item.message.producerV1 ? styles.agentMessage : null]}>{item.message.producerV1 === null && item.message.authorAccountId !== null && item.message.content !== null && item.message.id !== mutation?.localId ? <SelectMessageButton messageId={item.message.id} enabled visible role="user" previewText={textOf(item.message.content, resolveAccountLabel)} testID={`session-discussion-select-${item.message.id}`} /> : null}<View style={styles.messageBody}><View style={styles.messageAttribution}><Text testID={`session-discussion-message-actor-${item.message.id}`} style={styles.meta}>{discussionMessageActorLabel(item.message)}</Text>{item.message.producerV1 ? <Text testID={`session-discussion-message-producer-${item.message.id}`} style={styles.meta}>{t('session.collaboration.discussion.viaAgent')}</Text> : null}</View><Text testID={`session-discussion-message-content-${item.message.id}`}>{textOf(item.message.content, resolveAccountLabel)}</Text>{item.message.createdAt > 0 ? <Text testID={`session-discussion-message-timestamp-${item.message.id}`} accessibilityRole="text" accessibilityLabel={new Date(item.message.createdAt).toLocaleString()} style={styles.timestamp}>{formatShortRelativeTime(item.message.createdAt)}</Text> : null}{item.message.localId === mutation?.localId && mutationStatusLabel(mutation) ? <Text testID={`session-discussion-message-status-${item.message.localId}`} accessibilityLiveRegion="polite" style={mutation.status === 'failed' ? styles.error : styles.deliveryStatus}>{mutationStatusLabel(mutation)}</Text> : null}{item.message.localId === mutation?.localId ? <MutationRecovery mutation={mutation} onRetry={() => void repository.retry(mutation.localId)} onDismiss={dismissRefusal} /> : null}</View></View>;
-        }} /></View><View style={styles.selectionToolbar}><TranscriptSelectionToolbar selectableMessagesInOrder={selectableMessages} bulkCopyFormat={transcriptBulkCopyFormat} roleLabels={{ user: t('session.collaboration.discussion.collaborator'), assistant: t('voiceActivity.format.assistant') }} sendToSessionEnabled={discussion.capabilities.sendToSession} onSendToSession={sendSelectionToComposer} formatSelection={(selected) => prepareSelection(selected)?.text ?? null} selectionUnavailableText={t('session.collaboration.discussion.contentUnavailable')} additionalAction={discussion.capabilities.askAgent && canLaunchExecutionRuns ? { testID: 'session-discussion-selection-ask-agent', label: t('session.collaboration.discussion.selection.askAgent'), onPress: askAgentAboutSelection } : undefined} /></View>{selectionHandoffRetry ? <View style={styles.selectionHandoffError}><Text testID="session-discussion-selection-handoff-error" accessibilityLiveRegion="polite" style={styles.selectionHandoffErrorText}>{t('session.collaboration.discussion.selection.handoffError')}</Text><Pressable testID="session-discussion-selection-handoff-retry" accessibilityRole="button" accessibilityLabel={t('common.retry')} accessibilityState={selectionHandoffRetrying ? { disabled: true } : undefined} disabled={selectionHandoffRetrying} onPress={() => void retrySelectionHandoff()} style={styles.retry}><Text style={styles.retryText}>{t('common.retry')}</Text></Pressable></View> : null}{discussion.archivedAt !== null ? <Text style={styles.banner}>{t('session.collaboration.discussion.archivedNotice')}</Text> : discussion.capabilities.postMessages ? <SessionDiscussionComposer scope={props.scope} address={props.target.address} discussionId={props.target.discussionId} availability="full_collaboration" value={{ text: draft.text, mentions: draft.mentions }} onChange={draft.setComposer} disabled={composerBlocked || mutationsDisabled} onSend={(content) => void send(content)} /> : <Text style={styles.banner}>{t('session.collaboration.discussion.locked')}</Text>}</View></TranscriptMessageSelectionBoundary>;
+        return <View testID={`session-discussion-message-group-${startsGroup ? 'start' : 'continuation'}-${item.message.id}`} style={[styles.message, !startsGroup ? styles.messageGroupContinuation : null, item.message.producerV1 ? styles.agentMessage : null]}>{isSelectableDiscussionMessage(item.message) && item.message.id !== mutation?.localId ? <SelectMessageButton messageId={item.message.id} enabled visible role="user" previewText={textOf(item.message.content, resolveAccountLabel)} testID={`session-discussion-select-${item.message.id}`} /> : null}<View style={styles.messageBody}><View style={styles.messageAttribution}><Text testID={`session-discussion-message-actor-${item.message.id}`} style={styles.meta}>{discussionMessageActorLabel(item.message)}</Text>{item.message.producerV1 ? <Text testID={`session-discussion-message-producer-${item.message.id}`} style={styles.meta}>{t('session.collaboration.discussion.viaAgent')}</Text> : null}</View><Text testID={`session-discussion-message-content-${item.message.id}`}>{textOf(item.message.content, resolveAccountLabel)}</Text>{item.message.createdAt > 0 ? <Text testID={`session-discussion-message-timestamp-${item.message.id}`} accessibilityRole="text" accessibilityLabel={new Date(item.message.createdAt).toLocaleString()} style={styles.timestamp}>{formatShortRelativeTime(item.message.createdAt)}</Text> : null}{item.message.localId === mutation?.localId && mutationStatusLabel(mutation) ? <Text testID={`session-discussion-message-status-${item.message.localId}`} accessibilityLiveRegion="polite" style={mutation.status === 'failed' ? styles.error : styles.deliveryStatus}>{mutationStatusLabel(mutation)}</Text> : null}{item.message.localId === mutation?.localId ? <MutationRecovery mutation={mutation} onRetry={() => void repository.retry(mutation.localId)} onDismiss={dismissRefusal} /> : null}</View></View>;
+        }} /></View><View style={styles.selectionToolbar}><TranscriptSelectionToolbar selectableMessagesInOrder={selectableMessages} bulkCopyFormat={transcriptBulkCopyFormat} roleLabels={{ user: t('session.collaboration.discussion.collaborator'), assistant: t('voiceActivity.format.assistant') }} sendToSessionEnabled={discussion.capabilities.sendToSession} onSendToSession={sendSelectionToComposer} formatSelection={(selected) => prepareSelection(selected)?.text ?? null} selectionUnavailableText={t('session.collaboration.discussion.contentUnavailable')} additionalAction={discussion.capabilities.askAgent && canLaunchExecutionRuns ? { testID: 'session-discussion-selection-ask-agent', label: t('session.collaboration.discussion.selection.askAgent'), onPress: askAgentAboutSelection } : undefined} /></View>{selectionHandoffRetry ? <View style={styles.selectionHandoffError}><Text testID="session-discussion-selection-handoff-error" accessibilityLiveRegion="polite" style={styles.selectionHandoffErrorText}>{t('session.collaboration.discussion.selection.handoffError')}</Text><Pressable testID="session-discussion-selection-handoff-retry" accessibilityRole="button" accessibilityLabel={t('common.retry')} accessibilityState={selectionHandoffRetrying ? { disabled: true } : undefined} disabled={selectionHandoffRetrying} onPress={() => void retrySelectionHandoff()} style={styles.retry}><Text style={styles.retryText}>{t('common.retry')}</Text></Pressable></View> : null}{discussion.archivedAt !== null ? <Text style={styles.banner}>{t('session.collaboration.discussion.archivedNotice')}</Text> : discussion.capabilities.postMessages ? <SessionDiscussionComposer scope={props.scope} address={props.target.address} discussionId={props.target.discussionId} availability="available" value={{ text: draft.text, mentions: draft.mentions }} onChange={draft.setComposer} disabled={composerBlocked || mutationsDisabled} onSend={(content) => void send(content)} /> : <Text style={styles.banner}>{t('session.collaboration.discussion.locked')}</Text>}</View></TranscriptMessageSelectionBoundary>;
 }
 
 /**

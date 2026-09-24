@@ -124,39 +124,53 @@ export function loadEffectiveHomeViewState(): HomeViewStateV1 | null {
     return value;
 }
 
+function overlayTabTarget(deviceState: HomeViewStateV1): HomeViewStateV1 {
+    const tabTarget = readTabTarget();
+    if (!tabTarget) return deviceState;
+    const validTarget = targetFromState({
+        ...deviceState,
+        activeTargetKind: tabTarget.kind,
+        activeTargetId: tabTarget.id,
+    }, listServerProfiles());
+    return validTarget
+        ? { ...deviceState, activeTargetKind: validTarget.kind, activeTargetId: validTarget.id }
+        : deviceState;
+}
+
 /**
- * Group definitions remain device-global. A tab-scoped update changes only the
- * current web tab target; non-web runtimes use the device target.
+ * Group definitions are device-global; the active target is applied at the
+ * requested platform scope. Non-web runtimes use the device target.
+ *
+ * A tab-scoped update runs the caller's updater through the canonical persisted
+ * owner, against the latest device state under its browser-wide lock, so a group
+ * create/rename/remove/membership/presentation edit made from a browser tab is
+ * persisted device-wide without overwriting a concurrent edit from another
+ * surface. The requested target is applied only to this tab: a routine browser
+ * selection never rewrites the device default.
  */
-export function updateEffectiveHomeViewState(
+export async function updateEffectiveHomeViewState(
     update: (current: HomeViewStateV1) => HomeViewStateV1,
     options: Readonly<{ scope: 'tab' | 'device' }>,
 ): Promise<HomeViewStateV1> {
     if (options.scope !== 'tab' || !isWebRuntime()) {
         // The canonical persisted owner invokes this updater only after acquiring
         // the browser-wide state lock and re-reading the latest device state.
-        return updateHomeViewState(update);
+        return await updateHomeViewState(update);
     }
 
-    const deviceState = loadHomeViewState() ?? {
-        version: 1,
-        groups: [],
-        activeTargetKind: null,
-        activeTargetId: null,
-    };
-    const current = loadEffectiveHomeViewState() ?? deviceState;
-    const requested = update(current);
-
-    // A routine web selection owns only this tab's target. `requested` was derived
-    // from a snapshot captured before the updater ran, so publishing its groups
-    // here could overwrite a newer device-global group edit from another surface.
-    // Group mutation remains exclusively owned by the device-scoped path.
-    const savedDeviceState = loadHomeViewState() ?? deviceState;
-    writeTabTarget(targetFromState(
-        { ...requested, groups: savedDeviceState.groups },
-        listServerProfiles(),
-    ));
-    return Promise.resolve(loadEffectiveHomeViewState() ?? savedDeviceState);
+    const tabRequest: { requested: HomeViewStateV1 | null } = { requested: null };
+    const savedDeviceState = await updateHomeViewState((latestDeviceState) => {
+        const requested = update(overlayTabTarget(latestDeviceState));
+        tabRequest.requested = requested;
+        return { ...latestDeviceState, groups: requested.groups };
+    });
+    if (tabRequest.requested) {
+        writeTabTarget(targetFromState(
+            { ...tabRequest.requested, groups: savedDeviceState.groups },
+            listServerProfiles(),
+        ));
+    }
+    return loadEffectiveHomeViewState() ?? savedDeviceState;
 }
 
 export function subscribeEffectiveHomeViewState(listener: () => void): () => void {

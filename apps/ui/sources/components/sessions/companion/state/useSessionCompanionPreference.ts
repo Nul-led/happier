@@ -23,6 +23,12 @@ export function useSessionCompanionPreference(input: Readonly<{
     preference: SessionCompanionPreferenceV1;
     availability: SessionCompanionAvailability;
     preferenceExists: boolean;
+    /**
+     * The realm-qualified storage key this preference currently resolves to — the exact
+     * Account+Home+Session identity the canonical key owner produced. Consumers compare it
+     * rather than re-deriving a realm of their own.
+     */
+    realmKey: string | null;
 }> {
     const slot = useSessionCompanionPreferenceSlot(input.sessionId, input.serverId ?? null);
     const preference = React.useMemo(
@@ -33,5 +39,6 @@ export function useSessionCompanionPreference(input: Readonly<{
         preference,
         availability: slot.storageKey ? 'ready' as const : 'realm_unavailable' as const,
         preferenceExists: slot.stored !== undefined,
+        realmKey: slot.storageKey,
     }), [preference, slot.storageKey, slot.stored]);
 }

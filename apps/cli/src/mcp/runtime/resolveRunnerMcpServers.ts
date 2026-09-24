@@ -65,6 +65,9 @@ function createRunScopedMcpSessionView(
     // admitted Session transport's immutable Home binding explicitly so a
     // Run-scoped MCP view cannot fall back to ambient Home configuration.
     getServerBinding: () => session.getServerBinding(),
+    ...(session.getStoredContentEncryptionContext
+      ? { getStoredContentEncryptionContext: () => session.getStoredContentEncryptionContext!() }
+      : {}),
     getPermissionMode: run.getPermissionMode ?? session.getPermissionMode,
     getActiveTurnPermissionWitness: () => {
       const witness = readWitness();
@@ -211,5 +214,13 @@ export async function resolveRunnerMcpServers(params: Readonly<{
   }
 
   const merged = mergeWithBuiltInHappierMcpServer({ builtIn: builtIn.mcpServers, extra: params.resolvedMcpServers ?? materialized.mcpServers });
-  return { happierMcpServer: builtIn.happierMcpServer, mcpServers: merged };
+  return {
+    happierMcpServer: {
+      ...builtIn.happierMcpServer,
+      stop: () => {
+        try { builtIn.happierMcpServer.stop(); } finally { materialized.cleanup(); }
+      },
+    },
+    mcpServers: merged,
+  };
 }

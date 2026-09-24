@@ -5,6 +5,7 @@
 
 import axios from 'axios';
 import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import { readStoredCredentials } from '@/persistence';
 import {
@@ -16,6 +17,7 @@ import {
     EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
     readServerEnabledBit,
     type FeaturesResponse,
+    type IrohEndpointDescriptorV1,
     sealAccountScopedBlobCiphertext,
     ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
     type ActionOperationRevisionEphemeralV1,
@@ -27,15 +29,15 @@ import { fetchAccountEncryptionCurrentness } from './client/connectedServiceCred
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTransportErrorToProbeResult';
 import { resolveMachineSessionInputAdmissionCapability } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
 import { createCurrentMachineExecutionOriginContextResolver } from './machine/resolveCurrentMachineExecutionOriginContext';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 import { MachineMetadata, DaemonState, Machine, Update, UpdateMachineBody } from './types';
 import type { SocketRpcCallResponse } from './types';
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
 import { registerAutomationReplyHandoffRpcHandler } from '@/rpc/handlers/automationReplyHandoff';
-import { createCredentialedTargetActionCurrentIntent } from '@/session/actions/createCliActionExecutor';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
     resolveExternalSessionOperationAccountScope,
@@ -364,13 +366,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
-function classifyMachineTransportErrorToProbeResult(
-    error: unknown,
-): Exclude<ReadinessProbeResult, Readonly<{ status: 'ready' }>> | null {
-    void error;
-    return null;
-}
-
 function readSocketConnectErrorDiagnostic(error: unknown): Readonly<{
     message?: string;
     name?: string;
@@ -450,7 +445,8 @@ export class ApiMachineClient {
     > | null = null;
     private sessionSpawnV1OutcomeRequired = false;
     private externalActionExecutionAuthorizationV1OutcomeRequired = false;
-    private currentIrohMachineEndpointId: string | null = null;
+    private currentIrohMachineEndpoint: IrohEndpointDescriptorV1 | null = null;
+    private pendingPersistedIrohEndpointWithdrawal = false;
     /** Reflects only an installed provider-broker application handler; the
      * composition root owns the fact, this client only publishes it. */
     private providerBrokerIngressAdvertised = false;
@@ -692,6 +688,7 @@ export class ApiMachineClient {
         }>,
         lifecycleDependencies?: ApiMachineClientLifecycleDependencies,
     ) {
+        this.machine.daemonState = this.discardUnverifiedIrohEndpoint(this.machine.daemonState);
         this.ownershipMetadata = ownershipMetadata ?? {};
         this.lifecycleDependencies = lifecycleDependencies ?? {};
         this.machineContentCodec = createMachineContentCodec(this.machine);
@@ -715,7 +712,7 @@ export class ApiMachineClient {
             projectTransportAcknowledgement: projectMachineRpcTransportAcknowledgement,
             logger: (msg, data) => logger.debug(msg, data),
             onRegistrationError: (error) => {
-                const probe = classifyMachineTransportErrorToProbeResult(error);
+                const probe = classifyTransportErrorToProbeResult(error);
                 const supervisor = this.connectionSupervisor;
                 const scope = supervisor?.captureProbeReportScope?.();
                 if (probe && scope) {
@@ -839,16 +836,6 @@ export class ApiMachineClient {
                             }),
                     });
                 },
-                requestCurrentIntent: async (request) => {
-                    const credentials = await readStoredCredentials().catch(() => null);
-                    if (!credentials) {
-                        return {
-                            status: 'unavailable' as const,
-                            code: 'plugin_action_current_intent_unavailable',
-                        };
-                    }
-                    return await createCredentialedTargetActionCurrentIntent(credentials)(request);
-                },
                 resolveConnectedAccountPurposeBindingRuntime: () => (
                     this.connectedAccountPurposeBindingRuntime
                 ),
@@ -959,10 +946,7 @@ export class ApiMachineClient {
     }: MachineRpcHandlers, deps?: Omit<MachineRpcHandlerDeps, 'externalAction'> & Readonly<{
         externalActionIngressOwner?: ExternalActionIngressOwner;
     }>): MachineRpcLifecycleRegistration {
-        const tokenPayload = decodeJwtPayload(this.token);
-        const executionRunRuntimeAccountId = typeof tokenPayload?.sub === 'string' && tokenPayload.sub.trim()
-            ? tokenPayload.sub.trim()
-            : undefined;
+        const executionRunRuntimeAccountId = readAccountIdFromToken(this.token) ?? undefined;
         const actionsSettingsProvider = deps?.actionsSettingsProvider ?? createActionSettingsProvider({
             scopeKey: resolveAccountSettingsScopeKeyForToken(this.token),
         });
@@ -1760,11 +1744,13 @@ export class ApiMachineClient {
         socket: Socket<ServerToDaemonEvents, DaemonToServerEvents>,
         capabilities: MachineOperationProtocolCapabilitiesV1,
     ): Promise<number> {
-        return await publishMachineOperationProtocolCapabilitiesOnSocket({
+        const revision = await publishMachineOperationProtocolCapabilitiesOnSocket({
             socket,
             machineId: this.machine.id,
             capabilities,
         });
+        this.pendingPersistedIrohEndpointWithdrawal = false;
+        return revision;
     }
 
     private currentMachineOperationProtocolCapabilities(
@@ -1781,11 +1767,11 @@ export class ApiMachineClient {
             ...(this.externalActionExecutionAuthorizationV1OutcomeRequired
                 ? { externalActionExecutionAuthorization: { protocolVersions: [1] } }
                 : {}),
-            ...(this.currentIrohMachineEndpointId
+            ...(this.currentIrohMachineEndpoint
                 ? {
                     irohMachineEndpoint: {
                         protocolVersions: [1],
-                        endpointId: this.currentIrohMachineEndpointId,
+                        ...this.currentIrohMachineEndpoint,
                     },
                 }
                 : {}),
@@ -1850,11 +1836,14 @@ export class ApiMachineClient {
 
     private async synchronizeIrohMachineEndpointAuthority(
         state: DaemonState,
+        withdrewPersistedEndpoint = false,
     ): Promise<void> {
-        const nextEndpointId = state.peerMediation?.iroh?.endpoint.endpointId ?? null;
-        if (nextEndpointId === this.currentIrohMachineEndpointId) return;
-        const previousEndpointId = this.currentIrohMachineEndpointId;
-        this.currentIrohMachineEndpointId = nextEndpointId;
+        const nextEndpoint = state.peerMediation?.iroh?.endpoint ?? null;
+        if (isDeepStrictEqual(nextEndpoint, this.currentIrohMachineEndpoint)
+            && !((withdrewPersistedEndpoint || this.pendingPersistedIrohEndpointWithdrawal)
+                && nextEndpoint === null)) return;
+        const previousEndpoint = this.currentIrohMachineEndpoint;
+        this.currentIrohMachineEndpoint = nextEndpoint;
 
         const socket = this.socket;
         if (!socket || socket.connected !== true) return;
@@ -1866,12 +1855,22 @@ export class ApiMachineClient {
         try {
             await this.publishOperationProtocolCapabilitiesOnSocket(socket, capabilities);
         } catch (error) {
-            this.currentIrohMachineEndpointId = previousEndpointId;
+            this.currentIrohMachineEndpoint = previousEndpoint;
             throw error;
         }
         if (this.socket === socket && socket.connected === true) {
             this.advertisedOperationProtocolCapabilitiesGeneration = this.activeTransportGeneration;
         }
+    }
+
+    private discardUnverifiedIrohEndpoint(state: DaemonState | null): DaemonState | null {
+        const peerMediation = state?.peerMediation;
+        if (!state || !peerMediation?.iroh
+            || isDeepStrictEqual(peerMediation.iroh.endpoint, this.currentIrohMachineEndpoint)) return state;
+        // A stored endpoint is not proof of this process's live acceptor. This
+        // also applies when a version-mismatch reloads older server state.
+        this.pendingPersistedIrohEndpointWithdrawal = true;
+        return { ...state, peerMediation: { ...peerMediation, iroh: undefined } };
     }
 
     /**
@@ -1973,6 +1972,7 @@ export class ApiMachineClient {
             if (!this.socket) {
                 throw new Error('Machine socket is not connected');
             }
+            const previousIrohEndpoint = this.machine.daemonState?.peerMediation?.iroh?.endpoint ?? null;
             const updated = handler(this.machine.daemonState);
             await this.requirePlainMachineCompatibility();
 
@@ -1989,13 +1989,18 @@ export class ApiMachineClient {
             if (answer.result === 'success') {
                 this.machine.daemonState = this.machineContentCodec.decodeStored(answer.daemonState) as DaemonState;
                 this.machine.daemonStateVersion = answer.version;
-                await this.synchronizeIrohMachineEndpointAuthority(this.machine.daemonState);
+                await this.synchronizeIrohMachineEndpointAuthority(
+                    this.machine.daemonState,
+                    previousIrohEndpoint !== null,
+                );
                 logger.debug('[API MACHINE] Daemon state updated successfully');
                 return 'published';
             } else if (answer.result === 'version-mismatch') {
                 if (answer.version > this.machine.daemonStateVersion) {
                     this.machine.daemonStateVersion = answer.version;
-                    this.machine.daemonState = this.machineContentCodec.decodeStored(answer.daemonState) as DaemonState;
+                    this.machine.daemonState = this.discardUnverifiedIrohEndpoint(
+                        this.machineContentCodec.decodeStored(answer.daemonState) as DaemonState,
+                    );
                 }
                 throw new Error('Daemon state version mismatch'); // Triggers retry
             }
@@ -2077,7 +2082,7 @@ export class ApiMachineClient {
         if (!this.connectionSupervisor) {
             this.connectionSupervisor = createManagedConnectionSupervisor({
                 ...DEFAULT_MANAGED_CONNECTION_POLICY,
-                classifyTransportErrorToProbeResult: classifyMachineTransportErrorToProbeResult,
+                classifyTransportErrorToProbeResult,
                 createTransport: () => {
                     const serverUrl = resolveServerHttpBaseUrl();
                     const transportGeneration = this.activeTransportGeneration + 1;

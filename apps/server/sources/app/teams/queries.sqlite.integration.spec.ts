@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { NO_TEAM_CAPABILITIES_V1 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
@@ -110,6 +111,7 @@ describe("Team directory (SQLite integration)", () => {
 
     it("qualifies member-derived rows while preserving the independent Home directory", async () => {
         const viewer = await account("member", "e2ee");
+        const inherited = await team(`Inherited ${crypto.randomUUID()}`, [viewer]);
         const restricted = await team(`Restricted ${crypto.randomUUID()}`, [viewer]);
         await db.team.update({ where: { id: restricted.id }, data: { authenticationPolicy: {
             v: 1,
@@ -117,14 +119,28 @@ describe("Team directory (SQLite integration)", () => {
             accepted: [{ kind: "home_method", methodId: "key_challenge" }],
         } } });
 
-        expect(await list(viewer.id)).toEqual({ ok: false, error: "team_authentication_required" });
+        // One Team this credential has not qualified for withholds its own
+        // capabilities; it must not take the Teams this viewer satisfies, or
+        // their page position, down with it.
+        const unqualified = await list(viewer.id);
+        expect(unqualified.ok).toBe(true);
+        if (!unqualified.ok) return;
+        const unqualifiedInherited = unqualified.page.items.find((item) => item.id === inherited.id);
+        expect(unqualifiedInherited?.capabilities.viewTeam).toBe(true);
+        expect(unqualifiedInherited?.capabilities.manageMembers).toBe(true);
+        const unqualifiedRestricted = unqualified.page.items.find((item) => item.id === restricted.id);
+        expect(unqualifiedRestricted).toBeDefined();
+        expect(unqualifiedRestricted?.viewerRole).toBe("owner");
+        expect(unqualifiedRestricted?.capabilities).toEqual(NO_TEAM_CAPABILITIES_V1);
+
         const qualified = await list(viewer.id, { authentication: {
             authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
             authenticationAuthority: "present_user",
         } });
         expect(qualified.ok).toBe(true);
         if (!qualified.ok) return;
-        expect(qualified.page.items.map((item) => item.id)).toContain(restricted.id);
+        expect(qualified.page.items.find((item) => item.id === restricted.id)?.capabilities.manageMembers)
+            .toBe(true);
 
         const homeAdmin = await account("admin");
         const administered = await list(homeAdmin.id, { scope: "administered" });
@@ -229,7 +245,18 @@ describe("Team directory (SQLite integration)", () => {
             expect(JSON.stringify(projected)).not.toContain("must-not-leak");
         }
 
-        expect(await list(ordinary.id)).toEqual({ ok: false, error: "team_authentication_unavailable" });
+        // A member who cannot repair the policy keeps the row — redacted and
+        // without capabilities — instead of losing the whole directory to it.
+        const asOrdinary = await list(ordinary.id);
+        expect(asOrdinary.ok).toBe(true);
+        if (!asOrdinary.ok) return;
+        const ordinaryRow = asOrdinary.page.items.find((item) => item.id === malformed.id);
+        expect(ordinaryRow?.capabilities).toEqual(NO_TEAM_CAPABILITIES_V1);
+        expect(ordinaryRow?.policy).toMatchObject({
+            authenticationPolicy: null,
+            authenticationPolicyStatus: "repair_required",
+        });
+        expect(JSON.stringify(ordinaryRow)).not.toContain("must-not-leak");
         const outside = await list(outsider.id);
         expect(outside.ok).toBe(true);
         if (outside.ok) expect(outside.page.items.map((item) => item.id)).not.toContain(malformed.id);

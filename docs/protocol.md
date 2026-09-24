@@ -178,6 +178,7 @@ Field names below match on-wire payloads.
 - `activity`: `{ type: "activity", id: sessionId, active, activeAt, thinking? }`
 - `machine-activity`: `{ type: "machine-activity", id: machineId, active, activeAt }`
 - `usage`: `{ type: "usage", id: sessionId, key, tokens, cost, timestamp }`
+- `team-credential-usage-changed`: `{ type: "team-credential-usage-changed", resourceId }` — content-free wake sent to the app (user-scoped) connections of a Team credential resource's usage readers (active custodian, credential managers, and the acting member) after a new immutable usage fact for that resource commits. Idempotent replays do not emit it, daemons do not receive it, and readers re-query the authorized resource usage projection.
 - `machine-status`: `{ type: "machine-status", machineId, online, timestamp }`
 
 ### Client -> server WebSocket events
@@ -198,11 +199,12 @@ Field names below match on-wire payloads.
 
 - `session-alive`
   - `{ sid, time, thinking? }`
-  - Emits `ephemeral` activity to user-scoped connections.
+  - In the current development server, the released event refreshes the exact machine-bound publisher's reachability. The server uses its receipt time, retains observations while coalescing writes, and does not derive runtime activity from the legacy `thinking` flag. See [presence ownership](backend-architecture.md#presence-and-activity).
+  - Committed reachability is projected through the Session transcript publication policy to interested recipients, with an additional activity `ephemeral` event to the publisher's user-scoped connections.
 
 - `session-end`
   - `{ sid, time }`
-  - Marks session inactive and emits `ephemeral` activity.
+  - Closes the authorized publisher and publishes its inactive state through `publishSessionPublisherClose`, using the same recipient policy and user-scoped activity fanout.
 
 - `usage-report`
   - `{ key, sessionId?, tokens, cost }`
@@ -257,6 +259,26 @@ See `api.md` for the full HTTP endpoint catalog and auth flows.
 - `UpdatePayload.seq` is the per-user update sequence (monotonic) used for sync ordering.
 - Sessions, machines, and artifacts have their own `seq` fields used by clients for ordering.
 - Versioned fields (metadata, agentState, daemonState, artifact header/body, access keys, KV) use optimistic concurrency with `expectedVersion` and return a version-mismatch response containing the current version/data.
+
+### Hosted transcript catch-up and reading position (development)
+
+This 0.3 integration is in progress, not a released guarantee. The hosted catch-up, page-pipeline, viewport-demand, retry, realtime-gap, and sparse-repair behavior described below is present with focused owner coverage; integrated and live validation remain incomplete.
+
+Account-change cursors, Session sequence hints, and transcript paging cursors serve different purposes. A Session hint announces durable content but does not prove that this device has loaded intervening rows. An account checkpoint can advance after successful shell/content handling when the UI retains outstanding forward loading in its canonical deferred-transcript state. Failed shell loads, message loads, and revision repairs still block the affected checkpoint.
+
+`decideMessageCatchUpPolicy` owns hosted catch-up. Its existing defaults allow three incremental pages, with a separate large-gap threshold of 500 sequence positions and a long-offline threshold of 30 minutes; sequence positions are not necessarily main-transcript rows. Large backlogs go directly to the latest page for live-tail readers and remain deferred for history readers. An explicit reopen can probe one page even when the Session hint appears current. Known deferred backlog takes precedence over a stale hint.
+
+Latest-page catch-up merges into retained history and records omitted ranges through the tail-discontinuity owner. It does not clear cached history. Current viewport intent is checked again across asynchronous work: a reader who detaches or enters a target window must not acquire a live-tail display floor from an outstanding response.
+
+Visibility does not imply bottom arrival. Detached forward-edge paging retains one-adjacent-page behavior, target-window proximity uses only that window's cursors, and explicit live-tail demand returns to the canonical catch-up policy. An unsuccessful catch-up read retains deferred demand, so a stale Session hint cannot suppress the needed retry.
+
+Within the main transcript, initial-fill and jump reads report exhaustion to the existing older-pagination machine rather than retaining a separate component flag. A later fillable tail gap can reset an exhausted pager; that reset alone does not fetch a page or move the viewport. If bounded fill leaves the transcript too short to scroll, the existing “Earlier messages” action requests one page through the same pager and prepend path. Explicit continuation clears the automatic negative-offset suspension, but preserves fill and viewport-transaction suspensions. The main-transcript action is unavailable inside a target window, which retains its own cursors. Sidechain and public transcript lists retain their dataset-scoped pagination lifecycles.
+
+The shared message-page pipeline preserves Session/owner and encryption currentness fences. Successfully normalized rows can be retained even when another row cannot be decrypted, but the page does not publish pagination coverage across that unresolved row. Received revision watermarks follow successful reducer application. Cryptographic authentication failure remains distinct from authenticated unsupported or null content.
+
+Live socket rows, including sidechain rows, remain visible while canonical deferred-transcript state retains the earliest uncovered sequence cursor and observed upper bound. Hosted incremental catch-up and adjacent forward paging read that gap floor, including zero for an already-loaded empty transcript. Only successful page commits advance coverage; a latest snapshot transfers omitted history to the existing tail-discontinuity owner. The shared acknowledged-message commit path detects gaps from locally acknowledged messages as well.
+
+Sparse repair uses bounded affected ranges identified by message identities and available sequence hints, rather than replaying between distant edits. Each group uses the configured page size and may refresh already-materialized neighbors without inserting unseen, unrequested spill rows; only explicitly hinted rows receive authoritative replacement semantics. Repair suppresses historical lifecycle events without changing target-window or forward paging cursors, and missing or unavailable rows remain outstanding. Completion acknowledges the captured immutable stale-message map, retaining newer marks that arrive during the request. Account-change hints are coalesced per Session and retain only the latest hint, not a complete edit journal, so bounded repair cannot certify the freshness of every historical row outside the fetched ranges.
 
 ### Personal Machine Pool changes (0.3 development)
 
@@ -436,6 +458,70 @@ PostgreSQL/MySQL execution is unavailable, and an
 isolated GitHub browser flow was blocked before page-body execution by the MachPort
 sandbox. Behaviorally activated loaded-runtime/two-client behavior, daemon restart,
 mobile preview, and supported-platform proof remain open.
+
+## External transcript continuation (development)
+
+External transcript refresh follows the reader's current intent. A loaded transcript
+that is detached from the live tail, including a target-window view, retains its
+accepted rows and reading position. Automatic refresh defers content work there;
+explicit forward-edge demand can request one adjacent page through the external
+transcript RPC. Foreground resume only refreshes loaded Sessions with a current
+full-content consumer.
+
+Protocol's `shouldResyncExternalSessionTranscriptReadAfterV1` owns the continuation
+decision. An advancing page with `hasMore` may be appended for explicit adjacent
+paging, but live-tail demand fetches and merges a bounded latest page while
+retaining cached earlier history. The existing tail-discontinuity owner records
+an opaque-cursor gap, and the transcript's earlier-messages separator pages from
+the latest island until a source-identity overlap reconnects the cached prefix.
+Then the original older cursor resumes. Stacked gaps retain the deepest prefix;
+network exhaustion keeps the separator rather than claiming continuity. Source
+page receipts are distinct from rendered row IDs, so absorbed tool results can
+prove overlap without falsely exposing an old tool row. A later visible message
+initializes an empty display boundary without advancing or closing the gap.
+A stalled
+cursor or required source diagnostic still requires authoritative recovery, not a
+merge into accepted history. The accepted cursor's existing state retains an
+observed discontinuity until replacement succeeds, including when a source
+regrows enough for that old cursor to look valid again. Forward, older-page, and
+secure-refresh reads share this recovery intent; a changed source authority
+retains its separate binding fence. Reads admitted before a reset cannot append
+after replacement, even if cursor strings are reused; ordinary tail growth
+leaves older-history reads valid. Forward and latest-window reads also require
+their original cursor to remain current. A staged latest window cannot overwrite
+a newer accepted window. Genuine source replacement is staged before commit and rechecks the
+viewport: a failed fetch or a reader who detached during the request keeps the
+last accepted transcript. Secure refresh retains its existing source-binding and
+generation checks; this paging policy does not relax them.
+
+Transcript authority, not the presence of a retained external link, selects the
+transport. Once a Session is hosted, that retained link does not suppress ordinary
+server catch-up or route forward paging back to the external source. The shared
+HTTP page-currentness predicate captures this authority alongside Account, server
+and encryption currentness. Superseded HTTP reads cannot publish rows, mark a
+transcript or sidechain loaded, acknowledge repair demand, or update paging state
+after a handoff. Source replacement remains staged through the existing authority
+owner; a failed replacement read preserves the accepted transcript.
+
+The current `../0.2` predecessor's direct transcript RPCs add optional
+`truncationReason` while retaining its released `truncated` boolean. Only the
+existing legacy RPC response adapter translates those facts: `page_limit` clears
+the overloaded truncation flag, establishes `hasMore` for read-after, and preserves
+the page RPC's own older-availability and cursor. `source_discontinuity` remains
+truncated and becomes a required source diagnostic. The
+current 0.3 protocol adds no parallel reason field. Released responses without the
+reason keep their conservative truncation semantics, and a clean empty
+already-current response retaining its cursor stays a no-op. Only the initial
+`tail` bootstrap may be clean-empty without a cursor; an ordinary read losing
+its accepted continuation requires recovery. This adapter follows the prospective
+predecessor contract owned by `packages/protocol/src/directSessions/daemonRpcV1.ts`;
+it is not a second continuation policy.
+
+Claude's existing V3 source anchors remain Agent-owned. Latest-page and tail cursors
+stop at the consumed complete-record boundary, so an unfinished JSONL record can
+be read after its append completes. Bounded forward reads report `hasMore` when
+their existing page budget leaves work; incomplete EOF alone does not report a
+page-limit backlog.
 
 ## Implementation references
 - API routes: `apps/server/sources/app/api/routes`

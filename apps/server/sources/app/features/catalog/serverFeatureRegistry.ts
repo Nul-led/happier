@@ -29,7 +29,6 @@ import { resolveSessionFoldersFeature } from '../sessionFoldersFeature';
 import { resolveSessionDraftsFeature } from '../sessionDraftsFeature';
 import { resolveSessionBoardFeature } from '../sessionBoardFeature';
 import { resolveSessionFollowingFeature } from '../sessionFollowingFeature';
-import { resolveSessionCollaborationFeature } from '../sessionCollaborationFeature';
 import { resolveSessionFilteredListingFeature } from '../sessionFilteredListingFeature';
 import { resolveSessionEphemeralRunnerFeature } from '../sessionEphemeralRunnerFeature';
 import { resolveSessionAgentSwitchingFeature } from '../sessionAgentSwitchingFeature';
@@ -83,7 +82,6 @@ export const serverFeatureRegistry = Object.freeze([
     (env) => resolveSessionDraftsFeature(env),
     (env) => resolveSessionBoardFeature(env),
     (env) => resolveSessionFollowingFeature(env),
-    (env) => resolveSessionCollaborationFeature(env),
     (env) => resolveSessionConversationsFeature(env),
     (env) => resolveSessionFilteredListingFeature(env),
     (env) => resolveSessionEphemeralRunnerFeature(env),

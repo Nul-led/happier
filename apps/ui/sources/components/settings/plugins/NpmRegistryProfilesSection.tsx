@@ -29,7 +29,7 @@ import {
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
-import { showNpmRegistryProfileEditor } from './NpmRegistryProfileEditor';
+import { showNpmRegistryProfileEditor, type NpmRegistryProfileEditorSubject } from './NpmRegistryProfileEditor';
 
 type LocalRegistryMutation = DaemonNpmRegistryProfileMutationRequestV1 extends infer TMutation
     ? TMutation extends DaemonNpmRegistryProfileMutationRequestV1
@@ -66,6 +66,11 @@ export type NpmRegistryProfilesSectionProps = Readonly<{
         profileId: string | null,
     ) => Promise<Readonly<{ status: 'success' | 'unavailable' | 'outcomeUnknown' | 'superseded' }>>;
     marketplaceSourceMutationInFlight?: boolean;
+    /**
+     * The profile a new one starts from, when the caller already knows which
+     * registry is needed. The reader still reviews and edits every field.
+     */
+    createProfileSubject?: NpmRegistryProfileEditorSubject;
 }>;
 
 export function NpmRegistryProfilesSection({
@@ -74,6 +79,7 @@ export function NpmRegistryProfilesSection({
     marketplaceSources = [],
     onSetMarketplaceSourceProfile,
     marketplaceSourceMutationInFlight = false,
+    createProfileSubject,
 }: NpmRegistryProfilesSectionProps): React.ReactElement {
     const { theme } = useUnistyles();
     const selectedTarget = targetSelection.selectedTarget;
@@ -211,6 +217,28 @@ export function NpmRegistryProfilesSection({
             ) return;
             if (result.status === 'success') {
                 setLoaded({ selectionKey: requestedSelection, snapshot: result.snapshot });
+                // A profile is usable only once its owner's check has recorded
+                // availability. Signing in runs that check inside the daemon's
+                // own sign-in; a newly added profile is checked here at once
+                // instead of staying "unknown" until a separate Test. A refused
+                // or unreachable registry is recorded by the owner.
+                if (request.action === 'add') {
+                    const checked = await machineNpmRegistryProfilesMutate(executionTarget.machine.id, {
+                        action: 'test',
+                        profileId: request.profileId,
+                        machineId: executionTarget.machine.id,
+                        expectedRevision: result.snapshot.revision,
+                        mutationId: `registry-test-${randomUUID()}`,
+                    }, { serverId: executionTarget.serverId });
+                    if (
+                        requestId === mutationRequestIdRef.current
+                        && daemonOperationsAvailableRef.current
+                        && isExecutionTargetCurrent(requestedSelection, executionTarget)
+                        && checked.status === 'success'
+                    ) {
+                        setLoaded({ selectionKey: requestedSelection, snapshot: checked.snapshot });
+                    }
+                }
                 return;
             }
             if (result.status === 'outcomeUnknown') {
@@ -263,7 +291,7 @@ export function NpmRegistryProfilesSection({
     const openProfileEditor = React.useCallback(async (current: RegistryProfileView | null) => {
         if (!daemonOperationsAvailableRef.current) return;
         const profile = await showNpmRegistryProfileEditor(current === null
-            ? { mode: 'create' }
+            ? { mode: 'create', ...(createProfileSubject ? { subject: createProfileSubject } : {}) }
             : {
                 mode: 'edit',
                 subject: {
@@ -282,7 +310,7 @@ export function NpmRegistryProfilesSection({
                 profile,
             }
             : { action: 'update', profileId: current.profileId, profile });
-    }, [mutate]);
+    }, [createProfileSubject, mutate]);
 
     const login = React.useCallback(async (profileId: string) => {
         if (!daemonOperationsAvailableRef.current) return;

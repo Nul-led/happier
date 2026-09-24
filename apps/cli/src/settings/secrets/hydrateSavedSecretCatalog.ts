@@ -18,6 +18,7 @@ import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentials } from '@/persistence';
 import {
+  beginActiveSavedSecretCatalogRefresh,
   commitActiveSavedSecretCatalog,
   disableActiveSavedSecretCatalog,
   getActiveAccountSettingsSnapshot,
@@ -107,10 +108,12 @@ export async function hydrateSavedSecretCatalog(input: Readonly<{
   const lifetimeToken = getActiveAccountSettingsSnapshotLifetimeToken();
   // A refresh is an authorization observation boundary. Keep display metadata
   // for recovery, but retire all opened material before waiting on the Home.
-  withdrawActiveSavedSecretCatalog({ scopeKey, lifetimeToken });
-  let response;
+  // Listeners are woken once, by the refresh's outcome, and only when the
+  // authorized catalog changed.
+  beginActiveSavedSecretCatalogRefresh({ scopeKey, lifetimeToken });
+  let settled = false;
   try {
-    response = await axios.get(
+    const response = await axios.get(
       `${resolveServerHttpBaseUrl()}/v1/account/saved-secrets/resources/materials`,
       {
         headers: {
@@ -122,52 +125,54 @@ export async function hydrateSavedSecretCatalog(input: Readonly<{
         validateStatus: () => true,
       },
     );
-  } catch (error) {
-    withdrawActiveSavedSecretCatalog({ scopeKey, lifetimeToken });
-    throw error;
-  }
-  if (response.status === 404) {
-    const resources: readonly SavedSecretCatalogResourceInputV1[] = Object.freeze([]);
+    if (response.status === 404) {
+      const resources: readonly SavedSecretCatalogResourceInputV1[] = Object.freeze([]);
+      if (!commitActiveSavedSecretCatalog({ scopeKey, lifetimeToken, resources, state: 'ready' })) {
+        throw new Error('saved_secret_account_lifetime_changed');
+      }
+      settled = true;
+      return Object.freeze({ resources, state: 'ready' });
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`saved_secret_catalog_http_${response.status}`);
+    }
+    const parsed = SavedSecretResourceMaterialsResponseV1Schema.parse(response.data);
+    // Corrupt rows intentionally expose only row-local repair metadata. They have
+    // no canonical resource reference or material envelope and therefore cannot
+    // participate in the CLI's materialization snapshot.
+    const materialRows = parsed.resources.filter(isHealthySavedSecretResourceMaterialV1);
+    const privateKey = materialRows.some((row) => row.encryptionMode === 'e2ee')
+      ? await accountContentPrivateKey(input.token)
+      : null;
+    const resources: SavedSecretCatalogResourceInputV1[] = materialRows.map((row) => {
+      const resourceDataKey = row.encryptionMode === 'e2ee' && row.recipientEnvelope && privateKey
+        ? openEncryptedDataKeyEnvelopeV1({
+          envelope: decodeBase64(row.recipientEnvelope.encryptedDataKey),
+          recipientSecretKeyOrSeed: privateKey,
+        })
+        : null;
+      return {
+        resourceId: row.resourceId,
+        ownerAccountId: row.entry.ownerAccountId ?? '',
+        displayName: row.entry.name,
+        kind: row.entry.kind ?? 'other',
+        encryptionMode: row.encryptionMode,
+        revision: row.entry.revision ?? 1,
+        storedContent: row.storedContent,
+        materialStatus: row.entry.materialStatus,
+        ...(resourceDataKey ? { resourceDataKey } : {}),
+      };
+    });
     if (!commitActiveSavedSecretCatalog({ scopeKey, lifetimeToken, resources, state: 'ready' })) {
       throw new Error('saved_secret_account_lifetime_changed');
     }
-    return Object.freeze({ resources, state: 'ready' });
+    settled = true;
+    return Object.freeze({ resources: Object.freeze(resources), state: 'ready' });
+  } finally {
+    // Any unsettled refresh (transport failure, non-success or malformed Home
+    // answer, unopenable envelope) ends with the fail-closed state published.
+    if (!settled) withdrawActiveSavedSecretCatalog({ scopeKey, lifetimeToken });
   }
-  if (response.status < 200 || response.status >= 300) {
-    withdrawActiveSavedSecretCatalog({ scopeKey, lifetimeToken });
-    throw new Error(`saved_secret_catalog_http_${response.status}`);
-  }
-  const parsed = SavedSecretResourceMaterialsResponseV1Schema.parse(response.data);
-  // Corrupt rows intentionally expose only row-local repair metadata. They have
-  // no canonical resource reference or material envelope and therefore cannot
-  // participate in the CLI's materialization snapshot.
-  const materialRows = parsed.resources.filter(isHealthySavedSecretResourceMaterialV1);
-  const privateKey = materialRows.some((row) => row.encryptionMode === 'e2ee')
-    ? await accountContentPrivateKey(input.token)
-    : null;
-  const resources: SavedSecretCatalogResourceInputV1[] = materialRows.map((row) => {
-    const resourceDataKey = row.encryptionMode === 'e2ee' && row.recipientEnvelope && privateKey
-      ? openEncryptedDataKeyEnvelopeV1({
-        envelope: decodeBase64(row.recipientEnvelope.encryptedDataKey),
-        recipientSecretKeyOrSeed: privateKey,
-      })
-      : null;
-    return {
-      resourceId: row.resourceId,
-      ownerAccountId: row.entry.ownerAccountId ?? '',
-      displayName: row.entry.name,
-      kind: row.entry.kind ?? 'other',
-      encryptionMode: row.encryptionMode,
-      revision: row.entry.revision ?? 1,
-      storedContent: row.storedContent,
-      materialStatus: row.entry.materialStatus,
-      ...(resourceDataKey ? { resourceDataKey } : {}),
-    };
-  });
-  if (!commitActiveSavedSecretCatalog({ scopeKey, lifetimeToken, resources, state: 'ready' })) {
-    throw new Error('saved_secret_account_lifetime_changed');
-  }
-  return Object.freeze({ resources: Object.freeze(resources), state: 'ready' });
 }
 
 /**

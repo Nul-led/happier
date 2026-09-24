@@ -123,8 +123,48 @@ select yourself. Update requests carry no source of their own:
 `plugins update` rebuilds the artifact request from the plugin's trust record
 — the same saved archive path or URL, or the same npm registry origin, package,
 and registry profile it was trusted from — so it cannot be pointed at a different
-source. New executable realms, widened required host access, or another
-declared authority expansion opens a delta-only decision.
+source.
+
+An installed plugin is trusted code, so an update that only adds
+contributions or ships a new executable realm (for example a new React
+Native surface) applies without asking. What an update can ask about is the
+reach you granted: widened required host access, new Connected Account
+purposes, wider request-interceptor reach, or wider raw-credential access.
+**Settings -> Plugins -> Update review** decides what happens then:
+
+- **Confirm access changes** (the default) opens a delta-only decision.
+- **Apply automatically** applies the update without asking. Optional access
+  you granted carries over only where the new declaration still fits inside
+  it; anything wider is dropped and stays off until you turn it on again.
+
+The preference belongs to your Account, so it applies to every machine you
+sign in on. It covers marketplace, npm, archive, and local path installs.
+Development plugins never ask on change. The per-plugin update policy
+(`allowed` or `pinned`) still decides whether an update is allowed at all.
+
+### Private registries
+
+A private registry is always your explicit choice on the machine that installs.
+When an install needs a registry this machine has no usable registry profile
+for — the registry refused an anonymous request, the marketplace source is not
+bound to a profile, or the bound profile needs signing in again — the daemon
+stops before anything is downloaded or reviewed and reports
+`plugin_registry_profile_required` with the exact registry origin and package,
+and the existing profile for that registry when there is one.
+
+In **Settings -> Plugins -> Discover**, such a listing is marked as needing a
+registry profile for its registry, and Install asks in place. The dialog opens the
+registry profiles for that one listing: add a profile (prefilled with the
+registry's address and the package's scope), sign in to it, and bind it to the
+listing's marketplace source. **Continue** asks the daemon again, which prepares
+the Install and Trust review or names what is still missing. **Cancel** ends the
+install with nothing downloaded.
+
+From the terminal, add or sign in to that profile with
+`hdev plugins registry add|login`, bind it to the marketplace source when the
+listing came from one, and run the install again. Signing in checks the token
+against the registry at once, so a refused token is reported immediately;
+`hdev plugins registry test` checks the profile again later.
 
 Restore the retained prior generation through the same daemon owner:
 
@@ -186,11 +226,15 @@ and yields one immutable generation; Decline installs nothing. There is no
 Runner-specific registry, trust tier, or installer, and an external plugin gets
 the same capabilities a bundled one does.
 
-Two boundaries follow from that:
+Three boundaries follow from that:
 
 - A plugin installed from a working folder or a local archive has no published
   listing, so no commitment exists for a fresh computer to acquire. Its agents
   are shown as unavailable for a Temporary computer with that reason.
-- The activation-local home knows the default curated source and the community
-  npm source. A listing from a catalog source only the creator's machine has
-  configured is refused before any registry is contacted.
+- A listing from a catalog source only the creator's machine has configured is
+  acquired from that same reviewed source: the endpoint adds it to the
+  activation-local home without any registry profile.
+- A plugin published on a private registry asks the endpoint user to sign in to
+  that exact registry before the installation review appears. The token is
+  stored only in the temporary computer's own registry profile and nothing from
+  the creator's account or machine is used. Declining declines the request.

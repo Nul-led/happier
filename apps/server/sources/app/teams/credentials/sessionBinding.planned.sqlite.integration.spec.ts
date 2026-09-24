@@ -15,6 +15,8 @@ import {
     updateSessionMetadataEnvelopeTuple,
 } from "@/app/session/sessionWriteService";
 import { recordUsageEvent } from "@/app/usage/usageWriteService";
+import { deleteMachinePool } from "@/app/machines/pools/machinePoolService";
+import type { MachineDaemonPresenceSocketServer } from "@/app/machines/machineDaemonPresence";
 
 const TEST_AUTHENTICATION = {
     env: process.env,
@@ -30,7 +32,6 @@ describe("planned Session Team credential selection (SQLite)", () => {
             tempDirPrefix: "happier-planned-team-credential-selection-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
             },
         });
@@ -252,15 +253,27 @@ describe("planned Session Team credential selection (SQLite)", () => {
             authentication: TEST_AUTHENTICATION,
         }))).resolves.toMatchObject({ ok: true });
 
-        await db.machinePool.delete({ where: { id: pool.id } });
+        // Deleting the Pool through its real owner removes the placement. The
+        // resource is still readable, so it is not corrupt: it names no broker.
+        const poolIo: MachineDaemonPresenceSocketServer = { in: () => ({ fetchSockets: async () => [] }) };
+        await expect(deleteMachinePool({
+            accountId: current.broker.accountId,
+            input: { poolId: pool.id, expectedRevision: pool.revision },
+            io: poolIo,
+        })).resolves.toMatchObject({ ok: true });
+        const withoutPlacement = await db.teamCredentialResource.findUniqueOrThrow({
+            where: { id: current.resource.id },
+            select: { revision: true, brokerMachineId: true, brokerPoolId: true },
+        });
+        expect(withoutPlacement).toMatchObject({ brokerMachineId: null, brokerPoolId: null });
         await expect(inTx(tx => validatePlannedSessionTeamCredentialResourceInTx(tx, {
             accountId: current.creator.id,
             resourceId: current.resource.id,
-            expectedResourceRevision: current.resource.revision,
+            expectedResourceRevision: withoutPlacement.revision,
             deliveryMode: "brokered",
             plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
             authentication: TEST_AUTHENTICATION,
-        }))).resolves.toEqual({ ok: false, reason: "resource_corrupt" });
+        }))).resolves.toEqual({ ok: false, reason: "broker_unavailable" });
     });
 
     it("produces only the exact reviewed Runner resource/broker binding from current planned authority", async () => {
@@ -522,13 +535,19 @@ describe("planned Session Team credential selection (SQLite)", () => {
             where: { id: current.resource.id },
             data: { revision: { increment: 1 } },
         });
+        // The accepted witness names the selected resource and route; the
+        // revision is a mutable policy fact admitted as it is now, so a policy
+        // edit does not strand the Session's selection.
         await expect(inTx(tx => admitSessionTeamCredentialBindingInTx(tx, {
             sessionId: session.id,
             accountId: current.creator.id,
             slot: { kind: "provider_model" },
             deliveryMode: "brokered",
             authentication: TEST_AUTHENTICATION,
-        }))).resolves.toEqual({ ok: false, reason: "resource_changed" });
+        }))).resolves.toMatchObject({
+            ok: true,
+            binding: { resourceId: current.resource.id, resourceRevision: current.resource.revision + 1 },
+        });
         await expect(updateSessionMetadataEnvelopeTuple({
             ...base,
             sharedMetadata: { ciphertext: sharedMetadata, expectedVersion: 1 },
@@ -835,25 +854,54 @@ describe("planned Session Team credential selection (SQLite)", () => {
             data: { revision: { increment: 1 } },
         });
 
+        // A policy edit after the selection was accepted does not strand the
+        // Session: the turn witness is admitted against the resource as it is
+        // now (`11-integrated-security-qa-and-completion.md` A2(4)).
         await expect(applySessionTurnMutation({
             actorUserId: current.creator.id,
             authentication: TEST_AUTHENTICATION,
             mutation: {
                 v: 1,
                 sessionId: staleSession.id,
-                mutationId: "begin-stale",
-                turnId: "turn-stale",
+                mutationId: "begin-after-policy-edit",
+                turnId: "turn-after-policy-edit",
                 action: "begin",
                 observedAt: 201,
             },
-        })).resolves.toEqual({
-            ok: false,
-            error: "invalid-params",
-            code: "session_team_credential_binding_rejected",
-            reason: "resource_changed",
-        });
-        await expect(db.sessionTurn.count({ where: { sessionId: staleSession.id } })).resolves.toBe(0);
-        await expect(db.sessionTurnMutationReceipt.count({ where: { sessionId: staleSession.id } })).resolves.toBe(0);
-        await expect(db.usageEvent.count({ where: { sessionId: staleSession.id } })).resolves.toBe(0);
+        })).resolves.toMatchObject({ ok: true, didApply: true });
+        await expect(db.sessionTurn.findUniqueOrThrow({
+            where: { sessionId_turnId: { sessionId: staleSession.id, turnId: "turn-after-policy-edit" } },
+            select: { teamCredentialResourceId: true, credentialDeliveryMode: true },
+        })).resolves.toEqual({ teamCredentialResourceId: current.resource.id, credentialDeliveryMode: "brokered" });
+        // Losing the grant still refuses the turn's credential witness.
+        const refusedSession = await db.session.create({ data: {
+            accountId: current.creator.id,
+            tag: `refused-turn-${crypto.randomUUID()}`,
+            encryptionMode: "plain",
+            metadata: "{}",
+            active: true,
+        } });
+        await db.sessionTeamCredentialBinding.create({ data: {
+            sessionId: refusedSession.id,
+            slotKind: "provider_model:brokered",
+            slotKey: Buffer.from(encodeSessionTeamCredentialSlotKeyV1({ kind: "provider_model" })),
+            resourceId: current.resource.id,
+            resourceRevision: current.resource.revision,
+        } });
+        await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: false } });
+        await expect(applySessionTurnMutation({
+            actorUserId: current.creator.id,
+            authentication: TEST_AUTHENTICATION,
+            mutation: {
+                v: 1,
+                sessionId: refusedSession.id,
+                mutationId: "begin-refused",
+                turnId: "turn-refused",
+                action: "begin",
+                observedAt: 202,
+            },
+        })).resolves.toMatchObject({ ok: false, code: "session_team_credential_binding_rejected" });
+        await expect(db.sessionTurn.count({ where: { sessionId: refusedSession.id } })).resolves.toBe(0);
+        await expect(db.usageEvent.count({ where: { sessionId: refusedSession.id } })).resolves.toBe(0);
     });
 });

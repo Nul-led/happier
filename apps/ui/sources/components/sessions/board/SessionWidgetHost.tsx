@@ -506,15 +506,21 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         state,
     });
     const canOpenElsewhere = props.onOpenHere !== undefined;
+    const embeddedPresentation = props.expanded === true ? 'fill' as const : 'content' as const;
     // Source availability has ONE owner (`createSessionBoardSourceAvailabilityResolver`),
     // supplied by the mounted controller. The item shell does not resolve plugin
     // projections a second time.
     const presentation = resolveSessionBoardItemPresentation({
         state,
-        // A preview presentation never runs content, whatever the mount resolver says.
-        mountMode: props.density === 'preview' ? 'preview' : mountMode,
+        // `density` is visual chrome; whether this placement runs the item is answered
+        // once by `resolveSessionBoardMountMode`. A second rule here made the compact
+        // sidebar inert even when it was the elected primary host.
+        mountMode,
         canEdit: props.canEdit,
         canOpenElsewhere,
+        // The one embedded presentation this host will mount, from the live `expanded` fact
+        // it owns — so renderer admission and the mount agree on the same presentation.
+        embeddedPresentation,
         ...(props.resolveSourceAvailability
             ? { resolveSourceAvailability: props.resolveSourceAvailability }
             : {}),
@@ -522,6 +528,17 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
 
     const title = resolveSessionBoardItemTitle(state);
     const provenance = itemProvenance(props.item, props.pluginRuntime);
+    // A fresh literal here made an equivalent context a new value on every parent render —
+    // a same-item auto-height report was enough — which retired the mounted frame's Host API
+    // bridge under an unchanged document. The mount's lifetime belongs to its identity, so
+    // this value only changes when one of the facts it actually carries changes.
+    const hostedHtmlSurfaceContext = React.useMemo(() => ({
+        kind: 'sessionWidget' as const,
+        sessionId: props.sessionId,
+        itemId: props.item.itemId,
+        recordRevision: props.item.revision,
+        ...(state.kind === 'ready' && state.item.input !== undefined ? { input: state.item.input } : {}),
+    }), [props.item.itemId, props.item.revision, props.sessionId, state]);
 
     const [draftTitle, setDraftTitle] = React.useState<string | null>(null);
     const renameEnabled = props.density === 'full' && props.canEdit && props.onRename !== undefined;
@@ -700,7 +717,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                         {...(state.item.input === undefined ? {} : { input: state.item.input })}
                         // The embedded plugin presentation describes the actual
                         // host composition, not persisted outer card chrome.
-                        presentation={props.expanded === true ? 'fill' : 'content'}
+                        presentation={embeddedPresentation}
                         runtime={props.pluginRuntime}
                         onIntrinsicHeightChange={setHostedFrameReportedHeight}
                         {...(props.onManagePlugin ? { onManagePlugin: props.onManagePlugin } : {})}
@@ -725,13 +742,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                             source={state.item.source.source}
                             requestedCapabilities={state.item.source.requestedCapabilities}
                             {...(state.item.input === undefined ? {} : { input: state.item.input })}
-                            surfaceContext={{
-                                kind: 'sessionWidget',
-                                sessionId: props.sessionId,
-                                itemId: props.item.itemId,
-                                recordRevision: props.item.revision,
-                                ...(state.item.input === undefined ? {} : { input: state.item.input }),
-                            }}
+                            surfaceContext={hostedHtmlSurfaceContext}
                             runtime={props.callerHostedHtmlRuntime}
                             onIntrinsicHeightChange={setHostedFrameReportedHeight}
                             testID={`${testID}-hosted-html`}

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { usePathname } from 'expo-router';
 
 import type {
+  AgentConnectedAccountPurposeTeamResourceDefault,
   PluginContributionIdentityV1,
   PluginLocalizedStringV2,
   QualifiedConnectedAccountPurposeBindingTargetV1,
@@ -23,6 +24,7 @@ import { resolveQualifiedConnectedServiceRegistryDisplayName } from '@/component
 import { resolveConnectedAccountUiNegotiation } from '@/sync/domains/connectedServices/resolveConnectedAccountUiNegotiation';
 import { useServerFeaturesRuntimeSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { useActiveServerAccountScope, useProfile, useSettings } from '@/sync/store/hooks';
+import type { HomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
 import { t } from '@/text';
 
 import {
@@ -33,6 +35,7 @@ import {
 const PURPOSE_TARGET_PICKER_MAX_HEIGHT = 520;
 const EMPTY_ACCOUNTS = Object.freeze([]);
 const EMPTY_GROUPS = Object.freeze([]);
+const EMPTY_TEAM_RESOURCES: HomeTeamCredentialModelCatalog['resources'] = Object.freeze([]);
 
 type ConnectedAccountPurposeTargetPickerModalContentProps = Readonly<{
   rootStep: SelectionListStep;
@@ -74,12 +77,30 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     required?: boolean;
   }>;
   value: QualifiedConnectedAccountPurposeBindingTargetV1 | null;
-  onChange: (target: QualifiedConnectedAccountPurposeBindingTargetV1 | null) => void;
+  /** The purpose's current Team resource default, when that is its selection. */
+  teamResourceValue?: AgentConnectedAccountPurposeTeamResourceDefault | null;
+  /**
+   * One choice: a personal target, or (only with `teamCredentialCatalog`) a
+   * Team resource as its canonical Team selection; never both.
+   */
+  onChange: (
+    target: QualifiedConnectedAccountPurposeBindingTargetV1 | null,
+    teamResource: AgentConnectedAccountPurposeTeamResourceDefault | null,
+  ) => void;
   disabled?: boolean;
   disabledReason?: string;
   onReload?: () => Promise<void> | void;
   /** Provider's current status, presented by the provider status owner. */
   reloadSubtitle?: string;
+  /**
+   * The viewer's entitled Team catalog for the active Home. Supplied only by a
+   * surface whose consumer materializes the purpose inside a Session, where
+   * the Home admits the Team binding; other surfaces offer personal targets.
+   */
+  teamCredentialCatalog?: Pick<
+    HomeTeamCredentialModelCatalog,
+    'resources' | 'teamNameById' | 'currentResourceKeys'
+  >;
 }>) {
   const profile = useProfile();
   const settings = useSettings();
@@ -107,6 +128,14 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
   const groups = effectiveAccountTransport === 'advertised-v4'
     ? profile.connectedAccountGroupsV4 ?? EMPTY_GROUPS
     : EMPTY_GROUPS;
+  const teamCatalog = props.teamCredentialCatalog;
+  const teamResources = React.useMemo(() => (
+    teamCatalog
+      ? teamCatalog.resources.filter((resource) => (
+          teamCatalog.currentResourceKeys.has(`${resource.teamId}:${resource.id}`)
+        ))
+      : EMPTY_TEAM_RESOURCES
+  ), [teamCatalog]);
   const serviceTitle = React.useMemo(() => {
     return resolveQualifiedConnectedServiceRegistryDisplayName(
       registry,
@@ -118,24 +147,30 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
   const choices = React.useMemo(() => buildConnectedAccountPurposeTargetChoices({
     declaration: { ...props.declaration, required: props.declaration.required === true },
     selectedTarget: props.value,
+    selectedTeamResource: props.teamResourceValue ?? null,
     accounts,
     groups,
     labelsByKey: settings.connectedServicesProfileLabelByKey,
     serviceTitle,
     sourceNegotiation: effectiveAccountTransport,
     resolveAuthentication: getConnectedAccountAuthentication,
+    teamResources,
+    ...(teamCatalog ? { teamNameById: teamCatalog.teamNameById } : {}),
   }), [
     accounts,
     groups,
+    teamResources,
+    teamCatalog,
     effectiveAccountTransport,
     props.declaration,
     props.value,
+    props.teamResourceValue,
     serviceTitle,
     settings.connectedServicesProfileLabelByKey,
     // The registry is the descriptor/currentness owner for authentication.
     registry,
   ]);
-  const selectedId = connectedAccountPurposeTargetChoiceId(props.value);
+  const selectedId = connectedAccountPurposeTargetChoiceId(props.value, props.teamResourceValue ?? null);
   const selected = choices.find((choice) => choice.id === selectedId) ?? null;
   const declaredPurposeTitle = props.declaration.title
     ? localizePluginText(props.localizedTextPluginId, props.declaration.title)
@@ -149,7 +184,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     : effectiveAccountTransport === 'legacy'
       ? t('connectedServices.purposeTargets.legacyUnavailable')
       : null;
-  const requiredUnsetLabel = props.value === null && props.declaration.required === true
+  const requiredUnsetLabel = props.value === null && !props.teamResourceValue && props.declaration.required === true
     ? t('connectedServices.purposeTargets.requiredPrompt')
     : null;
   const triggerStatus = props.disabledReason
@@ -200,7 +235,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
         accessibilityLabel: purposeTitle,
         onSelect: (id) => {
           const choice = choices.find((candidate) => candidate.id === id);
-          if (choice?.selectable) props.onChange(choice.target);
+          if (choice?.selectable) props.onChange(choice.target, choice.teamResource);
         },
       },
       chrome: {

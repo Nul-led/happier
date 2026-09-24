@@ -20,5 +20,11 @@ export type RpcForwardTargetGuard = Readonly<{
     }>) => Promise<
         | Readonly<{ status: "current"; value: unknown }>
         | Readonly<{ status: "unavailable" }>
+        /**
+         * The guard proved a typed refusal rather than an absent target. The
+         * forwarder answers with this exact envelope so the caller keeps the
+         * recovery the decision owner stated.
+         */
+        | Readonly<{ status: "refused"; response: Readonly<{ ok: false; error: string; errorCode: string }> }>
     >;
 }>;

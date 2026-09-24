@@ -37,6 +37,7 @@ describe('Session creation initial-access failures', () => {
     ['session_access_subject_ineligible', false],
     ['session_access_external_sharing_requires_team_admin', false],
     ['session_access_external_sharing_disabled', false],
+    ['session_access_sharing_unavailable', false],
     ['session_access_authentication_required', false],
     ['session_access_authentication_unavailable', false],
     ['session_data_key_unavailable', false],

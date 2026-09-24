@@ -35,6 +35,7 @@ describe('ordinary Session-list dual frontier', () => {
             hasNext: true,
             attentionNextCursor: 'attention-100',
             attentionHasNext: true,
+            metadataUpgradeRequiredCount: 0,
         });
     });
 

@@ -244,6 +244,9 @@ export function createTransitionDepsHarness(
     // boundary. `null` is the ordinary Account with no configured connected
     // account for the target, which leaves the target on native CLI auth.
     resolveSpawnConnectedServicesDefaults: vi.fn(async () => null),
+    // The Home's recipient Team catalog read is a network boundary; the
+    // target-binding cases (`*.teamDefault.test.ts`) supply their own.
+    createTeamCredentialResourceCatalogResolver: () => undefined,
     nowMs: () => 1_000,
     ...overrides,
   };

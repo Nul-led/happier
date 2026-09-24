@@ -184,6 +184,7 @@ describe('Provider Connection Team broker source', () => {
     const cleanup = vi.fn(async () => {});
     const retire = vi.fn(async () => {});
     let resourceEnabled = true;
+    let resourceRevision = 7;
     const resolveExactSelection = vi.fn(async (candidate: Readonly<{
       modelId: string;
       sourceRevision: string;
@@ -256,7 +257,7 @@ describe('Provider Connection Team broker source', () => {
         // second ongoing ACL.
         brokerPlacement: { kind: 'machine_pool', poolId: 'pool-a' },
         enabled: resourceEnabled,
-        revision: 7,
+        revision: resourceRevision,
         source: sourceBinding,
       }),
       withRegistry: async (read) => await read(registry),
@@ -266,6 +267,7 @@ describe('Provider Connection Team broker source', () => {
       resolveExactSelection,
     });
     const sourceOwner = createTeamCredentialBrokerSourceOwner({
+      selectConnectedServicesSourceMember: async () => null,
       custody: { retire: async () => true },
       machineId: 'machine-a',
       openConnectedServicesSource: async () => null,
@@ -351,6 +353,30 @@ describe('Provider Connection Team broker source', () => {
     expect(openCpxProviderConnection).toHaveBeenCalledOnce();
     expect(JSON.stringify(openCpxProviderConnection.mock.calls[0]?.[0])).not.toContain('source-secret');
     expect(JSON.stringify(openCpxProviderConnection.mock.calls[0]?.[0])).not.toContain('worker-must-not-cross');
+    // A policy edit only advances the revision (a mutable policy fact the Home
+    // rechecks per request). The next request on this stream presents the new
+    // revision and keeps the same operation, projection and source custody.
+    resourceRevision = 8;
+    await expect(streamLifetime.acquireSource({
+      resourceId: 'resource-a',
+      brokerMachineId: 'machine-a',
+      source: sourceBinding,
+      operation: { kind: 'session', sessionId: 'session-a' },
+      expectedResourceRevision: 8,
+      application,
+      modelId: 'gateway-model',
+      sourceRevision: 'source-revision-a',
+    })).resolves.toBe(access);
+    await expect(access!.access.request({
+      pathAndQuery: '/v1/responses',
+      method: 'POST',
+      headers: {},
+      body: new TextEncoder().encode('{"model":"gateway-model"}'),
+      signal: controller.signal,
+    })).resolves.toMatchObject({ status: 200 });
+    expect(credentialValues).toEqual(['Bearer source-secret', 'Bearer source-secret']);
+    expect(retire).not.toHaveBeenCalled();
+    expect(openCpxProviderConnection).toHaveBeenCalledOnce();
     resourceEnabled = false;
     await expect(access!.access.request({
       pathAndQuery: '/v1/responses',
@@ -359,7 +385,9 @@ describe('Provider Connection Team broker source', () => {
       body: new TextEncoder().encode('{"model":"gateway-model"}'),
       signal: controller.signal,
     })).resolves.toMatchObject({ status: 403 });
-    expect(credentialValues).toEqual(['Bearer source-secret']);
+    // Disabling the resource is real authority loss: the refused request
+    // leases no credential material and the operation is retired.
+    expect(credentialValues).toEqual(['Bearer source-secret', 'Bearer source-secret']);
     expect(retire).toHaveBeenCalledOnce();
     expect(cleanup).toHaveBeenCalledOnce();
     await streamLifetime.close();

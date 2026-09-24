@@ -5,6 +5,10 @@ import {
     type ClientEncryptionRequirement,
 } from '@happier-dev/protocol';
 
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { areServerAccountScopesEqual, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
+
 type SyncedClientEncryptionRequirementSettings = Readonly<{
     clientEncryptionRequirementV1?: ClientEncryptionRequirement;
 }>;
@@ -21,6 +25,33 @@ export function resolveUiClientEncryptionRequirement(params: Readonly<{
         params.syncedSettings.clientEncryptionRequirementV1 ?? 'follow_account',
         params.localSettings.clientEncryptionRequirementLocalV1 ?? 'follow_account',
     );
+}
+
+/**
+ * The client encryption requirement of one exact Home/Account reader.
+ *
+ * Both halves are that Account's own settings: the synced
+ * `clientEncryptionRequirementV1` and the local-only minimum persisted for the
+ * same scope. The focused Account's live settings projection answers only for the
+ * focused Account; a reader serving any other Account (a concurrent secondary
+ * Home, an explicitly scoped read) resolves that Account's persisted settings and
+ * never borrows the focused projection. A scope with nothing persisted yet
+ * resolves to that Account's own defaults.
+ */
+export function resolveUiClientEncryptionRequirementForScope(params: Readonly<{
+    scope: ServerAccountScope;
+    focusedSettings: SyncedClientEncryptionRequirementSettings & LocalClientEncryptionRequirementSettings;
+}>): ClientEncryptionRequirement {
+    if (areServerAccountScopesEqual(params.scope, getActiveServerAccountScope())) {
+        return resolveUiClientEncryptionRequirement({
+            syncedSettings: params.focusedSettings,
+            localSettings: params.focusedSettings,
+        });
+    }
+    const persisted = loadAccountSettings(params.scope).settings;
+    const settings: SyncedClientEncryptionRequirementSettings & LocalClientEncryptionRequirementSettings =
+        persisted && typeof persisted === 'object' && !Array.isArray(persisted) ? persisted : {};
+    return resolveUiClientEncryptionRequirement({ syncedSettings: settings, localSettings: settings });
 }
 
 export function assertUiAccountEncryptionModeAllowed(params: Readonly<{

@@ -352,6 +352,7 @@ export type MachineRpcHandlerDeps = Readonly<{
       executionRunId: string;
       expectedIntent?: import('@happier-dev/protocol').ExecutionRunIntent;
       expectedOccurrenceId: string | null;
+      expectedDirectMaterialUse?: import('@happier-dev/protocol/teams').TeamCredentialDirectMaterialUseV1;
     }>,
   ) => Promise<import('@happier-dev/protocol').SessionExecutionRunBrokerAuthorityResponseV1>;
   /** Exact authenticated Account policy shared with detached execution-run Actions. */
@@ -451,6 +452,9 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     registerActionSpecRpcHandlers({
       rpcHandlerManager,
       actionIds: WORKFLOW_ACTION_IDS_V1,
+      ...(params.deps?.currentMachineId
+        ? { targetMachineId: params.deps.currentMachineId }
+        : {}),
       actionExecutor: {
         execute: async (actionId, input, context) => await externalAction.executor.execute(
           actionId as Parameters<typeof externalAction.executor.execute>[0],
@@ -882,11 +886,16 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
           if (!params.deps?.resolveExecutionRunLiveBrokerAuthority) {
             return { status: 'not_current', reason: 'runtime_unavailable' };
           }
+          // An attached Run's live owner checks the Home's direct-material
+          // expectation exactly as a detached Run's does.
           return await params.deps.resolveExecutionRunLiveBrokerAuthority({
             sessionId: input.sessionId,
             executionRunId: input.executionRunId,
             ...(input.expectedIntent !== undefined ? { expectedIntent: input.expectedIntent } : {}),
             expectedOccurrenceId: input.expectedOccurrenceId,
+            ...(input.expectedDirectMaterialUse
+              ? { expectedDirectMaterialUse: input.expectedDirectMaterialUse }
+              : {}),
           });
         },
       });

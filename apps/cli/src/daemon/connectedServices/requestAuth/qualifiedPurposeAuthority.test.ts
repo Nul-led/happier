@@ -48,4 +48,31 @@ describe('assertQualifiedPurposeAuthorityForSelections', () => {
       },
     })).toThrow(ConnectedServiceQualifiedPurposeAuthorityError);
   });
+
+  it('represents a Team direct selection by its disclosed-member binding, never a Team purpose target', () => {
+    const service = { pluginId: 'plugin.acme', localId: 'service' } as const;
+    const disclosedMember = { service, accountId: 'recipient-visible-source' } as const;
+    const purpose = { consumer: { pluginId: 'plugin.acme-agent', localId: 'agent' }, purpose: 'inference' } as const;
+    const selections = [{
+      kind: 'team_resource' as const,
+      serviceId: 'plugin.acme/service',
+      resourceId: 'resource-1',
+      deliveryMode: 'direct' as const,
+      disclosedMember,
+    }];
+    expect(() => assertQualifiedPurposeAuthorityForSelections({
+      selections,
+      snapshot: {
+        purposes: [purpose],
+        bindings: [{ purpose, target: { kind: 'account', account: disclosedMember } }],
+      },
+    })).not.toThrow();
+    expect(() => assertQualifiedPurposeAuthorityForSelections({
+      selections,
+      snapshot: {
+        purposes: [purpose],
+        bindings: [{ purpose, target: { kind: 'account', account: { service, accountId: 'another-member' } } }],
+      },
+    })).toThrow(ConnectedServiceQualifiedPurposeAuthorityError);
+  });
 });

@@ -51,12 +51,15 @@ export interface SecretsListProps {
     resolveSharedReference?: (ref: string) => SavedSecretReferenceResolution;
     onRenameShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onRotateShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    /** Converts an owned end-to-end encrypted resource to Home-managed storage; absent where not allowed. */
+    onMakeSharedHomeManaged?: (entry: SavedSecretCatalogEntryV1) => void;
+    /** Converts an owned Home-managed resource to end-to-end encrypted storage; absent where not allowed. */
+    onEncryptShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onManageAccessShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onDeleteShared?: (entry: SavedSecretCatalogEntryV1) => void;
     sharedMutationsDisabled?: boolean;
     sharedApprovalId?: string | null;
     onOpenSharedApproval?: () => void;
-    allowSharedSelection?: boolean;
     sharedCatalogStale?: boolean;
     onRetrySharedCatalog?: () => void;
 
@@ -166,6 +169,18 @@ export function SecretsList(props: SecretsListProps) {
         (entry): entry is Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }> => entry.relationship === 'owner',
     );
     const recipientCorruptEntries = (props.corruptEntries ?? []).filter((entry) => entry.relationship === 'recipient');
+    // A configured shared ref the Home no longer authorizes (revoked, deleted,
+    // or not yet readable) has no catalog row. The binding itself survives, so
+    // the picker keeps showing it — selected, with the canonical resolver's
+    // reason, and not choosable — instead of silently dropping the selection.
+    const unavailableSelection = (() => {
+        const ref = props.selectedId;
+        if (!ref || !props.onSelectId || !props.resolveSharedReference) return null;
+        if (secrets.some((secret) => secret.id === ref)) return null;
+        if ((props.sharedEntries ?? []).some((entry) => entry.ref === ref)) return null;
+        const resolution = props.resolveSharedReference(ref);
+        return resolution.kind === 'shared_resource' ? resolution : null;
+    })();
 
     const renderCorruptEntry = (entry: SavedSecretCatalogCorruptEntryV1, idx: number, total: number) => {
         const ownerEntry = entry.relationship === 'owner' ? entry : null;
@@ -210,9 +225,11 @@ export function SecretsList(props: SecretsListProps) {
     const renderSharedEntry = (entry: SavedSecretCatalogEntryV1, idx: number, total: number) => {
         const resolvedStatus = props.resolveSharedReference?.(entry.ref).status ?? entry.materialStatus;
         const provenance = sharedSecretProvenanceSegments(entry);
-        const ready = props.allowSharedSelection !== false
-            && resolvedStatus === 'ready'
+        const ready = resolvedStatus === 'ready'
             && entry.capabilities.use;
+        const convertShared = entry.encryptionMode === 'e2ee' ? props.onMakeSharedHomeManaged
+            : entry.encryptionMode === 'plain' ? props.onEncryptShared
+                : undefined;
         const actions = [
             entry.capabilities.rename && props.onRenameShared ? {
                 id: 'rename', title: t('common.rename'), icon: 'pencil' as const,
@@ -223,6 +240,19 @@ export function SecretsList(props: SecretsListProps) {
                 id: 'rotate', title: t('secrets.actions.replaceValue'), icon: 'arrow-clockwise' as const,
                 disabled: props.sharedMutationsDisabled,
                 onPress: () => props.onRotateShared?.(entry),
+            } : null,
+            // Conversion rewrites the resource's content through the same
+            // update Action a rotation uses, so it is offered exactly where a
+            // rotation is, out of the row's known current mode, and only when
+            // the screen allows that direction.
+            entry.capabilities.rotate && convertShared ? {
+                id: 'convertMode',
+                title: entry.encryptionMode === 'e2ee'
+                    ? t('secrets.catalog.actions.convertToPlain')
+                    : t('secrets.catalog.actions.convertToE2ee'),
+                icon: entry.encryptionMode === 'e2ee' ? 'lock-open' as const : 'lock' as const,
+                disabled: props.sharedMutationsDisabled,
+                onPress: () => convertShared(entry),
             } : null,
             entry.capabilities.manageAccess && props.onManageAccessShared ? {
                 id: 'manageAccess', title: t('secrets.catalog.actions.manageAccess'), icon: 'users' as const,
@@ -305,7 +335,24 @@ export function SecretsList(props: SecretsListProps) {
                     />
                 )}
 
-                {props.secrets.length === 0 && (props.sharedEntries?.length ?? 0) === 0 && (props.corruptEntries?.length ?? 0) === 0 ? (
+                {unavailableSelection ? (
+                    <Item
+                        testID={`saved-secret:${unavailableSelection.ref}`}
+                        title={unavailableSelection.entry?.name ?? t('secrets.catalog.unavailableName')}
+                        subtitle={sharedSecretStatusLabel(unavailableSelection.status)}
+                        accessibilityLabel={[
+                            unavailableSelection.entry?.name ?? t('secrets.catalog.unavailableName'),
+                            sharedSecretStatusLabel(unavailableSelection.status),
+                        ].join(', ')}
+                        icon={<Icon name="warning-circle" size={29} color={theme.colors.state.warning.foreground} />}
+                        showChevron={false}
+                        selected
+                        disabled
+                        showDivider
+                    />
+                ) : null}
+
+                {!unavailableSelection && props.secrets.length === 0 && (props.sharedEntries?.length ?? 0) === 0 && (props.corruptEntries?.length ?? 0) === 0 ? (
                     <Item
                         testID="saved-secret:empty"
                         title={t('secrets.emptyTitle')}

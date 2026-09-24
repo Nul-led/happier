@@ -8,6 +8,7 @@ import {
 
 import { createProviderProbeHttpClient } from './client';
 import { createProviderDraftProbeService } from './draft';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 const key = new Uint8Array(32).fill(7);
 
@@ -392,5 +393,39 @@ describe('draft provider probe service', () => {
       savedSecretId: 'happier:shared-secret:v1:resource-draft-probe',
     })).resolves.toMatchObject({ status: 'success', models: [{ id: 'shared-model' }] });
     expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it('admits a draft probe against Home-current shared material, not the hydrated row', async () => {
+    const transport = vi.fn(async () => ({
+      status: 200,
+      headers: {},
+      body: Buffer.from(JSON.stringify({ data: [{ id: 'shared-model' }] }), 'utf8'),
+    }));
+    const admitted: string[] = [];
+    // The hydrated row still reads ready because the revocation's
+    // AccountChange hint was never delivered.
+    const currentSnapshot = { ...sharedSecretSnapshot(), scopeKey: 'account-scope' };
+    const service = createProviderDraftProbeService({
+      machineId: 'machine-a',
+      getAccountSettingsSnapshot: () => currentSnapshot,
+      resolveAddresses: async () => ['1.1.1.1'],
+      client: createProviderProbeHttpClient({ resolveAddresses: async () => ['1.1.1.1'], transport }),
+      createAuthorizationId: () => 'authorization-revoked-shared-secret',
+      now: () => 1_000,
+      refreshSavedSecretCatalogForOperation: async (refreshInput) => {
+        for (const reference of refreshInput.references ?? []) admitted.push(reference.ref);
+        throw new SavedSecretOperationAdmissionError({
+          reason: 'reference_unavailable',
+          reference: refreshInput.references?.[0]?.ref ?? '',
+        });
+      },
+    });
+
+    await expect(service.probe({
+      ...request('draft-action-revoked-shared-secret', true),
+      savedSecretId: 'happier:shared-secret:v1:resource-draft-probe',
+    })).resolves.toMatchObject({ status: 'error', error: { code: 'provider_secret_missing' } });
+    expect(admitted).toEqual(['happier:shared-secret:v1:resource-draft-probe']);
+    expect(transport).not.toHaveBeenCalled();
   });
 });

@@ -342,7 +342,7 @@ describe('sessionChanges content and attribution axes', () => {
     expect(result.confidenceSummary.checkpointOverlap).toBe('not_observed');
   });
 
-  it('keeps provider-only turns neutral when composing checkpoint overlap for the same file', () => {
+  it('treats a later provider-only turn on the same file as uncovered, not neutral', () => {
     const result = mergeTurnChangeSets({
       sessionId: 'session-1',
       turns: [
@@ -364,8 +364,26 @@ describe('sessionChanges content and attribution axes', () => {
         confidence: 'session_likely',
         reason: 'checkpoint_no_happier_overlap_observed',
       },
-      checkpointOverlap: 'not_observed',
+      checkpointOverlap: 'unknown',
     });
+    expect(result.confidenceSummary.checkpointOverlap).toBe('unknown');
+  });
+
+  it('keeps a file checkpointed in every contributing turn observed-negative', () => {
+    const result = mergeTurnChangeSets({
+      sessionId: 'session-1',
+      turns: [
+        makeTurn([CHECKPOINT_FILE], {
+          repositoryCheckpoint: makeCheckpointMetadata('no_happier_checkpoint_overlap_observed'),
+        }),
+        makeTurn([CHECKPOINT_FILE], {
+          turnId: 'turn-2',
+          repositoryCheckpoint: makeCheckpointMetadata('no_happier_checkpoint_overlap_observed'),
+        }),
+      ],
+    });
+
+    expect(result.files[0]?.checkpointOverlap).toBe('not_observed');
     expect(result.confidenceSummary.checkpointOverlap).toBe('not_observed');
   });
 

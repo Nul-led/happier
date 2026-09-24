@@ -186,9 +186,16 @@ describe('Session Discussion repository', () => {
 
     it('retains recoverable projections across a transient list failure', async () => {
         const retained = summary('discussion-a', null, 1);
-        const list = vi.fn<SessionDiscussionRepositoryClient['list']>()
-            .mockResolvedValueOnce({ kind: 'succeeded', value: listResult([retained], null) })
-            .mockResolvedValueOnce({ kind: 'failed', errorCode: 'offline' });
+        // Each active refresh also asks the bounded archived-existence probe.
+        const activeOutcomes: Awaited<ReturnType<SessionDiscussionRepositoryClient['list']>>[] = [
+            { kind: 'succeeded', value: listResult([retained], null) },
+            { kind: 'failed', errorCode: 'offline' },
+        ];
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>(async (input) => (
+            input?.state === 'archived'
+                ? { kind: 'succeeded', value: listResult([], null) }
+                : activeOutcomes.shift()!
+        ));
         const repository = createSessionDiscussionRepository({ address, client: client({ list }) });
 
         await repository.refreshList('active');
@@ -226,10 +233,15 @@ describe('Session Discussion repository', () => {
     it('keeps active and archived keyset pages separate and merges repeated rows stably', async () => {
         const first = summary('discussion-a', null, 3);
         const second = summary('discussion-b', null, 2);
-        const list = vi.fn<SessionDiscussionRepositoryClient['list']>()
-            .mockResolvedValueOnce({ kind: 'succeeded', value: listResult([first], 'next-active') })
-            .mockResolvedValueOnce({ kind: 'succeeded', value: listResult([first, second], null) })
-            .mockResolvedValueOnce({ kind: 'succeeded', value: listResult([{ ...first, archivedAt: 20 }], null) });
+        const activeOutcomes: Awaited<ReturnType<SessionDiscussionRepositoryClient['list']>>[] = [
+            { kind: 'succeeded', value: listResult([first], 'next-active') },
+            { kind: 'succeeded', value: listResult([first, second], null) },
+        ];
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>(async (input) => (
+            input?.state === 'archived'
+                ? { kind: 'succeeded', value: listResult([{ ...first, archivedAt: 20 }], null) }
+                : activeOutcomes.shift()!
+        ));
         const repository = createSessionDiscussionRepository({ address, client: client({ list }) });
 
         await repository.refreshList('active');
@@ -241,8 +253,10 @@ describe('Session Discussion repository', () => {
         expect(snapshot.lists.active.items.map((item) => item.id)).toEqual(['discussion-a', 'discussion-b']);
         expect(snapshot.lists.active.items[0]).toBe(firstReference);
         expect(snapshot.lists.archived.items.map((item) => item.id)).toEqual(['discussion-a']);
+        // The active refresh's archived-existence probe is one bounded read, not a page.
         expect(list.mock.calls.map(([input]) => input)).toEqual([
             { state: 'active' },
+            { state: 'archived', limit: 1 },
             { state: 'active', cursor: 'next-active' },
             { state: 'archived' },
         ]);
@@ -358,6 +372,44 @@ describe('Session Discussion repository', () => {
         expect(repository.getSnapshot().threads['discussion-created']?.messages[0]?.localId).toBe('message-local-a');
         repository.acknowledgeObservedSuccess('create-local-a');
         expect(repository.getSnapshot().mutations['create-local-a']).toBeUndefined();
+    });
+
+    it('reconciles an outcome-unknown create whose committed discussion is already archived', async () => {
+        const archivedSummary = { ...summary('discussion-created', 'create-local-a', 1), archivedAt: 5 };
+        const create = vi.fn<SessionDiscussionRepositoryClient['create']>()
+            .mockResolvedValue({ kind: 'failed', errorCode: 'outcome_unknown' });
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>()
+            .mockImplementation(async (input) => {
+                if (!input) throw new Error('expected a scoped discussion list request');
+                return {
+                    kind: 'succeeded',
+                    value: listResult(input.state === 'archived' ? [archivedSummary] : [], null),
+                };
+            });
+        const read = vi.fn<SessionDiscussionRepositoryClient['read']>()
+            .mockResolvedValue({
+                kind: 'succeeded',
+                value: {
+                    ...readResult([{ ...message(1, 'message-local-a'), discussionId: 'discussion-created' }], false, 1),
+                    discussionId: 'discussion-created',
+                },
+            });
+        const repository = createSessionDiscussionRepository({ address, client: client({ create, list, read }) });
+
+        const outcome = await repository.create({
+            creationLocalId: 'create-local-a',
+            messageLocalId: 'message-local-a',
+            title: 'Release',
+            content: { v: 1, parts: [{ t: 'text', text: 'Ready?' }] },
+            draftSubmission: draftSubmission(),
+        });
+        expect(outcome.kind).toBe('checking');
+        await vi.waitFor(() => expect(repository.getSnapshot().mutations['create-local-a']?.status).toBe('observed_success'));
+
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(repository.getSnapshot().lists.archived.items.map((item) => item.id)).toEqual(['discussion-created']);
+        expect(repository.getSnapshot().lists.active.items).toEqual([]);
+        expect(repository.getSnapshot().threads['discussion-created']?.messages[0]?.localId).toBe('message-local-a');
     });
 
     it('recognizes an outcome-unknown post already published by a racing refresh', async () => {
@@ -501,7 +553,7 @@ describe('Session Discussion repository', () => {
 
         expect(second).toBe(first);
         expect(staleList).not.toHaveBeenCalled();
-        expect(currentList).toHaveBeenCalledOnce();
+        expect(currentList).toHaveBeenCalledWith({ state: 'active' }, undefined);
         expect(second.getSnapshot().lists.active.items[0]?.id).toBe('discussion-current');
         clearSessionDiscussionRepositoryRegistryForTests();
     });
@@ -512,9 +564,15 @@ describe('Session Discussion repository', () => {
         let resolveRefresh: (value: Awaited<ReturnType<SessionDiscussionRepositoryClient['list']>>) => void = () => {
             throw new Error('refresh resolver was not installed');
         };
-        const list = vi.fn<SessionDiscussionRepositoryClient['list']>()
-            .mockResolvedValueOnce({ kind: 'succeeded', value: listResult([first], null) })
-            .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+        const activeOutcomes: Array<() => ReturnType<SessionDiscussionRepositoryClient['list']>> = [
+            async () => ({ kind: 'succeeded', value: listResult([first], null) }),
+            () => new Promise((resolve) => { resolveRefresh = resolve; }),
+        ];
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>((input) => (
+            input?.state === 'archived'
+                ? Promise.resolve({ kind: 'succeeded' as const, value: listResult([], null) })
+                : activeOutcomes.shift()!()
+        ));
         const repository = createSessionDiscussionRepository({ address, client: client({ list }) });
         await repository.refreshList('active');
         const unmount = repository.mount();
@@ -530,7 +588,7 @@ describe('Session Discussion repository', () => {
         });
         resolveRefresh({ kind: 'succeeded', value: listResult([refreshed], null) });
         await vi.waitFor(() => expect(repository.getSnapshot().lists.active.items[0]?.messageSeq).toBe(2));
-        expect(list).toHaveBeenCalledTimes(2);
+        expect(list.mock.calls.filter(([input]) => input?.state === 'active')).toHaveLength(2);
         unmount();
     });
 
@@ -577,5 +635,179 @@ describe('Session Discussion repository', () => {
 
         expect(replacement).not.toBe(first);
         clearSessionDiscussionRepositoryRegistryForTests();
+    });
+
+    it('merges an overlapping tail read into current thread state instead of its pre-await snapshot', async () => {
+        const pendingReads: Array<(value: Awaited<ReturnType<SessionDiscussionRepositoryClient['read']>>) => void> = [];
+        const read = vi.fn<SessionDiscussionRepositoryClient['read']>()
+            .mockResolvedValueOnce({ kind: 'succeeded', value: readResult([message(1)], false, 1) })
+            .mockImplementation(() => new Promise((resolve) => { pendingReads.push(resolve); }));
+        const repository = createSessionDiscussionRepository({ address, client: client({ read }) });
+        await repository.refreshMessages('discussion-a');
+
+        const slower = repository.refreshMessages('discussion-a');
+        const faster = repository.refreshMessages('discussion-a');
+        pendingReads[1]!({ kind: 'succeeded', value: readResult([message(2), message(3)], false, 3) });
+        await faster;
+        expect(repository.getSnapshot().threads['discussion-a']!.messages.map((row) => row.seq)).toEqual([1, 2, 3]);
+        pendingReads[0]!({ kind: 'succeeded', value: readResult([message(2)], false, 2) });
+        await slower;
+
+        // Two mounted surfaces refresh the same thread independently; the response
+        // that settles second must not delete the messages the other one published.
+        const thread = repository.getSnapshot().threads['discussion-a']!;
+        expect(thread.messages.map((row) => row.seq)).toEqual([1, 2, 3]);
+        expect(thread.messageSeq).toBe(3);
+    });
+
+    it('keeps the messages a concurrent read published when an overlapping read fails', async () => {
+        const pendingReads: Array<(value: Awaited<ReturnType<SessionDiscussionRepositoryClient['read']>>) => void> = [];
+        const read = vi.fn<SessionDiscussionRepositoryClient['read']>()
+            .mockResolvedValueOnce({ kind: 'succeeded', value: readResult([message(1)], false, 1) })
+            .mockImplementation(() => new Promise((resolve) => { pendingReads.push(resolve); }));
+        const repository = createSessionDiscussionRepository({ address, client: client({ read }) });
+        await repository.refreshMessages('discussion-a');
+
+        const failing = repository.refreshMessages('discussion-a');
+        const succeeding = repository.refreshMessages('discussion-a');
+        pendingReads[1]!({ kind: 'succeeded', value: readResult([message(2), message(3)], false, 3) });
+        await succeeding;
+        pendingReads[0]!({ kind: 'failed', errorCode: 'offline' });
+        await failing;
+
+        // A retryable failure reports the failure; it must not republish the thread
+        // as it looked before the successful concurrent read landed.
+        const thread = repository.getSnapshot().threads['discussion-a']!;
+        expect(thread.messages.map((row) => row.seq)).toEqual([1, 2, 3]);
+        expect(thread.messageSeq).toBe(3);
+        expect(thread).toMatchObject({ status: 'offline', errorCode: 'offline' });
+    });
+
+    it('completes an older Discussion page against the message that arrived while it was in flight', async () => {
+        let resolveOlder: (value: Awaited<ReturnType<SessionDiscussionRepositoryClient['read']>>) => void = () => {
+            throw new Error('older read resolver was not installed');
+        };
+        const read = vi.fn<SessionDiscussionRepositoryClient['read']>()
+            .mockResolvedValueOnce({ kind: 'succeeded', value: readResult([message(3)], true, 3) })
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveOlder = resolve; }));
+        const post = vi.fn<SessionDiscussionRepositoryClient['post']>().mockResolvedValue({
+            kind: 'succeeded',
+            value: {
+                v: 1,
+                serverId: address.serverId,
+                sessionId: address.sessionId,
+                message: message(4, 'post-local-older'),
+                messageSeq: 4,
+            },
+        });
+        const repository = createSessionDiscussionRepository({ address, client: client({ read, post }) });
+        await repository.refreshMessages('discussion-a');
+
+        const older = repository.loadOlderMessages('discussion-a');
+        await repository.post({
+            discussionId: 'discussion-a',
+            localId: 'post-local-older',
+            content: { v: 1, parts: [{ t: 'text', text: 'message 4' }] },
+            draftSubmission: draftSubmission('discussion'),
+        });
+        resolveOlder({ kind: 'succeeded', value: readResult([message(1), message(2)], false, 3) });
+        await older;
+
+        const thread = repository.getSnapshot().threads['discussion-a']!;
+        expect(thread.messages.map((row) => row.seq)).toEqual([1, 2, 3, 4]);
+        expect(thread.messageSeq).toBe(4);
+        expect(thread.hasMoreOlder).toBe(false);
+    });
+
+    it('keeps the fetched summary when an existing Discussion is first opened in a new repository lifetime', async () => {
+        // Cold start: the list is loaded, the reader opens an existing Discussion,
+        // and its get and read both succeed. Nothing may leave the thread without
+        // the summary the get just returned.
+        const existing = summary('discussion-a', null, 1);
+        const repository = createSessionDiscussionRepository({ address, client: client({
+            list: vi.fn<SessionDiscussionRepositoryClient['list']>().mockResolvedValue({ kind: 'succeeded', value: listResult([existing], null) }),
+            get: vi.fn<SessionDiscussionRepositoryClient['get']>().mockResolvedValue({
+                kind: 'succeeded',
+                value: { v: 1, serverId: address.serverId, sessionId: address.sessionId, discussion: existing },
+            }),
+            read: vi.fn<SessionDiscussionRepositoryClient['read']>().mockResolvedValue({ kind: 'succeeded', value: readResult([message(1)], false, 1) }),
+        }) });
+
+        await repository.refreshList('active');
+        await repository.refreshDiscussion('discussion-a');
+
+        const thread = repository.getSnapshot().threads['discussion-a']!;
+        expect(thread.summary).toEqual(existing);
+        expect(thread.messages.map((row) => row.seq)).toEqual([1]);
+        expect(thread.status).toBe('ready');
+    });
+
+    it('reopens retained locked rows through the current cipher once the Session key arrives', async () => {
+        const lockedRow = { ...message(1), content: null };
+        const readOpened = { current: false };
+        const read = vi.fn<SessionDiscussionRepositoryClient['read']>(async (_discussionId, input) => (
+            input?.afterSeq === undefined
+                ? { kind: 'succeeded' as const, value: { ...readResult(readOpened.current ? [message(1)] : [lockedRow], false, 1), incomplete: !readOpened.current } }
+                : { kind: 'succeeded' as const, value: readResult([], false, 1) }
+        ));
+        const repository = createSessionDiscussionRepository({ address, client: client({ read }) });
+
+        await repository.refreshMessages('discussion-a');
+        expect(repository.getSnapshot().threads['discussion-a']).toMatchObject({ status: 'locked', incomplete: true });
+        expect(repository.getSnapshot().threads['discussion-a']!.messages[0]!.content).toBeNull();
+
+        readOpened.current = true;
+        await repository.refreshMessages('discussion-a');
+
+        // The adapter discarded the ciphertext, so the retained null row can only be
+        // completed by asking the Discussion owner for it again under the new key.
+        const thread = repository.getSnapshot().threads['discussion-a']!;
+        expect(thread.messages.map((row) => row.content)).toEqual([message(1).content]);
+        expect(thread).toMatchObject({ status: 'ready', incomplete: false });
+    });
+
+    /**
+     * Whether an archived Discussion exists at all is a fact this owner already
+     * has a route for. Answering it with one bounded probe beside the active
+     * refresh keeps the archived disclosure truthful without preloading a page
+     * the reader did not ask for, and without a new wire bit.
+     */
+    it('answers archived existence from one bounded probe beside the active refresh', async () => {
+        const archivedRows = { current: [summary('discussion-archived', null, 1)] };
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>(async (input) => (
+            input?.state === 'archived'
+                ? { kind: 'succeeded' as const, value: listResult(archivedRows.current, 'archived-page-2') }
+                : { kind: 'succeeded' as const, value: listResult([], null) }
+        ));
+        const repository = createSessionDiscussionRepository({ address, client: client({ list }) });
+
+        expect(repository.getSnapshot().archivedExistence).toBe('unknown');
+        await repository.refreshList('active');
+
+        // One bounded probe, not a page: the archived list itself stays idle and
+        // is still loaded lazily when the reader opens the disclosure.
+        expect(list).toHaveBeenCalledWith({ state: 'archived', limit: 1 }, undefined);
+        expect(repository.getSnapshot().archivedExistence).toBe('present');
+        expect(repository.getSnapshot().lists.archived).toMatchObject({ status: 'idle', items: [] });
+
+        archivedRows.current = [];
+        await repository.refreshList('active');
+        expect(repository.getSnapshot().archivedExistence).toBe('empty');
+    });
+
+    it('never claims archived emptiness from a refused probe', async () => {
+        const list = vi.fn<SessionDiscussionRepositoryClient['list']>(async (input) => (
+            input?.state === 'archived'
+                ? { kind: 'failed' as const, errorCode: 'offline' }
+                : { kind: 'succeeded' as const, value: listResult([], null) }
+        ));
+        const repository = createSessionDiscussionRepository({ address, client: client({ list }) });
+
+        await repository.refreshList('active');
+
+        // An unanswered probe is not an answer: the disclosure keeps offering the
+        // archived list rather than telling the reader there is nothing there.
+        expect(repository.getSnapshot().archivedExistence).toBe('unknown');
+        expect(repository.getSnapshot().lists.active.status).toBe('ready');
     });
 });

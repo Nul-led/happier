@@ -63,7 +63,7 @@ describe("session list on the pre-activation-authorization schema (SQLite integr
             orderBy: V2_SESSION_LIST_ORDER_BY,
             take: 10,
         });
-        const sessions = mapV2SessionListRows({ rows, userId: ownerId });
+        const { sessions } = mapV2SessionListRows({ rows, userId: ownerId });
 
         expect(sessions).toHaveLength(1);
         expect(sessions[0]).toMatchObject({ id: sessionId });

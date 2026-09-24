@@ -163,7 +163,6 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
                 hostedWeb: { enabled: false },
                 reactNativeBundles: {
                     enabled: false,
-                    devHotReload: { enabled: false },
                 },
             },
         },
@@ -313,8 +312,8 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
  * Fixture responses are written in place by `tryWriteServerEnabledBitInPlace`,
  * which walks to the owning gate object and assigns `enabled` on it. The
  * override ladder below only re-spreads the subtrees it has explicit override
- * keys for, so every other nested gate — `sessions.collaboration`,
- * `sessions.conversations`, `sharing.session`, and their siblings — would still
+ * keys for, so every other nested gate — `sessions.conversations`,
+ * `sharing.session`, and their siblings — would still
  * be the exact object held by the module-level base. One test enabling a gate
  * would then silently enable it for every later fixture in the same worker.
  * Handing out a structurally independent response keeps each test's primed
@@ -542,10 +541,6 @@ export function createRootLayoutFeaturesResponse(overrides?: RootLayoutFeaturesO
                     reactNativeBundles: {
                         ...BASE_ROOT_LAYOUT_FEATURES.features.plugins.ui.reactNativeBundles,
                         ...(nextPlugins.ui?.reactNativeBundles ?? {}),
-                        devHotReload: {
-                            ...BASE_ROOT_LAYOUT_FEATURES.features.plugins.ui.reactNativeBundles.devHotReload,
-                            ...(nextPlugins.ui?.reactNativeBundles?.devHotReload ?? {}),
-                        },
                     },
                 },
             },

@@ -99,32 +99,64 @@ describe("Team credential audience mutation", () => {
         })).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 3 });
     });
 
-    it("zeroizes derived recipient material when the audience is replaced", async () => {
+    it("ends prepared material only for the recipients the replaced audience no longer entitles", async () => {
         const f = await fixture();
-        await expect(f.set(f.manager.id)).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 1 });
+        // A second recipient holds two overlapping direct grants: the Group
+        // grant and their own member grant.
+        const overlapping = await db.account.create({ data: { encryptionMode: "plain" } });
+        const overlappingMembership = await db.teamMembership.create({
+            data: { teamId: f.team.id, accountId: overlapping.id, role: "member" },
+        });
+        await db.teamGroupMembership.create({ data: {
+            teamId: f.team.id, teamGroupId: f.group.id, teamMembershipId: overlappingMembership.id,
+        } });
+        const withOverlap = {
+            ...f.input,
+            memberGrants: [
+                ...f.input.memberGrants,
+                { teamMembershipId: overlappingMembership.id, deliveryMode: "direct" as const },
+            ],
+        };
+        await expect(f.set(f.manager.id, withOverlap)).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 1 });
+        const published = JSON.stringify({ "member-1": "source-version-1" });
         await db.teamCredentialResource.update({
             where: { id: f.resource.id },
-            data: { directSourceVersionsJson: JSON.stringify({ "member-1": "source-version-1" }) },
+            data: { directSourceVersionsJson: published },
         });
-        await db.teamCredentialRecipientMaterial.create({ data: {
-            resourceId: f.resource.id,
-            recipientAccountId: f.recipientMembership.accountId,
-            sourceMemberKey: "member-1",
-            sourceVersion: "source-version-1",
-            recipientMode: "plain",
-            storedMaterial: new Uint8Array([1, 2, 3]),
-        } });
+        for (const recipientAccountId of [f.recipientMembership.accountId, overlapping.id]) {
+            await db.teamCredentialRecipientMaterial.create({ data: {
+                resourceId: f.resource.id,
+                recipientAccountId,
+                sourceMemberKey: "member-1",
+                sourceVersion: "source-version-1",
+                recipientMode: "plain",
+                storedMaterial: new Uint8Array([1, 2, 3]),
+            } });
+        }
 
+        // Replacing the audience ends exactly the material of the recipients it
+        // no longer entitles. A recipient who keeps another effective direct
+        // grant keeps their prepared row, and the source has not changed, so the
+        // published source versions are untouched
+        // (06-direct-credential-delivery.md:572, :579).
         await expect(f.set(f.manager.id, {
-            ...f.input,
+            ...withOverlap,
             expectedRevision: 1,
-            groupGrants: [],
-            memberGrants: [],
+            memberGrants: [{ teamMembershipId: overlappingMembership.id, deliveryMode: "direct" }],
         })).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 2 });
+        expect(await db.teamCredentialRecipientMaterial.findMany({
+            where: { resourceId: f.resource.id }, select: { recipientAccountId: true },
+        })).toEqual([{ recipientAccountId: overlapping.id }]);
+        expect(await db.teamCredentialResource.findUniqueOrThrow({ where: { id: f.resource.id } }))
+            .toMatchObject({ directSourceVersionsJson: published });
 
+        // Removing the last effective direct grant ends that recipient's row too.
+        await expect(f.set(f.manager.id, {
+            ...withOverlap, expectedRevision: 2, groupGrants: [], memberGrants: [],
+        })).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 3 });
         expect(await db.teamCredentialRecipientMaterial.count({ where: { resourceId: f.resource.id } })).toBe(0);
         expect(await db.teamCredentialResource.findUniqueOrThrow({ where: { id: f.resource.id } }))
-            .toMatchObject({ directSourceVersionsJson: null });
+            .toMatchObject({ directSourceVersionsJson: published });
     });
 
     it("saves a broker audience on a compatible offline persistent custodian Machine", async () => {

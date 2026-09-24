@@ -34,6 +34,17 @@ const RUN_BINDINGS = {
     },
 } as const;
 
+const PERSISTED_RUN_BINDINGS = {
+    v: 2,
+    bindingsByServiceId: {
+        'happier.agent.codex/openai-codex': {
+            source: 'connected',
+            selection: 'profile',
+            profileId: 'profile_1',
+        },
+    },
+} as const;
+
 const MATERIALIZE_INPUT = {
     runId: 'run_abc',
     runnerPid: 4242,
@@ -48,7 +59,7 @@ const REQUEST_AUTH_HTTP_PORT = 42427;
 const AGENT_CONTRIBUTION_IDENTITY = Object.freeze({
     pluginId: 'happier.agent.codex',
     localId: 'codex',
-    immutableGenerationId: 'gen-1',
+    sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'gen-1', installSource: 'npm' as const },
 });
 const UNKNOWN_ACTIVATION_ID = '00000000-0000-4000-8000-000000000000';
 
@@ -146,7 +157,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             createAdoptedRootCleanup,
         });
         const receipt = {
-            v: 2 as const,
+            v: 1 as const,
             activationId: '33333333-3333-4333-8333-333333333333',
             runKey: MATERIALIZE_INPUT.runId,
             agentId: MATERIALIZE_INPUT.agentId,
@@ -317,7 +328,6 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             bindings: [expect.objectContaining({
                 target: expect.objectContaining({ kind: 'account' }),
             })],
-            directMaterialOrigins: [],
         });
         expect(requestAuthRegistry.activate).toHaveBeenCalledWith({
             subject: expect.objectContaining({
@@ -438,7 +448,6 @@ describe('createExecutionRunConnectedServicesBridge', () => {
                 purpose: 'primary',
             }],
             bindings: [],
-            directMaterialOrigins: [],
         });
         expect(requestAuthRegistry.activate).not.toHaveBeenCalled();
     });
@@ -970,7 +979,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             agentId: 'codex' as const,
             agentContribution: AGENT_CONTRIBUTION_IDENTITY,
             materializationKey: 'run_abc',
-            connectedServicesBindings: RUN_BINDINGS,
+            connectedServicesBindings: PERSISTED_RUN_BINDINGS,
             connectedServiceSelectionsEnv: { [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]' },
             sessionDirectory: '/tmp/project',
             materializedRoot: '/materialized/run_abc/codex',
@@ -1142,7 +1151,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             agentId: 'codex' as const,
             agentContribution: AGENT_CONTRIBUTION_IDENTITY,
             materializationKey: 'run_abc',
-            connectedServicesBindings: RUN_BINDINGS,
+            connectedServicesBindings: PERSISTED_RUN_BINDINGS,
             connectedServiceSelectionsEnv: {
                 [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]',
             },
@@ -1201,7 +1210,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
     it.each([
         {
             label: 'the Agent generation moved from G1 to G2',
-            currentIdentity: { ...AGENT_CONTRIBUTION_IDENTITY, immutableGenerationId: 'gen-2' },
+            currentIdentity: { ...AGENT_CONTRIBUTION_IDENTITY, sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'gen-2', installSource: 'npm' as const } },
             launched: AGENT_CONTRIBUTION_IDENTITY,
         },
         {
@@ -1245,7 +1254,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
                 agentId: 'codex' as const,
                 ...(launched ? { agentContribution: launched } : {}),
                 materializationKey: 'run_abc',
-                connectedServicesBindings: RUN_BINDINGS,
+                connectedServicesBindings: PERSISTED_RUN_BINDINGS,
                 connectedServiceSelectionsEnv: {
                     [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]',
                 },
@@ -1279,7 +1288,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
                 contributions: REQUEST_AUTH_CONTRIBUTIONS,
                 resolveAgentContributionIdentity: async () => ({
                     ...AGENT_CONTRIBUTION_IDENTITY,
-                    immutableGenerationId: 'gen-2',
+                    sourceCustody: { kind: 'managed' as const, immutableGenerationId: 'gen-2', installSource: 'npm' as const },
                 }),
                 isCurrent: () => true,
                 release,
@@ -1294,7 +1303,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             agentId: 'codex' as const,
             agentContribution: AGENT_CONTRIBUTION_IDENTITY,
             materializationKey: 'run_abc',
-            connectedServicesBindings: RUN_BINDINGS,
+            connectedServicesBindings: PERSISTED_RUN_BINDINGS,
             connectedServiceSelectionsEnv: {
                 [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]',
             },
@@ -1347,7 +1356,7 @@ describe('createExecutionRunConnectedServicesBridge', () => {
             agentId: 'codex' as const,
             agentContribution: AGENT_CONTRIBUTION_IDENTITY,
             materializationKey: 'run_abc',
-            connectedServicesBindings: RUN_BINDINGS,
+            connectedServicesBindings: PERSISTED_RUN_BINDINGS,
             connectedServiceSelectionsEnv: {
                 [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]',
             },

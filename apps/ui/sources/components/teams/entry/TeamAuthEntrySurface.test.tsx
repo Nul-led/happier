@@ -3,7 +3,6 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HomeTargetInput } from '@happier-dev/cli-common/homeTarget';
-import type { TeamInvitationAcceptResultV1 } from '@happier-dev/protocol';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { t } from '@/text';
@@ -14,21 +13,6 @@ const endpointFetch = vi.hoisted(() => vi.fn());
 const authorityFetch = vi.hoisted(() => vi.fn());
 const runWithServerRequestAuthorityForServerAccountScope = vi.hoisted(() => vi.fn());
 const acceptTeamInvitation = vi.hoisted(() => vi.fn());
-
-/**
- * The approval Artifact is a stored-content boundary, replaced here exactly as
- * the Team shell's own suite replaces it. Everything above it — the shared
- * continuation owner and this surface's admission state machine — stays real.
- */
-const approvalArtifactState = vi.hoisted(() => ({
-    value: {
-        artifact: null as null | Readonly<{ id: string; body: string | null; header: Record<string, unknown> }>,
-        isLoading: false,
-        error: null as boolean | null,
-        invalidArtifact: false,
-    },
-    requests: [] as Array<Readonly<{ artifactId: string | null; serverId: string | null }>>,
-}));
 
 const routerReplaceSpy = vi.hoisted(() => vi.fn());
 const routerPushSpy = vi.hoisted(() => vi.fn());
@@ -72,19 +56,6 @@ vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     isTeamActionApprovalPendingError: (value: unknown) => (
         typeof value === 'object' && value !== null && 'registration' in value
     ),
-}));
-
-vi.mock('@/components/approvals/useApprovalArtifact', () => ({
-    useApprovalArtifact: (input: Readonly<{ artifactId: string | null; serverId: string | null }>) => {
-        approvalArtifactState.requests.push(input);
-        const held = approvalArtifactState.value;
-        return {
-            ...held,
-            artifact: held.artifact?.id === input.artifactId ? held.artifact : null,
-            homeUnavailable: false,
-            refresh: async () => {},
-        };
-    },
 }));
 
 vi.mock('react-native', async () => {
@@ -214,50 +185,6 @@ async function waitForTestId(
     throw new Error(`Timed out waiting for ${testID}; rendered=${screen.getTextContent()}; fetchCalls=${endpointFetch.mock.calls.length}`);
 }
 
-function approvalArtifact(id: string, status: 'executed' | 'rejected' | 'failed') {
-    return {
-        id,
-        title: null,
-        header: { title: null, approvalStatus: status },
-        body: '{}',
-        headerVersion: 1,
-        bodyVersion: 1,
-        seq: 1,
-        createdAt: 1,
-        updatedAt: 2,
-        isDecrypted: true,
-    };
-}
-
-/**
- * What `acceptTeamInvitation` throws once the shared front door has deferred
- * this exact admission: the Artifact id plus the result-bearing continuation it
- * builds from the caller's own handlers.
- *
- * The binding inside that continuation — Action id, Home, Account and input
- * fencing — is owned and proven by `teamActionClient`; this mirrors only its
- * shape so what is under test here is the surface's own custody.
- */
-function deferAdmission(artifactId: string, answer: TeamInvitationAcceptResultV1): void {
-    acceptTeamInvitation.mockImplementationOnce(async (params: Readonly<{
-        onApprovalSucceeded?: (value: TeamInvitationAcceptResultV1) => void | Promise<void>;
-        onApprovalFailed?: (code: string) => void;
-    }>) => {
-        throw {
-            name: 'TeamActionApprovalPendingError',
-            artifactId,
-            registration: {
-                artifactId,
-                onExecuted: async () => {
-                    await params.onApprovalSucceeded?.(answer);
-                    return 'consumed' as const;
-                },
-                onTerminal: (status: string) => params.onApprovalFailed?.(`approval_${status}`),
-            },
-        };
-    });
-}
-
 let entryScope: 'team' | 'invitation' = 'team';
 let entrySignInService: unknown;
 let previewResult: unknown;
@@ -275,13 +202,6 @@ describe('TeamAuthEntrySurface', () => {
         endpointFetch.mockReset();
         authorityFetch.mockReset();
         acceptTeamInvitation.mockReset();
-        approvalArtifactState.value = {
-            artifact: null,
-            isLoading: false,
-            error: null,
-            invalidArtifact: false,
-        };
-        approvalArtifactState.requests.length = 0;
         entryScope = 'team';
         entrySignInService = undefined;
         accountServiceDiscovery.value = null;
@@ -429,6 +349,54 @@ describe('TeamAuthEntrySurface', () => {
         expect(actionIconNames(screen, 'team-auth-entry-action:team-unknown-hint')).toContain('sign-in');
     });
 
+    it('names an accepted Team sign-in that cannot run with the Home reason, and re-asks the Home on press', async () => {
+        // teams-lane-03/01 §10.2 / TA-R17: the per-provider safe unavailable reason
+        // is a real wire field, so the page says it instead of dropping the choice.
+        const withUnavailable = () => readyResponse('team', undefined, undefined, 'Acme Home', [{
+            kind: 'authenticate',
+            methodId: 'team-oidc',
+            action: 'connect',
+            mode: 'either',
+            origin: 'team',
+            presentation: { displayName: 'Acme SSO', providerKind: 'oidc', connectButtonColor: '#0f62fe', supportsProfileBadge: false },
+        }, {
+            kind: 'provider_unavailable',
+            methodId: 'team-backup',
+            origin: 'team',
+            presentation: { displayName: 'Backup SSO', providerKind: 'oidc' },
+            reason: 'provider_setup_incomplete',
+        }]);
+        endpointFetch.mockImplementation(async (path: string) => (
+            String(path).includes('/team-invitations/preview')
+                ? new Response(JSON.stringify(previewResult), { status: 200 })
+                : withUnavailable()
+        ));
+        authorityFetch.mockImplementation(async () => withUnavailable());
+        const onSelectAction = vi.fn();
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                teamId="team-1"
+                target={target}
+                onSelectAction={onSelectAction}
+                onBack={() => {}}
+            />,
+        );
+
+        await waitForTestId(screen, 'team-auth-entry-ready');
+        const unavailable = screen.findByTestId('team-auth-entry-unavailable:team-backup');
+        if (!unavailable) throw new Error('expected the unavailable Team sign-in to be named');
+        expect(unavailable.props.accessibilityLabel).toBe(t('teams.entry.providerUnavailableTitle', { method: 'Backup SSO' }));
+        expect(unavailable.props.accessibilityHint).toBe(t('teams.entry.providerUnavailableSetupIncomplete'));
+        // The runnable choice is unaffected by the richer descriptor.
+        expect(screen.findByTestId('team-auth-entry-action:team-oidc')).not.toBeNull();
+
+        const requestsBefore = endpointFetch.mock.calls.length + authorityFetch.mock.calls.length;
+        await screen.pressByTestIdAsync('team-auth-entry-unavailable:team-backup');
+        await waitForTestId(screen, 'team-auth-entry-ready');
+        expect(endpointFetch.mock.calls.length + authorityFetch.mock.calls.length).toBeGreaterThan(requestsBefore);
+        expect(onSelectAction).not.toHaveBeenCalled();
+    });
+
     it('admits only one action at a time and marks the selected action busy', async () => {
         let releaseAction!: () => void;
         const actionPending = new Promise<void>((resolve) => {
@@ -519,6 +487,44 @@ describe('TeamAuthEntrySurface', () => {
         expect(opaque.getTextContent()).toContain(t('teams.errors.notFound'));
         expect(opaque.getTextContent()).not.toContain(t('teams.entry.ssoRequiredTitle'));
         expect(opaque.findAllByTestId('team-auth-entry-unavailable-reason')).toHaveLength(0);
+    });
+
+    it('says Teams are turned off on this Home instead of claiming the Team does not exist', async () => {
+        // A capable, reachable Home with Teams administratively disabled answers
+        // the non-enumerating `entry_not_available` on the entry projection and
+        // its own declared `feature_unavailable` on the preview. Reading only
+        // the first sent a valid invitation holder to "Team not found".
+        const token = 'F'.repeat(43);
+        previewResult = { outcome: 'feature_unavailable' };
+        endpointFetch.mockReset();
+        endpointFetch.mockImplementation(async (path: string) => (
+            String(path).includes('/team-invitations/preview')
+                ? new Response(JSON.stringify(previewResult), { status: 200 })
+                : new Response(JSON.stringify({
+                    v: 1,
+                    state: 'unavailable',
+                    scope: { kind: 'invitation' },
+                    reason: 'entry_not_available',
+                    autoRedirect: null,
+                }), { status: 200 })
+        ));
+
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                invitation={{ token }}
+                target={target}
+                onSelectAction={() => {}}
+                onAdmissionComplete={() => {}}
+            />,
+        );
+        await waitForTestId(screen, 'team-auth-entry-unavailable');
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+
+        expect(screen.getTextContent()).toContain(t('teams.unavailable.title'));
+        expect(screen.getTextContent()).toContain(t('teams.unavailable.disabled'));
+        expect(screen.getTextContent()).not.toContain(t('teams.errors.notFound'));
     });
 
     it('offers a way out of a Team it cannot enter instead of only an endless retry', async () => {
@@ -869,103 +875,8 @@ describe('TeamAuthEntrySurface', () => {
         expect(await waitForTestId(screen, 'team-auth-entry-admission-complete')).toBeTruthy();
     });
 
-    describe('deferred admission approval', () => {
-        const accountScope = Object.freeze({ serverId: 'home-team', accountId: 'account-1' });
-        const token = 'P'.repeat(43);
-
-        function renderJoin(onAdmissionComplete: (result: TeamInvitationAcceptResultV1) => void) {
-            return (
-                <TeamAuthEntrySurface
-                    invitation={{ token, accountScope }}
-                    target={target}
-                    onSelectAction={() => {}}
-                    onAdmissionComplete={onAdmissionComplete}
-                />
-            );
-        }
-
-        it('registers the deferred admission instead of stranding the invitation', async () => {
-            entryScope = 'invitation';
-            deferAdmission('approval-admission', { outcome: 'joined', teamId: 'team-1' });
-            const screen = await renderScreen(renderJoin(() => {}));
-            await waitForTestId(screen, 'team-auth-entry-join');
-
-            await screen.pressByTestIdAsync('team-auth-entry-join');
-
-            await waitForTestId(screen, 'team-auth-entry-admission-approval');
-            expect(acceptTeamInvitation).toHaveBeenCalledTimes(1);
-            // Join is withheld while this same request is unresolved, so one
-            // admission cannot be asked for twice.
-            expect(screen.findAllByTestId('team-auth-entry-join')).toHaveLength(0);
-            // Custody is bound to the exact Home the invitation was opened
-            // against, not to whichever Home happens to be focused.
-            expect(approvalArtifactState.requests.at(-1)).toEqual({
-                artifactId: 'approval-admission',
-                serverId: 'home-team',
-            });
-        });
-
-        it('settles an approved admission with the Home answer without redispatching it', async () => {
-            entryScope = 'invitation';
-            deferAdmission('approval-admission', { outcome: 'joined', teamId: 'team-1' });
-            const onAdmissionComplete = vi.fn();
-            const screen = await renderScreen(renderJoin(onAdmissionComplete));
-            await waitForTestId(screen, 'team-auth-entry-join');
-            await screen.pressByTestIdAsync('team-auth-entry-join');
-            await waitForTestId(screen, 'team-auth-entry-admission-approval');
-
-            approvalArtifactState.value = {
-                artifact: approvalArtifact('approval-admission', 'executed'),
-                isLoading: false,
-                error: null,
-                invalidArtifact: false,
-            };
-            await screen.update(renderJoin(onAdmissionComplete));
-
-            await waitForTestId(screen, 'team-auth-entry-admission-complete');
-            // The Home admitted them when the approval was granted; settling
-            // must never repeat the intent.
-            expect(acceptTeamInvitation).toHaveBeenCalledTimes(1);
-            expect(onAdmissionComplete).not.toHaveBeenCalled();
-            await screen.pressByTestIdAsync('team-auth-entry-admission-complete-action');
-            expect(onAdmissionComplete).toHaveBeenCalledWith({ outcome: 'joined', teamId: 'team-1' });
-        });
-
-        it('keeps the same invitation retryable after its approval is refused', async () => {
-            entryScope = 'invitation';
-            deferAdmission('approval-admission', { outcome: 'joined', teamId: 'team-1' });
-            const screen = await renderScreen(renderJoin(() => {}));
-            await waitForTestId(screen, 'team-auth-entry-join');
-            await screen.pressByTestIdAsync('team-auth-entry-join');
-            await waitForTestId(screen, 'team-auth-entry-admission-approval');
-
-            approvalArtifactState.value = {
-                artifact: approvalArtifact('approval-admission', 'rejected'),
-                isLoading: false,
-                error: null,
-                invalidArtifact: false,
-            };
-            await screen.update(renderJoin(() => {}));
-
-            await waitForTestId(screen, 'team-auth-entry-admission-approval-refused');
-            expect(acceptTeamInvitation).toHaveBeenCalledTimes(1);
-
-            // A refused approval says nothing about the offer, so the same
-            // invitation is re-requested with the same bearer and Account.
-            acceptTeamInvitation.mockResolvedValueOnce({
-                kind: 'succeeded',
-                value: { outcome: 'joined', teamId: 'team-1' },
-            });
-            await screen.pressByTestIdAsync('team-auth-entry-admission-approval-refused-action');
-
-            await waitForTestId(screen, 'team-auth-entry-admission-complete');
-            expect(acceptTeamInvitation).toHaveBeenCalledTimes(2);
-            expect(acceptTeamInvitation.mock.calls[1]?.[0]).toMatchObject({
-                scope: accountScope,
-                admission: { token },
-            });
-        });
-    });
+    // The deferred admission approval runs on the real approval lifecycle in
+    // `TeamAuthEntrySurface.approval.test.tsx`.
 
     it('offers recovery back to the current Account without accepting the invitation', async () => {
         entryScope = 'invitation';

@@ -25,7 +25,7 @@ describe("Session access owner/direct authority (SQLite)", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => {
         harness = await createLightSqliteHarness({ tempDirPrefix: "happier-session-access-", initAuth: false,
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1", HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" },
+            env: { HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" },
         });
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
@@ -208,7 +208,7 @@ describe("Session access owner/direct authority (SQLite)", () => {
         expect((await visible()).ok).toBe(false);
         await db.session.update({ where: { id: session.id }, data: { materializationPublicationId: "published" } });
         expect((await visible()).ok).toBe(true);
-        harness.resetEnv({ HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "0" });
+        harness.resetEnv({ HAPPIER_BUILD_FEATURES_DENY: "sharing.session" });
         try {
             expect((await visible()).ok).toBe(false);
         } finally {
@@ -1091,14 +1091,14 @@ describe("Session access owner/direct authority (SQLite)", () => {
         }))).resolves.toMatchObject({ status: "allowed", access: { level: "edit", sources: [{ kind: "group", teamId: independentTeam.id, groupId: group.id }] } });
     });
 
-    it("keeps direct access available while disabled collaboration cannot expand recipients", async () => {
+    it("keeps direct access available while disabled Session sharing cannot expand recipients", async () => {
         const { owner, actor, session, share } = await fixture("view");
         const team = await db.team.create({ data: { name: crypto.randomUUID() } });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: actor.id, role: "member" } });
         await db.sessionTeamGrant.create({ data: {
             sessionId: session.id, teamId: team.id, accessLevel: "admin", effectiveAt: new Date(),
         } });
-        harness.resetEnv({ HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "0" });
+        harness.resetEnv({ HAPPIER_BUILD_FEATURES_DENY: "sharing.session" });
         try {
             expect(await resolveEffectiveSessionAccess(db, { sessionId: session.id, accountId: actor.id, authentication }))
                 .toMatchObject({ level: "view" });

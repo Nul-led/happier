@@ -33,6 +33,7 @@ import {
     setHomeRoleInTx,
 } from "@/app/home/governance/homeGovernanceService";
 import { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
+import { readTeamOperationAuthenticationFromRequest } from "@/app/teams/actorContext";
 import { inTx } from "@/storage/inTx";
 
 import type { Fastify } from "../../types";
@@ -164,6 +165,7 @@ export function homeGovernanceRoutes(app: Fastify): void {
                 scope: request.body.scope,
                 teamsEnabled: teamsEnabled(),
                 env: process.env,
+                authentication: readTeamOperationAuthenticationFromRequest(request),
             }));
             if (search.status === "rejected") {
                 return await reply.code(homeGovernanceErrorHttpStatusV1(search.code)).send({ error: search.code });

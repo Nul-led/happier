@@ -4,7 +4,7 @@ import { TeamsPageV1Schema, type TeamExternalSharingPolicyV1, type TeamMembershi
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
-import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccessLegacyAdapter';
+import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccessApi';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { listTeamGroups } from '@/sync/ops/teams/teamGroupOperations';
@@ -381,7 +381,6 @@ export function useSessionAccessDirectory(input: Readonly<{
         try {
             const page = await searchSessionAccessAccountPage({
                 scope,
-                ...(sessionId ? { sessionId } : {}),
                 availability,
                 query,
                 signal,
@@ -468,7 +467,6 @@ export function useSessionAccessDirectory(input: Readonly<{
                 try {
                     const page = await searchSessionAccessAccountPage({
                         scope,
-                        ...(sessionId ? { sessionId } : {}),
                         availability,
                         query: existing.query!,
                         cursor: existing.nextCursor,
@@ -546,7 +544,7 @@ export function useSessionAccessDirectory(input: Readonly<{
         // it on every render creates a refresh loop and makes authoritative
         // empty-directory recovery impossible; only the explicit retry removes
         // the page and starts another attempt.
-        if (!enabled || teamAddress || availability !== 'full_collaboration' || pagesRef.current.team !== undefined) return;
+        if (!enabled || teamAddress || availability !== 'available' || pagesRef.current.team !== undefined) return;
         void resolvePaged('team', '').catch(() => {});
     }, [availability, enabled, resolvePaged, revision, teamAddress]);
 
@@ -640,9 +638,8 @@ export function useSessionAccessDirectory(input: Readonly<{
             resolverKey: `${scopeKey}:account:${revision}:${accountPage.query ?? ''}:${accountPage.rows.length}:${accountPage.failed}:${operationsKey}`,
             resolveCandidates: resolveAccount,
         }];
-        // Team and Group grants exist only where the current collaboration
-        // vertical is available; an older Home keeps the Account-only editor.
-        if (availability !== 'full_collaboration') return built.filter((section) => principalKinds.includes(section.kind));
+        // Team and Group grants exist only where the Home shares Sessions.
+        if (availability !== 'available') return built.filter((section) => principalKinds.includes(section.kind));
         const teamPage = pages.team ?? EMPTY_PAGE;
         built.push({
             kind: 'team',

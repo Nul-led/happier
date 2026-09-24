@@ -21,7 +21,7 @@ describe('session list View options presentation', () => {
             sessionFolderViewModeV1: 'tree',
             sessionListFolderSortModeV1: 'mixed',
             foldersFeatureEnabled: true,
-        });
+        }, 'recent_activity');
 
         expect(presentation.selectedLayout).toBe('recent_activity');
         expect(presentation.layoutItems.map((item) => item.id)).toEqual([
@@ -64,7 +64,7 @@ describe('session list View options presentation', () => {
             sessionListActiveGroupingV1: 'date',
             sessionListInactiveGroupingV1: 'project',
         } as const;
-        const presentation = resolveSessionListViewOptionsPresentation(settings);
+        const presentation = resolveSessionListViewOptionsPresentation(settings, 'active_inactive');
 
         expect(presentation.showSectionGrouping).toBe(true);
         expect(presentation.activeGroupingItems.map((item) => item.id)).toEqual([
@@ -90,9 +90,23 @@ describe('session list View options presentation', () => {
             sessionFolderViewModeV1: 'tree',
         } as const;
 
-        expect(resolveSessionListViewOptionsPresentation({ ...settings, foldersFeatureEnabled: true })
+        expect(resolveSessionListViewOptionsPresentation({ ...settings, foldersFeatureEnabled: true }, 'projects')
             .showFolderOptions).toBe(true);
-        expect(resolveSessionListViewOptionsPresentation({ ...settings, foldersFeatureEnabled: false })
+        expect(resolveSessionListViewOptionsPresentation({ ...settings, foldersFeatureEnabled: false }, 'projects')
             .showFolderOptions).toBe(false);
+    });
+
+    it('describes the layout that is rendering, not the stored preference a visit intent overrides', () => {
+        const savedProjects = {
+            sessionListSectionModeV1: 'single',
+            sessionListActiveGroupingV1: 'project',
+        } as const;
+
+        // On /session/recent the rows render Recent activity while the Account
+        // still stores Projects; the menu must check what the person sees.
+        const presentation = resolveSessionListViewOptionsPresentation(savedProjects, 'recent_activity');
+
+        expect(presentation.selectedLayout).toBe('recent_activity');
+        expect(presentation.showProjectOrdering).toBe(false);
     });
 });

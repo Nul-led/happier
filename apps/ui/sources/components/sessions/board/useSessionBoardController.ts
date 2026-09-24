@@ -12,6 +12,7 @@ import type { PluginContributionIdentityV1 } from '@happier-dev/protocol';
 import {
     readSessionSurfaceNoteTextV1,
     SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1,
+    sessionBoardPlacedWidthRetainsPlacementV1,
     SessionSurfaceItemV1Schema,
     type SessionBoardActionFailureV1,
     type SessionBoardActionRecoveryEvidenceV1,
@@ -449,7 +450,7 @@ function isRetainedSessionBoardMutationApplied(
         const view = snapshot.views.find((candidate) => candidate.id === (placement.tabId ?? SESSION_BOARD_OVERVIEW_VIEW_ID));
         const currentPlacement = view?.placements.find((candidate) => candidate.itemId === submission.input.itemId);
         return currentPlacement !== undefined
-            && currentPlacement.width === (placement.width ?? SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1)
+            && sessionBoardPlacedWidthRetainsPlacementV1(currentPlacement.width, placement)
             && isAnchoredAt(placedItemIds(view), submission.input.itemId, placement.anchor);
     }
 
@@ -694,10 +695,16 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     }, [askAgent, callerHostedHtmlAvailable, canEdit, installedWidgetsAvailable, mutationsBlockedReason]);
 
     const supports = React.useCallback((kind: SessionBoardCommandKind): boolean => {
-        const writable = mutationsBlockedReason === null
-            && !mutationInFlightRef.current
+        const settled = !mutationInFlightRef.current
             && !approvalPendingRef.current
             && guardedRemovalRef.current === null;
+        const writable = mutationsBlockedReason === null && settled;
+        // Opening an editor is not a mutation. The draft is local to the retained
+        // editor and its Save already explains that it needs a connection to this
+        // Home, so unreachability must not remove the entry point to editing text
+        // the person can already read from the cached record.
+        const draftable = settled
+            && (mutationsBlockedReason === null || mutationsBlockedReason === 'offline');
         switch (kind) {
             case 'item.rename':
             case 'item.resize':
@@ -712,9 +719,10 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
             case 'view.rename':
             case 'view.move':
             case 'view.remove':
-            case 'item.edit':
             case 'item.addInstalled':
                 return writable;
+            case 'item.edit':
+                return draftable;
             case 'add':
                 return addIntents.length > 0;
             case 'item.openHere':
@@ -1301,12 +1309,27 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                         ? removalInput.binding.snapshot
                         : null;
                     const projected = removalLive?.itemsById.get(command.itemId);
-                    if (
-                        !removalLive
-                        || removalLive.layoutRevision === null
-                        || !projected
-                        || projected.revision === null
-                    ) return;
+                    if (!removalLive || removalLive.layoutRevision === null || !projected) return;
+                    if (projected.revision === null) {
+                        // A missing-reference card has no shared record left to delete, but the
+                        // layout still carries its placement and the card publishes Remove as
+                        // the recovery. Resolve it as layout-reference cleanup through the same
+                        // canonical layout Action every other placement edit uses: siblings and
+                        // every other view are untouched, and no item revision is fabricated.
+                        const cleanupView = removalLive.views.find((candidate) => !candidate.synthetic
+                            && candidate.placements.some((placement) => placement.itemId === command.itemId));
+                        const cleanupLayoutRevision = removalLive.layoutRevision;
+                        if (!cleanupView) {
+                            present({ kind: 'failed', error: 'session_board_item_not_found' }, command);
+                            return;
+                        }
+                        await submit(command, (p) => p.updateLayout({
+                            sessionId: removalInput.sessionId,
+                            expectedLayoutRevision: cleanupLayoutRevision,
+                            operation: { op: 'item.unpin', itemId: command.itemId, tabId: cleanupView.id },
+                        }), () => retireDraftForItem(command.itemId));
+                        return;
+                    }
                     // Captured here because the request closure below cannot see
                     // this narrowing; the previous cast concealed that.
                     const guardedRemoval = guardedRemovalRef.current;
@@ -1529,6 +1552,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     const onNoteSaved = React.useCallback((
         result: SessionBoardMutationResult | null,
         committedItemRevision?: string | null,
+        draftSettled = true,
     ) => {
         const itemId = result?.result.operation === 'upsert_item'
             ? result.result.itemId
@@ -1543,14 +1567,17 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
             guardedRemoval.committedItemRevision = committedRevision;
         }
         const expectedRevision = noteDraftRef.current?.expectedItemRevision ?? null;
-        if (itemId && !retainForGuardedRemoval) {
+        // A draft that has not settled is newer text the save never carried. Retiring the
+        // editor or its continuity buffer here would destroy it under a "saved" notice.
+        const retainForDraft = !draftSettled;
+        if (itemId && !retainForGuardedRemoval && !retainForDraft) {
             continuity?.editorDrafts.clear(sessionBoardNoteDraftBufferKey(itemId, expectedRevision));
             setHeadingFocusRequest({
                 itemId,
                 requestId: nextHeadingFocusRequestId.current++,
             });
         }
-        if (!retainForGuardedRemoval) setNoteDraft(null);
+        if (!retainForGuardedRemoval && !retainForDraft) setNoteDraft(null);
         setLastOutcome({ kind: 'applied' });
         publishPresentationNotice({
             key: JSON.stringify([
@@ -1571,6 +1598,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     const onHostedHtmlSaved = React.useCallback((
         result?: SessionBoardMutationResult | null,
         committedItemRevision?: string | null,
+        draftSettled = true,
     ) => {
         const draft = hostedHtmlDraftRef.current;
         const itemId = result?.result.operation === 'upsert_item'
@@ -1585,10 +1613,12 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
         if (retainForGuardedRemoval && committedRevision !== null) {
             guardedRemoval.committedItemRevision = committedRevision;
         }
-        if (draft && !retainForGuardedRemoval) {
+        // Same settlement contract as the Note editor: newer text keeps its editor open.
+        const retainForDraft = !draftSettled;
+        if (draft && !retainForGuardedRemoval && !retainForDraft) {
             continuity?.editorDrafts.clear(sessionBoardHostedHtmlDraftBufferKey(draft.itemId));
         }
-        if (!retainForGuardedRemoval) setHostedHtmlDraft(null);
+        if (!retainForGuardedRemoval && !retainForDraft) setHostedHtmlDraft(null);
         setLastOutcome({ kind: 'applied' });
         publishPresentationNotice({
             key: JSON.stringify([

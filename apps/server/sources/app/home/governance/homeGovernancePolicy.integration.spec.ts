@@ -99,9 +99,14 @@ describe("Home governance policy singleton", () => {
         });
     });
 
-    it("fails inherited and unreadable Team-provider ceilings closed", async () => {
+    it("inherits the deployment ceiling for a fresh Home and fails an unreadable ceiling closed", async () => {
+        // Absent policy means "inherit the deployment ceiling" (teams-lane-01/02 :230, :234):
+        // the Home adds no narrowing, while each provider kind's deployment runtime still
+        // decides whether it can actually be set up.
         const inherited = await readHomeGovernancePolicy();
-        expect(resolveTeamProviderKindPolicy(inherited, "oidc")).toBe("unavailable");
+        expect(inherited.teamProviders).toEqual({ status: "inherited" });
+        expect(resolveTeamProviderKindPolicy(inherited, "oidc")).toBe("allowed");
+        expect(resolveTeamProviderKindPolicy(inherited, "workos_sso")).toBe("allowed");
 
         await db.homeGovernancePolicy.create({
             data: {
@@ -113,25 +118,76 @@ describe("Home governance policy singleton", () => {
         expect(resolveTeamProviderKindPolicy(unreadable, "oidc")).toBe("unavailable");
     });
 
-    it("rejects an unvalidated first Team-provider policy write without changing the revision", async () => {
+    it("lets a fresh Home save its first Team-provider narrowing within the deployment ceiling", async () => {
         const owner = await createAccount("owner");
+        // This deployment serves managed OIDC/GitHub callbacks but has no WorkOS platform.
+        const env = { ...POLICY_ENV, HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test" };
+        const beyondCeiling = await inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
+            actorAccountId: owner,
+            env,
+            patch: {
+                expectedRevision: 0,
+                teamProviderPolicy: {
+                    v: 1,
+                    allowedTeamProviderKinds: ["oidc", "workos_sso"],
+                    teamJitAllowed: false,
+                    approvedGitHubEnterpriseOrigins: [],
+                },
+            },
+        }));
+        expect(beyondCeiling).toEqual({ status: "invalid_policy" });
+        await expect(db.homeGovernancePolicy.count()).resolves.toBe(0);
+
         const providerPolicy: HomeTeamProviderPolicyV1 = {
-            v: 1 as const,
+            v: 1,
             allowedTeamProviderKinds: ["oidc", "github_app_identity"],
-            teamJitAllowed: false,
+            teamJitAllowed: true,
             approvedGitHubEnterpriseOrigins: ["https://github.corp.example:8443"],
         };
         const created = await inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
             actorAccountId: owner,
-            env: POLICY_ENV,
-            patch: {
-                expectedRevision: 0,
-                teamProviderPolicy: providerPolicy,
-            },
+            env,
+            patch: { expectedRevision: 0, teamProviderPolicy: providerPolicy },
         }));
+        expect(created).toMatchObject({
+            status: "applied",
+            policy: { revision: 1, teamProviders: { status: "narrowed", policy: providerPolicy } },
+        });
+        if (created.status !== "applied") throw new Error("expected the first narrowing to apply");
+        expect(resolveTeamProviderKindPolicy(created.policy, "oidc")).toBe("allowed");
+        expect(resolveTeamProviderKindPolicy(created.policy, "workos_sso")).toBe("prohibited");
 
-        expect(created).toEqual({ status: "invalid_policy" });
-        await expect(db.homeGovernancePolicy.count()).resolves.toBe(0);
+        // Resetting to inheritance is always a recoverable write.
+        await expect(inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
+            actorAccountId: owner,
+            env,
+            patch: { expectedRevision: 1, teamProviderPolicy: null },
+        }))).resolves.toMatchObject({ status: "applied", policy: { revision: 2, teamProviders: { status: "inherited" } } });
+    });
+
+    it("recovers an unreadable Team-provider policy by writing a valid narrowing", async () => {
+        const owner = await createAccount("owner");
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: HOME_GOVERNANCE_POLICY_ID,
+                revision: 3,
+                teamProviderPolicy: { v: 999, allowedTeamProviderKinds: ["oidc"] },
+            },
+        });
+        const providerPolicy: HomeTeamProviderPolicyV1 = {
+            v: 1,
+            allowedTeamProviderKinds: ["oidc"],
+            teamJitAllowed: false,
+            approvedGitHubEnterpriseOrigins: [],
+        };
+        await expect(inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
+            actorAccountId: owner,
+            env: { ...POLICY_ENV, HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test" },
+            patch: { expectedRevision: 3, teamProviderPolicy: providerPolicy },
+        }))).resolves.toMatchObject({
+            status: "applied",
+            policy: { revision: 4, teamProviders: { status: "narrowed", policy: providerPolicy } },
+        });
     });
 
     it("preserves edits to an already narrowed Team-provider policy", async () => {

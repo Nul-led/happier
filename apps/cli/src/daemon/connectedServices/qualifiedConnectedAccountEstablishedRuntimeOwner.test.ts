@@ -130,8 +130,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
             },
             resolveConnectedAccountRuntime: vi.fn(async () => Object.freeze({
               ref: service,
-              generation: 'generation-1',
-              immutableGenerationId: 'external-plugin-artifact-1',
+              occurrenceId: 'generation-1',
+              sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'external-plugin-artifact-1',
+                installSource: 'npm',
+              },
               descriptor,
               runtime: {},
               isCurrent: () => true,
@@ -152,6 +156,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -219,8 +224,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
           describe: vi.fn(() => Object.freeze({
             ref: service,
             descriptor,
-            generation: 'generation-1',
-            immutableGenerationId: 'plugin-contract-1',
+            occurrenceId: 'plugin-contract-1',
+            sourceCustody: {
+              kind: 'managed',
+              immutableGenerationId: 'plugin-contract-1',
+              installSource: 'npm',
+            },
             isCurrent: () => contributionCurrent,
           })),
         },
@@ -243,6 +252,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => true),
           read: vi.fn(async () => configurationSecret),
         },
@@ -317,6 +327,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -363,6 +374,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -454,8 +466,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
     }) as unknown as ConnectedAccountHostRuntimeInvoker;
     const runtimeLease = Object.freeze({
       ref: service,
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      occurrenceId: 'generation-1',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'artifact-1',
+        installSource: 'npm',
+      },
       descriptor,
       runtime: {},
       isCurrent: () => true,
@@ -492,6 +508,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: hasSavedSecret,
           read: readSavedSecret,
         },
@@ -515,8 +532,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
         credentialRevision: 'credential-1',
         credentialConfigurationRevision: 'configuration-1',
         runtimeConfigurationRevision: 'configuration-1',
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
         isCurrent: expect.any(Function),
         prepareCredentialReplacement: expect.any(Function),
       },
@@ -611,8 +632,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       },
       resolveConnectedAccountRuntime: vi.fn(async () => ({
         ref: service,
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
         descriptor,
         runtime: {},
         isCurrent: () => true,
@@ -644,6 +669,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => true),
           read: vi.fn(async () => 'secret-value'),
         },
@@ -717,10 +743,11 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       },
       destroyAttempt: vi.fn(),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => true),
         read: vi.fn(async () => 'secret-value'),
       },
-      isGenerationCurrent: vi.fn(async () => true),
+      isRuntimeCurrent: vi.fn(async () => true),
     });
     const invokeEstablished = vi.fn(async (
       input: ConnectedAccountRuntimeEstablishedInvocation<{
@@ -759,8 +786,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
           values: { endpoint: 'https://api2.example.test' },
           secretRefs: {},
         },
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
       })).resolves.toMatchObject({
         status: 'committed',
       });
@@ -777,8 +808,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       },
       resolveConnectedAccountRuntime: vi.fn(async () => ({
         ref: service,
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
         descriptor: serviceDescriptor,
         runtime: {},
         isCurrent: () => true,
@@ -811,6 +846,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: readConfigurationRecord,
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => true),
           read: vi.fn(async () => 'secret-value'),
         },
@@ -886,8 +922,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
             },
             resolveConnectedAccountRuntime: vi.fn(async () => ({
               ref: service,
-              generation: 'generation-1',
-              immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
               descriptor,
               runtime: {},
               isCurrent: () => true,
@@ -911,6 +951,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -987,8 +1028,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
             },
             resolveConnectedAccountRuntime: vi.fn(async () => Object.freeze({
               ref: service,
-              generation: 'generation-1',
-              immutableGenerationId: 'artifact-1',
+        occurrenceId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'npm',
+        },
               descriptor: originDescriptor,
               runtime: {},
               isCurrent: () => true,
@@ -1009,6 +1054,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },
@@ -1059,8 +1105,12 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
             },
             resolveConnectedAccountRuntime: vi.fn(async () => Object.freeze({
               ref: service,
-              generation: 'generation-1',
-              immutableGenerationId: 'artifact-1',
+              occurrenceId: 'generation-1',
+              sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'artifact-1',
+                installSource: 'npm',
+              },
               descriptor: originDescriptor,
               runtime: {},
               isCurrent: () => true,
@@ -1081,6 +1131,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       configuration: {
         read: vi.fn(async () => null),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },

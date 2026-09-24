@@ -37,6 +37,19 @@ export function SessionAccessEditor(props: SessionAccessEditorProps): React.Reac
             name: previous[removedIndex]!.principal.displayName,
         }));
     }, [expanded, model.grants]);
+    // Encrypted-access preparation is slow, asynchronous and invisible to a screen
+    // reader once the summary row has been read. The projector already decides what a
+    // material state is, so this only reports the moment one is *reached*: a committed
+    // count tick and a later recipient page keep the same key and say nothing.
+    const encryptionStatusKey = model.encryption?.statusKey ?? null;
+    const encryptionAnnouncement = model.encryption?.announcement;
+    const announcedEncryptionStatus = React.useRef(encryptionStatusKey);
+    React.useEffect(() => {
+        const previous = announcedEncryptionStatus.current;
+        announcedEncryptionStatus.current = encryptionStatusKey;
+        if (previous === null || previous === encryptionStatusKey || !encryptionAnnouncement) return;
+        announceAccessibilityMessage(encryptionAnnouncement);
+    }, [encryptionAnnouncement, encryptionStatusKey]);
     const input = { model, actions, onExpand: setExpanded, testID,
         ...(props.onOpenFullSurface ? { onOpenFullSurface: props.onOpenFullSurface } : {}) };
     const rootStep = buildSessionAccessSelectionStep(input);

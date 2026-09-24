@@ -5,7 +5,7 @@ server, and who owns each step. This page is the internal counterpart to the ope
 `apps/docs/content/docs/self-hosting/local-service-previews.mdx`.
 
 **Status of this page.** The Iroh Home and machine-carrier contracts were refreshed against the
-current 0.3 development source on 2026-09-08. The remaining peer-mediation claims below were
+current 0.3 development source on 2026-09-23. The remaining peer-mediation claims below were
 checked against implementing code on 2026-08-23.
 Where the `PMS-1 … PMS-9` specification packets
 (`.project/plans/runtime-unification-v2/stages/stage-A/`) describe behaviour the code does not
@@ -33,7 +33,17 @@ and rejects an identity mismatch or equal-revision conflict instead of creating 
 authority. The server persists one outer `{ revision, contentKey }` continuity fact so an
 Iroh-to-HTTPS-only transition cannot regress across restart.
 
-Transport selection is automatic. Direct-versus-relay path facts remain native diagnostics and do
+Transport selection defaults to automatic. The 0.3 client-local Standard-only setting in the UI,
+or `HAPPIER_HOME_CARRIER_POLICY=standard_only` in the CLI/daemon process environment, prevents
+new Home and finite Machine Iroh acquisitions; descriptor-declared HTTPS remains usable, as do
+independently eligible legacy Machine routes. An Iroh-only Home or Machine with no Standard route is
+unavailable in this mode. The setting does not change the Home server's published descriptor and
+does not cancel a finite transfer already in progress. On the UI, focused Home recovery reselects
+and releases its prior Iroh Home carrier. The managed daemon service installer persists an explicit
+mode on macOS, Linux, and Windows, and same-owner updates and repair retain it. This
+application-carrier decision is distinct from
+`HAPPIER_IROH_RELAY_POLICY=disabled`, which still permits direct Iroh contact. Direct-versus-relay
+path facts remain native diagnostics and do
 not rebuild Home HTTP/Socket.IO clients or appear in routine connection labels. Standard HTTPS
 remains available where independently trusted; identity, authentication, integrity, ALPN, preamble,
 and stale-target failures remain fail-closed.
@@ -58,7 +68,7 @@ auth audience, reachability scope, and logging. The resolved transport therefore
 runtime origin (independent HTTPS, or the loopback origin a native lease binds) or a Home carrier
 that moves the bytes itself — never both.
 
-Selection is automatic and narrow. The browser carrier is chosen only on a plain browser host
+When the client-local policy permits Iroh, selection is automatic and narrow. The browser carrier is chosen only on a plain browser host
 (never Tauri or Electron, which run the same bundle but keep the native direct-or-relay carrier),
 and only when the canonical Home descriptor names an exact EndpointId plus at least one explicitly
 configured relay and a Home-scoped credential exists. The canonical owners are unchanged:
@@ -94,6 +104,31 @@ EndpointId: every new finite-transfer grant binds its current identity. Browser 
 ephemeral per live SharedWorker. Corrupt, unreadable, or partially retained native key material
 fails explicitly rather than being overwritten. These role-specific rules avoid a second endpoint
 registry or universal pairing ledger.
+
+In the current 0.3 development source, the authenticated Machine capability projection carries
+the current Machine EndpointId and optional bounded relay URLs and direct-address hints under
+`irohMachineEndpoint`. Its server-assigned projection revision establishes currentness; the hints
+only help a client reach the authenticated EndpointId. The daemon publishes these facts from its
+Iroh runtime state, while a restricted Session Runner publishes them from its own native endpoint
+in the same complete capability projection as its Session services. A Runner has no daemon state
+for browser clients to inspect, so its relay hints must travel with that Machine projection.
+
+### Workspace inspection and reviewed resolution
+
+The 0.3 development Workspace Sync extension uses the existing authenticated Machine RPC
+composition to reach the relationship's actual controller, including a request originating on
+a linked spoke. The controller derives the linked set from current Account settings; each
+target resolves its own WorkspaceRef and retained root authority. A reachable Machine, a cached
+endpoint label, or membership in the set does not itself authorize another root read or write.
+
+Inspection returns current entry observations and separately requested bounded previews.
+Reviewed resolution captures exact approved content into file-backed, operation-owned material
+and uses the existing finite peer transfer to stage it. The target still checks the executing
+Action receipt and the explicit destination expectation before applying it. This adds no
+preview-sized file-transfer limit, browser synchronization engine, new carrier, or server-side
+conflict-content store. Private stage/apply/release operations retain their explicit classifications
+in `packages/protocol/src/machines/peer/mediation/rpc/routePolicyV1.ts`; transport reachability is
+not a replacement for approval or root authority.
 
 ## 1. The model
 
@@ -156,14 +191,17 @@ AccessKey revocation takes effect without waiting for a reconnect. See
 
 ## 2. The enablement contract
 
-This is the part that surprises people: **on a default deployment none of the substrate is
-reachable**, and the reason is configuration, not missing code.
+This is the part that surprises people: on a generic Home the substrate is unavailable until its
+grant signer is configured. Managed Personal Homes derive that same signer from their existing
+persisted master secret; they do not store or configure a second signing secret.
 
 ### 2.1 Grant signing is the master switch
 
 `resolvePeerMediationGrantSigningConfig`
-(`apps/server/sources/app/machines/peer/mediation/mintDirectRouteGrantV1.ts`) reads four variables
-and returns a typed refusal when they are absent:
+(`apps/server/sources/app/machines/peer/mediation/mintDirectRouteGrantV1.ts`) is the sole signer
+owner. Complete explicit operator configuration is authoritative. If any explicit signer field is
+present, the resolver parses the same four variables strictly and returns a typed refusal when the
+configuration is partial or invalid:
 
 | Variable | Absent → | Notes |
 | --- | --- | --- |
@@ -171,6 +209,18 @@ and returns a typed refusal when they are absent:
 | `HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY` | `missing_private_key` | 32-byte Ed25519 seed or 64-byte secret key, strict unpadded base64url (`decodeBase64Url` / `normalizeSigningSecretKey`) |
 | `HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PUBLIC_KEY` | *(optional)* | cross-checked against the key derived from the seed; mismatch → `invalid_public_key` |
 | `HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT` | *(optional)* | epoch **milliseconds** |
+
+When all four fields are absent and `HAPPIER_MANAGED_RELAY_PURPOSE=personal-home`, the resolver
+derives a stable Ed25519 key from `HANDY_MASTER_SECRET` under the distinct
+`happier.machine-route-grant.v1` domain. Backup, restore, relocation, and reinstall already preserve
+that master secret, so they preserve the derived public key without another archive field. Generic
+Homes, Team/shared Homes, and preview runtimes do not receive this fallback merely because they
+have a master secret; they continue to require complete explicit signer configuration.
+
+The derived key ID uses the same SHA-256-of-public-key convention as the Account Directory signer,
+but the two domains produce different keys. There is no overlapping-key rotation registry: changing
+the Personal Home master secret changes the derived authority, while explicit signer configuration
+remains the operator-owned rotation and expiry mechanism.
 
 Two consequences, both observable:
 
@@ -361,7 +411,24 @@ admitted stream/request rechecks its authenticated transport context, route gran
 source currentness, grant lifetime, placement, Session/run binding, policy, and accountable Account.
 Reusing or multiplexing a connection must not exchange headers, identity, or usage attribution
 between streams. An already admitted upstream request may finish after later revocation; a new
-request must pass current admission again.
+request must pass current admission again, and it does so before the broker starts or joins any
+managed source custody, so a refused request materializes nothing. A Home refusal that means the
+operation itself lost its authority (`resource_forbidden`, or an ended/unknown execution run)
+retires that operation's custody; a reached limit, turn boundary or unreachable Home does not.
+
+The route grant signs the operation's identity only: resource, source revision, application,
+initiator, consumer and target Machine. The model, reasoning effort and resource revision are
+request facts, not signed identity: one open serves every model the resource currently allows, and
+the broker's single request-policy owner evaluates each request's model against the resource policy
+at the revision the Home confirms is current, so a model dropped from the allowlist is refused on
+the next request. An execution run's operation is authorized on the provider-model selection its
+own Run owner attests with its currentness, or on its parent Session's accepted selection when the
+Run selected nothing and inherits it; the resource an open names never substitutes for either.
+
+The route grant's expiry bounds new work, not the operation. A stream admitted after the grant
+expired can only release the exact Session/run claim that grant names (the carrier's DELETE close);
+every other request on it is refused with `grant_expired` before policy, admission or source
+custody. A live operation that needs a new inference stream obtains a fresh grant from the Home.
 
 Broker readiness is a content-free, non-inference activation exchange. It can establish only that
 the exact application handler for the selected target is installed and eligible; it does not grant

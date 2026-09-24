@@ -23,7 +23,7 @@ describe('decryptTranscriptReplayCore', () => {
       };
     });
 
-    const res = decryptTranscriptReplayCore({ rows, maxDialogItems: 300 });
+    const res = decryptTranscriptReplayCore({ rows, crypto: { mode: 'plain' as const, ctx: null }, maxDialogItems: 300 });
     expect(res.dialog).toHaveLength(300);
     expect(res.dialog[0]?.text).toBe('msg1');
     expect(res.dialog[299]?.text).toBe('msg300');
@@ -42,7 +42,7 @@ describe('decryptTranscriptReplayCore', () => {
       };
     });
 
-    const res = decryptTranscriptReplayCore({ rows, maxDialogItems: 200 });
+    const res = decryptTranscriptReplayCore({ rows, crypto: { mode: 'plain' as const, ctx: null }, maxDialogItems: 200 });
     expect(res.dialog).toHaveLength(200);
     expect(res.dialog[0]?.text).toBe('msg101');
     expect(res.dialog[199]?.text).toBe('msg300');
@@ -57,6 +57,7 @@ describe('decryptTranscriptReplayCore', () => {
     });
 
     const res = decryptTranscriptReplayCore({
+      crypto: { mode: 'plain' as const, ctx: null },
       maxDialogItems: 1,
       rows: [
         {
@@ -92,6 +93,7 @@ describe('decryptTranscriptReplayCore', () => {
 
   it('extracts assistant text from agent_message body rows', () => {
     const res = decryptTranscriptReplayCore({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -131,6 +133,7 @@ describe('decryptTranscriptReplayCore', () => {
       },
     };
     const res = decryptTranscriptReplayCore({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -178,7 +181,7 @@ describe('decryptTranscriptReplayCore', () => {
   it('keeps both Agents’ history and never replays the transition divider prose', () => {
     const corpus = createMixedAgentReplayCorpus();
 
-    const res = decryptTranscriptReplayCore({ rows: corpus.rows });
+    const res = decryptTranscriptReplayCore({ rows: corpus.rows, crypto: { mode: 'plain' as const, ctx: null } });
 
     expect(res.dialog.map((item) => item.text)).toEqual([
       ...corpus.sourceAgentTexts,
@@ -193,8 +196,7 @@ describe('decryptTranscriptReplayCore', () => {
 
     const res = decryptTranscriptReplayCore({
       rows,
-      encryptionKey: REPLAY_CORPUS_DATA_KEY,
-      encryptionVariant: 'dataKey',
+      crypto: { mode: 'e2ee' as const, ctx: { encryptionKey: REPLAY_CORPUS_DATA_KEY, encryptionVariant: 'dataKey' } },
     });
 
     expect(res.dialog.map((item) => item.text)).toEqual([
@@ -220,21 +222,20 @@ describe('decryptTranscriptReplayCore', () => {
 
       const res = decryptTranscriptReplayCore({
         rows,
-        encryptionKey: REPLAY_CORPUS_DATA_KEY,
-        encryptionVariant: 'dataKey',
+        crypto: { mode: 'e2ee' as const, ctx: { encryptionKey: REPLAY_CORPUS_DATA_KEY, encryptionVariant: 'dataKey' } },
       });
 
       expect(res.unreadableRowCount).toBe(2);
     });
 
-    it('reports encrypted rows it has no key for as unreadable', () => {
+    it('reports encrypted rows a plain Session cannot admit as unreadable', () => {
       const corpus = createMixedAgentReplayCorpus({ encrypted: true });
 
       const encryptedRowCount = corpus.rows.filter(
         (row) => (row.content as { t?: unknown }).t === 'encrypted',
       ).length;
 
-      const res = decryptTranscriptReplayCore({ rows: corpus.rows });
+      const res = decryptTranscriptReplayCore({ rows: corpus.rows, crypto: { mode: 'plain' as const, ctx: null } });
 
       expect(encryptedRowCount).toBeGreaterThan(0);
       expect(res.dialog).toEqual([]);
@@ -243,6 +244,7 @@ describe('decryptTranscriptReplayCore', () => {
 
     it('does not count a readable row that simply carries nothing to replay', () => {
       const res = decryptTranscriptReplayCore({
+        crypto: { mode: 'plain' as const, ctx: null },
         rows: [
           { seq: 1, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello' } } } },
           { seq: 2, createdAt: 2, content: { t: 'plain', v: { role: 'agent', meta: { isThinking: true }, content: { type: 'text', text: 'thinking' } } } },

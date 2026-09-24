@@ -519,8 +519,6 @@ describe('production Ephemeral Runner composition', () => {
           expiresAt: Date.now() + 60_000,
           teamId: 'team-1',
           resourceId: 'resource-1',
-          expectedResourceRevision: 3,
-          modelId: 'gpt-5',
           sourceRevision: 'source-3',
           initiator: {
             accountId: 'account-1',
@@ -660,6 +658,7 @@ describe('production Ephemeral Runner composition', () => {
         installationPrivateKey,
         signal: controller.signal,
         onRuntimeStopReady: () => undefined,
+        onRuntimeConnectionState: () => undefined,
       } as never);
       await vi.waitFor(() => expect(machineSocket.emitWithAck).toHaveBeenCalledWith(
         MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,

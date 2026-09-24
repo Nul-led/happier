@@ -25,14 +25,13 @@ function errorStatus(error: SessionAccessGrantErrorCode): 400 | 403 | 404 | 409 
         || error === "session_access_external_sharing_requires_team_admin"
         || error === "session_access_external_sharing_disabled") return 403;
     if (error === "session_access_session_not_found" || error === "session_access_subject_not_found") return 404;
-    if (error === "session_access_team_policy_required"
-        || error === "session_access_transcript_not_shareable") return 409;
+    if (error === "session_access_team_policy_required") return 409;
     return 400;
 }
 
 /** Current desired-state transport; the grant service owns admission, persistence and access effects. */
 export function registerSessionAccessGrantRoutes(app: Fastify) {
-    const collaborationApp = createServerFeatureGatedRouteApp(app, "sessions.collaboration");
+    const collaborationApp = createServerFeatureGatedRouteApp(app, "sharing.session");
     collaborationApp.post("/v2/sessions/access-grants/list", {
         preHandler: app.authenticate,
         schema: { body: SessionAccessGrantsListRequestV1Schema, response: { 200: SessionAccessGrantsListResponseV1Schema, ...errors } },

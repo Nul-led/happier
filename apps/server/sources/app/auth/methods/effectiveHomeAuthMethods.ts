@@ -3,7 +3,9 @@ import type { HomeAuthenticationPolicyReadV1, HomeSignInServicePolicyV1 } from "
 import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
 import {
     createProviderAuthMethodActionTable,
+    isAccountProvisionModePermittedByHomePolicy,
     narrowAuthMethodDecisionForHomePolicy,
+    projectProviderDecisionPresentation,
     resolveEffectiveAuthMethodDecisions,
     type EffectiveAuthMethodDecision,
 } from "@/app/auth/methods/effectiveAuthMethods";
@@ -14,6 +16,7 @@ import { resolveEffectiveHomeSignInServicePolicy } from "@/app/auth/methods/sign
 import { listProviderDescriptorsInTx, resolveOAuthRuntimeByIdInTx } from "@/app/auth/providers/identityProviderCatalog";
 import { resolveAccountDirectoryFeature } from "@/app/features/accountDirectoryFeature";
 import { readHomeGovernancePolicyInTx, resolveTeamProviderKindPolicy } from "@/app/home/governance/governancePolicy";
+import { readTeamIdentityConnectionInTx } from "@/app/teams/identity/teamIdentityConnectionLifecycle";
 import { inTx, type Tx } from "@/storage/inTx";
 import type { TeamOAuthAdmissionSource } from "@/app/teams/memberships/teamOAuthAdmissionSource";
 
@@ -61,7 +64,7 @@ async function resolveEffectiveHomeAuthMethodsForPolicyInTx(
     const recommendedProvisionMode = resolveRecommendedAccountProvisionMode(input.env);
     const providerActions = createProviderAuthMethodActionTable(input.env);
     const managedDecisions = (await listProviderDescriptorsInTx(tx, input.env))
-        .flatMap(({ descriptor: details, reference }) => {
+        .flatMap(({ descriptor: details, reference, providerKind }) => {
             if (reference.source !== "managed" || existingIds.has(reference.id)) return [];
             const decision = narrowAuthMethodDecisionForHomePolicy({
                 id: reference.id,
@@ -77,9 +80,7 @@ async function resolveEffectiveHomeAuthMethodsForPolicyInTx(
                 }),
                 allowedProvisionModes,
                 recommendedProvisionMode,
-                ...(details.ui?.displayName
-                    ? { ui: { displayName: details.ui.displayName, iconHint: details.ui.iconHint ?? null } }
-                    : {}),
+                ...projectProviderDecisionPresentation(details.ui, providerKind),
             }, input.homeAuthenticationPolicy, input.admission);
             return [decision];
         })
@@ -165,40 +166,47 @@ export async function isEffectiveHomeAuthMethodActionEnabledInTx(
         && !resolveAllowedAccountProvisionModes(input.env).includes(requestedAccountMode)) {
         return false;
     }
-    const [governance, team, connection, runtime] = await Promise.all([
+    const [governance, team, connectionRead, runtime] = await Promise.all([
         readHomeGovernancePolicyInTx(tx),
         tx.team.findUnique({
             where: { id: admission.teamId },
             select: { admissionMode: true, archivedAt: true },
         }),
-        tx.teamIdentityConnection.findUnique({
-            where: { id: admission.connectionId },
-            select: {
-                id: true,
-                teamId: true,
-                providerInstanceId: true,
-                revision: true,
-                enabled: true,
-                providerInstance: { select: { enabled: true, kind: true } },
-            },
+        // Connection usability is the lifecycle owner's derived `state`, not a
+        // pair of raw enabled flags: a `setting_up` or `needs_attention`
+        // connection admitted here is refused again by qualification
+        // (`qualifyTeamAuthentication`) and by admission finalization
+        // (`teamOAuthAdmission`), which both already read it through this owner.
+        // The reader keys on `{teamId, id}`, so it also carries the exact-Team
+        // check this gate used to spell out.
+        readTeamIdentityConnectionInTx(tx, {
+            id: admission.connectionId,
+            teamId: admission.teamId,
         }),
         resolveOAuthRuntimeByIdInTx(tx, input.env, admission.providerId, {
             kind: "team",
             teamId: admission.teamId,
         }, "oauth_finalize"),
     ]);
+    // The Home's own storage narrowing bounds this admission exactly as it
+    // bounds the ordinary path (`narrowAuthMethodDecisionForHomePolicy`): a Team
+    // identity connection admits members, it does not widen the Account
+    // protections this Home stores.
+    if (requestedAccountMode
+        && !isAccountProvisionModePermittedByHomePolicy(governance.authentication, requestedAccountMode)) {
+        return false;
+    }
     if (!team || team.archivedAt !== null || team.admissionMode !== admission.admissionMode) return false;
+    const connection = connectionRead.status === "ready" ? connectionRead.connection : null;
     if (!connection
-        || !connection.enabled
-        || !connection.providerInstance.enabled
-        || connection.teamId !== admission.teamId
+        || connection.state !== "connected"
         || connection.providerInstanceId !== admission.providerId
         || connection.revision !== admission.connectionRevision
         || !runtime
         || runtime.reference.id !== admission.providerId
         || runtime.reference.context.kind !== "team"
         || runtime.reference.context.teamId !== admission.teamId
-        || resolveTeamProviderKindPolicy(governance, connection.providerInstance.kind) !== "allowed") {
+        || resolveTeamProviderKindPolicy(governance, connection.providerKind) !== "allowed") {
         return false;
     }
     if (admission.kind === "team_invitation" && admission.providerOrigin !== "team") return false;

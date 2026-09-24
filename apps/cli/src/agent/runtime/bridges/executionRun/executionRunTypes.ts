@@ -104,7 +104,7 @@ export type ExecutionRunManagerStartParams = Readonly<{
   ioMode: 'request_response' | 'streaming';
   notifyParentOnCompletion?: boolean;
   profileId?: string | null;
-  profileGenerationId?: string | null;
+  profileSourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1 | null;
   // Internal runtime override for bounded-run timeouts. Not part of the public RPC contract.
   boundedTimeoutMs?: number;
   resumeHandle?: ExecutionRunResumeHandle | null;
@@ -144,6 +144,7 @@ export type ExecutionRunState = Readonly<{
   depth: number;
   intent: ExecutionRunManagerStartParams['intent'];
   profileId?: string | null;
+  profileSourceCustody?: import('@happier-dev/protocol').PluginSourceCustodyV1 | null;
   backendTarget: BackendTargetRefV1;
   backendId: string;
   instructions: string;
@@ -178,6 +179,12 @@ export type ExecutionRunState = Readonly<{
     teamCredentialModel?: TeamCredentialProviderModelSelectionV1;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
     connectedServicesSelection?: ConnectedServiceBindingsV2 | null;
+    /**
+     * The Run's own Agent for `connectedServicesSelection`, recorded with the
+     * resolved selection before materialization. Runtime-only: it lets the Run
+     * owner attest its selection while its registration does not yet exist.
+     */
+    connectedServicesSelectionAgent?: import('@happier-dev/protocol').PluginContributionIdentityV1;
     connectedServicesRegistration?: ExecutionRunConnectedServicesLaunchV1;
     secretReferenceOverlay?: SecretReferenceOverlayV1;
   }>;

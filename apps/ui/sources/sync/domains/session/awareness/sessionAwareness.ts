@@ -1,7 +1,8 @@
 import {
-    normalizeAwarenessSequenceV1,
     projectSessionAwarenessV1,
+    readSessionTerminalControlServiceabilityStateV1,
     readSessionWorkStateV1FromMetadata,
+    resolveAwarenessCurrentnessV1,
     SessionWorkflowActivityHeadlineV1Schema,
     type ProjectSessionAwarenessV1Input,
     type SessionContentAvailabilityInputV1,
@@ -56,11 +57,6 @@ export function createUiSessionAwarenessInput(
         ? hydrated ? presentationMetadata : session.metadata
         : null;
     const pending = hydrated ? derivePendingRequestFlagsFromSession(session, []) : session;
-    const hasRuntimeProjectionEvidence = session.presence !== undefined
-        || typeof session.active === 'boolean'
-        || typeof session.thinking === 'boolean'
-        || session.runtimeActivityState != null
-        || typeof session.runtimeActivityActiveCount === 'number';
     const hasPendingPermissionRequests = options.hasPendingPermissionRequests ?? pending.hasPendingPermissionRequests;
     const hasPendingUserActionRequests = options.hasPendingUserActionRequests ?? pending.hasPendingUserActionRequests;
     const hasPendingOptionsEvidence = options.hasPendingPermissionRequests !== undefined
@@ -72,41 +68,38 @@ export function createUiSessionAwarenessInput(
         ) || session.agentState !== null
         : typeof session.hasPendingPermissionRequests === 'boolean'
             && typeof session.hasPendingUserActionRequests === 'boolean';
-    const control = hydrated ? ownerMetadata?.terminal?.controlServiceabilityV1 : metadata?.terminalControlServiceabilityV1;
+    const controlState = readSessionTerminalControlServiceabilityStateV1(
+        hydrated ? ownerMetadata?.terminal?.controlServiceabilityV1 : metadata?.terminalControlServiceabilityV1,
+    );
     const workflow = hydrated ? SessionWorkflowActivityHeadlineV1Schema.safeParse(ownerMetadata?.sessionWorkflowActivityHeadlineV1) : null;
     const fork = hasReadableMetadata
         ? hydrated ? presentationMetadata?.forkV1 : session.forkV1
         : undefined;
+    const components = toAwarenessRuntimeInput({
+        ...session,
+        hasPendingPermissionRequests,
+        hasPendingUserActionRequests,
+        hasPendingUserMessages: options.hasPendingUserMessages ?? (session.pendingCount ?? 0) > 0,
+        optimisticThinkingAt: session.optimisticThinkingAt ?? options.optimisticPendingUserMessageAt,
+        controlServiceability: controlState === 'unknown' ? null : controlState,
+        pendingRequestObservedAt: options.pendingRequestObservedAt ?? (hydrated ? deriveLatestPendingRequestObservedAtFromSession(session, []) : session.pendingRequestObservedAt),
+    });
     return {
         sessionId: session.id,
         nowMs,
         title: readSessionDisplayTitleField({ metadata }).value ?? metadata?.name,
-        ...toAwarenessRuntimeInput({
-            ...session,
-            hasPendingPermissionRequests,
-            hasPendingUserActionRequests,
-            hasPendingUserMessages: options.hasPendingUserMessages ?? (session.pendingCount ?? 0) > 0,
-            optimisticThinkingAt: session.optimisticThinkingAt ?? options.optimisticPendingUserMessageAt,
-            controlServiceability: control?.state === 'unknown' ? null : control?.state,
-            pendingRequestObservedAt: options.pendingRequestObservedAt ?? (hydrated ? deriveLatestPendingRequestObservedAtFromSession(session, []) : session.pendingRequestObservedAt),
-        }),
+        ...components,
         content: readUiSessionContentAvailability(session),
         work: hydrated ? metadata ? readSessionWorkStateV1FromMetadata(metadata) : null : session.workState,
         workflowHeadline: hydrated ? workflow?.success ? workflow.data : null : session.workflowHeadline,
         workspace: metadata ? { path: metadata.path, machineId: metadata.machineId ?? undefined } : null,
         lineage: fork ? { relation: 'fork', sourceSessionId: fork.parentSessionId } : null,
-        currentness: {
-            lifecycle: session.archivedAt != null
-                || session.latestTurnStatus !== undefined
-                || normalizeAwarenessSequenceV1(session.latestReadyEventSeq) !== null
-                ? 'observed'
-                : 'unavailable',
-            // Runtime component evidence is broader than reachability. Durable `active`, thinking,
-            // or provider activity stays observed while absent device presence remains `unknown`.
-            runtime: hasRuntimeProjectionEvidence ? 'observed' : 'unavailable',
+        currentness: resolveAwarenessCurrentnessV1({
+            lifecycle: components.lifecycle,
+            runtime: components.runtime,
             pending: hasPendingOptionsEvidence || hasPendingProjectionEvidence ? 'observed' : 'unavailable',
             work: metadata ? 'observed' : 'unavailable',
-        },
+        }),
     };
 }
 

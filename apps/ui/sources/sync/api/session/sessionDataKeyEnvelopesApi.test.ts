@@ -50,7 +50,7 @@ describe('Session envelope exact Account transport', () => {
         const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
         const args = {
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same/id', availability: 'full_collaboration' as const,
+            sessionId: 'same/id', availability: 'available' as const,
             isCurrent: () => true,
         };
         await expect(createSessionDataKeyEnvelopeClient(args).fetchPage(null)).resolves.toEqual({ status: 'not_required' });
@@ -65,10 +65,10 @@ describe('Session envelope exact Account transport', () => {
         const env = await setup();
         const { createSessionDataKeyEnvelopeClient } = await import('./sessionDataKeyEnvelopesApi');
         const args = { scope: { serverId: env.target.id, accountId: 'target-account' }, sessionId: 'same', isCurrent: () => true };
-        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'direct_only' }).fetchPage(null)).rejects.toMatchObject({ code: 'unsupported_action' });
+        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'unavailable' }).fetchPage(null)).rejects.toMatchObject({ code: 'session_access_sharing_unavailable' });
         expect(env.request).not.toHaveBeenCalled();
         env.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
-        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'full_collaboration' }).fetchPage(null)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
+        await expect(createSessionDataKeyEnvelopeClient({ ...args, availability: 'available' }).fetchPage(null)).rejects.toMatchObject({ code: 'forbidden', status: 403 });
         expect(env.request.mock.calls).toHaveLength(1);
     });
 
@@ -88,7 +88,7 @@ describe('Session envelope exact Account transport', () => {
         });
         await expect(prepareSessionDataKeyEnvelopesForScope({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+            sessionId: 'same', availability: 'available', isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'not_required', preparedCount: 0 });
         expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
     });
@@ -164,7 +164,7 @@ describe('Session envelope exact Account transport', () => {
         const onProgress = vi.fn(() => { events.push('progress'); });
         const outcome = await prepareSessionDataKeyEnvelopesForScope({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+            sessionId: 'same', availability: 'available', isCurrent: () => true,
             ...(envelopeState === 'prepared' ? { reprepareRecipientAccountId: 'recipient-1' } : {}),
             onProgress,
         });
@@ -246,7 +246,7 @@ describe('Session envelope exact Account transport', () => {
 
         await expect(prepareSessionDataKeyEnvelopesForScope({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+            sessionId: 'same', availability: 'available', isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
         expect(env.request.mock.calls.every(([url]) => !url.includes('/data-key/envelopes'))).toBe(true);
     });
@@ -289,7 +289,7 @@ describe('Session envelope exact Account transport', () => {
         });
         await expect(prepareSessionDataKeyEnvelopesForScope({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same', availability: 'full_collaboration', isCurrent: () => true,
+            sessionId: 'same', availability: 'available', isCurrent: () => true,
         })).resolves.toMatchObject({ status: 'scope_changed', preparedCount: 0 });
     });
 
@@ -302,7 +302,7 @@ describe('Session envelope exact Account transport', () => {
         });
         await expect(createSessionDataKeyEnvelopeClient({
             scope: { serverId: env.target.id, accountId: 'target-account' }, sessionId: 'same',
-            availability: 'full_collaboration', isCurrent: () => true,
+            availability: 'available', isCurrent: () => true,
         }).fetchPage(null)).rejects.toMatchObject({ code: 'scope_changed' });
     });
 });

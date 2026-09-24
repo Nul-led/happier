@@ -659,6 +659,10 @@ export function buildUsageEphemeral(sessionId: string, key: string, tokens: Reco
     };
 }
 
+export function buildTeamCredentialUsageChangedEphemeral(resourceId: string): EphemeralPayload {
+    return { type: 'team-credential-usage-changed', resourceId };
+}
+
 export function buildMachineStatusEphemeral(machineId: string, online: boolean): EphemeralPayload {
     return {
         type: 'machine-status',

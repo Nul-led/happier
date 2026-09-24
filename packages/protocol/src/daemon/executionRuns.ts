@@ -34,6 +34,19 @@ import {
 } from '../connect/connectedServiceSchemas.js';
 import { AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1 } from '../runtime/agentSessionLimitsV1.js';
 import { TeamCredentialDirectMaterialUseV1Schema } from '../teams/credentials/directMaterialV1.js';
+import { TeamCredentialRouteV1Schema } from '../teams/credentials/resourceV1.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
+
+/**
+ * The Run owner's own accepted provider-model selection, attested with its
+ * currentness: the Home authorizes a Run's broker operation on it, never on
+ * the resource an open names (`teams-lane-10/PLAN.md` §2.3). Null when the Run
+ * selected nothing and so inherits its parent Session's selection.
+ */
+const ExecutionRunTeamCredentialProviderModelAttestationV1Schema = z.object({
+  resourceId: z.string().trim().min(1).max(512),
+  deliveryMode: TeamCredentialRouteV1Schema,
+}).strict().nullable();
 
 const EXECUTION_RUN_MARKER_RESULT_SIZE_MAX_BYTES =
   AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.p0MeasuredCandidates.sendRequestMaxJsonBytes;
@@ -66,6 +79,7 @@ export const DaemonExecutionRunBrokerAuthorityResponseV1Schema = z.discriminated
     intent: ExecutionRunIntentSchema,
     runtimeState: z.enum(['active_turn', 'idle']),
     activeTurnId: z.string().trim().min(1).max(512).nullable().optional(),
+    teamCredentialProviderModel: ExecutionRunTeamCredentialProviderModelAttestationV1Schema,
   }).strict(),
   z.object({
     status: z.literal('not_current'),
@@ -102,6 +116,7 @@ export const SessionExecutionRunBrokerAuthorityResponseV1Schema = z.discriminate
     intent: ExecutionRunIntentSchema,
     runtimeState: z.enum(['active_turn', 'idle']),
     activeTurnId: z.string().trim().min(1).max(512).nullable().optional(),
+    teamCredentialProviderModel: ExecutionRunTeamCredentialProviderModelAttestationV1Schema,
   }).strict(),
   z.object({
     status: z.literal('not_current'),
@@ -127,13 +142,13 @@ export type SessionExecutionRunBrokerAuthorityResponseV1 = z.infer<
  * Agent a live runner is executing. Restart adoption reconstructs Connected Account purposes and
  * request-auth uses from the daemon's CURRENT registry, so without this fact a runner still
  * executing generation G1 could be handed authority derived from G2's declarations. Recording the
- * exact contribution identity plus its immutable generation lets adoption demand correspondence
- * instead of trusting run/PID liveness as generation proof.
+ * exact contribution identity plus its durable source custody lets adoption demand correspondence
+ * instead of trusting run/PID liveness as source proof.
  */
 export const ExecutionRunAgentContributionIdentityV1Schema = z.object({
   pluginId: z.string().trim().min(1).max(256),
   localId: z.string().trim().min(1).max(256),
-  immutableGenerationId: z.string().trim().min(1).max(256),
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
 export type ExecutionRunAgentContributionIdentityV1 = z.infer<
   typeof ExecutionRunAgentContributionIdentityV1Schema
@@ -145,7 +160,7 @@ export const ExecutionRunConnectedServicesLaunchV1Schema = z.object({
   runKey: z.string().trim().min(1),
   agentId: z.string().trim().min(1),
   /**
-   * Absent only for a record whose writer could not prove the Agent generation. Adoption treats
+   * Absent only for a record whose writer could not prove the Agent source custody. Adoption treats
    * that as unproven and refuses, rather than upgrading it into fresh request-auth authority.
    */
   agentContribution: ExecutionRunAgentContributionIdentityV1Schema.optional(),

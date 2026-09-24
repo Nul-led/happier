@@ -31,6 +31,7 @@ import {
     type TeamOperationAuthenticationContext,
 } from "./actorContext";
 import { toTeamViewer } from "./viewer";
+import { resolveTeamCapabilitiesV1 } from "./capabilities";
 
 /**
  * The one Team lifecycle service.
@@ -448,17 +449,36 @@ export async function readTeamSummaryForActorInTx(
     const context = await resolveTeamActorContextInTx(tx, input);
     const viewer = toTeamViewer(context);
     if (viewer === null) return denied("team_not_found");
+    let capabilities = viewer.capabilities;
     if (!context!.homeAuthority.manageAllTeams) {
         const qualified = await qualifyTeamProjectionReadAuthenticationInTx(tx, {
             context: context!,
             ...input.authentication,
         });
         if (!qualified.ok) return denied(qualified.error);
+    } else if (context!.teamCapabilities.viewTeam) {
+        // Home authority is not Team-derived, so a Home administrator always
+        // reads the Team. A membership it also holds is Team-derived: when the
+        // credential does not qualify for it, its capabilities are withheld and
+        // recomposed by the capability owner without it — exactly as the
+        // directory row is — so no surface offers what the Home will refuse.
+        const qualified = await qualifyTeamProjectionReadAuthenticationInTx(tx, {
+            context: context!,
+            ...input.authentication,
+        });
+        if (!qualified.ok) {
+            capabilities = resolveTeamCapabilitiesV1({
+                accountStatus: context!.accountStatus,
+                homeAuthority: context!.homeAuthority,
+                membership: null,
+                teamArchivedAt: context!.team.archivedAt,
+            });
+        }
     }
     return { ok: true, team: projectTeamSummaryV1({
         team: viewer.team,
         viewerRole: viewer.viewerRole,
-        capabilities: viewer.capabilities,
+        capabilities,
         ownerRequired: viewer.ownerRequired,
         homeAuthority: context!.homeAuthority,
     }) };

@@ -34,6 +34,10 @@ const iosPodspec = read(moduleRoot, 'ios', 'HappierActivityNotifications.podspec
 const kotlinEnricherSource = read(
   moduleRoot, 'android', 'src', 'main', 'java', 'dev', 'happier', 'activitynotifications', 'ActivityNotificationEnricher.kt',
 );
+const installedExpoNotificationRecords = read(
+  dirname(moduleRoot), '..', 'node_modules', 'expo-notifications', 'ios', 'ExpoNotifications', 'Notifications',
+  'NotificationRecords.swift',
+);
 const swiftSessionCryptoSource = read(
   dirname(moduleRoot), 'happier-crypto-worker', 'ios', 'HappierCryptoWorkerSessionCrypto.swift',
 );
@@ -164,6 +168,26 @@ test('native event identities distinguish equal sequences owned by different Dis
   );
 });
 
+test('both native consumers name a committed request exactly as the canonical owner does', () => {
+  const [canonicalRequest] = canonicalIdentityTemplate('resolveActivityRequestEventIdentityV1');
+  const rendered = renderTemplate(canonicalRequest, { requestId: 'req-1' });
+  // Swift interpolates with `\(x)` and Kotlin with `$x`; normalize both to the
+  // canonical `${x}` so the identity a device renders is compared, not spelling.
+  const interpolations = [
+    ['kotlin', kotlinSource, /"((?:[^"\\]|\\.)*\$\{?requestId\}?(?:[^"\\]|\\.)*)"/g, (text) => text],
+    ['swift', swiftSource, /"((?:[^"]*)\\\(requestId\)(?:[^"]*))"/g, (text) => text.replace(/\\\((\w+)\)/g, '${$1}')],
+  ];
+  for (const [name, source, pattern, normalize] of interpolations) {
+    const templates = [...source.matchAll(pattern)].map((match) => normalize(match[1]));
+    assert.equal(templates.length, 1, `${name} has no single committed-request identity branch`);
+    assert.equal(renderTemplate(templates[0], { requestId: 'req-1' }), rendered,
+      `${name} committed-request identity diverges from the canonical Protocol owner`);
+  }
+  // The identity exists only where the Protocol union carries it.
+  assert.match(protocolSource, /type: z\.literal\('permission_request'\), requestId:/);
+  assert.match(protocolSource, /type: z\.literal\('user_action_request'\), requestId:/);
+});
+
 test('Android terminal turn alerts carry the canonical Protocol turn identity', () => {
   const [canonicalTurn] = canonicalIdentityTemplate('resolveActivityTurnEventIdentityV1');
   const identityBlock = kotlinEventIdentityBlock();
@@ -216,6 +240,13 @@ test('Android terminal turn alerts carry the canonical Protocol turn identity', 
 
 test('iOS keeps remote body-envelope admission separate from local top-level admission', () => {
   assert.match(swiftSource, /init\?\(remoteUserInfo:/);
+  // `expo-notifications` hands iOS the Expo `body` envelope as a JSON object and
+  // serializes it to a string only for the JS background representation, so the
+  // remote initializer must admit the object shape this platform really receives.
+  assert.match(installedExpoNotificationRecords, /userInfo\["body"\] as\? \[String: Any\]/,
+    'expo-notifications no longer delivers the iOS body envelope as an object');
+  assert.match(swiftSource, /remoteUserInfo\["body"\] as\? \[String: Any\]/,
+    'the remote service rejects the object envelope iOS actually delivers');
   assert.match(swiftSource, /remoteUserInfo\["body"\] as\? String/);
   assert.match(swiftSource, /init\?\(localUserInfo:/);
   assert.match(swiftSource, /ActivityRemoteAlert\(remoteUserInfo: request\.content\.userInfo\)/);

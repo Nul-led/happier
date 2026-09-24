@@ -516,6 +516,41 @@ function invalidExternalAuth(): never {
     );
 }
 
+/**
+ * The current-password first-key proof (02.04 :179): the Home verifies the
+ * present Account's current Plain password and mints the transition-bound
+ * `email_password` variant of the existing first-key proof for this exact
+ * migration request digest. Keyless first-key enrollment and a retained-key
+ * password-bearing conversion both obtain it here; the raw password only
+ * travels in this one request.
+ */
+export async function requestAccountEncryptionFirstKeyPasswordProof(params: Readonly<{
+    request: ServerFetch;
+    token: string;
+    password: string;
+    requestDigest: string;
+}>): Promise<AccountEncryptionMigrateExternalAuthProof> {
+    const response = await params.request('/v1/auth/email/step-up', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${params.token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            v: 1,
+            password: params.password,
+            purpose: FIRST_KEY_PURPOSE,
+            requestDigest: params.requestDigest,
+        }),
+    }, { includeAuth: false, retry: 'none' });
+    const payload: unknown = await response.json().catch(() => null);
+    const parsed = response.ok && payload && typeof payload === 'object' && 'externalAuthProof' in payload
+        ? AccountEncryptionMigrateExternalAuthProofSchema.safeParse(payload.externalAuthProof)
+        : null;
+    if (!parsed?.success || parsed.data.provider !== 'email_password') return invalidExternalAuth();
+    return parsed.data;
+}
+
 function unavailableExternalAuth(): never {
     throw new HappyError(
         'first-key-external-auth-unavailable',
@@ -819,34 +854,22 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
             ...(pending ? { pending } : {}),
         });
         if (params.nativePassword !== undefined) {
-            const response = await requestAtTarget('/v1/auth/email/step-up', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${params.currentCredentials.token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    v: 1,
-                    password: params.nativePassword,
-                    purpose: FIRST_KEY_PURPOSE,
-                    requestDigest,
-                }),
-            }, { includeAuth: false, retry: 'none' });
-            const payload: unknown = await response.json().catch(() => null);
-            const parsed = response.ok && payload && typeof payload === 'object' && 'externalAuthProof' in payload
-                ? AccountEncryptionMigrateExternalAuthProofSchema.safeParse(payload.externalAuthProof)
-                : null;
-            if (!parsed?.success || parsed.data.provider !== 'email_password') return invalidExternalAuth();
+            const externalAuthProof = await requestAccountEncryptionFirstKeyPasswordProof({
+                request: requestAtTarget,
+                token: params.currentCredentials.token,
+                password: params.nativePassword,
+                requestDigest,
+            });
             const stored = await TokenStorage.setPendingExternalAuth({
-                provider: parsed.data.provider,
-                proof: parsed.data.proof,
+                provider: externalAuthProof.provider,
+                proof: externalAuthProof.proof,
                 secret: params.proposedCredentials.secret,
                 returnTo: params.returnTo,
                 ...serverContext,
-                accountEncryptionFirstKey: createPendingContinuation(parsed.data.pending),
+                accountEncryptionFirstKey: createPendingContinuation(externalAuthProof.pending),
             }, target);
             if (!stored) return unavailableExternalAuth();
-            return { kind: 'email_password', externalAuthProof: parsed.data };
+            return { kind: 'email_password', externalAuthProof };
         }
         const accountScope = createServerAccountScope(target.serverId, params.accountId);
         if (!accountScope) return invalidExternalAuth();

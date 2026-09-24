@@ -63,6 +63,18 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
     public async forwardCredentialQualifiedSessionDelivery(
         delivery: CredentialQualifiedSessionDeliveryV1,
     ): Promise<void> {
+        await this.writeServerSideEvent(CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT, delivery);
+    }
+
+    /**
+     * The worker's counterpart of `Server#serverSideEmit`: reaches the API nodes'
+     * server-side handlers without joining the cluster as a peer.
+     */
+    public serverSideEmit(eventName: string, payload: unknown): void {
+        void this.writeServerSideEvent(eventName, payload);
+    }
+
+    private async writeServerSideEvent(eventName: string, payload: unknown): Promise<void> {
         try {
             await writeToRedisStream({
                 client: this.client,
@@ -75,14 +87,14 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
                     // API node resolves its own exact sockets and credential facts.
                     type: "9",
                     data: JSON.stringify({
-                        packet: [CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT, delivery],
+                        packet: [eventName, payload],
                     }),
                 },
             });
         } catch (error) {
             log(
                 { module: "websocket", level: "warn", streamName: this.streamName },
-                `Failed to forward credential-qualified Session delivery: ${error instanceof Error ? error.message : String(error)}`,
+                `Failed to forward server-side event ${eventName}: ${error instanceof Error ? error.message : String(error)}`,
             );
         }
     }
@@ -151,7 +163,7 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
 export function createRedisStreamsRoomEmitter(params: Readonly<{
     maxLen: number;
     streamName: string;
-}>): SocketRoomEmitter {
+}>): RedisStreamsRoomEmitter {
     return new RedisStreamsRoomEmitter(getRedisClient(), {
         maxLen: params.maxLen,
         streamName: params.streamName,

@@ -8,12 +8,7 @@ import type { GitHubAppManagementAuthenticationV1 } from "@/app/integrations/git
 import { db } from "@/storage/db";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { resolveOauthStateAttemptTtlMsFromEnv } from "./oauthExternalConfig";
-import type { TeamOAuthAdmissionSource } from "@/app/teams/memberships/teamOAuthAdmissionSource";
-
-type TeamOAuthAdmissionSeed =
-    | Extract<TeamOAuthAdmissionSource, { kind: "team_invitation" }>
-    | Omit<Extract<TeamOAuthAdmissionSource, { kind: "team_jit_identity" }>, "authAttemptId">
-    | null;
+import type { TeamOAuthAdmissionSeed } from "./teamAdmissionStartBinding";
 
 type ExternalAuthorizeFlowParams =
     | Readonly<{
@@ -44,8 +39,14 @@ type ExternalAuthorizeFlowParams =
           reference: ProviderReference;
           env: NodeJS.ProcessEnv;
           userId: string;
-          purpose?: "identity_connection_test";
+          /**
+           * `team_admission` is the authenticated Team entry: the member already
+           * holds this Account, so the journey links the Team's identity to it
+           * instead of provisioning a fresh keypair-seeded Account.
+           */
+          purpose?: "identity_connection_test" | "team_admission";
           connection?: Readonly<{ id: string; revision: number }>;
+          admission?: TeamOAuthAdmissionSeed;
           connectFinalization?: "credential_adoption_v1";
           webAppOAuthReturnUrl?: string | null;
       }>
@@ -86,15 +87,22 @@ export async function createExternalAuthorizeAttempt(
     const codeChallenge = pkceChallengeS256(pkceCodeVerifier);
     const nonce = randomBytes(32).toString("base64url");
 
+    // Both the provisioning (`auth`) and the authenticated (`connect`) Team start
+    // seed the same admission authority and the same Team-owned connection.
+    const teamAdmissionSeed: TeamOAuthAdmissionSeed = params.purpose === "team_admission"
+        ? params.admission ?? null
+        : null;
+    const boundConnection: Readonly<{ id: string; revision: number }> | null =
+        params.purpose === "team_admission" || params.purpose === "identity_connection_test"
+            ? params.connection ?? null
+            : null;
+
     let sid = "";
     for (let i = 0; i < 3; i++) {
         sid = randomKeyNaked(24);
-        const admission = params.flow === "auth" && params.purpose === "team_admission"
-            && params.admission?.kind === "team_jit_identity"
-            ? { ...params.admission, authAttemptId: sid }
-            : params.flow === "auth" && params.purpose === "team_admission"
-                ? params.admission ?? null
-                : null;
+        const admission = teamAdmissionSeed?.kind === "team_jit_identity"
+            ? { ...teamAdmissionSeed, authAttemptId: sid }
+            : teamAdmissionSeed;
         try {
             await db.repeatKey.create({
                 data: {
@@ -112,11 +120,7 @@ export async function createExternalAuthorizeAttempt(
                             : {
                                 securityBinding: {
                                     provider: params.reference,
-                                    connection: params.flow === "connect" && params.purpose === "identity_connection_test"
-                                        ? params.connection ?? null
-                                        : params.flow === "auth" && params.purpose === "team_admission"
-                                            ? params.connection ?? null
-                                            : null,
+                                    connection: boundConnection,
                                     // Structural admission is re-decided from Team mode and exact
                                     // current evidence during finalization; OAuth success never
                                     // mints a generic membership capability.

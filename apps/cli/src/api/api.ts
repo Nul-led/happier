@@ -113,7 +113,6 @@ import { SessionCreationPlacementError } from './session/sessionCreationPlacemen
 import {
   buildSessionInitialAccessCreateFields,
   materializeSessionInitialAccessCreateFields,
-  readSessionInitialAccessUpdateRequiredError,
   readSessionInitialAccessServerError,
 } from './session/sessionCreationInitialAccess';
 import {
@@ -130,7 +129,7 @@ import {
   type ConnectedServiceProfileListResult,
 } from './client/connectedServiceCredentialApi';
 export { ConnectedServiceCredentialUnsupportedFormatError } from './client/connectedServiceCredentialApi';
-import { createHttpStatusError, HttpStatusError } from './client/httpStatusError';
+import { createHttpStatusError, HttpStatusError, readHttpStatus } from './client/httpStatusError';
 import {
   createConnectedServiceQuotaApiError,
   createConnectedServiceQuotaHttpStatusError,
@@ -191,6 +190,7 @@ import type {
   SealedConnectedServiceQuotaSnapshotV1,
   SealedProviderAccountUsageSnapshotV1,
   RuntimeActionExecute,
+  SessionMetadata,
   SessionOwnerMetadataV1,
 } from '@happier-dev/protocol';
 import { resolveSessionCreateEncryptionMode } from '@/api/session/resolveSessionCreateEncryptionMode';
@@ -446,11 +446,13 @@ export class ApiClient {
   }
 
   /**
-   * Create a new session or load existing one with the given tag
+   * Create a new session or load existing one with the given tag. Creation
+   * accepts the canonical protocol metadata shape because a pre-committed
+   * Session may not have runtime-owned workspace identity until attach.
    */
   async getOrCreateSession(opts: {
     tag: string,
-    metadata: Metadata,
+    metadata: SessionMetadata,
     state: AgentState | null,
     organizationPlacement?: import('@happier-dev/protocol').SessionOrganizationPlacementV1,
     initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1,
@@ -468,7 +470,10 @@ export class ApiClient {
       // Never log raw Axios errors: they can contain bearer tokens or vendor keys.
       logger.debug('[API] [ERROR] Failed to get or create session:', serializeAxiosErrorForLog(error));
 
-      const terminalAuthStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+      // The canonical status reader: the currentness preflight's cause is an
+      // HttpStatusError (a minimal Axios-like carrier, not an Axios error), so
+      // branding is not a reliable discriminator here.
+      const terminalAuthStatus = readHttpStatus(error);
       if (terminalAuthStatus === 401 || terminalAuthStatus === 403) {
         // Preserve status for offline reconnection stop conditions without leaking request config.
         throw new HttpStatusError(terminalAuthStatus, 'Authentication failed');
@@ -793,10 +798,6 @@ export class ApiClient {
           );
         }
         const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-        const initialAccessUpdateRequired = readSessionInitialAccessUpdateRequiredError(
-          axios.isAxiosError(error) ? error.response?.data : undefined,
-        );
-        if (initialAccessUpdateRequired) throw initialAccessUpdateRequired;
         const initialAccessServerError = axios.isAxiosError(error) && typeof status === 'number'
           ? readSessionInitialAccessServerError(error.response?.data, status)
           : null;

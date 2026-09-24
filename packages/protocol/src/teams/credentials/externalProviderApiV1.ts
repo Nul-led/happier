@@ -9,6 +9,7 @@ import {
   ProviderBrokerResourceTestRelayBindingV1Schema,
   PeerTcpTunnelRelayAuthorizationV2Schema,
 } from '../../machines/peer/mediation/tunnel/authorization.js';
+import { UsageObservationTokensSchema } from '../../usage/usageAnalyticsContracts.js';
 import { TeamCredentialSourceBindingV1Schema } from './sourceBindingV1.js';
 import { TeamCredentialUsageLimitDenialV1Schema } from './usageV1.js';
 
@@ -208,9 +209,18 @@ export const TeamCredentialExternalProviderAdmissionResponseV1Schema = z.discrim
 export type TeamCredentialExternalProviderAdmissionV1 = z.infer<typeof TeamCredentialExternalProviderAdmissionV1Schema>;
 export type TeamCredentialExternalProviderAdmissionResponseV1 = z.infer<typeof TeamCredentialExternalProviderAdmissionResponseV1Schema>;
 
-/** The current managed response exposes terminal lifecycle, but no bounded
- * authoritative token/cost observer. This strict internal report therefore
- * records only the real terminal fact and keeps metric coverage unavailable. */
+/**
+ * Strict internal terminal report for a public external Provider call, which
+ * has no Session turn and no Agent usage publisher. The broker runtime observes
+ * the admitted response exactly once and reports the Provider's own terminal
+ * token block when that route's protocol carries one; otherwise the fact stays
+ * `unavailable` and analytics leaves the request's tokens unknown.
+ *
+ * Cost is deliberately absent: no canonical price exists for these routes, an
+ * estimate is not a Team fact, and an omitted field cannot decay into `$0.00`.
+ * Reuse the canonical UsageEvent token shape so the writer, the personal
+ * observation path and this report cannot drift into three token vocabularies.
+ */
 export const TeamCredentialExternalProviderTerminalUsageV1Schema = z.object({
   v: z.literal(1),
   admissionUsageEventId: ExternalProviderIdentityV1Schema,
@@ -218,8 +228,19 @@ export const TeamCredentialExternalProviderTerminalUsageV1Schema = z.object({
   brokerMachineId: ExternalProviderIdentityV1Schema,
   completedAtMs: z.number().int().nonnegative().safe(),
   outcome: z.enum(['succeeded', 'failed', 'cancelled']),
-  measurement: z.literal('unavailable'),
-}).strict();
+  measurement: z.enum(['reported', 'unavailable']),
+  /** The model the Provider actually answered with, when it names one. */
+  actualModelId: z.string().min(1).max(PROVIDER_ENDPOINT_SAFETY_LIMITS.maxHeaderValueChars).nullable(),
+  tokens: UsageObservationTokensSchema.nullable(),
+}).strict().superRefine((usage, context) => {
+  if ((usage.measurement === 'reported') !== (usage.tokens !== null)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['tokens'],
+      message: 'A reported terminal measurement carries exactly its observed token fact.',
+    });
+  }
+});
 export type TeamCredentialExternalProviderTerminalUsageV1 = z.infer<
   typeof TeamCredentialExternalProviderTerminalUsageV1Schema
 >;

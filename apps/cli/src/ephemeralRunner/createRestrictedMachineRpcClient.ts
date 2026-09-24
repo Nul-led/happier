@@ -11,9 +11,11 @@ import {
   EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
   type MachineInstallationProofV1,
+  type IrohEndpointDescriptorV1,
   type PeerTcpTunnelRelayEnvelope,
 } from '@happier-dev/protocol';
 import type { VerifiedEphemeralSessionRunnerPrincipal } from '@happier-dev/protocol/ephemeralRunner/principal';
+import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTransportErrorToProbeResult';
 import type { Socket } from 'socket.io-client';
 
 import { createLoopbackHomeIdentityProbe } from '@/api/connection/createLoopbackReadinessProbe';
@@ -66,12 +68,18 @@ export function createRestrictedMachineRpcClient(input: Readonly<{
    * Runner's Session capabilities; a second capability publisher would race
    * and withdraw one side of the projection.
    */
-  irohEndpointId?: string;
+  irohEndpoint?: IrohEndpointDescriptorV1;
   installationProof: MachineInstallationProofV1;
   transport: RestrictedTransport;
   registerHandlers(rpc: RpcHandlerRegistrar): void;
   /** Terminal restricted-principal loss is handed to the ordinary Session Stop owner. */
   onTerminalConnectionFailure?: () => void;
+  /**
+   * This Machine's live transport connectivity, so a surface that presents the
+   * running Session reflects the Session's own connection rather than the
+   * activation connection it replaced.
+   */
+  onConnectionState?: (state: 'connected' | 'reconnecting') => void;
   dependencies?: RestrictedMachineRpcClientDependencies;
 }>) {
   const dependencies = input.dependencies ?? productionDependencies;
@@ -124,11 +132,11 @@ export function createRestrictedMachineRpcClient(input: Readonly<{
     ...(externalActionDispatchInstalled
       ? { externalActionExecutionAuthorization: { protocolVersions: [1] as const } }
       : {}),
-    ...(input.irohEndpointId
+    ...(input.irohEndpoint
       ? {
           irohMachineEndpoint: {
             protocolVersions: [1] as const,
-            endpointId: input.irohEndpointId,
+            ...input.irohEndpoint,
           },
         }
       : {}),
@@ -212,6 +220,13 @@ export function createRestrictedMachineRpcClient(input: Readonly<{
       serverUrl: input.runtimeOrigin,
       expectedServerIdentityId: input.homeServerIdentityId,
     }),
+    // Without this the supervisor reads every failed connect as unreachable, so
+    // a Home that revoked this Runner's credential would leave it retrying with
+    // a live child Agent instead of stopping.
+    classifyTransportErrorToProbeResult,
+    onStateChange: (state) => {
+      input.onConnectionState?.(state.phase === 'online' ? 'connected' : 'reconnecting');
+    },
     onConnected: () => {
       if (!activeSocket) return;
       rpc.onSocketConnect(activeSocket);

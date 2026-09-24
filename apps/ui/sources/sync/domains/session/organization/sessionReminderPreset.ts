@@ -1,3 +1,4 @@
+import { SessionReminderPresetsV1Schema } from '@happier-dev/protocol';
 import type { SessionReminderPresetRule, SessionReminderPresetV1 } from '@happier-dev/protocol';
 export { SessionReminderPresetsV1Schema } from '@happier-dev/protocol';
 export type { SessionReminderPresetRule, SessionReminderPresetV1 } from '@happier-dev/protocol';
@@ -71,6 +72,35 @@ export function upsertSessionReminderPreset(
     const existingIndex = presets.findIndex((preset) => sessionReminderPresetRuleKey(preset.rule) === nextKey);
     if (existingIndex < 0) return [...presets, nextPreset];
     return presets.map((preset, index) => index === existingIndex ? nextPreset : preset);
+}
+
+/**
+ * A preset-list change expressed as an intent, so the Account-settings writer can apply it to the
+ * value that is current when the write happens instead of a snapshot captured before a modal and a
+ * network round trip — otherwise a preset added or removed meanwhile is silently dropped.
+ */
+export type SessionReminderPresetIntent =
+    | Readonly<{ kind: 'upsert'; preset: SessionReminderPresetV1 }>
+    | Readonly<{ kind: 'replace'; presets: readonly SessionReminderPresetV1[] }>;
+
+export function applySessionReminderPresetIntent(
+    presets: readonly SessionReminderPresetV1[],
+    intent: SessionReminderPresetIntent,
+): SessionReminderPresetV1[] {
+    return intent.kind === 'upsert'
+        ? upsertSessionReminderPreset(presets, intent.preset)
+        : [...intent.presets];
+}
+
+export function applySessionReminderPresetIntentToAccountSettings(
+    raw: Readonly<Record<string, unknown>>,
+    intent: SessionReminderPresetIntent,
+): Record<string, unknown> {
+    const current = SessionReminderPresetsV1Schema.safeParse(raw.sessionReminderPresetsV1);
+    return {
+        ...raw,
+        sessionReminderPresetsV1: applySessionReminderPresetIntent(current.success ? current.data : [], intent),
+    };
 }
 
 export function formatSessionReminderPresetRuleLabel(

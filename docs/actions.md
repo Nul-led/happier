@@ -96,17 +96,65 @@ is reserved for non-danger egress leaves; mutating, navigating and dangerous ver
 hand-added to it, because they are already classified `danger` in the specs and derived from
 there.
 
+The default floor has one present-user rule. A `present_user` invocation on the `ui` surface skips
+the default danger floor, because the product UI confirms its ordinary dangerous Actions in its
+own confirmation host (a destructive modal, for example) and a second, central approval would ask
+twice. The CLI gets the same treatment only when its host has recorded a completed confirmation
+for that exact Action (`presentUserConfirmation`). The exception is
+`PRESENT_USER_UI_POLICY_CONFIRMED_ACTION_ID_SET`, currently only `session.responsibility.set`. That
+row has no UI-local confirmation host, so its confirmation *is* this policy's default: it is
+required by default on the present-user UI as well, and a user can waive it only in Actions
+settings (teams-lane-04/11 §7.1). Do not give such a row a picker-local prompt or a domain
+approval resolver. The set is listed by hand on purpose, because no spec fact separates it. Other
+rows share its `safety: 'danger'` and its optional deferred approval, such as
+`session.access.grant.set`. Deriving the set from those facts would also switch off the UI
+suppression for all of them. Persisted per-surface overrides and waivers are evaluated before any
+of this and always win.
+
 The flow is `deferred` when the caller cannot hold a blocking waiter: the public Action API, which
 reports a created approval artifact to its caller, and the present-user UI, whose mounted
 continuation follows the artifact and consumes the replayed typed result. The exception is
 `approvalResultCustody: 'live_only'`, where the exact invocation stays the blocking waiter because
 its raw result must never become durable artifact custody; such a row must declare both a required
-result and a safe observation projection, which the spec schema enforces.
-`teams.credentials.externalKeys.create` is the worked example: its result is `{ token, key }`, the
-bearer token reaches only the live caller, and the observation projection keeps just the non-secret
-`key` summary for the artifact. Agent,
-CLI and MCP blocking callers are unchanged. Approval Actions themselves (`approval.request.*`) are never
-approval-gated, which is what prevents the obvious loop.
+result and a safe observation projection, which the spec schema enforces. Two rows declare it for
+a show-once bearer:
+
+- `teams.credentials.externalKeys.create`. Its result is `{ token, key }`. The bearer token
+  reaches only the live caller, and the observation projection keeps just the non-secret `key`
+  summary for the artifact.
+- `account.apiTokens.create`. The API token is shown once and stored only as a digest, so like
+  the external key it stays on the admitted invocation and never enters approval history.
+
+Because of this, a deferred approval of either row becomes a blocking one. If the live invocation
+is lost, the result is intentionally unrecoverable: list and revoke the credential instead.
+`approvalInputCustody: 'live_only'` is the input-side sibling, used for credential-bearing input
+such as passwords. The artifact carries only the declared input projection from creation, and a
+replay without the live invocation fails closed. Agent, CLI and MCP blocking callers are
+unchanged. Approval Actions themselves (`approval.request.*`) are never approval-gated, which is
+what prevents the obvious loop.
+
+Plugin-contributed Actions follow the same split between present and non-present requesters, with
+one owner per side. For a `ui` or `voice` invocation the UI dispatcher
+(`apps/ui/sources/components/plugins/surfaces/pluginSurfaceActionDispatch.ts`) is the only place
+that asks: it applies the shared requirement rule (`pluginActionRequiresPresentUserIntent`, which
+covers a non-safe danger level, declared confirmation, and the Account's Ask-first setting), shows
+the app-shell confirmation, and only then executes. A client-target Action runs through the shared
+present-user gate in the UI. A daemon-target Action is sent with `presentUserIntent: 'confirmed'`
+on `daemon.plugins.structuredMessages.actions.execute`. The daemon's gate admits that carried
+intent and creates no `plugin_target_action` approval artifact. A request without it fails closed
+with `plugin_action_current_intent_unavailable`, so a settings skew between UI and daemon refuses
+rather than executes. Durable `plugin_target_action` artifacts remain only for requesters that are
+not present in the app: agent, MCP, CLI, the public API and automation ingresses.
+
+A settled artifact keeps only the declared input projection. The admitted `actionArgs` stay
+immutable while the request is `open`, `approved` and `executing`, because deferred replay reads
+them. On the transition into a settled state (`rejected`, `canceled`, `executed` or `failed`, which
+includes a failure before execution), they are replaced by the Action's own
+`projectObservationInput`, never by caller-authored arguments. One owner decides this:
+`packages/protocol/src/approvals/approvalRequestTransition.ts` (`decideApprovalRequestTransition`,
+`settleApprovalRequestActionArgs`). Both artifact writers consume it, the CLI/daemon approval store
+and the UI approval writer, and each commits with the revision it read. Only the winner of
+`approved -> executing` performs the effect.
 
 ## The CLI demotes a success that did not take effect
 

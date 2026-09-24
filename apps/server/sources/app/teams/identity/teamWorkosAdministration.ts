@@ -25,6 +25,7 @@ import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity
 import { inTx, type Tx } from "@/storage/inTx";
 import {
     createTeamIdentityConnectionInTx,
+    isTeamIdentityConnectionNamespaceActivatedInTx,
     readTeamIdentityConnectionInTx,
     recordTeamIdentityConnectionWorkosObservationInTx,
     updateTeamIdentityConnectionInTx,
@@ -143,53 +144,47 @@ export async function createTeamWorkosConnection(
             return { ok: false, error: "workos_platform_unavailable" };
         }
 
-        // A Team has at most one WorkOS carrier, but provider instances may not
-        // be unique by (owner, kind) because OIDC deliberately supports several
-        // instances. Write the already-authoritative Team row without changing
-        // its bytes before inspecting or creating the carrier. Serializable
-        // PostgreSQL/MySQL transactions then retry a concurrent creator from a
-        // fresh snapshot; SQLite already serializes the write. The connection's
-        // own unique key still resolves duplicate binding attempts with upsert,
-        // so no P2002 handler ever queries a failed PostgreSQL transaction.
+        // Serialize concurrent creators on the already-authoritative Team row
+        // without changing its bytes: serializable PostgreSQL/MySQL transactions
+        // retry the loser from a fresh snapshot and SQLite already serializes the
+        // write, so two presses cannot both create a draft carrier.
         await tx.team.update({
             where: { id: input.teamId },
             data: { updatedAt: team.updatedAt },
             select: { id: true },
         });
+        // A still-draft WorkOS connection is the one setup in progress, so a replay
+        // returns it. Once a connection's namespace is activated (enabled or an
+        // identity was issued) it is immutable; recovering from a replaced or
+        // deleted upstream connection creates a new provider instance and Team
+        // connection beside it, and the old one keeps its identities until an
+        // administrator removes it (teams-lane-03/03 §6.3(7)). No relink job.
         const existingConnections = await tx.teamIdentityConnection.findMany({
             where: {
                 teamId: input.teamId,
                 providerInstance: { kind: "workos_sso" },
             },
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-            select: { id: true },
-            take: 2,
+            select: { id: true, firstEnabledAt: true, providerInstanceId: true },
         });
-        if (existingConnections.length > 1) {
-            return { ok: false, error: "identity_connection_conflict" };
-        }
-        if (existingConnections[0]) {
-            const existing = await readTeamIdentityConnectionInTx(tx, {
-                id: existingConnections[0].id,
-                teamId: input.teamId,
-            });
-            return existing.status === "ready"
-                ? { ok: true, value: await projectCurrentTeamIdentityConnectionV1InTx(tx, { env: input.env, teamId: input.teamId, connection: existing.connection }) }
+        for (const candidate of existingConnections) {
+            if (await isTeamIdentityConnectionNamespaceActivatedInTx(tx, candidate)) continue;
+            const draft = await readTeamIdentityConnectionInTx(tx, { id: candidate.id, teamId: input.teamId });
+            return draft.status === "ready"
+                ? { ok: true, value: await projectCurrentTeamIdentityConnectionV1InTx(tx, { env: input.env, teamId: input.teamId, connection: draft.connection }) }
                 : { ok: false, error: "identity_connection_invalid" };
         }
 
-        const providerRows = await tx.identityProviderInstance.findMany({
-            where: { ownerTeamId: input.teamId, kind: "workos_sso" },
+        // Each Team connection owns exactly one provider instance (unique per
+        // Team). Reuse only a Team-owned WorkOS instance no connection carries.
+        const unboundProvider = await tx.identityProviderInstance.findFirst({
+            where: { ownerTeamId: input.teamId, kind: "workos_sso", connections: { none: {} } },
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             select: { id: true },
-            take: 2,
         });
-        if (providerRows.length > 1) {
-            return { ok: false, error: "identity_connection_conflict" };
-        }
-        let provider = providerRows[0]
+        const provider = unboundProvider
             ? await readIdentityProviderInstanceInTx(tx, {
-                id: providerRows[0].id,
+                id: unboundProvider.id,
                 owner: { kind: "team", teamId: input.teamId },
             })
             : await createIdentityProviderInstanceInTx(tx, {

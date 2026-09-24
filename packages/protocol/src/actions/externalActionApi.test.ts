@@ -127,7 +127,9 @@ describe('External Action API envelope v1', () => {
       },
     };
 
-    expect(ExternalActionMachineBootstrapListV1Schema.parse([runnerRow])).toEqual([runnerRow]);
+    // A Runner row the Home publishes without its activation claim stays
+    // parseable; the claim then simply cannot select it for a Session target.
+    expect(ExternalActionMachineBootstrapListV1Schema.parse([runnerRow])).toEqual([{ ...runnerRow, runnerClaim: null }]);
     // A persistent Machine keeps the released minimal row; kind is projected.
     expect(ExternalActionMachineBootstrapListV1Schema.parse([{
       id: 'machine-1',
@@ -140,6 +142,7 @@ describe('External Action API envelope v1', () => {
       dataEncryptionKey: null,
       installationId: null,
       runnerContentKeyBinding: null,
+      runnerClaim: null,
     });
   });
 

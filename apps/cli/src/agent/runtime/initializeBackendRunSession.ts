@@ -2,12 +2,7 @@ import type { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/session/sessionClient'
 import type { AgentState, Metadata, SessionCreationOutcome } from '@/api/types'
 import type { SessionAttachMetadataIdentityPolicy } from '@happier-dev/protocol'
-import { SessionCreationTerminalSpawnErrorDetailSchema } from '@happier-dev/protocol'
-import { SessionInitialAccessUpdateRequiredError } from '@/api/session/sessionCreationInitialAccess'
-import { isSessionCreationPlacementError } from '@/api/session/sessionCreationPlacementError'
-import {
-  isSessionCreationCorrespondenceConflictError,
-} from '@/api/session/sessionCreationCorrespondenceConflictError'
+import { readSessionCreationTerminalSpawnErrorDetail } from '@/api/session/sessionCreationTerminalSpawnErrorDetail'
 import { createBaseSessionForAttach } from '@/agent/runtime/createBaseSessionForAttach'
 import {
   applyStartupMetadataUpdateToSession,
@@ -444,19 +439,7 @@ export async function initializeBackendRunSession(
     })
   } catch (error) {
     const spawnNonce = readSessionStartupSpawnNonceFromEnv()
-    const errorDetail = isSessionCreationPlacementError(error)
-      ? {
-          kind: 'session_creation_organization_invalid' as const,
-          code: 'organization_invalid' as const,
-        }
-      : isSessionCreationCorrespondenceConflictError(error)
-        ? {
-            kind: 'session_creation_correspondence_conflict' as const,
-            code: 'creation_conflict' as const,
-          }
-        : error instanceof SessionInitialAccessUpdateRequiredError
-          ? SessionCreationTerminalSpawnErrorDetailSchema.safeParse(error.details).data
-          : null
+    const errorDetail = readSessionCreationTerminalSpawnErrorDetail(error)
     if (
       !opts.signal?.aborted
       && opts.metadata.startedBy === 'daemon'

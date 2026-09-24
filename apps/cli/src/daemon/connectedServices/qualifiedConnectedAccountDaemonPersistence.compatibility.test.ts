@@ -144,6 +144,7 @@ function createRevisionedPeerPersistence(legacyCredentialApi: ReturnType<
     }),
     legacyCredentialApi,
     secrets: {
+      admit: vi.fn(async () => undefined),
       has: vi.fn(async () => false),
       read: vi.fn(async () => null),
     },
@@ -255,6 +256,7 @@ describe('qualified Connected Account daemon old-peer compatibility', () => {
       }),
       legacyCredentialApi,
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },

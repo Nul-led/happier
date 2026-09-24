@@ -17,6 +17,7 @@ struct ActivityRemoteAlert {
   let messageSeq: Int64?
   let sequenceDomain: String?
   let discussionId: String?
+  let requestId: String?
   let version: Int64
 
   private static let supportedPreviewBehaviors = Set(["status_only", "title_only", "include_preview"])
@@ -30,6 +31,10 @@ struct ActivityRemoteAlert {
   /// delivery receipt; it keeps equal local sequences owned by two Discussions
   /// distinct for presentation dedupe and diagnostics.
   var eventIdentity: String? {
+    if version == 2, let requestId,
+       ["permission_request", "user_action_request"].contains(eventType) {
+      return "request:\(requestId)"
+    }
     guard version == 2, let messageSeq else { return nil }
     if sequenceDomain == "discussion", let discussionId {
       return "message-seq:discussion:\(discussionId):\(messageSeq)"
@@ -59,10 +64,23 @@ struct ActivityRemoteAlert {
     canFetchSessionTranscriptPreview || canFetchDiscussionPreview
   }
 
-  /// APNs/Expo remote delivery serializes the canonical object into `body`.
+  /// APNs/Expo remote delivery nests the canonical object under `body`.
   /// Requiring that envelope here prevents a remote top-level object from being
   /// mistaken for the separate local-notification representation.
+  ///
+  /// On iOS the nested value is a JSON object, not a string: `expo-notifications`
+  /// reads it as `userInfo["body"] as? [String: Any]`
+  /// (`ios/ExpoNotifications/Notifications/NotificationRecords.swift`) and
+  /// serializes it to a string only when building the JS background
+  /// representation, "for alignment with Android"
+  /// (`.../Background/BackgroundEventTransformer.swift`). Both encodings are
+  /// admitted through the one parser below so this extension never depends on
+  /// which representation a given delivery path produced.
   init?(remoteUserInfo: [AnyHashable: Any]) {
+    if let nestedObject = remoteUserInfo["body"] as? [String: Any] {
+      self.init(payload: nestedObject)
+      return
+    }
     guard let serializedBody = remoteUserInfo["body"] as? String,
           let data = serializedBody.data(using: .utf8),
           let decoded = try? JSONSerialization.jsonObject(with: data),
@@ -106,7 +124,10 @@ struct ActivityRemoteAlert {
       ? ActivityRemoteAlert.requiredString(event["sequenceDomain"])
       : nil
     self.discussionId = version == 2 && self.sequenceDomain == "discussion"
-      ? ActivityRemoteAlert.requiredDiscussionId(event["discussionId"])
+      ? ActivityRemoteAlert.requiredBoundedIdentifier(event["discussionId"])
+      : nil
+    self.requestId = version == 2 && ["permission_request", "user_action_request"].contains(eventType)
+      ? ActivityRemoteAlert.requiredBoundedIdentifier(event["requestId"])
       : nil
   }
 
@@ -117,7 +138,8 @@ struct ActivityRemoteAlert {
     return text
   }
 
-  private static func requiredDiscussionId(_ value: Any?) -> String? {
+  /// One bounded-identifier admission for every id the wire union carries.
+  private static func requiredBoundedIdentifier(_ value: Any?) -> String? {
     guard let text = requiredString(value), text.utf16.count <= 191 else { return nil }
     return text
   }
@@ -149,11 +171,18 @@ struct ActivityRemoteAlert {
       return domain == "discussion"
         && type != "ready"
         && exactKeys(event, allowed: ["type", "sequenceDomain", "discussionId", "messageSeq"])
-        && requiredDiscussionId(event["discussionId"]) != nil
+        && requiredBoundedIdentifier(event["discussionId"]) != nil
     }
     if ["failed", "cancelled"].contains(type) {
       return exactKeys(event, allowed: ["type", "turnId"])
         && requiredString(event["turnId"]) != nil
+    }
+    // The committed request id is optional in the wire union, so a payload that
+    // carries it must still be admitted; a present but invalid one is not.
+    if version == 2 && ["permission_request", "user_action_request"].contains(type) {
+      if event["requestId"] == nil { return exactKeys(event, allowed: ["type"]) }
+      return exactKeys(event, allowed: ["type", "requestId"])
+        && requiredBoundedIdentifier(event["requestId"]) != nil
     }
     return exactKeys(event, allowed: ["type"])
   }

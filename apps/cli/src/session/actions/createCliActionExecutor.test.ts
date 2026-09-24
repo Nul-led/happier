@@ -2249,6 +2249,85 @@ describe('createCliActionExecutor', () => {
           source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'brokered',
         },
       } },
+      // The Home admits the defaulted Team target only through the Session's
+      // own Team slot binding, created with the Session (lane 10 child 01).
+      teamCredentialBindings: [{
+        v: 1,
+        slot: {
+          kind: 'connected_service_purpose',
+          purpose: { consumer: { pluginId: 'happier.agent.codex', localId: 'codex' }, purpose: 'primary' },
+        },
+        resourceId: 'resource-a',
+        expectedResourceRevision: 7,
+        deliveryMode: 'brokered',
+        teamId: 'team-a',
+      }],
+    }));
+  });
+
+  it('keeps an explicit Team slot choice over the defaulted Team slot binding', async () => {
+    const serverId = configuration.activeServerId;
+    const token = `e30.${Buffer.from(JSON.stringify({ sub: 'recipient-account' })).toString('base64url')}.signature`;
+    const homeDomainAction = vi.fn(async () => ({
+      resources: [{
+        id: 'resource-a', teamId: 'team-a', displayName: 'Shared Codex account',
+        resourceRevision: 7, readiness: { kind: 'available' }, recoveryAction: null,
+        mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered',
+        sessionUsePolicy: 'personal_allowed', providerModels: [],
+        connectedServiceSelections: [{
+          source: 'team_resource', resourceId: 'resource-a', deliveryMode: 'brokered',
+        }],
+        sourcePresentation: {
+          kind: 'connected_service',
+          service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+        },
+      }],
+    }));
+    const executor = createCliActionExecutor({
+      token,
+      credentials: { token, credentialProvenance: 'stored_session', encryption: null },
+      sessionId: 'sess-1',
+      accountServerActionDeps: { homeDomainAction }, mode: 'plain', ctx: null,
+    });
+    bootstrapAccountSettingsContext.mockResolvedValueOnce({
+      source: 'network',
+      settings: accountSettingsParse({
+        connectedServicesDefaultAuthByAgentIdV1: {
+          v: 1,
+          bindingsByAgentId: { codex: { v: 2, bindingsByServiceId: {
+            'happier.agent.codex/openai-codex': {
+              source: 'team_resource', serverId, accountId: 'recipient-account', teamId: 'team-a',
+              resourceId: 'resource-a', expectedResourceRevision: 7, deliveryMode: 'brokered',
+            },
+          } } },
+        },
+      }),
+      settingsVersion: 8, loadedAtMs: 1234, settingsSecretsReadKeys: [], whenRefreshed: null,
+    });
+    readMachineOperationProtocolCapabilitiesV1.mockResolvedValue({
+      capabilities: { sessionSpawn: { protocolVersions: [1] } }, revision: 2,
+    });
+    lookupSessionsByTags.mockResolvedValue({ state: 'available', sessions: [] });
+    mockMachineSpawnSuccess('sess-team-explicit');
+    const explicitSlot = {
+      v: 1 as const,
+      slot: {
+        kind: 'connected_service_purpose' as const,
+        purpose: { consumer: { pluginId: 'happier.agent.codex', localId: 'codex' }, purpose: 'primary' },
+      },
+      resourceId: null,
+    };
+
+    await expect(executor.execute(
+      'session.spawn_new',
+      createSessionSpawnInput({
+        agentTarget: SESSION_SPAWN_AGENT_TARGETS.codex,
+        teamCredentialBindings: [explicitSlot],
+      }),
+      { surface: 'cli', defaultSessionId: 'sess-1' },
+    )).resolves.toMatchObject({ ok: true, result: { type: 'success' } });
+    expect(spawnMachineSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      teamCredentialBindings: [explicitSlot],
     }));
   });
 
@@ -2586,7 +2665,7 @@ describe('createCliActionExecutor', () => {
           value: { prepareForSend, resolveForDispatch, afterMessageAccepted },
         },
       }],
-      resolveGenerationLifecycle: () => ({
+      resolveOccurrenceLifecycle: () => ({
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
       }),

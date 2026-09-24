@@ -12,6 +12,7 @@ import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 
 import { styles } from './petCompanionActivityTrayStyles';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const noDragProps = {
     'data-pet-no-drag': 'true',
@@ -46,7 +47,6 @@ const REPLY_INPUT_MAX_LINES = 4;
 const REPLY_INPUT_VERTICAL_CHROME_PX = 13;
 const REPLY_INPUT_MIN_VISUAL_HEIGHT_PX = 30;
 const webReplyInputControlStyle = {
-    outlineStyle: 'none',
     resize: 'none',
 } as unknown as TextStyle;
 
@@ -188,7 +188,9 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
             data-pet-collapsed={active ? 'false' : 'true'}
             data-pet-reply-expanded={replyOpen ? 'true' : 'false'}
             accessibilityRole="button"
-            accessibilityLabel={`${statusLabel}: ${props.item.title}`}
+            accessibilityLabel={props.item.accessibilityContext
+                ? `${statusLabel}: ${props.item.title}, ${props.item.accessibilityContext}`
+                : `${statusLabel}: ${props.item.title}`}
             onHoverIn={() => props.onActiveChange(props.item, true)}
             onHoverOut={() => props.onActiveChange(props.item, false)}
             onFocus={() => props.onActiveChange(props.item, true)}
@@ -384,7 +386,7 @@ function PetCompanionActivityTrayItemCard(props: Readonly<{
                                     backgroundColor: draft.trim()
                                         ? primaryButtonTheme.background
                                         : primaryButtonTheme.disabled,
-                                    opacity: pressed ? 0.72 : 1,
+                                    opacity: pressed ? motionTokens.press.opacity : 1,
                                 },
                             ]}
                         >

@@ -414,8 +414,6 @@ describe('updateSessionMetadataTupleWithRetry', () => {
         agent: {
           backendMode: 'native',
           providerSessionId: 'claude-session-private',
-          backendId: 'claude',
-          provenance: 'first_party',
         },
       },
     });
@@ -450,8 +448,12 @@ describe('updateSessionMetadataTupleWithRetry', () => {
             v: 1,
             agentId: 'claude',
             agent: {
-              backendId: 'claude',
-              provenance: 'first_party',
+              agentExtra: {
+                runtimeHandle: {
+                  backendId: 'claude',
+                  provenance: 'first_party',
+                },
+              },
             },
           },
         },
@@ -828,6 +830,109 @@ describe('updateSessionMetadataTupleWithRetry', () => {
         agentState: { controlledByUser: true },
       },
     });
+  });
+
+  it('migrates a dormant layout-0 owner on an explicit request without any value change', async () => {
+    // A predecessor (0.2) owner tuple: one decrypted bag mixing recipient-safe
+    // presentation with machine-local owner-private facts.
+    const metadata = {
+      path: '/Users/owner/private-repo',
+      host: 'owner-laptop',
+      summary: { text: 'Historical work', updatedAt: 1 },
+    };
+    const initial = legacyOwnerSnapshot({
+      metadata,
+      agentState: { controlledByUser: false },
+      metadataVersion: 7,
+      metadataCiphertext: 'metadata-0.2-source',
+      agentStateVersion: 9,
+      agentStateCiphertext: 'agent-0.2-source',
+    });
+    const crypto = cryptoAdapter();
+    const commit = vi.fn(async (_patch: SessionMetadataTuplePatchV1) => ({
+      result: 'success' as const,
+      metadataVersion: 8,
+      agentStateVersion: 10,
+    }));
+    const mutateLegacy = vi.fn();
+
+    const result = await updateSessionMetadataTupleWithRetry({
+      initialSnapshot: initial,
+      mutation: { kind: 'ownerMigration' },
+      crypto,
+      commit,
+      mutateLegacy,
+      ownerMigrationCurrentness: {
+        expectedAccountEncryptionMode: 'plain',
+        expectedAccountContentPublicKeyFingerprint: null,
+      },
+    });
+
+    expect(mutateLegacy).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledTimes(1);
+    const patch = commit.mock.calls[0]![0];
+    if (patch.mode !== 'owner_migration') throw new Error('expected owner_migration');
+    expect(patch.source).toEqual({
+      metadataLayoutVersion: 0,
+      metadata: { version: 7, ciphertext: 'metadata-0.2-source' },
+      ownerMetadata: null,
+      agentState: { version: 9, ciphertext: 'agent-0.2-source' },
+    });
+    // Recipients get only the strict shared projection; owner-private facts
+    // stay in the owner envelope.
+    expect(patch.target.sharedMetadata.ciphertext).toContain('Historical work');
+    expect(patch.target.sharedMetadata.ciphertext).not.toContain('/Users/owner/private-repo');
+    expect(patch.target.sharedMetadata.ciphertext).not.toContain('owner-laptop');
+    expect(JSON.stringify(patch.target.ownerMetadata)).toContain('/Users/owner/private-repo');
+    expect(patch.target.agentState.ciphertext).toContain('"controlledByUser":false');
+    // The owner's complete view is unchanged by the split.
+    expect(result).toMatchObject({
+      mode: 'owner',
+      metadataLayoutVersion: 1,
+      metadataVersion: 8,
+      agentStateVersion: 10,
+      value: {
+        metadata: {
+          path: '/Users/owner/private-repo',
+          host: 'owner-laptop',
+          summary: { text: 'Historical work', updatedAt: 1 },
+        },
+        agentState: { controlledByUser: false },
+      },
+    });
+  });
+
+  it('treats an explicit owner-migration request on a migrated tuple as already complete', async () => {
+    const current = ownerSnapshot();
+    const commit = vi.fn();
+
+    await expect(updateSessionMetadataTupleWithRetry({
+      initialSnapshot: current,
+      mutation: { kind: 'ownerMigration' },
+      crypto: cryptoAdapter(),
+      commit,
+    })).resolves.toBe(current);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('refuses an explicit owner migration typed when owner currentness is unavailable', async () => {
+    const commit = vi.fn();
+    const mutateLegacy = vi.fn();
+
+    await expect(updateSessionMetadataTupleWithRetry({
+      initialSnapshot: legacyOwnerSnapshot({
+        metadata: { path: '/workspace', host: 'local' },
+        metadataVersion: 2,
+        metadataCiphertext: 'metadata-source',
+        agentStateVersion: 1,
+      }),
+      mutation: { kind: 'ownerMigration' },
+      crypto: cryptoAdapter(),
+      commit,
+      mutateLegacy,
+    })).rejects.toMatchObject({ code: 'metadata_privacy_upgrade_required' });
+    expect(commit).not.toHaveBeenCalled();
+    expect(mutateLegacy).not.toHaveBeenCalled();
   });
 
   it('re-resolves owner-migration currentness after a conflict refresh', async () => {

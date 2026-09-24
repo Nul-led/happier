@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 import {
     buildSessionWorkspaceLocationV1,
     parseSessionMcpSelectionV1Json,
+    type SessionMetadata,
     type SessionModelSelectionIntentV1,
 } from '@happier-dev/protocol';
 import {
@@ -144,13 +145,13 @@ export function captureSessionLaunchControlMetadata(params: Readonly<{
     return captured;
 }
 
-function applySessionConfigOptionOverridesToMetadata(
-    metadata: Metadata,
+export function applySessionConfigOptionOverridesToMetadata<TMetadata extends SessionMetadata>(
+    metadata: TMetadata,
     overrides: SessionMetadataConfigOptionOverrides | null,
-): Metadata {
+): TMetadata {
     if (!overrides) return metadata;
 
-    let nextMetadata = metadata as Record<string, unknown>;
+    let nextMetadata = metadata;
     for (const [configId, entry] of Object.entries(overrides.overrides)) {
         nextMetadata = applyAcpConfigOptionIntentSessionMetadata(nextMetadata, {
             v: 1,
@@ -160,7 +161,7 @@ function applySessionConfigOptionOverridesToMetadata(
         });
     }
 
-    return nextMetadata as Metadata;
+    return nextMetadata;
 }
 
 function applyInitialIntentMetadata(metadata: Metadata, opts: CreateSessionMetadataOptions): Metadata {

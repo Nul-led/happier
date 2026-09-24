@@ -23,6 +23,7 @@ import { areAccountSettingsJsonValuesEqual } from '@/sync/domains/settings/accou
 import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { sync } from '@/sync/sync';
+import { refreshSavedSecretCatalog } from '@/sync/engine/settings/savedSecretCatalogEngine';
 import {
   resolveSavedSecretReference,
   type SavedSecretReferenceResolution,
@@ -586,6 +587,18 @@ export function createAccountVoiceOperationService(input: Readonly<{
           const capturedSecret = accountAuthority.secret;
           if (accountAuthority.source.selection.kind !== 'savedSecret' || !capturedSecret) {
             throw operationError('voice_account_operation_unauthorized');
+          }
+          // A new Provider request is an authorization observation boundary
+          // for a shared secret (plan 10.08 §5.8, SECRET-05): AccountChange is
+          // only a hint, so the canonical catalog owner re-reads the Home's
+          // authorized answer before the value leaves this device. A revoked
+          // or rotated resource changes the captured resolution, which the
+          // authority lease below then reports as no longer current, so the
+          // request ends as a cancelled operation before any materialization.
+          if (accountAuthority.savedSecret?.kind === 'shared_resource' && accountAuthority.settingsScope) {
+            // A failed read leaves the catalog stale, which also changes the
+            // resolution: an unobservable Home never admits the value.
+            await refreshSavedSecretCatalog(accountAuthority.settingsScope).catch(() => undefined);
           }
           if (!isAuthorityCurrent(operationAuthority)) {
             throw operationError('voice_account_operation_cancelled');

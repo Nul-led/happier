@@ -29,12 +29,18 @@ vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: (message: string) => announceAccessibilityMessage(message),
 }));
 
+// Navigation is the router boundary.
+const routerPush = vi.hoisted(() => vi.fn());
+vi.mock('expo-router', () => ({
+    useRouter: () => ({ push: routerPush, replace: vi.fn(), back: vi.fn() }),
+}));
+
 const responsibilityApi = vi.hoisted(() => ({
     setSessionResponsibleAccount: vi.fn(),
     listSessionResponsibilityCandidates: vi.fn(),
     readSessionResponsibleAccount: vi.fn(),
 }));
-const collaborationAvailability = vi.hoisted(() => ({ value: 'full_collaboration' as string }));
+const collaborationAvailability = vi.hoisted(() => ({ value: 'available' as string }));
 vi.mock('@/hooks/session/useSessionCollaborationAvailability', async () => {
     const actual = await vi.importActual<typeof import('@/hooks/session/useSessionCollaborationAvailability')>('@/hooks/session/useSessionCollaborationAvailability');
     return {
@@ -115,8 +121,10 @@ function MountedResponsibilitySection(props: Readonly<{
     scope: typeof scope;
     actingAccountId: string | null;
     testID?: string;
+    onController?: (controller: ReturnType<typeof useSessionResponsibilityController>) => void;
 }>) {
     const controller = useSessionResponsibilityController(props.sessionId, props.scope);
+    props.onController?.(controller);
     const pickerHost = useSessionResponsibilityPickerHost({
         sessionId: props.sessionId,
         scope: props.scope,
@@ -146,7 +154,7 @@ describe('SessionResponsibilitySection', () => {
             nextCursor: null,
         });
         responsibilityApi.readSessionResponsibleAccount.mockReset();
-        collaborationAvailability.value = 'full_collaboration';
+        collaborationAvailability.value = 'available';
         storeState.session = null;
         storeState.applied = [];
         storeState.scopedSessionHookCalls = 0;
@@ -171,8 +179,8 @@ describe('SessionResponsibilitySection', () => {
         expect(screen.findByTestId('session-responsibility-row')).toBeNull();
     });
 
-    it('hides the section when collaboration availability is direct_only, never claiming "No one"', async () => {
-        collaborationAvailability.value = 'direct_only';
+    it('hides the section when Session sharing is unavailable on the Home, never claiming "No one"', async () => {
+        collaborationAvailability.value = 'unavailable';
         storeState.session = { id: 'session-1', responsibleAccountId: null, access: { capabilities: { assignResponsibility: true } } };
         const screen = await renderScreen(
             <MountedResponsibilitySection sessionId="session-1" scope={scope} actingAccountId="account-owner" />,
@@ -455,6 +463,9 @@ describe('SessionResponsibilitySection', () => {
     });
 });
 
+// The assignment that awaits its default confirmation runs on the real approval
+// lifecycle in `SessionResponsibilitySection.approval.test.tsx`.
+
 describe('useSessionResponsibilityController', () => {
     beforeEach(() => {
         responsibilityApi.setSessionResponsibleAccount.mockReset();
@@ -464,7 +475,7 @@ describe('useSessionResponsibilityController', () => {
             nextCursor: null,
         });
         responsibilityApi.readSessionResponsibleAccount.mockReset();
-        collaborationAvailability.value = 'full_collaboration';
+        collaborationAvailability.value = 'available';
         storeState.session = null;
         storeState.applied = [];
         storeState.scopedSessionHookCalls = 0;
@@ -660,6 +671,122 @@ describe('useSessionResponsibilityController', () => {
 
         expect(latest!.failure).toBe('session_access_authentication_unavailable');
         expect(latest!.candidates.candidates).toEqual([]);
+    });
+
+    it('stops offering assignment and drops disclosed candidates after a proven denial', async () => {
+        storeState.session = { id: 'session-1', responsibleAccountId: 'account-alice', responsibleAccount: summary('account-alice', 'Alice', 'alice'), access: { capabilities: { assignResponsibility: true } } };
+        responsibilityApi.listSessionResponsibilityCandidates.mockResolvedValue({
+            candidates: [{ accountId: 'account-bob', profile: profile('Bob', 'bob') }],
+            nextCursor: null,
+        });
+        const { SessionResponsibilityError } = await import('@/sync/api/session/apiSessionResponsibility');
+        responsibilityApi.setSessionResponsibleAccount.mockRejectedValue(
+            new SessionResponsibilityError('forbidden'),
+        );
+        let latest: ReturnType<typeof useSessionResponsibilityController> | null = null;
+        await renderScreen(<Probe onReady={(controller) => { latest = controller; }} />);
+        await act(async () => { await latest!.loadCandidates(); });
+        expect(latest!.candidates.candidates).toHaveLength(1);
+
+        await act(async () => { expect(await latest!.setResponsibleAccount('account-bob')).toBe(false); });
+
+        await vi.waitFor(() => {
+            expect(latest!.failure).toBe('forbidden');
+            // The Home just proved this Account may not assign; the cached
+            // projection is the stale answer, so the control closes.
+            expect(latest!.availability).toBe('read_only');
+            expect(latest!.candidates.candidates).toEqual([]);
+        });
+        // No candidate page is re-requested under a disclosure basis the Home refused.
+        expect(responsibilityApi.listSessionResponsibilityCandidates).toHaveBeenCalledTimes(1);
+        expect(responsibilityApi.readSessionResponsibleAccount).not.toHaveBeenCalled();
+    });
+
+    it('drops disclosed candidates when the candidate page itself is refused', async () => {
+        storeState.session = { id: 'session-1', responsibleAccountId: null, responsibleAccount: null, access: { capabilities: { assignResponsibility: true } } };
+        responsibilityApi.listSessionResponsibilityCandidates.mockResolvedValueOnce({
+            candidates: [{ accountId: 'account-bob', profile: profile('Bob', 'bob') }],
+            nextCursor: null,
+        });
+        let latest: ReturnType<typeof useSessionResponsibilityController> | null = null;
+        await renderScreen(<Probe onReady={(controller) => { latest = controller; }} />);
+        await act(async () => { await latest!.loadCandidates(); });
+        expect(latest!.candidates.candidates).toHaveLength(1);
+
+        const { SessionResponsibilityError } = await import('@/sync/api/session/apiSessionResponsibility');
+        responsibilityApi.listSessionResponsibilityCandidates.mockRejectedValueOnce(
+            new SessionResponsibilityError('forbidden'),
+        );
+        await act(async () => { await latest!.loadCandidates(); });
+
+        await vi.waitFor(() => {
+            expect(latest!.failure).toBe('forbidden');
+            expect(latest!.candidates.candidates).toEqual([]);
+            expect(latest!.availability).toBe('read_only');
+        });
+    });
+
+    // The exact typed 404 is final loss of Session read: the Home proved the
+    // disclosure basis is gone, exactly as a `forbidden` does.
+    it('withdraws candidates and the control on a definitive not-found from a page or a mutation', async () => {
+        storeState.session = { id: 'session-1', responsibleAccountId: null, responsibleAccount: null, access: { capabilities: { assignResponsibility: true } } };
+        responsibilityApi.listSessionResponsibilityCandidates.mockResolvedValue({
+            candidates: [{ accountId: 'account-bob', profile: profile('Bob', 'bob') }],
+            nextCursor: null,
+        });
+        const { SessionResponsibilityError } = await import('@/sync/api/session/apiSessionResponsibility');
+        responsibilityApi.setSessionResponsibleAccount.mockRejectedValue(new SessionResponsibilityError('not-found'));
+        let latest: ReturnType<typeof useSessionResponsibilityController> | null = null;
+        await renderScreen(<Probe onReady={(controller) => { latest = controller; }} />);
+        await act(async () => { await latest!.loadCandidates(); });
+        expect(latest!.candidates.candidates).toHaveLength(1);
+
+        await act(async () => { expect(await latest!.setResponsibleAccount('account-bob')).toBe(false); });
+        await vi.waitFor(() => {
+            expect(latest!.failure).toBe('not-found');
+            expect(latest!.availability).toBe('read_only');
+            expect(latest!.candidates.candidates).toEqual([]);
+        });
+        expect(responsibilityApi.readSessionResponsibleAccount).not.toHaveBeenCalled();
+    });
+
+    it('withdraws candidates when the candidate page answers a definitive not-found', async () => {
+        storeState.session = { id: 'session-1', responsibleAccountId: null, responsibleAccount: null, access: { capabilities: { assignResponsibility: true } } };
+        responsibilityApi.listSessionResponsibilityCandidates.mockResolvedValueOnce({
+            candidates: [{ accountId: 'account-bob', profile: profile('Bob', 'bob') }],
+            nextCursor: null,
+        });
+        let latest: ReturnType<typeof useSessionResponsibilityController> | null = null;
+        await renderScreen(<Probe onReady={(controller) => { latest = controller; }} />);
+        await act(async () => { await latest!.loadCandidates(); });
+        const { SessionResponsibilityError } = await import('@/sync/api/session/apiSessionResponsibility');
+        responsibilityApi.listSessionResponsibilityCandidates.mockRejectedValueOnce(new SessionResponsibilityError('not-found'));
+        await act(async () => { await latest!.loadCandidates({ query: 'b' }); });
+        await vi.waitFor(() => {
+            expect(latest!.candidates.candidates).toEqual([]);
+            expect(latest!.availability).toBe('read_only');
+        });
+    });
+
+    it('keeps last-good candidate rows for an unproven transport failure', async () => {
+        storeState.session = { id: 'session-1', responsibleAccountId: null, responsibleAccount: null, access: { capabilities: { assignResponsibility: true } } };
+        responsibilityApi.listSessionResponsibilityCandidates.mockResolvedValueOnce({
+            candidates: [{ accountId: 'account-bob', profile: profile('Bob', 'bob') }],
+            nextCursor: null,
+        });
+        let latest: ReturnType<typeof useSessionResponsibilityController> | null = null;
+        await renderScreen(<Probe onReady={(controller) => { latest = controller; }} />);
+        await act(async () => { await latest!.loadCandidates(); });
+
+        const { SessionResponsibilityError } = await import('@/sync/api/session/apiSessionResponsibility');
+        responsibilityApi.listSessionResponsibilityCandidates.mockRejectedValueOnce(
+            new SessionResponsibilityError('unknown'),
+        );
+        await act(async () => { await latest!.loadCandidates(); });
+
+        expect(latest!.candidates.candidates).toHaveLength(1);
+        expect(latest!.candidates.failed).toBe(true);
+        expect(latest!.availability).toBe('editable');
     });
 
     it('reconciles an unknown mutation outcome from the exact Home before retry', async () => {

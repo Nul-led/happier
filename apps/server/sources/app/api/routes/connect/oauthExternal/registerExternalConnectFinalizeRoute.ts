@@ -15,7 +15,11 @@ import {
 } from "../connectRoutes.oauthPending";
 import { PROVIDER_ALREADY_LINKED_ERROR } from "./oauthExternalErrors";
 import { connectPendingSchema, hasInvalidOAuthSecurityBinding } from "./oauthExternalSchemas";
-import { requireCurrentOAuthPendingRuntime, requireCurrentOAuthPendingRuntimeInTx } from "./oauthSecurityBinding";
+import {
+    isTeamOwnedConnectionAdmission,
+    requireCurrentOAuthPendingRuntime,
+    requireCurrentOAuthPendingRuntimeInTx,
+} from "./oauthSecurityBinding";
 import { oauthExternalFinalizeErrorHandler } from "./oauthExternalFinalizeErrorHandler";
 import {
     ExternalOAuthFinalizeConnectRequestSchema,
@@ -41,7 +45,10 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
             response: {
                 200: ExternalOAuthFinalizeConnectSuccessResponseSchema,
                 400: z.object({ error: z.enum(["invalid-pending", "invalid-username"]) }),
-                403: z.object({ error: z.enum(["forbidden", "not-eligible"]) }),
+                // A Team-admission connect is refused by `oauthExternalFinalizeErrorHandler`
+                // with the same typed Team outcome the authentication finalizers declare.
+                403: z.object({ error: z.enum(["forbidden", "not-eligible", "team_authentication_required"]) }),
+                503: z.object({ error: z.literal("team_authentication_unavailable") }),
                 404: z.object({ error: z.literal("unsupported-provider") }),
                 409: z.union([
                     z.object({ error: z.literal("auth_provider_configuration_changed") }),
@@ -112,8 +119,13 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
         let refreshToken: string | undefined;
         let pendingProfile: unknown;
         try {
-            const tokenBytes = privacyKit.decodeBase64(parsedValue.accessTokenEnc);
-            accessToken = decryptString(["user", request.userId, "connect", providerId, "pending", pendingKey], tokenBytes);
+            // An identity-proof-only provider persists no token in the continuation.
+            accessToken = parsedValue.accessTokenEnc
+                ? decryptString(
+                    ["user", request.userId, "connect", providerId, "pending", pendingKey],
+                    privacyKit.decodeBase64(parsedValue.accessTokenEnc),
+                )
+                : "";
             if (typeof parsedValue.refreshTokenEnc === "string" && parsedValue.refreshTokenEnc.trim()) {
                 const refreshBytes = privacyKit.decodeBase64(parsedValue.refreshTokenEnc);
                 refreshToken = decryptString(
@@ -146,11 +158,12 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
             });
             const token = await inTx(async (tx) => {
                 await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
-                if (!isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                    env: process.env,
-                    methodId: providerId,
-                    actionId: "connect",
-                })) return false;
+                if (!isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
+                    && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: providerId,
+                        actionId: "connect",
+                    })) return false;
                 if (!await consumeValidOAuthPendingInTx(tx, pending)) return null;
                 await prepared.connectInTx(tx);
                 const teamAuthenticationEvidence = isTeamAdmission

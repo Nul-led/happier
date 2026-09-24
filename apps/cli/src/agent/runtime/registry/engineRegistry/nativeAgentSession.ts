@@ -25,6 +25,7 @@ import {
     type SessionRuntimeIssueV1,
     type SessionInputCausalPermissionAuthorityV1,
     type PluginMachineMaterializationRefV1,
+    type PluginSourceCustodyV1,
 } from '@happier-dev/protocol';
 import {
     parsePermissionIntentAlias,
@@ -80,6 +81,7 @@ import {
     createProviderBindingLaunchMaterializationCleanup,
 } from '@/providers/spawn/compose';
 import { createAgentNativeHomeReadService } from '@/agent/runtime/nativeHomeFileService';
+import { verifySessionStructuredImageInput } from '@/session/attachments/resolveTrustedSessionAttachmentLocalImagePaths';
 import { resolveConnectedServiceNativeHomeRoot } from '@/daemon/connectedServices/stateSharing/applyConnectedServiceStateSharingDescriptor';
 import {
     createHostSessionPresentationOwner,
@@ -165,7 +167,7 @@ import {
     publishSlashCommandsToMetadata,
 } from '@/agent/acp/commands/publishSlashCommands';
 import { logger } from '@/ui/logger';
-import { readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
+import { createProviderErrorV1, readNonBlankOpaqueIdentifier } from '@happier-dev/protocol';
 import { createPublicAcpRuntimeProtocols } from '@/agent/acp/runtime/publicSession/createPublicAcpRuntimeProtocols';
 import type { UsageObservation } from '@/usage/usageObservation';
 import type { ResolvedSessionMcpServer } from '@/mcp/runtimeTypes';
@@ -1134,6 +1136,26 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
             });
         },
     });
+    const inputFiles: NonNullable<AgentSessionHostServices['inputFiles']> = Object.freeze({
+        async readVerifiedImage(input, options) {
+            assertSessionScopeAvailable('input-files');
+            const signal = combineSessionOperationSignal(params.signal, options?.signal);
+            signal.throwIfAborted();
+            const verification = await verifySessionStructuredImageInput({
+                cwd: params.directory,
+                image: input,
+                maxBytes: happierConfiguration.filesUploadMaxFileBytes,
+            });
+            assertSessionScopeAvailable('input-files');
+            signal.throwIfAborted();
+            if (verification.status !== 'verified') return null;
+            return Object.freeze({
+                url: `data:${verification.mimeType};base64,${verification.bytes.toString('base64')}`,
+                mimeType: verification.mimeType,
+                filename: verification.filename,
+            });
+        },
+    });
     const happierTools: NonNullable<AgentSessionHostServices['happierTools']> = Object.freeze({
         async resolveNativeBridge(request, options) {
             assertSessionScopeAvailable('happier-tools');
@@ -1213,6 +1235,7 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
                 });
             },
         }),
+        inputFiles,
         ...(nativeHome ? { nativeHome } : {}),
         ...(
             params.toolsDelivery === 'native_extension'
@@ -1531,12 +1554,19 @@ function resolveNativeAgentSessionManualCompaction(
     capabilities: AgentSessionCapabilities,
     session: AgentSessionRuntime,
 ): NativeAgentSessionManualCompaction {
-    if (capabilities.compaction?.manual !== true) return { declared: false };
+    const runtimeSupport = session.runtimeCapabilities
+        ?.sessionCapabilities
+        ?.compaction
+        ?.manual;
+    const supported = runtimeSupport === undefined
+        ? capabilities.compaction?.manual === true
+        : runtimeSupport === 'supported';
+    if (!supported) return { declared: false };
     const compact = session.compact;
     if (typeof compact !== 'function') {
         throw new PluginError({
             code: 'agent_session_manual_compaction_contract_mismatch',
-            message: `Native Agent '${agentId}' declares sessions.compaction.manual but its session runtime does not implement compact`,
+            message: `Native Agent '${agentId}' publishes manual compaction support but its session runtime does not implement compact`,
         });
     }
     return {
@@ -3852,8 +3882,9 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
         pluginId: string;
         pluginVersion: string;
         agentId: string;
-        generation: string;
+        occurrenceId: string;
         immutableGenerationId?: string | null;
+        sourceCustody?: PluginSourceCustodyV1;
         /**
          * Local liveness hint only. Authoritative generation admission remains
          * with the daemon-held registration when the runtime is proxied.
@@ -3964,6 +3995,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
     if (!identity) {
         throw new Error('Native Agent runtime identity is required');
     }
+    const sourceCustody = identity.sourceCustody ?? null;
     if ((params.runtime === undefined) === (params.createRuntime === undefined)) {
         throw new Error(
             'Native Agent session runtime requires exactly one runtime source',
@@ -4301,11 +4333,13 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 (source) => (source.instances?.length ?? 0) > 0,
             ) === true;
             if (providerOps && hasDeclaredInstances) {
+                if (!sourceCustody) {
+                    throw new Error('Plugin External Sessions require Agent source custody');
+                }
                 const readsConnectedProfiles = hasConnectedServiceProfileSourceInstances(params.agent);
                 let configuredConstructionFailed = false;
                 const lifecycle = await createLiveConfiguredPluginExternalSessionsAdapter({
                     agents: [params.agent],
-                    contributionGenerationId: identity.generation,
                     activeServerDir: happierConfiguration.activeServerDir,
                     readAccount: async (): Promise<ConfiguredExternalSessionSourceAccountProjection> => (
                         readsConnectedProfiles
@@ -4317,6 +4351,11 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         (_previous, next) => listener(resolveActiveAccountConfiguredExternalSessionSourceRevision(next)),
                     ),
                     isCurrent: identity.isCurrent,
+                    resolveAgentOccurrence: () => Object.freeze({
+                        occurrenceId: identity.occurrenceId,
+                        isCurrent: identity.isCurrent,
+                    }),
+                    resolveAgentSourceCustody: () => sourceCustody,
                     resolveProviderOps: async (agentId) => agentId === params.agent.id ? providerOps : null,
                     attach: async (ref, source) => {
                         const linked = await ensureExternalSessionLink({
@@ -4535,10 +4574,11 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 contributionId,
                 runtimeId: identity.agentId,
                 sessionId,
-                generationId: identity.generation,
+                occurrenceId: identity.occurrenceId,
                 ...(identity.immutableGenerationId
                     ? { immutableGenerationId: identity.immutableGenerationId }
                     : {}),
+                ...(sourceCustody ? { sourceCustody } : {}),
                 isCurrent: identity.isCurrent,
                 ...(params.resolveCallerMaterialization
                     ? { resolveCallerMaterialization: params.resolveCallerMaterialization }
@@ -4679,6 +4719,16 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
             const teamCredentialBinding = params.sessionInput.teamCredentialBindings?.find((candidate) => (
                 candidate.slot.kind === 'provider_model'
             ));
+            // The Team credential custody this runtime generation actually
+            // opened. An inheriting Execution Run consumes exactly this
+            // (`teams-lane-10/PLAN.md` §2.3), never a later re-derivation.
+            let liveTeamCredentialOpen: Readonly<{
+                resourceId: string;
+                expectedResourceRevision: number;
+                deliveryMode: string;
+                agentTargetKey: string;
+                modelId: string;
+            }> | null = null;
             if (
                 teamCredentialBinding?.slot.kind === 'provider_model'
                 && teamCredentialBinding.resourceId !== null
@@ -4693,6 +4743,13 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     agentTargetKey: modelSelection.ref.agentTargetKey,
                     modelId: modelSelection.ref.modelId,
                     signal,
+                });
+                liveTeamCredentialOpen = Object.freeze({
+                    resourceId: teamCredentialBinding.resourceId,
+                    expectedResourceRevision: teamCredentialBinding.expectedResourceRevision,
+                    deliveryMode: teamCredentialBinding.deliveryMode,
+                    agentTargetKey: modelSelection.ref.agentTargetKey,
+                    modelId: modelSelection.ref.modelId,
                 });
                 const values = { ...openInputs.launchEnvironment.values };
                 const unset = new Set(openInputs.launchEnvironment.unset);
@@ -4872,7 +4929,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 ui: createPluginInvocationPresentation({
                     currentSession: currentSessionUi,
                     signal,
-                    isGenerationCurrent: identity.isCurrent,
+                    isOccurrenceCurrent: identity.isCurrent,
                     ...(identity.immutableGenerationId
                         ? {
                             presentationOwner: createHostSessionPresentationOwner({
@@ -4921,7 +4978,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     pluginId: identity.pluginId,
                     contributionId,
                     agentId: params.agent.id,
-                    generationId: identity.generation,
+                    occurrenceId: identity.occurrenceId,
                     declarations: readAgentSessionCapabilities(
                         params.agent.richDefinition?.definition,
                     )?.workStateSources ?? [],
@@ -5255,35 +5312,50 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         ? {
                             prepareRunTeamCredentialProviderBinding: async (request: Readonly<{
                                 runId: string;
+                                agentId: string;
                                 resourceId: string;
                                 modelId: string;
                                 selection?: import('@happier-dev/protocol').TeamCredentialProviderModelSelectionV1;
                             }>) => {
                                 if (!request.runId.trim() || context.signal.aborted) return null;
-                                const parentBinding = params.sessionInput.teamCredentialBindings?.find((candidate) => (
-                                    candidate.slot.kind === 'provider_model'
-                                ));
-                                const parentExpectedResourceRevision = parentBinding
-                                    && 'expectedResourceRevision' in parentBinding
-                                    ? parentBinding.expectedResourceRevision
-                                    : null;
                                 const explicitSelection = request.selection;
-                                if (explicitSelection?.deliveryMode === 'direct') return null;
-                                if (!explicitSelection && (
-                                    parentBinding?.slot.kind !== 'provider_model'
-                                    || parentBinding.resourceId === null
-                                    || parentBinding.deliveryMode !== 'brokered'
-                                    || parentExpectedResourceRevision === null
-                                    || !modelSelection
-                                    || parentBinding.resourceId !== request.resourceId
-                                    || modelSelection.ref.modelId !== request.modelId
-                                )) return null;
-                                const resourceId = explicitSelection?.resourceId ?? parentBinding!.resourceId!;
+                                const inherited = explicitSelection ? null : liveTeamCredentialOpen;
+                                if (!explicitSelection) {
+                                    // The request names the Session's current accepted
+                                    // Team selection. An inheriting Run consumes the live
+                                    // custody (§2.3); when a live parent edit made the two
+                                    // disagree, the parent awaits its restart and the Run
+                                    // is refused typed, never launched natively
+                                    // (`02-…` §11.6, §11.8).
+                                    if (
+                                        !inherited
+                                        || inherited.resourceId !== request.resourceId
+                                        || inherited.modelId !== request.modelId
+                                    ) {
+                                        const changed = createProviderErrorV1('provider_binding_changed', {});
+                                        throw Object.assign(new Error(changed.code), { code: changed.code });
+                                    }
+                                    // Direct custody is material delivered to this
+                                    // Session's own Agent; the Run owner attests only
+                                    // a Run's OWN direct selection, so an inheriting
+                                    // Run cannot consume it. That is a typed
+                                    // operation-local incompatibility (`02-…` §11.8),
+                                    // never a native launch: the Run selects its own
+                                    // credential instead.
+                                    if (inherited.deliveryMode !== 'brokered') {
+                                        const unavailable = createProviderErrorV1(
+                                            'provider_credential_transport_unavailable',
+                                            {},
+                                        );
+                                        throw Object.assign(new Error(unavailable.code), { code: unavailable.code });
+                                    }
+                                }
+                                const resourceId = explicitSelection?.resourceId ?? inherited!.resourceId;
                                 const expectedResourceRevision = explicitSelection?.expectedResourceRevision
-                                    ?? parentExpectedResourceRevision!;
+                                    ?? inherited!.expectedResourceRevision;
                                 const agentTargetKey = explicitSelection?.agentTargetKey
-                                    ?? modelSelection!.ref.agentTargetKey;
-                                const modelId = explicitSelection?.modelId ?? modelSelection!.ref.modelId;
+                                    ?? inherited!.agentTargetKey;
+                                const modelId = explicitSelection?.modelId ?? inherited!.modelId;
                                 const prepared = await params.prepareTeamCredentialProviderBinding!({
                                     sessionId,
                                     resourceId,
@@ -5291,6 +5363,18 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                                     agentTargetKey,
                                     modelId,
                                     consumer: { kind: 'execution_run', executionRunId: request.runId },
+                                    // The Run's own Agent, which need not be this Session's.
+                                    executionRunAgentId: request.agentId,
+                                    // A Run's own selection is its own binding (`PLAN.md`
+                                    // §2.3); it never borrows or rewrites the parent's.
+                                    ...(explicitSelection
+                                        ? {
+                                            executionRunSelection: {
+                                                teamId: explicitSelection.teamId,
+                                                deliveryMode: explicitSelection.deliveryMode,
+                                            },
+                                        }
+                                        : {}),
                                     signal: context.signal,
                                 });
                                 if (!prepared.cleanup) {

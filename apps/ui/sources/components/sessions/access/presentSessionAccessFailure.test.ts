@@ -29,6 +29,18 @@ describe('session access failure presentation', () => {
         );
     });
 
+    it('explains a Home whose Session sharing is off without the update premise', () => {
+        const sharingOff = presentSessionAccessFailure(new SessionAccessApiError('session_access_sharing_unavailable', 404));
+        expect(sharingOff).toEqual({
+            code: 'session_access_sharing_unavailable',
+            message: 'This Home doesn’t support sharing Sessions with people.',
+            retryable: false,
+        });
+        expect(sharingOff.message).not.toMatch(/update/i);
+        // A Home that lacks a required capability keeps the genuine update copy.
+        expect(presentSessionAccessFailure(new SessionAccessApiError('unsupported_action')).message).toMatch(/Update it/);
+    });
+
     it('states that a Plain Session needs no encrypted-access preparation', () => {
         // `data_key_not_required` is the Home answering "this Session is not
         // encrypted", so it must never read as unreadable encrypted content.

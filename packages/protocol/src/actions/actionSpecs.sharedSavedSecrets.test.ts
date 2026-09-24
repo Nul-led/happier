@@ -163,6 +163,39 @@ describe('Shared Saved Secret Action contracts', () => {
       displayName: 'Rotated token',
       kind: 'token',
     });
+    // A mode conversion is the trust change an approver decides on (plan
+    // 10.08 §10.5/§18.3(3)), so the observation names it; the payload and
+    // the envelopes stay out.
+    expect(getActionSpec('secrets.shared.update').projectObservationInput?.({
+      resourceId: 'secret-1',
+      expectedRevision: 3,
+      displayName: 'Rotated token',
+      kind: 'token',
+      storedContent: { t: 'plain', v: { v: 1, name: 'Rotated token', kind: 'token', value: 'plain-value' } },
+      toMode: 'plain',
+    })).toEqual({
+      resourceId: 'secret-1',
+      expectedRevision: 3,
+      displayName: 'Rotated token',
+      kind: 'token',
+      toMode: 'plain',
+    });
+    const encryptedConversion = getActionSpec('secrets.shared.update').projectObservationInput?.({
+      resourceId: 'secret-1',
+      expectedRevision: 3,
+      displayName: 'Rotated token',
+      kind: 'token',
+      storedContent,
+      toMode: 'e2ee',
+      keyEnvelopes: [keyEnvelope],
+    });
+    expect(encryptedConversion).toEqual({
+      resourceId: 'secret-1',
+      expectedRevision: 3,
+      displayName: 'Rotated token',
+      kind: 'token',
+      toMode: 'e2ee',
+    });
 
     for (const actionId of [
       'secrets.shared.create',

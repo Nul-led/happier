@@ -86,6 +86,27 @@ describe('open Session Collaboration', () => {
         expect(consumeSessionCollaborationIntent({ serverId: 'home-b', sessionId: 'same-id' })?.focusTarget).toBe('access');
     });
 
+    it('publishes the handing-off surface\'s typed query without putting it in the URL', async () => {
+        const hook = await renderHook(() => useOpenSessionCollaboration({
+            target: { serverId: 'home-b', sessionId: 'same-id' },
+            replace: true,
+            focusTarget: 'access',
+        }));
+        hook.getCurrent()({ query: 'ada lovelace' });
+        // A private roster query is mounted-surface state, so it rides the
+        // in-process mailbox only; the route keeps carrying the focus alone.
+        expect(route.replace).toHaveBeenLastCalledWith('/session/same-id?serverId=home-b&collaborationFocus=access&right=collaboration');
+        expect(consumeSessionCollaborationIntent({ serverId: 'home-b', sessionId: 'same-id' }))
+            .toMatchObject({ focusTarget: 'access', query: 'ada lovelace' });
+
+        // This same command is also the chip's `onOpen`, which the collapsed
+        // composer action invokes with its focus-return ref. An options bag is
+        // what keeps that positional argument from being read as a query.
+        hook.getCurrent()({ current: null } as never);
+        expect(consumeSessionCollaborationIntent({ serverId: 'home-b', sessionId: 'same-id' }))
+            .not.toHaveProperty('query');
+    });
+
     it('does not navigate while an exact Home target is unresolved', async () => {
         const hook = await renderHook(() => useOpenSessionCollaboration({ target: null }));
         hook.getCurrent()();

@@ -4,6 +4,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { SessionAccessEditor } from '@/components/sessions/access/SessionAccessEditor';
+import { UnboundSessionHomeScopeCard } from '@/components/sessions/access/UnboundSessionHomeScopeCard';
 import { useLiveSessionAccessEditorController } from '@/components/sessions/access/useLiveSessionAccessEditorController';
 import { SessionResponsibilitySection } from '@/components/sessions/responsibility/SessionResponsibilitySection';
 import { useSessionResponsibilityController } from '@/components/sessions/responsibility/useSessionResponsibilityController';
@@ -28,9 +29,11 @@ import {
     readSessionCollaborationIntent,
     subscribeSessionCollaborationIntent,
     type SessionCollaborationFocusTarget,
+    type SessionCollaborationIntent,
 } from './sessionCollaborationIntent';
 import { useConsumeSessionCollaborationRouteFocus } from './useOpenSessionCollaboration';
 import { useExactSessionSnapshot } from './useExactSessionSnapshot';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { SessionExternalSharingAvailabilitySection } from './SessionExternalSharingAvailabilitySection';
 
 const styles = StyleSheet.create({
@@ -44,36 +47,16 @@ const styles = StyleSheet.create({
 /** Hosts supply geometry; each domain child retains its own state and failure boundary. */
 export function SessionCollaborationSurface({ target }: Readonly<{ target: SessionAddress }>): React.ReactElement {
     const resolution = useServerCredentialAccountScopeResolution(target.serverId);
-    const scope = resolution.kind === 'bound' ? resolution.scope : null;
     return (
         <View style={styles.surface} testID="session-collaboration-surface">
-            {scope ? (
+            {resolution.kind === 'bound' ? (
                 <SessionCollaborationAccountContent
-                    key={`${serverAccountScopeKeySuffix(scope)}:${sessionAddressKey({ serverId: scope.serverId, sessionId: target.sessionId })}`}
-                    scope={scope}
+                    key={`${serverAccountScopeKeySuffix(resolution.scope)}:${sessionAddressKey({ serverId: resolution.scope.serverId, sessionId: target.sessionId })}`}
+                    scope={resolution.scope}
                     sessionId={target.sessionId}
                 />
-            ) : resolution.kind === 'resolving' ? (
-                <SurfaceStateCard
-                    testID="session-collaboration-home-loading"
-                    kind="loading"
-                    title={t('session.collaboration.title')}
-                    reason={t('common.loading')}
-                    accessibilitySemantics="status"
-                />
-            ) : resolution.kind === 'unknown_home' ? (
-                <SurfaceStateCard
-                    testID="session-collaboration-unknown-home"
-                    kind="unavailable"
-                    title={t('teams.join.unknownHomeTitle')}
-                />
             ) : (
-                <SurfaceStateCard
-                    testID="session-collaboration-signed-out"
-                    kind="unavailable"
-                    title={t('homeGovernance.signedOutTitle')}
-                    reason={t('homeGovernance.signedOutBody')}
-                />
+                <UnboundSessionHomeScopeCard resolution={resolution} serverId={target.serverId} testIDPrefix="session-collaboration" />
             )}
         </View>
     );
@@ -92,6 +75,12 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
         () => null,
     );
     const initialFocus = React.useRef(routeFocus ?? pendingIntent?.focusTarget ?? null).current;
+    // The same one-shot intent, kept for the Access body: the handing-off
+    // compact editor is unmounted by the time this surface renders, so the
+    // query it carried is read here and applied once by the destination's own
+    // controller. Identity is the frozen intent itself, so a later handoff for
+    // the same text still applies and a re-render never re-applies one.
+    const [handoff, setHandoff] = React.useState<SessionCollaborationIntent | null>(() => pendingIntent);
     const [mode, setMode] = React.useState<'conversations' | 'access'>(() => (
         initialFocus === 'access' || initialFocus === 'publicLink' || !conversationsEnabled ? 'access' : 'conversations'
     ));
@@ -143,6 +132,7 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
         appliedIntentId.current = pendingIntent.intentId;
         const consumed = consumeSessionCollaborationIntent(target);
         if (!consumed) return;
+        setHandoff(consumed);
         applyFocus(consumed.focusTarget);
     }, [applyFocus, pendingIntent, target]);
 
@@ -189,7 +179,7 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
         // A Home that stops projecting responsibility, or a target that is back to
         // first load, no longer has a row to pick for: dismiss rather than leave a
         // step over a section that is not rendered.
-        available: availability === 'full_collaboration'
+        available: availability === 'available'
             && (responsibilityController.availability === 'editable' || responsibilityController.availability === 'read_only'),
     });
     return (
@@ -204,7 +194,7 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
                 testID="session-collaboration-main-panel"
             >
                 <View style={styles.surface}>
-                    {availability === 'full_collaboration' ? (
+                    {availability === 'available' ? (
                         <View ref={responsibleAnchor} tabIndex={-1} testID="session-collaboration-responsible-anchor">
                             <SessionResponsibilitySection
                                 controller={responsibilityController}
@@ -248,6 +238,7 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
                                     scope={props.scope}
                                     sessionId={props.sessionId}
                                     namedAccessAvailable={availability !== 'unavailable'}
+                                    handoff={handoff}
                                 />
                             </RetainedPanelSurface>
                         ) : null}
@@ -260,8 +251,24 @@ function SessionCollaborationAccountContent(props: Readonly<{ scope: ServerAccou
 }
 
 /** Named-access editing only exists where the Home supports it; publication is a separate child. */
-function SessionNamedAccessEditor(props: Readonly<{ scope: ServerAccountScope; sessionId: string }>) {
-    const controller = useLiveSessionAccessEditorController({ scope: props.scope, sessionId: props.sessionId });
+function SessionNamedAccessEditor(props: Readonly<{
+    scope: ServerAccountScope;
+    sessionId: string;
+    handoff: SessionCollaborationIntent | null;
+    /** The exact snapshot's persisted metadata layout; null until that snapshot is read. */
+    metadataLayoutVersion: number | null;
+}>) {
+    const controller = useLiveSessionAccessEditorController({
+        scope: props.scope, sessionId: props.sessionId, metadataLayoutVersion: props.metadataLayoutVersion,
+    });
+    // The controller stays the single owner of the query; this only replays the
+    // one-shot handoff into it, after the controller's own scope reset has run.
+    const setQuery = controller.actions.setQuery;
+    const handoff = props.handoff;
+    React.useEffect(() => {
+        if (handoff?.query === undefined) return;
+        setQuery(handoff.query);
+    }, [handoff, setQuery]);
     return <SessionAccessEditor {...controller} presentation="full" testID="session-access-editor:collaboration" />;
 }
 
@@ -270,6 +277,8 @@ const SessionCollaborationAccessBody = React.forwardRef<React.ElementRef<typeof 
     sessionId: string;
     publicLinkAnchor: React.RefObject<React.ElementRef<typeof View> | null>;
     namedAccessAvailable: boolean;
+    /** The one-shot intent this surface consumed, carried for its typed query. */
+    handoff: SessionCollaborationIntent | null;
 }>>((props, ref) => {
     const snapshot = useExactSessionSnapshot(props.scope, props.sessionId);
     const session = snapshot.kind === 'ready' ? snapshot.session : null;
@@ -286,7 +295,8 @@ const SessionCollaborationAccessBody = React.forwardRef<React.ElementRef<typeof 
                 availability={snapshot.kind === 'ready' ? externalAvailability : null}
             />
             {props.namedAccessAvailable ? (
-                <SessionNamedAccessEditor scope={props.scope} sessionId={props.sessionId} />
+                <SessionNamedAccessEditor scope={props.scope} sessionId={props.sessionId} handoff={props.handoff}
+                    metadataLayoutVersion={session ? readSessionMetadataLayoutVersion(session.metadataLayoutVersion) : null} />
             ) : (
                 <SurfaceStateCard
                     testID="session-collaboration-named-access-unavailable"

@@ -120,6 +120,8 @@ function publicAuthoringProjection() {
         pluginId: manifest.id,
         contributionKind: 'surfacePlacement',
         descriptorId: view.id,
+        // The daemon producer stamps every projected UI entry with its plugin-slot occurrence.
+        occurrenceId: `${manifest.id}#1`,
         binding,
         target: binding.target,
         renderer: { kind: primaryRenderer.kind, contributionId: primaryRenderer.id },
@@ -163,6 +165,7 @@ function projection(options: Readonly<{
         pluginId: SURFACE.pluginId,
         contributionKind: 'surfacePlacement',
         descriptorId: SURFACE.localId,
+        occurrenceId: `${SURFACE.pluginId}#${options.generation ?? 3}`,
         binding,
         target: binding.target,
         renderer: { kind: 'reactNative', contributionId: 'review-native' },
@@ -555,8 +558,14 @@ describe('SessionWidgetHost installed surface placements', () => {
         expect(state.activeMountKeys).toEqual(new Set([String(state.mounts.at(-1)?.mountInstanceKey)]));
     });
 
-    it('never runs an inline transcript preview, even when it is the primary host', async () => {
-        await renderPlacement({ host: 'inlineTranscript', primaryHost: 'inlineTranscript', density: 'preview' });
+    it('never runs an inline transcript row, because the shell never elects that placement', async () => {
+        // The transcript row passes the shell's answer straight through
+        // (`SessionBoardActionResultReference.tsx:44-48`), and the visibility owner never puts
+        // `inlineTranscript` in `visibleHosts` — so `primaryHost` is whatever pane is really
+        // showing the item, or nothing at all. Both are previews here.
+        await renderPlacement({ host: 'inlineTranscript', primaryHost: null, density: 'preview' });
+        expect(state.mounts).toHaveLength(0);
+        await renderPlacement({ host: 'inlineTranscript', primaryHost: 'details', density: 'preview' });
         expect(state.mounts).toHaveLength(0);
     });
 

@@ -145,6 +145,37 @@ it('associates the email problem with the field that owns it', async () => {
         .toContain(error?.props.nativeID);
 });
 
+it('shows the reset request its own field error and submits from the address field', async () => {
+    screen = await renderPanel({ action: 'login' });
+    await screen.pressByTestIdAsync('email-password-forgot');
+
+    await screen.pressByTestIdAsync('email-password-request-reset');
+    const emptyError = screen.findByTestId('email-password-email-error');
+    expect(emptyError).not.toBeNull();
+    expect(screen.findByTestId('email-password-email')?.props['aria-describedby'])
+        .toContain(emptyError?.props.nativeID);
+    expect(nativeEmail.requestReset).not.toHaveBeenCalled();
+
+    // The same address acceptance the rest of this surface uses, not a bare
+    // emptiness check: a malformed address is refused before the request.
+    await act(async () => {
+        screen!.findByTestId('email-password-email')!.props.onChangeText('not-an-address');
+    });
+    await screen.pressByTestIdAsync('email-password-request-reset');
+    expect(screen.findByTestId('email-password-email-error')).not.toBeNull();
+    expect(nativeEmail.requestReset).not.toHaveBeenCalled();
+
+    // There is no password field in this view, so Return submits the request.
+    nativeEmail.requestReset.mockResolvedValue(undefined);
+    await act(async () => {
+        screen!.findByTestId('email-password-email')!.props.onChangeText('person@example.test');
+    });
+    const field = screen.findByTestId('email-password-email');
+    expect(field?.props.returnKeyType).toBe('go');
+    await act(async () => { field!.props.onSubmitEditing(); });
+    expect(nativeEmail.requestReset).toHaveBeenCalledWith(expect.any(Function), 'person@example.test');
+});
+
 it('offers the Account protections as an announced selection', async () => {
     screen = await renderPanel({
         action: 'provision',

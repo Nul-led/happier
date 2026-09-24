@@ -770,8 +770,11 @@ const HomeIdentityDeploymentSections = React.memo(function HomeIdentityDeploymen
  * page. This edits the Home-wide Team provider ceiling through the same
  * revision-guarded policy owner as the rest of Home governance.
  *
- * An inherited or unreadable policy is shown as-is. The UI does not fabricate
- * the deployment ceiling needed to turn either state into an editable list.
+ * An inherited (or unreadable) policy is edited from the deployment ceiling the
+ * Home projects (`identityServices.teamProviderKinds`): inheritance means "every
+ * kind this deployment can run", with Team JIT and GitHub Enterprise origins off
+ * until the Home explicitly allows them. The first save writes the narrowing.
+ * Kinds the deployment cannot run can be removed but never added.
  */
 export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenticationPolicySections(
     props: Readonly<{ context: HomeAdministrationContext }>,
@@ -814,7 +817,17 @@ export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenti
         setApprovalChange(null);
     }, [context.scope.serverId, context.scope.accountId]);
 
-    const committed = providerRead?.status === 'narrowed' ? providerRead.policy : null;
+    const ceilingKinds = context.projection.identityServices?.teamProviderKinds ?? null;
+    const committed: HomeTeamProviderPolicyV1 | null = providerRead?.status === 'narrowed'
+        ? providerRead.policy
+        : providerRead && ceilingKinds
+            ? {
+                v: 1,
+                allowedTeamProviderKinds: [...ceilingKinds],
+                teamJitAllowed: false,
+                approvedGitHubEnterpriseOrigins: [],
+            }
+            : null;
     const committedKey = committed ? JSON.stringify(committed) : '';
     React.useEffect(() => {
         setDraft((current) => {
@@ -968,7 +981,7 @@ export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenti
         );
     }
 
-    if (providerRead.status === 'inherited') {
+    if (providerRead.status === 'inherited' && !committed) {
         return (
             <>
                 <SignInPolicyEditor context={context} />
@@ -980,7 +993,7 @@ export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenti
         );
     }
 
-    if (providerRead.status === 'unreadable') {
+    if (providerRead.status === 'unreadable' && !committed) {
         return (
             <>
                 <SignInPolicyEditor context={context} />
@@ -997,14 +1010,22 @@ export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenti
             <SignInPolicyEditor context={context} />
             <ItemGroup
                 title={t('homeGovernance.manageTeams')}
-                footer={editable ? undefined : (
-                    context.mutationsAvailable
-                        ? t('homeGovernance.policyReadOnly')
-                        : t('homeGovernance.reasonHomeUnreachable')
-                )}
+                footer={editable
+                    ? (providerRead.status === 'inherited'
+                        ? t('homeGovernance.authInheritedDescription')
+                        : providerRead.status === 'unreadable'
+                            ? t('homeGovernance.authUnreadableDescription')
+                            : undefined)
+                    : (
+                        context.mutationsAvailable
+                            ? t('homeGovernance.policyReadOnly')
+                            : t('homeGovernance.reasonHomeUnreachable')
+                    )}
             >
                 {TEAM_PROVIDER_KINDS.map((kind) => {
                     const checked = selected?.allowedTeamProviderKinds.includes(kind) === true;
+                    // A kind the deployment cannot run may be removed, never added.
+                    const addable = checked || ceilingKinds === null || ceilingKinds.includes(kind);
                     return (
                         <Item
                             key={kind}
@@ -1014,8 +1035,8 @@ export const HomeAuthenticationPolicySections = React.memo(function HomeAuthenti
                             webRole="checkbox"
                             selected={checked}
                             loading={pending === kind}
-                            disabled={!editable || pending !== null}
-                            onPress={editable ? () => toggleProvider(kind) : undefined}
+                            disabled={!editable || pending !== null || !addable}
+                            onPress={editable && addable ? () => toggleProvider(kind) : undefined}
                             showChevron={false}
                         />
                     );

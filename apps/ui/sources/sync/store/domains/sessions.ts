@@ -172,6 +172,47 @@ export function isSessionRetiredForServer(
     return areServerProfileIdentifiersEquivalent(tombstone, normalizedServerId);
 }
 
+/**
+ * In-memory currentness for list reads against committed retirements.
+ *
+ * `deleteSession` (the one retirement writer) stamps each retirement with a
+ * monotonic sequence. A list read captures the sequence when it starts and, when
+ * its response lands, drops only the rows whose exact Home retired after that
+ * capture: the valid rows of the same page survive, a same-id Session on another
+ * Home is untouched, and a read that starts after the retirement (a later regrant)
+ * admits the row again. Nothing is persisted and no request registry is kept.
+ */
+let sessionRetirementSequence = 0;
+const sessionRetirementsBySessionId = new Map<string, Array<Readonly<{ serverId: string | null; sequence: number }>>>();
+
+export type SessionListRetirementFence = number;
+
+export function captureSessionListRetirementFence(): SessionListRetirementFence {
+    return sessionRetirementSequence;
+}
+
+export function wasSessionRetiredSinceFence(
+    fence: SessionListRetirementFence,
+    serverId: string | null | undefined,
+    sessionId: string,
+): boolean {
+    const retirements = sessionRetirementsBySessionId.get(sessionId);
+    if (!retirements) return false;
+    const normalizedServerId = normalizeTrimmedString(serverId);
+    return retirements.some((retirement) => retirement.sequence > fence && (
+        retirement.serverId === null
+        || !normalizedServerId
+        || areServerProfileIdentifiersEquivalent(retirement.serverId, normalizedServerId)
+    ));
+}
+
+function recordSessionRetirement(sessionId: string, serverId: string | null): void {
+    sessionRetirementSequence += 1;
+    const retirements = sessionRetirementsBySessionId.get(sessionId) ?? [];
+    retirements.push({ serverId, sequence: sessionRetirementSequence });
+    sessionRetirementsBySessionId.set(sessionId, retirements);
+}
+
 type SessionModelMode = NonNullable<Session['modelMode']>;
 type ScmOperationLogEntry = import('../../runtime/orchestration/projectManager').ScmProjectOperationLogEntry;
 type ScmInFlightOperation = import('../../runtime/orchestration/projectManager').ScmProjectInFlightOperation;
@@ -3066,6 +3107,9 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
         },
         deleteSession: (sessionId: string, serverId?: string | null) => set((state) => {
             const targetServerId = normalizeTrimmedString(serverId) || null;
+            // Fence every list read already in flight for this exact Home (or every
+            // Home, when no Home was addressed) before its response can reinsert the row.
+            recordSessionRetirement(sessionId, targetServerId);
             const retireActiveCarrier = shouldRetireSessionCarrierForServer(
                 state.sessions[sessionId]?.serverId,
                 targetServerId,

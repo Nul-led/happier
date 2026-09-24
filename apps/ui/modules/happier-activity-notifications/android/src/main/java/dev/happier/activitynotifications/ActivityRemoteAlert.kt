@@ -21,6 +21,7 @@ data class ActivityRemoteAlert(
   val sequenceDomain: String?,
   val discussionId: String?,
   val turnId: String?,
+  val requestId: String?,
   val version: Int,
 ) {
   /**
@@ -42,6 +43,7 @@ data class ActivityRemoteAlert(
   val eventIdentity: String?
     get() = when {
       turnId != null -> "turn:$turnId"
+      requestId != null -> "request:$requestId"
       version != 2 || messageSeq == null -> null
       sequenceDomain == "discussion" && discussionId != null ->
         "message-seq:discussion:$discussionId:$messageSeq"
@@ -69,6 +71,7 @@ data class ActivityRemoteAlert(
     val SUPPORTED_EVENT_TYPES = setOf("ready", "permission_request", "user_action_request", "assigned", "failed", "cancelled", "human_message", "message", "discussion_mention", "source_unavailable")
     private val SEQUENCED_EVENT_TYPES = setOf("ready", "human_message", "message", "discussion_mention")
     private val TURN_EVENT_TYPES = setOf("failed", "cancelled")
+    private val REQUEST_EVENT_TYPES = setOf("permission_request", "user_action_request")
     private val SUPPORTED_PREVIEW_BEHAVIORS = setOf("status_only", "title_only", "include_preview")
 
     @JvmStatic
@@ -93,6 +96,7 @@ data class ActivityRemoteAlert(
       var sequenceDomain: String? = null
       var discussionId: String? = null
       var turnId: String? = null
+      var requestId: String? = null
       val messageSeq = if (eventType in SEQUENCED_EVENT_TYPES) {
         if (version == 1) {
           if (!event.hasExactly("type", "messageSeq")) return null
@@ -104,7 +108,7 @@ data class ActivityRemoteAlert(
           } else if (sequenceDomain == "discussion") {
             if (!event.hasExactly("type", "sequenceDomain", "discussionId", "messageSeq") ||
               eventType == "ready") return null
-            discussionId = event.requiredDiscussionId("discussionId") ?: return null
+            discussionId = event.requiredBoundedIdentifier("discussionId") ?: return null
           } else return null
         }
         event.requiredPositiveInt("messageSeq") ?: return null
@@ -112,11 +116,19 @@ data class ActivityRemoteAlert(
         if (!event.hasExactly("type", "turnId")) return null
         turnId = event.requiredString("turnId") ?: return null
         null
+      } else if (version == 2 && eventType in REQUEST_EVENT_TYPES) {
+        // The committed request id is optional in the wire union, so both the
+        // bare category and the identified request are admitted.
+        if (event.has("requestId")) {
+          if (!event.hasExactly("type", "requestId")) return null
+          requestId = event.requiredBoundedIdentifier("requestId") ?: return null
+        } else if (!event.hasExactly("type")) return null
+        null
       } else if (!event.hasExactly("type")) return null
       else null
       return ActivityRemoteAlert(
         serverId, sessionId, accountId, eventType, previewBehavior,
-        messageSeq, sequenceDomain, discussionId, turnId, version,
+        messageSeq, sequenceDomain, discussionId, turnId, requestId, version,
       )
     }
 
@@ -125,7 +137,7 @@ data class ActivityRemoteAlert(
       return value.ifEmpty { null }
     }
 
-    private fun JSONObject.requiredDiscussionId(key: String): String? =
+    private fun JSONObject.requiredBoundedIdentifier(key: String): String? =
       requiredString(key)?.takeIf { it.length <= 191 }
 
     private fun JSONObject.requiredPositiveInt(key: String): Int? {

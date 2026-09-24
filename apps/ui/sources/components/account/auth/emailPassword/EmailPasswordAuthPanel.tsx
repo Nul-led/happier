@@ -5,7 +5,7 @@ import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { EmailPasswordEntryAction } from '@/auth/capabilities/authMethodCapabilities';
-import { resolveEmailPasswordProvisionModes } from '@/auth/capabilities/authMethodCapabilities';
+import { resolveEmailPasswordProvisionDefault, resolveEmailPasswordProvisionModes } from '@/auth/capabilities/authMethodCapabilities';
 import { loginEmailPassword, type EmailPasswordLoginTarget } from '@/auth/password/loginEmailPassword';
 import {
     provisionEmailPasswordAccount,
@@ -54,6 +54,8 @@ export type EmailPasswordAuthPanelProps = Readonly<{
     action: EmailPasswordEntryAction;
     /** Home Account-mode policy for this action: keyed = E2EE, keyless = Plain. */
     mode: 'keyed' | 'keyless' | 'either';
+    /** The Home's recommended protection for a new Account, when it states one. */
+    recommendedProvisionMode?: 'plain' | 'e2ee';
     homeLabel?: string;
     /** A validated bounded admission bearer, when creation came from an invitation. */
     admission?: NativeAccountAdmissionV1;
@@ -98,7 +100,8 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
     const [draft, setDraft] = React.useState<EmailPasswordDraft>(() => createEmailPasswordDraft(props.initialEmail ?? ''));
     const [view, setView] = React.useState<PanelView>(() => ({ kind: props.action }));
     const permittedModes = React.useMemo(() => resolveEmailPasswordProvisionModes(props.mode), [props.mode]);
-    const [accountMode, setAccountMode] = React.useState<'plain' | 'e2ee'>(() => permittedModes[0]!);
+    const defaultAccountMode = resolveEmailPasswordProvisionDefault(props.mode, props.recommendedProvisionMode);
+    const [accountMode, setAccountMode] = React.useState<'plain' | 'e2ee'>(defaultAccountMode);
     const [problem, setProblem] = React.useState<EmailPasswordProblem | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
@@ -127,12 +130,14 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         setProblem(null);
         setDraft(createEmailPasswordDraft(props.initialEmail ?? ''));
         setView({ kind: props.action });
-    }, [props.action, props.initialEmail, targetScope]);
+        // Another Home (or a changed Home policy) starts from its own recommendation.
+        setAccountMode(defaultAccountMode);
+    }, [defaultAccountMode, props.action, props.initialEmail, targetScope]);
     React.useEffect(() => {
         // A late permitted-mode narrowing must never leave a selection the Home
         // would refuse; it also must not silently reword the person's choice.
-        if (!permittedModes.includes(accountMode)) setAccountMode(permittedModes[0]!);
-    }, [accountMode, permittedModes]);
+        if (!permittedModes.includes(accountMode)) setAccountMode(defaultAccountMode);
+    }, [accountMode, defaultAccountMode, permittedModes]);
 
     /**
      * Whether this Home must see proven mailbox control before an Account can
@@ -291,20 +296,29 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
 
     const submitResetRequest = React.useCallback(() => run(async () => {
         const isCurrent = captureCurrentTarget();
-        const email = draft.email.trim();
-        if (!email) {
-            focusProblem({ field: 'email', messageKey: 'settingsAccount.nativePassword.emailRequired' });
+        // The address-only acceptance every other native writer on this surface
+        // uses. A bare emptiness check would send a malformed address.
+        const validated = validateEmailPasswordDraft({ purpose: 'verify_email', draft });
+        if (!validated.ok) {
+            focusProblem(validated.problem);
             return;
         }
-        await requestNativePasswordReset(publicRequest(), email);
+        await requestNativePasswordReset(publicRequest(), validated.email);
         if (!isCurrent()) return;
         setResent(view.kind === 'reset_requested');
-        setView({ kind: 'reset_requested', email });
-    }), [captureCurrentTarget, draft.email, focusProblem, publicRequest, run, view.kind]);
+        setView({ kind: 'reset_requested', email: validated.email });
+    }), [captureCurrentTarget, draft, focusProblem, publicRequest, run, view.kind]);
 
     const emailErrorId = 'email-password-email-error';
     const emailInvalid = problem?.field === 'email' && problemMessage !== null;
-    const emailField = (autoComplete: 'email' | 'username') => (
+    // The address field owns its refusal in every view, exactly as `PasswordField`
+    // does, so the announced error is always rendered and `aria-describedby`
+    // always resolves. `onSubmitEditing` names the branch's real next step; a
+    // view with no password field submits from here instead of focusing one.
+    const emailField = (
+        autoComplete: 'email' | 'username',
+        onSubmitEditing?: () => void,
+    ) => (
         <FieldItem label={t('settingsAccount.nativePassword.email')}>
             <TextInput
                 ref={emailRef as never}
@@ -333,9 +347,20 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 autoComplete={autoComplete}
                 textContentType="username"
                 editable={!busy}
-                returnKeyType="next"
-                onSubmitEditing={() => passwordRef.current?.focus()}
+                returnKeyType={onSubmitEditing ? 'go' : 'next'}
+                onSubmitEditing={onSubmitEditing ?? (() => passwordRef.current?.focus())}
             />
+            {emailInvalid ? (
+                <Text
+                    testID={emailErrorId}
+                    nativeID={emailErrorId}
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="polite"
+                    style={[styles.formError, { color: theme.colors.status.error }]}
+                >
+                    {problemMessage}
+                </Text>
+            ) : null}
         </FieldItem>
     );
 
@@ -436,7 +461,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             <View style={styles.root}>
                 <Text style={styles.title}>{t('settingsAccount.nativePassword.forgotTitle')}</Text>
                 <Text style={styles.hint}>{t('settingsAccount.nativePassword.forgotExplanation')}</Text>
-                {emailField('email')}
+                {emailField('email', submitResetRequest)}
                 {formProblem}
                 {progressNotice}
                 <WelcomeActionCard
@@ -481,18 +506,10 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             {props.homeLabel ? (
                 <Text testID="email-password-home-label" style={styles.hint}>{props.homeLabel}</Text>
             ) : null}
-            {emailField(provisioning ? 'email' : 'username')}
-            {emailInvalid ? (
-                <Text
-                    testID={emailErrorId}
-                    nativeID={emailErrorId}
-                    accessibilityRole="alert"
-                    accessibilityLiveRegion="polite"
-                    style={[styles.formError, { color: theme.colors.status.error }]}
-                >
-                    {problemMessage}
-                </Text>
-            ) : null}
+            {emailField(
+                provisioning ? 'email' : 'username',
+                collectsCredentials ? undefined : submitProvision,
+            )}
             {collectsCredentials ? (
             <PasswordField
                 testID="email-password-password"

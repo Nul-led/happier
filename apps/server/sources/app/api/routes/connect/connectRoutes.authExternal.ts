@@ -36,10 +36,11 @@ import {
 import {
     resolveCurrentAccountDirectoryOAuthTarget,
 } from "./oauthExternal/accountDirectoryOAuthTarget";
-import { inTx } from "@/storage/inTx";
-import { resolveTeamInvitationFreshAccountAdmissionReferenceInTx } from "@/app/teams/invitations/freshAccountAdmission";
-import type { TeamOAuthAdmissionSource } from "@/app/teams/memberships/teamOAuthAdmissionSource";
 import { isTeamMembershipAdmissionEnabled } from "@/app/teams/memberships/membershipService";
+import {
+    resolveTeamAdmissionStartBinding,
+    type TeamAdmissionStartBinding,
+} from "./oauthExternal/teamAdmissionStartBinding";
 
 export function connectAuthExternalRoutes(app: Fastify) {
     //
@@ -124,7 +125,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
         const teamAdmission = request.query.purpose === "team_admission";
         const teamId = teamAdmission ? String(request.query.teamId ?? "").trim() : "";
         const teamProviderOrigin = teamAdmission ? request.query.origin ?? "team" : null;
-        let connectionId = teamAdmission ? String(request.query.connectionId ?? "").trim() : "";
+        const connectionId = teamAdmission ? String(request.query.connectionId ?? "").trim() : "";
         if (teamAdmission && !teamId) {
             return reply.code(400).send({ error: "invalid-team-admission" });
         }
@@ -138,93 +139,20 @@ export function connectAuthExternalRoutes(app: Fastify) {
         );
         if (!resolved) return reply.code(404).send({ error: "unsupported-provider" });
         const { provider, reference } = resolved;
-        let teamAdmissionConnection: { id: string; revision: number } | undefined;
-        let teamAdmissionSourceSeed:
-            | Extract<TeamOAuthAdmissionSource, { kind: "team_invitation" }>
-            | Omit<Extract<TeamOAuthAdmissionSource, { kind: "team_jit_identity" }>, "authAttemptId">
-            | null = null;
-        if (teamAdmission && teamProviderOrigin === "team") {
-            const connection = await db.teamIdentityConnection.findFirst({
-                where: {
-                    teamId,
-                    providerInstanceId: providerId,
-                    ...(connectionId ? { id: connectionId } : {}),
-                },
-                select: {
-                    id: true,
-                    teamId: true,
-                    providerInstanceId: true,
-                    revision: true,
-                    enabled: true,
-                    team: { select: { admissionMode: true, archivedAt: true } },
-                },
-            });
-            if (!connection || !connection.enabled || connection.team.archivedAt !== null) {
-                return reply.code(403).send({ error: "invalid-team-admission" });
-            }
-            connectionId = connection.id;
-            teamAdmissionConnection = { id: connection.id, revision: connection.revision };
-            const invitationToken = typeof request.headers["x-happier-team-invitation"] === "string"
-                ? request.headers["x-happier-team-invitation"].trim()
-                : "";
-            if (invitationToken) {
-                const invitation = await inTx((tx) => resolveTeamInvitationFreshAccountAdmissionReferenceInTx(tx, {
-                    token: invitationToken,
-                }));
-                if (!invitation || invitation.teamId !== teamId) {
-                    return reply.code(403).send({ error: "invalid-team-admission" });
-                }
-                if (connection.team.admissionMode !== "invite_only") {
-                    return reply.code(403).send({ error: "invalid-team-admission" });
-                }
-                teamAdmissionSourceSeed = {
-                    kind: "team_invitation",
-                    teamId,
-                    providerId,
-                    providerOrigin: "team",
-                    connectionId: connection.id,
-                    connectionRevision: connection.revision,
-                    admissionMode: "invite_only",
-                    invitationId: invitation.invitationId,
-                    tokenHash: invitation.tokenHash,
-                };
-            } else if (connection.team.admissionMode === "jit") {
-                teamAdmissionSourceSeed = {
-                    kind: "team_jit_identity",
-                    teamId,
-                    providerId,
-                    connectionId: connection.id,
-                    connectionRevision: connection.revision,
-                    admissionMode: "jit",
-                };
-            }
-        } else if (teamAdmission) {
-            const invitationToken = typeof request.headers["x-happier-team-invitation"] === "string"
-                ? request.headers["x-happier-team-invitation"].trim()
-                : "";
-            const admission = invitationToken ? await inTx(async (tx) => {
-                const [invitation, team] = await Promise.all([
-                    resolveTeamInvitationFreshAccountAdmissionReferenceInTx(tx, { token: invitationToken }),
-                    tx.team.findUnique({ where: { id: teamId }, select: { admissionMode: true } }),
-                ]);
-                return invitation
-                    && invitation.teamId === teamId
-                    && team?.admissionMode === "invite_only"
-                    ? invitation
-                    : null;
-            }) : null;
-            if (!admission) return reply.code(403).send({ error: "invalid-team-admission" });
-            teamAdmissionSourceSeed = {
-                kind: "team_invitation",
+        let teamAdmissionBinding: TeamAdmissionStartBinding | null = null;
+        if (teamAdmission) {
+            teamAdmissionBinding = await resolveTeamAdmissionStartBinding({
                 teamId,
                 providerId,
-                providerOrigin: "home",
-                connectionId: null,
-                connectionRevision: null,
-                admissionMode: "invite_only",
-                invitationId: admission.invitationId,
-                tokenHash: admission.tokenHash,
-            };
+                origin: teamProviderOrigin!,
+                connectionId,
+                invitationToken: typeof request.headers["x-happier-team-invitation"] === "string"
+                    ? request.headers["x-happier-team-invitation"].trim()
+                    : "",
+            });
+            if (!teamAdmissionBinding) {
+                return reply.code(403).send({ error: "invalid-team-admission" });
+            }
         }
 
         const isFirstKeyStepUp = request.query.purpose === "account_encryption_first_key"
@@ -450,8 +378,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     publicKeyHex,
                     proofHash,
                     purpose: "team_admission",
-                    connection: teamAdmissionConnection,
-                    admission: teamAdmissionSourceSeed,
+                    ...(teamAdmissionBinding?.connection ? { connection: teamAdmissionBinding.connection } : {}),
+                    admission: teamAdmissionBinding?.admission ?? null,
                     ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
                 });
                 if (!attempt) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });

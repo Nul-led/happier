@@ -23,6 +23,9 @@ export const SessionAccessErrorCodeV1Schema = z.enum([
   'session_access_authentication_unavailable',
   'session_access_external_sharing_requires_team_admin',
   'session_access_external_sharing_disabled',
+  // The exact Home's `sharing.session` decision is not enabled, so it serves no
+  // access-bearing operation. A Home configuration answer, never an update requirement.
+  'session_access_sharing_unavailable',
   'session_access_invalid_recipient_envelope',
   SESSION_RESPONSIBILITY_ASSIGNEE_UNAVAILABLE_V1,
   SESSION_RESPONSIBILITY_CANDIDATES_INVALID_CURSOR_V1,
@@ -69,8 +72,21 @@ export type SessionAccessGrantTransitionsInputV1 = Readonly<{
   canDelegate: boolean;
   /** A Team-policy floor cannot be weakened to `view` or removed while the policy still requires it. */
   requiredByTeamPolicy: boolean;
-  /** The subject failed grant eligibility: no transition is offered and the code explains why. */
+  /**
+   * The subject failed grant eligibility for a *change*: no level or delegation
+   * transition is offered and the code explains why. It says nothing about
+   * removal — the writer deliberately admits withdrawing a retained grant after
+   * its subject is archived or deactivated, so `removalIneligible` carries that
+   * separate verdict rather than this one standing in for it.
+   */
   ineligible?: SessionAccessErrorCodeV1;
+  /**
+   * The subject fails eligibility even for removal — an identity the grant
+   * writer refuses outright (an owner/self direct grant, a missing subject, a
+   * Group whose claimed parent Team is not its own). Offering removal here would
+   * be an affordance the writer rejects.
+   */
+  removalIneligible?: SessionAccessErrorCodeV1;
   /** The primary Team's external-sharing policy refuses this external subject any increase. */
   externalSharing?: SessionAccessErrorCodeV1;
 }>;
@@ -86,8 +102,9 @@ export type SessionAccessGrantTransitionsInputV1 = Readonly<{
 export function projectSessionAccessGrantTransitionsV1(
   input: SessionAccessGrantTransitionsInputV1,
 ): SessionAccessGrantTransitionsV1 {
+  const canRemove = !input.requiredByTeamPolicy && input.removalIneligible === undefined;
   if (input.ineligible) {
-    return { accessLevels: [], canChangePermissionDelegation: false, canRemove: false, reason: input.ineligible };
+    return { accessLevels: [], canChangePermissionDelegation: false, canRemove, reason: input.ineligible };
   }
   const { current } = input;
   const admits = (next: SessionAccessGrantCapabilityValueV1) =>
@@ -103,7 +120,7 @@ export function projectSessionAccessGrantTransitionsV1(
   return {
     accessLevels,
     canChangePermissionDelegation,
-    canRemove: !input.requiredByTeamPolicy,
+    canRemove,
     ...(reason ? { reason } : {}),
   };
 }

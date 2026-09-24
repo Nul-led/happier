@@ -132,6 +132,12 @@ export function registerEphemeralRunnerRoutes(rawApp: Fastify, env: NodeJS.Proce
             if (result.reason === 'artifact_identity_mismatch') {
                 return reply.code(409).send({ error: 'runner_artifact_identity_mismatch' });
             }
+            // Declared but unverifiable release bytes. Absence would tell the
+            // creator to wait for a target that is in fact published, and 503
+            // would tell them to retry a publication that cannot become valid.
+            if (result.reason === 'publication_invalid') {
+                return reply.code(409).send({ error: 'runner_artifact_publication_invalid' });
+            }
             return reply.code(404).send({
                 error: result.reason === 'target_not_published'
                     ? 'runner_artifact_target_not_published'

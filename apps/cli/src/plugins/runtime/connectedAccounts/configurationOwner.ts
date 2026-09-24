@@ -16,11 +16,12 @@ import {
 import type { ConnectedAccountAttemptConfigurationAdmission } from './authenticationAttemptOwner';
 import { normalizeConnectedAccountConfiguredOrigin } from './configuredOrigins';
 import { clonePluginPlainData } from '../plainData';
+import type { PluginSourceCustody } from '../sourceAuthority';
 
 type MaybePromise<T> = T | Promise<T>;
-type GenerationIdentity = Readonly<{
-    generation: string;
-    immutableGenerationId: string;
+type RuntimeIdentity = Readonly<{
+    occurrenceId: string;
+    sourceCustody: PluginSourceCustody;
 }>;
 type ConnectedAccountModeConfiguration =
     Extract<
@@ -135,7 +136,7 @@ type ConfigurationReplacement = Readonly<{
 
 type SnapshotMetadata = Readonly<{
     mode: PluginConnectedAccountAuthenticationModeV2;
-    generation: GenerationIdentity;
+    runtimeIdentity: RuntimeIdentity;
     target: ConnectedAccountConfigurationTarget;
     revision: string;
     currentnessSignal: AbortSignal;
@@ -310,8 +311,8 @@ export type ConnectedAccountConfigurationOwner = Readonly<{
     inspect(input: Readonly<{
         target: ConnectedAccountConfigurationTarget;
         mode: PluginConnectedAccountAuthenticationModeV2;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<Readonly<{
         status: 'ready' | 'configurationRequired';
         revision: string | null;
@@ -325,8 +326,8 @@ export type ConnectedAccountConfigurationOwner = Readonly<{
         expectedRevision: string | null;
         values: Readonly<Record<string, unknown>>;
         secretValues: Readonly<Record<string, string>>;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<
         | Readonly<{
             status: 'committed';
@@ -344,16 +345,16 @@ export type ConnectedAccountConfigurationOwner = Readonly<{
         mode: PluginConnectedAccountAuthenticationModeV2;
         attemptId?: string;
         expectedConfigurationRevision?: string;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<ConnectedAccountAttemptConfigurationAdmission>;
     replace(input: Readonly<{
         target: ConnectedAccountConfigurationTarget;
         mode: PluginConnectedAccountAuthenticationModeV2;
         expectedRevision: string | null;
         replacement: ConfigurationReplacement;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<
         | Readonly<{
             status: 'committed';
@@ -376,8 +377,8 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         target: ConnectedAccountConfigurationTarget;
         expectedRevision: string | null;
         replacement: Omit<ConnectedAccountConfigurationRecord, 'revision'>;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<
         | Readonly<{ status: 'committed'; record: ConnectedAccountConfigurationRecord }>
         | Readonly<{ status: 'conflict' | 'unavailable'; code?: string }>
@@ -388,21 +389,27 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         values: Readonly<Record<string, JsonValue>>;
         currentSecretRefs: Readonly<Record<string, string>>;
         secretValues: Readonly<Record<string, string>>;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): Promise<
         | Readonly<{ status: 'committed'; record: ConnectedAccountConfigurationRecord }>
         | Readonly<{ status: 'conflict' | 'unavailable'; code?: string }>
     >;
     destroyAttempt(attemptId: string): MaybePromise<void>;
     secrets: Readonly<{
+        /**
+         * Validates an operation's Saved Secret references against the Home in
+         * one bounded batch before the operation is admitted
+         * (teams-lane-10 08 §5.8). Rejects when they cannot be admitted.
+         */
+        admit(secretIds: readonly string[], options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
         has(secretId: string): Promise<boolean>;
         read(secretId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<string | null>;
     }>;
-    isGenerationCurrent(input: Readonly<{
+    isRuntimeCurrent(input: Readonly<{
         pluginId: string;
-        generation: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustody;
     }>): MaybePromise<boolean>;
 }>): ConnectedAccountConfigurationOwner {
     const snapshotMetadata = new WeakMap<PluginConnectedAccountRuntimeConfiguration, SnapshotMetadata>();
@@ -460,27 +467,27 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         return controller.signal;
     }
 
-    async function assertGenerationCurrent(
+    async function assertRuntimeCurrent(
         service: PluginContributionRef,
-        generation: GenerationIdentity,
+        runtimeIdentity: RuntimeIdentity,
     ): Promise<void> {
-        if (!await params.isGenerationCurrent({ pluginId: service.pluginId, ...generation })) {
+        if (!await params.isRuntimeCurrent({ pluginId: service.pluginId, ...runtimeIdentity })) {
             throw new ConnectedAccountConfigurationError(
                 'connected_account_configuration_stale',
-                'Connected-account plugin generation is no longer current',
+                'Connected-account plugin runtime is no longer current',
             );
         }
     }
 
     async function isTargetRevisionCurrent(
         service: PluginContributionRef,
-        generation: GenerationIdentity,
+        runtimeIdentity: RuntimeIdentity,
         target: ConnectedAccountConfigurationTarget,
         expectedRevision: string | null,
     ): Promise<boolean> {
-        await assertGenerationCurrent(service, generation);
+        await assertRuntimeCurrent(service, runtimeIdentity);
         const current = await params.read(target);
-        await assertGenerationCurrent(service, generation);
+        await assertRuntimeCurrent(service, runtimeIdentity);
         return (current?.revision ?? null) === expectedRevision;
     }
 
@@ -619,7 +626,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
     function createSnapshot(input: Readonly<{
         target: ConnectedAccountConfigurationTarget;
         mode: PluginConnectedAccountAuthenticationModeV2;
-        generation: GenerationIdentity;
+        runtimeIdentity: RuntimeIdentity;
         revision: string;
         values: Readonly<Record<string, JsonValue>>;
         secretRefs: Readonly<Record<string, string>>;
@@ -676,7 +683,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         });
         snapshotMetadata.set(snapshot, Object.freeze({
             mode: input.mode,
-            generation: input.generation,
+            runtimeIdentity: input.runtimeIdentity,
             target: input.target,
             revision: input.revision,
             currentnessSignal,
@@ -691,8 +698,8 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
         async inspect(input: Readonly<{
             target: ConnectedAccountConfigurationTarget;
             mode: PluginConnectedAccountAuthenticationModeV2;
-            generation: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
+            sourceCustody: PluginSourceCustody;
         }>) {
             const target = snapshotTarget(input.target);
             assertTargetMatchesMode(target, input.mode);
@@ -700,17 +707,17 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 throw invalid('A mode without configuration has no configuration record');
             }
             const service = serviceForTarget(target);
-            const generationIdentity = Object.freeze({
-                generation: input.generation,
-                immutableGenerationId: input.immutableGenerationId,
+            const runtimeIdentity = Object.freeze({
+                occurrenceId: input.occurrenceId,
+                sourceCustody: input.sourceCustody,
             });
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const record = await params.read(target);
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const normalized = await normalize({ target, mode: input.mode, record });
             if (!await isTargetRevisionCurrent(
                 service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 normalized.revision,
             )) {
@@ -742,8 +749,8 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             expectedRevision: string | null;
             values: Readonly<Record<string, unknown>>;
             secretValues: Readonly<Record<string, string>>;
-            generation: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
+            sourceCustody: PluginSourceCustody;
         }>) {
             const target = snapshotTarget(input.target);
             assertTargetMatchesMode(target, input.mode);
@@ -751,13 +758,13 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 throw invalid('A mode without configuration cannot persist a configuration record');
             }
             const service = serviceForTarget(target);
-            const generationIdentity = Object.freeze({
-                generation: input.generation,
-                immutableGenerationId: input.immutableGenerationId,
+            const runtimeIdentity = Object.freeze({
+                occurrenceId: input.occurrenceId,
+                sourceCustody: input.sourceCustody,
             });
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const current = await params.read(target);
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             if ((current?.revision ?? null) !== input.expectedRevision) {
                 return Object.freeze({
                     status: 'conflict' as const,
@@ -776,7 +783,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             });
             if (!await isTargetRevisionCurrent(
                 service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 input.expectedRevision,
             )) {
@@ -804,7 +811,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                     return entry;
                 },
             );
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const result = await (async () => {
                 if (target.kind !== 'service') {
                     return params.replace({
@@ -826,7 +833,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                                 ...replacements,
                             }),
                         }),
-                        ...generationIdentity,
+                        ...runtimeIdentity,
                     });
                 }
                 if (!params.replaceForControl) {
@@ -841,7 +848,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                     values: preview.values,
                     currentSecretRefs: current?.secretRefs ?? Object.freeze({}),
                     secretValues: replacements,
-                    ...generationIdentity,
+                    ...runtimeIdentity,
                 });
             })();
             if (result.status !== 'committed') {
@@ -855,7 +862,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 });
             }
             revokeCurrentnessFence(target);
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const committed = await normalize({
                 target,
                 mode: input.mode,
@@ -869,7 +876,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             }
             if (!await isTargetRevisionCurrent(
                 service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 committed.revision,
             )) {
@@ -881,7 +888,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             const snapshot = createSnapshot({
                 target,
                 mode: input.mode,
-                generation: generationIdentity,
+                runtimeIdentity,
                 revision: committed.revision,
                 values: committed.values,
                 secretRefs: committed.secretRefs,
@@ -897,21 +904,21 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             mode: PluginConnectedAccountAuthenticationModeV2;
             attemptId?: string;
             expectedConfigurationRevision?: string;
-            generation: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
+            sourceCustody: PluginSourceCustody;
         }>): Promise<ConnectedAccountAttemptConfigurationAdmission> {
-            const generationIdentity = Object.freeze({
-                generation: input.generation,
-                immutableGenerationId: input.immutableGenerationId,
+            const runtimeIdentity = Object.freeze({
+                occurrenceId: input.occurrenceId,
+                sourceCustody: input.sourceCustody,
             });
-            await assertGenerationCurrent(input.service, generationIdentity);
+            await assertRuntimeCurrent(input.service, runtimeIdentity);
             const target = resolveTarget(input);
             const configuration = modeConfiguration(input.mode);
             if (!configuration) {
                 const snapshot = createSnapshot({
                     target,
                     mode: input.mode,
-                    generation: generationIdentity,
+                    runtimeIdentity,
                     revision: 'unconfigured',
                     values: Object.freeze({}),
                     secretRefs: Object.freeze({}),
@@ -920,11 +927,22 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 return Object.freeze({ status: 'ready', snapshot });
             }
             const record = await params.read(target);
-            await assertGenerationCurrent(input.service, generationIdentity);
+            await assertRuntimeCurrent(input.service, runtimeIdentity);
+            // An AccountChange hint is only a wake; a new operation must not use
+            // a shared Saved Secret the Home no longer authorizes.
+            try {
+                await params.secrets.admit(Object.values(record?.secretRefs ?? {}));
+            } catch {
+                throw new ConnectedAccountConfigurationError(
+                    'connected_account_configuration_unavailable',
+                    'Connected-account configuration secrets could not be admitted',
+                );
+            }
+            await assertRuntimeCurrent(input.service, runtimeIdentity);
             const normalized = await normalize({ target, mode: input.mode, record });
             if (!await isTargetRevisionCurrent(
                 input.service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 normalized.revision,
             )) {
@@ -959,7 +977,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             const snapshot = createSnapshot({
                 target,
                 mode: input.mode,
-                generation: generationIdentity,
+                runtimeIdentity,
                 revision: normalized.revision,
                 values: normalized.values,
                 secretRefs: normalized.secretRefs,
@@ -985,8 +1003,8 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             mode: PluginConnectedAccountAuthenticationModeV2;
             expectedRevision: string | null;
             replacement: ConfigurationReplacement;
-            generation: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
+            sourceCustody: PluginSourceCustody;
         }>) {
             const target = snapshotTarget(input.target);
             assertTargetMatchesMode(target, input.mode);
@@ -995,11 +1013,11 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                 throw invalid('A mode without configuration cannot persist a configuration record');
             }
             const service = serviceForTarget(target);
-            const generationIdentity = Object.freeze({
-                generation: input.generation,
-                immutableGenerationId: input.immutableGenerationId,
+            const runtimeIdentity = Object.freeze({
+                occurrenceId: input.occurrenceId,
+                sourceCustody: input.sourceCustody,
             });
-            await assertGenerationCurrent(service, generationIdentity);
+            await assertRuntimeCurrent(service, runtimeIdentity);
             const normalized = await normalize({
                 target,
                 mode: input.mode,
@@ -1011,7 +1029,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             }
             if (!await isTargetRevisionCurrent(
                 service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 input.expectedRevision,
             )) {
@@ -1030,7 +1048,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
                         ? { secretValues: normalized.secretValues }
                         : {}),
                 }),
-                ...generationIdentity,
+                ...runtimeIdentity,
             });
             if (result.status !== 'committed') {
                 return Object.freeze({
@@ -1052,7 +1070,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             }
             if (!await isTargetRevisionCurrent(
                 service,
-                generationIdentity,
+                runtimeIdentity,
                 target,
                 committed.revision,
             )) {
@@ -1064,7 +1082,7 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             const snapshot = createSnapshot({
                 target,
                 mode: input.mode,
-                generation: generationIdentity,
+                runtimeIdentity,
                 revision: committed.revision,
                 values: committed.values,
                 secretRefs: committed.secretRefs,
@@ -1078,14 +1096,14 @@ export function createConnectedAccountConfigurationOwner(params: Readonly<{
             if (!metadata) return false;
             const service = serviceForTarget(metadata.target);
             try {
-                if (!await params.isGenerationCurrent({ pluginId: service.pluginId, ...metadata.generation })) {
+                if (!await params.isRuntimeCurrent({ pluginId: service.pluginId, ...metadata.runtimeIdentity })) {
                     revokeCurrentnessFence(metadata.target, metadata.revision);
                     return false;
                 }
                 if (metadata.unconfigured) return true;
                 const current = await isTargetRevisionCurrent(
                     service,
-                    metadata.generation,
+                    metadata.runtimeIdentity,
                     metadata.target,
                     metadata.revision,
                 );

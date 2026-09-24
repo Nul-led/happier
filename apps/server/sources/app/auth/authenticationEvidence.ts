@@ -91,19 +91,28 @@ export async function isAuthenticationEvidenceCurrentInTx(
         || identity.eligibilityStatus === "ineligible") return false;
 
     if (providerEvidence.teamConnectionId) {
+        // The row read resolves the exact Team only; usability is the connection
+        // lifecycle owner's derived `state`, which is also what qualification,
+        // policy resolution, admission finalization and the Home method gate
+        // compare. Reading the raw `enabled` column here would keep a second
+        // answer to one question, and the exact-connection descriptor is the
+        // same one the batch branch below consumes.
         const connection = await tx.teamIdentityConnection.findUnique({
             where: { id: providerEvidence.teamConnectionId },
-            select: { id: true, teamId: true, providerInstanceId: true, enabled: true },
+            select: { id: true, teamId: true },
         });
-        if (!connection?.enabled
-            || normalized(connection.providerInstanceId) !== normalized(providerEvidence.providerId)) return false;
-        const descriptors = await listProviderDescriptorsInTx(tx, input.env, { kind: "team", teamId: connection.teamId });
-        const exact = descriptors.find(({ reference }) => normalized(reference.id) === normalized(providerEvidence.providerId)
-            && reference.runtimeFingerprint === providerEvidence.runtimeFingerprint);
-        if (!exact) return false;
+        if (!connection) return false;
+        const read = (await readTeamAuthenticationConnectionDescriptorsInTx(tx, {
+            env: input.env,
+            references: [connection],
+        })).get(teamIdentityConnectionReferenceKey(connection));
+        if (read?.status !== "ready"
+            || read.connection.state !== "connected"
+            || normalized(read.connection.providerInstanceId) !== normalized(providerEvidence.providerId)
+            || read.descriptor?.reference.runtimeFingerprint !== providerEvidence.runtimeFingerprint) return false;
         return (await resolveRuntimeInTx(tx, {
             env: input.env,
-            reference: exact.reference,
+            reference: read.descriptor.reference,
             purpose: "oauth_finalize",
         })).ok;
     }
@@ -248,7 +257,7 @@ export async function resolveCurrentAuthenticationEvidenceForTeamQualificationIn
                 if (!connection) return null;
                 const read = teamDescriptors.get(teamIdentityConnectionReferenceKey(connection));
                 if (read?.status !== "ready"
-                    || !read.connection.enabled
+                    || read.connection.state !== "connected"
                     || normalized(read.connection.providerInstanceId) !== normalized(item.providerId)
                     || read.descriptor?.reference.runtimeFingerprint !== item.runtimeFingerprint) return null;
                 return read.descriptor;

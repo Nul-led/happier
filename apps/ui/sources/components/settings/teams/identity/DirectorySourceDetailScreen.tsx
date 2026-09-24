@@ -9,6 +9,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamPagedList } from '@/hooks/teams/useTeamPagedList';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { getPreferredLanguage, t } from '@/text';
@@ -94,6 +95,8 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         key: `${props.scope.serverId} ${props.scope.accountId} ${props.address.teamId} ${props.sourceId} ${query.trim()}`,
         enabled: props.groupMappingsAvailable,
         loadPage,
+        // Directory projection changes are published as the Team change.
+        accountChange: { serverId: props.address.serverId, entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 },
     });
     const nativeGroups = useTeamGroups({
         scope: props.scope,
@@ -197,9 +200,22 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         } else if (directoryGroups.rows.length === 0) {
             result.push({ key: 'groups-empty', element: <ItemGroup title={t('identityAdministration.directoryGroups')}><Item title={t('teams.authentication.directory.empty')} showChevron={false} /></ItemGroup> });
         } else {
-            segments.forEach((segment, index) => result.push({
-                key: `groups:${index}`,
-                element: (
+            // The chooser is emitted next to the row that opened it. Appended
+            // after the whole group list it opened off-screen for any group
+            // that is not on the last page, and there is no scroll-to.
+            const chooser = selectedGroup === null ? null : (
+                <ItemGroup title={t('identityAdministration.chooseGroup')}>
+                    <Item testID="directory-group-map-create" title={t('identityAdministration.mapCreate')} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'directory_created' })} showChevron={false} />
+                    <Item testID="directory-group-map-existing" title={t('identityAdministration.mapExisting')} selected disabled={!props.mutationsAvailable} onPress={() => setChoosingFor(null)} showChevron={false} />
+                    {nativeGroups.rows.map((group) => <Item key={group.id} testID={`directory-group-native-target:${group.id}`} title={group.name} subtitle={t('teams.groups.memberCount', { count: group.memberCount })} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'native_target', teamGroupId: group.id })} showChevron={false} />)}
+                    {nativeGroups.hasMore ? <Item title={t('identityAdministration.loadMore')} loading={nativeGroups.status === 'loading_more'} disabled={nativeGroups.status === 'loading_more'} onPress={() => void nativeGroups.loadMore()} showChevron={false} /> : null}
+                    {selectedGroup.mapping.state === 'bound' ? <Item testID="directory-group-remove-mapping" title={t('identityAdministration.removeMapping')} destructive disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, null)} showChevron={false} /> : null}
+                </ItemGroup>
+            );
+            segments.forEach((segment, index) => {
+                result.push({
+                    key: `groups:${index}`,
+                    element: (
                     <ItemGroup title={segment.first ? t('identityAdministration.directoryGroups') : undefined} virtualizedSegment={{ first: segment.first, last: segment.last }}>
                         {segment.items.map((group) => (
                             <Item
@@ -217,21 +233,15 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
                             />
                         ))}
                     </ItemGroup>
-                ),
-            }));
+                    ),
+                });
+                if (selectedGroup !== null && chooser !== null && segment.items.some((group) => group.id === selectedGroup.id)) {
+                    result.push({ key: `groups-choice:${selectedGroup.id}`, element: chooser });
+                }
+            });
         }
         if (directoryGroups.error) result.push({ key: 'groups-error', element: <ItemGroup footer={directoryGroups.error.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>{directoryGroups.error.retryable ? <Item testID="directory-groups-retry" title={t('common.retry')} onPress={() => void directoryGroups.reload()} showChevron={false} /> : null}</ItemGroup> });
         if (directoryGroups.hasMore) result.push({ key: 'groups-more', element: <ItemGroup><Item testID="directory-groups-load-more" title={t('identityAdministration.loadMore')} loading={directoryGroups.status === 'loading_more'} disabled={directoryGroups.status === 'loading_more'} onPress={() => void directoryGroups.loadMore()} showChevron={false} /></ItemGroup> });
-        if (selectedGroup) result.push({
-            key: `groups-choice:${selectedGroup.id}`,
-            element: <ItemGroup title={t('identityAdministration.chooseGroup')}>
-                <Item testID="directory-group-map-create" title={t('identityAdministration.mapCreate')} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'directory_created' })} showChevron={false} />
-                <Item testID="directory-group-map-existing" title={t('identityAdministration.mapExisting')} selected disabled={!props.mutationsAvailable} onPress={() => setChoosingFor(null)} showChevron={false} />
-                {nativeGroups.rows.map((group) => <Item key={group.id} testID={`directory-group-native-target:${group.id}`} title={group.name} subtitle={t('teams.groups.memberCount', { count: group.memberCount })} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'native_target', teamGroupId: group.id })} showChevron={false} />)}
-                {nativeGroups.hasMore ? <Item title={t('identityAdministration.loadMore')} loading={nativeGroups.status === 'loading_more'} disabled={nativeGroups.status === 'loading_more'} onPress={() => void nativeGroups.loadMore()} showChevron={false} /> : null}
-                {selectedGroup.mapping.state === 'bound' ? <Item testID="directory-group-remove-mapping" title={t('identityAdministration.removeMapping')} destructive disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, null)} showChevron={false} /> : null}
-            </ItemGroup>,
-        });
         if (failure) result.push({ key: 'groups-failure', element: <ItemGroup><Item testID="directory-group-mapping-failure" title={failure} showChevron={false} /></ItemGroup> });
         return result;
     }, [changeMapping, directoryGroups.error, directoryGroups.hasMore, directoryGroups.loadMore, directoryGroups.reload, directoryGroups.rows, directoryGroups.status, failure, nativeGroupNames, nativeGroups.hasMore, nativeGroups.loadMore, nativeGroups.rows, pendingGroupId, props.beforeRows, props.groupMappingsAvailable, props.mutationsAvailable, query, selectedGroup]);
@@ -569,7 +579,9 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
                 {can('teams.directory.sources.sync') ? (
                     <Item
                         testID="team-directory-source-sync"
-                        title={t('teams.authentication.directory.actions.sync')}
+                        // child 05 §14.1: a failed source offers Retry — the
+                        // same one complete-scan Sync Action.
+                        title={source.error ? t('common.retry') : t('teams.authentication.directory.actions.sync')}
                         disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
                         detail={pendingAction === 'teams.directory.sources.sync' ? t('common.loading') : undefined}
                         onPress={() => void run('teams.directory.sources.sync')}

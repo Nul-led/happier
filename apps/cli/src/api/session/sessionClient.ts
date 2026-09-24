@@ -28,7 +28,7 @@ import {
 import type {
     SessionMetadataLegacyOwnerMutationRequestV1,
 } from '@happier-dev/cli-common/sessionMetadata';
-import { readAuthenticationStatus } from '@/api/client/httpStatusError';
+import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTransportErrorToProbeResult';
 import type { ACPMessageData, ACPProvider, SessionEventMessage } from './sessionMessageTypes';
 import {
     type ManagedConnectionState,
@@ -243,6 +243,7 @@ import {
     blockPendingExecutionRunDelivery,
     isAcceptedPendingQueueV2DeliveryAckResponseLoss,
     listPendingQueueV2DeliveryStatusesFromServer,
+    PendingQueueAcceptedSettlementError,
     readAcceptedPendingQueueV2DeliveryRetryDirective,
     resolveAcceptedPendingQueueV2Delivery,
     resolveAcceptedPendingExecutionRunDelivery,
@@ -272,6 +273,18 @@ type AcceptedPendingSettlementOperationAuthority = Readonly<{
     abortSignal: AbortSignal;
     executionRun?: ExecutionRunPendingInputBinding;
 }>;
+
+function serializeAcceptedPendingSettlementErrorForLog(error: unknown): Record<string, unknown> {
+    const serialized = serializeAxiosErrorForLog(error);
+    if (!(error instanceof PendingQueueAcceptedSettlementError)) return serialized;
+    return {
+        ...serialized,
+        code: error.code,
+        settlementError: error.settlementError,
+        ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+        ...(error.correlationId ? { correlationId: error.correlationId } : {}),
+    };
+}
 
 export type ExecutionRunPendingInputPort = SessionProviderInputConsumerSession & Readonly<{
     observeProviderInputSettlement: (outcome: SessionProviderInputOutcome) => Promise<boolean>;
@@ -375,18 +388,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readRecordProperty(value: unknown, key: string): unknown {
     return isRecord(value) ? value[key] : undefined;
-}
-
-export function classifySessionTransportErrorToProbeResult(
-    error: unknown,
-): Exclude<ReadinessProbeResult, Readonly<{ status: 'ready' }>> | null {
-    const statusCode = readAuthenticationStatus(error);
-    if (!statusCode) return null;
-    return {
-        status: 'auth_failed',
-        statusCode,
-        errorMessage: error instanceof Error ? error.message : 'Authentication failed',
-    };
 }
 
 const SESSION_CONNECTION_STATE_EVENT = 'session-connection-state';
@@ -1422,7 +1423,7 @@ export class ApiSessionClient extends EventEmitter {
             ...rpcTransportConfig,
             logger: (msg, data) => logger.debug(msg, data),
             onRegistrationError: (error) => {
-                const probe = classifySessionTransportErrorToProbeResult(error);
+                const probe = classifyTransportErrorToProbeResult(error);
                 const supervisor = this.sessionConnectionSupervisor;
                 const scope = supervisor?.captureProbeReportScope?.();
                 if (probe && scope) {
@@ -1604,7 +1605,7 @@ export class ApiSessionClient extends EventEmitter {
             rpcHandlerManager: this.rpcHandlerManager,
             handleUserScopedUpdate: (data, socket) => this.handleUserScopedUpdate(data, socket),
             installSessionSocketEventHandlers: (socket) => this.interactionApi.installSessionSocketEventHandlers(socket),
-            classifyTransportErrorToProbeResult: classifySessionTransportErrorToProbeResult,
+            classifyTransportErrorToProbeResult,
             onStateChange: (state) => {
                 this.currentConnectionState = state;
                 this.emit(SESSION_CONNECTION_STATE_EVENT, state);
@@ -3950,7 +3951,14 @@ export class ApiSessionClient extends EventEmitter {
                         && result.message.seq >= 0;
                     const hasExactCommittedReplay = result.didResolve === false
                         && hasExactCommittedMessage;
-                    if (result.didResolve !== true && !hasExactCommittedReplay) return;
+                    if (result.didResolve !== true && !hasExactCommittedReplay) {
+                        logger.infoFile('[pendingQueue] accepted provider-input settlement remains unresolved', {
+                            sessionId: this.sessionId,
+                            localId,
+                            reason: 'settlement_noop_without_exact_commit',
+                        });
+                        return;
+                    }
                     if (hasExactCommittedMessage) {
                         this.recordCommittedUserMessageSeq(localId, result.message!.seq);
                     }
@@ -3961,16 +3969,35 @@ export class ApiSessionClient extends EventEmitter {
                     this.acceptedPendingSettlementLocalIds.delete(localId);
                     return;
                 } catch (error) {
+                    const serializedError = serializeAcceptedPendingSettlementErrorForLog(error);
                     logger.debug('[pendingQueue] accepted provider-input settlement failed', {
                         sessionId: this.sessionId,
                         localId,
-                        error: serializeAxiosErrorForLog(error),
+                        error: serializedError,
                     });
                     if (!this.isAcceptedPendingSettlementOperationCurrent(authority, localId)) return;
-                    if (attempt > 0) return;
+                    if (attempt > 0) {
+                        logger.infoFile('[pendingQueue] accepted provider-input settlement remains unresolved', {
+                            sessionId: this.sessionId,
+                            localId,
+                            reason: 'settlement_error',
+                            attempt: attempt + 1,
+                            error: serializedError,
+                        });
+                        return;
+                    }
                     const retryDirective = readAcceptedPendingQueueV2DeliveryRetryDirective(error);
                     const isResponseLoss = isAcceptedPendingQueueV2DeliveryAckResponseLoss(error);
-                    if (!retryDirective && !isResponseLoss) return;
+                    if (!retryDirective && !isResponseLoss) {
+                        logger.infoFile('[pendingQueue] accepted provider-input settlement remains unresolved', {
+                            sessionId: this.sessionId,
+                            localId,
+                            reason: 'settlement_error',
+                            attempt: attempt + 1,
+                            error: serializedError,
+                        });
+                        return;
+                    }
                     const retryAfterMs = retryDirective
                         ? Math.min(60_000, Math.max(250, retryDirective.retryAfterMs))
                         : 1_000;
@@ -3986,7 +4013,15 @@ export class ApiSessionClient extends EventEmitter {
         localId: string,
         authority: AcceptedPendingSettlementOperationAuthority,
     ): Promise<void> {
-        const settlement = this.resolveAcceptedPendingDeliveryOperation(localId, authority);
+        const settlement = this.resolveAcceptedPendingDeliveryOperation(localId, authority)
+            .catch((error) => {
+                logger.infoFile('[pendingQueue] accepted provider-input settlement resolution crashed', {
+                    sessionId: this.sessionId,
+                    localId,
+                    error: serializeAxiosErrorForLog(error),
+                });
+                throw error;
+            });
         this.pendingProviderInputSettlementWrites.add(settlement);
         this.acceptedPendingSettlementWrites.add(settlement);
         return settlement.finally(() => {

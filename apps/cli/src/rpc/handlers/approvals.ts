@@ -1,9 +1,8 @@
-import { readSettings, readStoredCredentials } from '@/persistence';
+import { readStoredCredentials } from '@/persistence';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { configuration } from '@/configuration';
-import {
-  createDaemonApprovalExecutionOriginCurrentnessFromCredentials,
-} from '@/daemon/externalActions/daemonExternalActionTargetResolver';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
+import { createProductionDaemonWorkflowRuntime } from '@/daemon/workflows/daemonRuntime';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { RpcActionExecutor } from './_actionDispatchAdapter';
@@ -36,22 +35,24 @@ async function resolveProductionActionExecutor(): Promise<ApprovalRpcActionExecu
       }),
     };
   }
-  const settings = await readSettings().catch(() => null);
-  const machineId = typeof settings?.machineId === 'string' && settings.machineId.trim()
-    ? settings.machineId.trim()
-    : null;
-  if (!machineId) {
-    return createCliActionExecutorFromCredentials({ credentials });
-  }
-  const isApprovalExecutionOriginCurrent = createDaemonApprovalExecutionOriginCurrentnessFromCredentials({
-    credentials,
-    machineId,
-    serverId: configuration.activeServerId,
-    serverApiUrl: configuration.apiServerUrl,
-  });
+  // The Workflow accepted-authorization owner, composed for these credentials
+  // exactly as the daemon composes it (`startDaemon`). The credential-backed
+  // executor builds the canonical daemon replay currentness checker itself
+  // (this daemon's Machine from settings, the active Home) and hands this owner
+  // to it, so a replayed Workflow origin is rechecked like its live admission
+  // instead of failing closed for want of the owner.
+  const accountId = readAccountIdFromToken(credentials.token);
   return createCliActionExecutorFromCredentials({
     credentials,
-    ...(isApprovalExecutionOriginCurrent ? { isApprovalExecutionOriginCurrent } : {}),
+    ...(accountId
+      ? {
+          workflowAcceptedAuthorizationCurrentness: createProductionDaemonWorkflowRuntime({
+            credentials,
+            accountId,
+            serverId: configuration.activeServerId,
+          }).isAcceptedAuthorizationCurrent,
+        }
+      : {}),
   });
 }
 

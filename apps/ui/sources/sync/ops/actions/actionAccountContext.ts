@@ -2,7 +2,6 @@ import { TokenStorage, subscribeHomeCredentialMutations } from '@/auth/storage/t
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent, getServerProfileById, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { storage } from '@/sync/domains/state/storage';
@@ -11,6 +10,8 @@ import { readAccountSettingsBaseline } from '@/sync/engine/settings/accountSetti
 import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import { resolveServerScopedTransport } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport';
+import { getAppliedActiveServerSnapshot } from '@/sync/runtime/orchestration/connectionManager';
+import { mergeAbortSignals } from '@/utils/runtime/abortSignals';
 import { parseToken } from '@/utils/auth/parseToken';
 import { createArtifactWithHeaderViaApi, fetchArtifactWithBodyFromApi, updateArtifactWithHeaderViaApi, type ArtifactDataKeyCache } from '@/sync/engine/artifacts/syncArtifacts';
 import type { ArtifactHeader, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
@@ -21,8 +22,8 @@ export async function captureActionAccountContext(serverIdRaw: string, signal?: 
     const profile = getServerProfileById(serverId);
     if (!profile) throw new Error('action_home_not_found');
     const serverIdentityId = profile.serverIdentityId?.trim() || undefined;
-    const active = getActiveServerSnapshot();
-    const currentness = areServerProfileIdentifiersEquivalent(active.serverId, serverId)
+    const applied = getAppliedActiveServerSnapshot();
+    const currentness = areServerProfileIdentifiersEquivalent(applied.serverId, serverId)
         ? captureActiveServerAccountScopeCurrentness() : null;
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -51,22 +52,32 @@ export async function captureActionAccountContext(serverIdRaw: string, signal?: 
         if (!credentials) throw new Error('action_home_signed_out');
         const accountId = parseToken(credentials.token);
         const scope = { serverId, accountId };
-        // A request owns only its transport lease. Prepared invocations need not hold an idle
-        // Iroh transport while a caller is deciding whether to run them.
+        // Every Action owns an explicit Home target. Resolve it through the
+        // canonical scoped carrier so a staged focus change cannot retarget an
+        // Action through the ambient focused request path.
         const request: ServerFetch = async (path, init, options) => {
             assertCurrent();
-            const transport = await resolveServerScopedTransport({ profile, credentials });
+            const cancellation = mergeAbortSignals([controller.signal, init?.signal ?? undefined]);
             try {
-                assertCurrent();
-                const response = await createServerFetchAtEndpoint({
-                    endpointUrl: transport.canonicalServerUrl, runtimeOrigin: transport.runtimeOrigin,
-                    serverId, credentials, signal: controller.signal,
-                    ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
-                })(path, init, options);
-                assertCurrent();
-                return response;
+                const requestInit = { ...init, signal: cancellation.signal };
+                const transport = await resolveServerScopedTransport({ profile, credentials });
+                try {
+                    assertCurrent();
+                    const response = await createServerFetchAtEndpoint({
+                        endpointUrl: transport.canonicalServerUrl,
+                        runtimeOrigin: transport.runtimeOrigin,
+                        serverId,
+                        credentials,
+                        signal: cancellation.signal,
+                        ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
+                    })(path, requestInit, options);
+                    assertCurrent();
+                    return response;
+                } finally {
+                    try { await transport.release(); } finally { assertCurrent(); }
+                }
             } finally {
-                try { await transport.release(); } finally { assertCurrent(); }
+                cancellation.dispose();
             }
         };
         const accountMode = (await fetchAccountEncryptionMode(credentials, { request })).mode;
@@ -117,8 +128,10 @@ export async function captureActionAccountContext(serverIdRaw: string, signal?: 
                 ...artifactParams, header, body,
                 addArtifact: (artifact) => { if (canPublish()) storage.getState().addArtifact(artifact); },
             }),
-            updateArtifact: async (artifactId: string, header: ArtifactHeader, body: string) => {
-                const current = await fetchArtifact(artifactId);
+            // `basis` is the exact read a caller validated its change against; its
+            // versions become the CAS expectation. Without one, the latest row is.
+            updateArtifact: async (artifactId: string, header: ArtifactHeader, body: string, basis?: DecryptedArtifact) => {
+                const current = basis ?? await fetchArtifact(artifactId);
                 await updateArtifactWithHeaderViaApi({
                     ...artifactParams, artifactId, header, body,
                     getArtifact: () => current ?? undefined,

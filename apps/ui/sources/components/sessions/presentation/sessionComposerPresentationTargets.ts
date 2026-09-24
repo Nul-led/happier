@@ -2377,6 +2377,75 @@ export function flushPendingRegisteredSessionComposerFocus(addressRaw: SessionAd
     return target ? deliverPendingSessionComposerFocus(addressKey, target) : false;
 }
 
+/**
+ * The viewer-local Board/Companion adapter of a Session surface that is presented
+ * WITHOUT a Chat composer — the full-screen Cockpit Board or Companion. It carries
+ * only presentation availability, never composer editability: nothing here can
+ * read or mutate a draft, so no hidden composer is fabricated for it.
+ */
+export type SessionPresentationOnlyTarget = Readonly<{
+    applySessionPresentationIntent: (
+        intent: CurrentSessionPresentationIntentV1,
+    ) => CurrentSessionPresentationIntentResultV1;
+    /** The surface is mounted AND presented; a retained hidden surface is not current. */
+    isCurrent: () => boolean;
+}>;
+
+const qualifiedSessionPresentationOnlyTargetByAddress = new Map<string, SessionPresentationOnlyTarget>();
+
+/** Registers a presented composer-less Session surface under its exact Home/Session address. */
+export function registerSessionPresentationOnlyTarget(
+    addressRaw: SessionAddress,
+    target: SessionPresentationOnlyTarget,
+): () => void {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return () => undefined;
+    const addressKey = sessionAddressKey(address);
+    qualifiedSessionPresentationOnlyTargetByAddress.set(addressKey, target);
+    emit();
+    return () => {
+        if (qualifiedSessionPresentationOnlyTargetByAddress.get(addressKey) !== target) return;
+        qualifiedSessionPresentationOnlyTargetByAddress.delete(addressKey);
+        emit();
+    };
+}
+
+/**
+ * The exact-address presentation adapter the current-UI runtime applies intents
+ * through. A presented composer-less surface is the one the viewer is looking at,
+ * so it answers first; otherwise the mounted Chat composer's own adapter answers.
+ */
+export function readSessionPresentationAdapterAtAddress(
+    addressRaw: SessionAddress,
+): Readonly<{ apply: SessionPresentationOnlyTarget['applySessionPresentationIntent'] }> | null {
+    const address = normalizeSessionAddress(addressRaw.serverId, addressRaw.sessionId);
+    if (!address) return null;
+    const addressKey = sessionAddressKey(address);
+    const presented = qualifiedSessionPresentationOnlyTargetByAddress.get(addressKey) ?? null;
+    if (presented && isSessionPresentationOnlyTargetCurrent(presented)) {
+        return Object.freeze({
+            apply: (intent: CurrentSessionPresentationIntentV1) => (
+                qualifiedSessionPresentationOnlyTargetByAddress.get(addressKey) === presented
+                    && isSessionPresentationOnlyTargetCurrent(presented)
+                    ? presented.applySessionPresentationIntent(intent)
+                    : { status: 'notCurrent' as const }
+            ),
+        });
+    }
+    const composer = readSessionComposerPresentationTargetAtAddress(address);
+    return composer?.applySessionPresentationIntent
+        ? Object.freeze({ apply: composer.applySessionPresentationIntent })
+        : null;
+}
+
+function isSessionPresentationOnlyTargetCurrent(target: SessionPresentationOnlyTarget): boolean {
+    try {
+        return target.isCurrent();
+    } catch {
+        return false;
+    }
+}
+
 export function notifySessionComposerPresentationTargetChanged(sessionIdRaw?: string): void {
     // This compatibility invalidation carries no mutation/effect authority. It
     // wakes generic ComposerRef observers only; every current-Session read,

@@ -136,6 +136,47 @@ describe('resolveRemoteAlertForegroundPresentation', () => {
             .toMatchObject({ kind: 'present', target: { eventIdentity: 'message-seq:session_transcript:8' } });
     });
 
+    it('shows one alert per committed request whichever leg observed it first', () => {
+        const address = { serverId: acmeId, sessionId: 'session-1' };
+        const requestAlert = {
+            ...ALERT,
+            event: { type: 'permission_request', requestId: 'req-1' },
+        };
+
+        // Local leg first: the Home alert for the same committed request is suppressed.
+        noteActivityAlertPresented({
+            address,
+            event: 'permission_required',
+            identity: 'request:req-1',
+            source: 'local_notification',
+        });
+        expect(resolveRemoteAlertForegroundPresentation({ data: requestAlert, isSessionVisible: () => false }))
+            .toEqual({ kind: 'suppress', reason: 'already_presented' });
+
+        // Home leg first: the local leg sees the same identity and stands down.
+        const presentation = resolveRemoteAlertForegroundPresentation({ data: requestAlert, isSessionVisible: () => false });
+        expect(presentation).toMatchObject({ kind: 'present', target: { eventIdentity: 'request:req-1' } });
+        if (presentation.kind !== 'present') return;
+        noteActivityAlertPresented({
+            address: presentation.target.address,
+            event: presentation.target.event,
+            identity: presentation.target.eventIdentity!,
+            source: 'home_remote_alert',
+        });
+        expect(consumeOtherLegActivityAlertPresentation({
+            address,
+            event: 'permission_required',
+            identity: 'request:req-1',
+            source: 'local_notification',
+        })).toBe(true);
+
+        // A different committed request still gets its own alert.
+        expect(resolveRemoteAlertForegroundPresentation({
+            data: { ...ALERT, event: { type: 'user_action_request', requestId: 'req-2' } },
+            isSessionVisible: () => false,
+        })).toMatchObject({ kind: 'present', target: { eventIdentity: 'request:req-2' } });
+    });
+
     it('keeps a released V1 sequence distinct from the current transcript identity', () => {
         noteActivityAlertPresented({
             address: { serverId: acmeId, sessionId: 'session-1' },

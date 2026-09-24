@@ -46,6 +46,13 @@ import {
 } from '../spawn/prepareDaemonConnectedServices';
 import { prepareDaemonSpawnChildEnvironment } from '../spawn/prepareDaemonSpawnChildEnvironment';
 import { prepareDaemonSpawnLifecycle } from '../spawn/prepareDaemonSpawnLifecycle';
+import {
+    commitDaemonLaunchSession,
+    daemonLaunchRequiresCommittedSession,
+    withoutFreshSessionCreationFields,
+    type CommittedDaemonLaunchSession,
+} from '../spawn/commitDaemonLaunchSession';
+import { archiveSessionOnceInactive } from '@/session/services/archiveSessionOnceInactive';
 import { bindAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 import {
     prepareRunnerAgentSessionBootstrapForLease,
@@ -79,6 +86,7 @@ import {
     readLaunchSecretReferenceOverlayProviderErrorCodeV1,
     resolveLaunchProfileSavedSecretEnvironment,
 } from '../agentRuntime/resolveForegroundProfileSavedSecretEnvironment';
+import type { DaemonPluginChangeService } from '@/plugins/daemon/changeService';
 
 type SpawnCredentials = NonNullable<Parameters<typeof resolveSpawnBackendIdentity>[0]['credentials']>;
 type SpawnApi = Parameters<typeof resolveConnectedServiceAuthForSpawn>[0]['api'];
@@ -124,6 +132,7 @@ export type ExecuteSpawnSessionRequestParams = Readonly<{
     activatePurposeBindings?: ConnectedAccountPurposeBindingOwner['activatePurposeBindings'];
     resolveSessionSyncPendingInputServerContractResult?: () =>
         SessionSyncPendingInputServerContractResult | null;
+    controlPluginDevelopment?: DaemonPluginChangeService['controlPluginDevelopment'];
 }>;
 
 async function refreshAccountSettingsForSpawn(
@@ -399,6 +408,24 @@ export async function executeSpawnSessionRequest(
                 return await refuseSpawn(ensuredDirectory.response);
             }
             const directoryCreated = ensuredDirectory.directoryCreated;
+            if (params.controlPluginDevelopment) {
+                try {
+                    const developmentRegistration = await params.controlPluginDevelopment({
+                        kind: 'registerWorkspace',
+                        projectRoot: directory,
+                    });
+                    if (developmentRegistration.kind !== 'status') {
+                        logger.debug('[DAEMON RUN] Workspace plugin development registration needs attention', {
+                            kind: developmentRegistration.kind,
+                            ...(developmentRegistration.kind === 'failed'
+                                ? { code: developmentRegistration.code }
+                                : {}),
+                        });
+                    }
+                } catch (error) {
+                    logger.debug('[DAEMON RUN] Workspace plugin development registration failed', error);
+                }
+            }
             const runnerAgentSessionBootstrap =
                 await prepareRunnerAgentSessionBootstrapForLease({
                     target: effectiveBackendTargetV2,
@@ -432,9 +459,53 @@ export async function executeSpawnSessionRequest(
                 ));
             }
 
+            // Direct Team launch material is disclosed only to an existing
+            // Session carrying its Home-accepted Team binding (lane 10 child 06
+            // L10D-R11, §15; child 01 principle 3). Such a fresh launch commits
+            // its Session here, through the runner's own create-or-load owner,
+            // and from then on is an attach to that exact Session.
+            let launchExistingSessionId = normalizedExistingSessionId;
+            let launchSessionAttachPayload = sessionAttachPayload;
+            let launchOptions = optionsWithProviderIsolation;
+            let committedLaunchSession: CommittedDaemonLaunchSession | null = null;
+            let childLaunchSubmitted = false;
+            if (
+                !normalizedExistingSessionId
+                && daemonLaunchRequiresCommittedSession(optionsWithProviderIsolation)
+            ) {
+                const committed = await commitDaemonLaunchSession({
+                    api: params.api,
+                    credentials: params.credentials,
+                    options: optionsWithProviderIsolation,
+                    directory,
+                    ...(agentModeId ? { agentModeId } : {}),
+                    ...(typeof agentModeUpdatedAt === 'number' ? { agentModeUpdatedAt } : {}),
+                });
+                if (!committed.ok) return await refuseSpawn(committed.result);
+                committedLaunchSession = committed.session;
+                launchExistingSessionId = committed.session.sessionId;
+                launchSessionAttachPayload = committed.session.attachPayload;
+                launchOptions = committed.session.options;
+                if (committed.session.created) {
+                    const committedSessionId = committed.session.sessionId;
+                    launchResourceScope.register({
+                        // A launch refused before its runner started leaves no
+                        // Session behind; once submitted, the runner owns it.
+                        onFailure: async () => {
+                            if (childLaunchSubmitted) return;
+                            await archiveSessionOnceInactive({
+                                token: params.credentials.token,
+                                sessionId: committedSessionId,
+                            }).catch(() => undefined);
+                        },
+                        onExit: () => undefined,
+                    });
+                }
+            }
+
             const connectedServices = await prepareDaemonConnectedServices({
-                options: optionsWithProviderIsolation,
-                normalizedExistingSessionId,
+                options: launchOptions,
+                normalizedExistingSessionId: launchExistingSessionId,
                 requestedSessionId,
                 effectiveResume,
                 catalogAgentId,
@@ -552,6 +623,11 @@ export async function executeSpawnSessionRequest(
                             sessionId: canonicalSessionId,
                             purposes: sessionPurposeBindingSnapshot.purposes,
                             bindings: sessionPurposeBindingSnapshot.bindings,
+                            // The composed snapshot carries purposes and bindings only;
+                            // direct Team material origins come from the Agent snapshot alone.
+                            ...(agentPurposeBindingSnapshot?.directMaterialOrigins?.length
+                                ? { directMaterialOrigins: agentPurposeBindingSnapshot.directMaterialOrigins }
+                                : {}),
                         });
                     launchResourceScope.register({
                         onFailure: () => activatedLease.dispose(),
@@ -739,15 +815,18 @@ export async function executeSpawnSessionRequest(
                         'connected_account_request_auth_unavailable',
                 });
             }
+            // A committed Session was created with its initial access; the
+            // attaching runner receives none of the fresh-creation fields.
             const initialAccessFile = effectiveOptionsForSpawn.initialAccess === undefined
+                || committedLaunchSession
                 ? undefined
                 : await createSessionInitialAccessFile(configuration.happyHomeDir, effectiveOptionsForSpawn.initialAccess);
             if (initialAccessFile) launchResourceScope.register(initialAccessFile.cleanup);
             const spawnLifecycle = await prepareDaemonSpawnLifecycle({
                 runnerAgentSessionBootstrap,
-                normalizedExistingSessionId,
+                normalizedExistingSessionId: launchExistingSessionId,
                 spawnNonce: effectiveOptionsForSpawn.spawnNonce,
-                sessionAttachPayload: sessionAttachPayload ?? null,
+                sessionAttachPayload: launchSessionAttachPayload ?? null,
                 extraEnv,
                 extraEnvForChild,
                 providerBindingLaunchHandoff: spawnEnvironment.providerBindingLaunchHandoff ?? null,
@@ -805,13 +884,19 @@ export async function executeSpawnSessionRequest(
                 }
                 : undefined;
 
+            childLaunchSubmitted = true;
             let spawnResult = await routeSpawnModeAndWaitForWebhook({
                 initialAccessFilePath: initialAccessFile?.path,
                 terminalRequest,
                 directory,
-                options: effectiveOptionsForSpawn,
+                options: committedLaunchSession
+                    ? withoutFreshSessionCreationFields(effectiveOptionsForSpawn)
+                    : effectiveOptionsForSpawn,
                 trackedSpawnOptions,
-                normalizedExistingSessionId,
+                normalizedExistingSessionId: launchExistingSessionId,
+                ...(committedLaunchSession?.sessionCreationOutcome
+                    ? { sessionCreationOutcome: committedLaunchSession.sessionCreationOutcome }
+                    : {}),
                 effectiveResume,
                 effectiveBackendTargetV2,
                 reservedSessionId: typeof sessionId === 'string' ? sessionId : undefined,

@@ -120,7 +120,8 @@ describe('ephemeral Runner logging custody', () => {
         },
         ui: {
           selectDirectory: vi.fn(async () => '/workspace/project'),
-          reviewAndRequestConsent: vi.fn(async () => true),
+          requestRegistryProfile: vi.fn(async () => null),
+          reviewAndRequestConsent: vi.fn(async () => ({ allow: true as const, optionalSelections: [] })),
           confirmActiveClose: vi.fn(async () => 'stop' as const),
           requestFailureRecovery: vi.fn(async () => 'exit' as const),
           bindControls: vi.fn(() => () => undefined),

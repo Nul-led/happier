@@ -92,7 +92,12 @@ function compareEvidence(left: FileChangeEvidence, right: FileChangeEvidence): n
     || compareNullableText(left.description, right.description);
 }
 
-function compareTurnChronology(left: TurnChangeSet, right: TurnChangeSet): number {
+/**
+ * Canonical turn order. Exported because "the latest turn" is a turn-identity question for every
+ * host that presents a turn-scoped view: transcript arrival order is not it, since evidence for an
+ * earlier turn can be published after a later turn's.
+ */
+export function compareTurnChangeSetChronology(left: TurnChangeSet, right: TurnChangeSet): number {
   return left.seqRange.startSeqInclusive - right.seqRange.startSeqInclusive
     || left.seqRange.endSeqInclusive - right.seqRange.endSeqInclusive
     || left.derivedAt - right.derivedAt
@@ -143,13 +148,17 @@ export function mergeCheckpointOverlap(
   return 'not_observed';
 }
 
-function mergeOptionalCheckpointOverlap(
+/**
+ * Across turns, a contributing turn Happier never checkpointed is uncovered rather than neutral:
+ * `not_observed` is a coverage claim and survives only when every contributing turn observed that
+ * negative result. Corroborating evidence inside one checkpointed turn stays neutral.
+ */
+function foldCrossTurnCheckpointOverlap(
   left: CheckpointOverlapObservation | null,
   right: CheckpointOverlapObservation | null,
 ): CheckpointOverlapObservation | null {
-  if (left === null) return right;
-  if (right === null) return left;
-  return mergeCheckpointOverlap(left, right);
+  if (left === null && right === null) return null;
+  return mergeCheckpointOverlap(left ?? 'unknown', right ?? 'unknown');
 }
 
 /**
@@ -365,7 +374,7 @@ export function mergeTurnChangeSets(params: Readonly<{
   const byFilePath = new Map<string, SelectedTurnFile>();
   let summarySource: ChangeEvidenceSource | 'unavailable' = 'unavailable';
   let summaryConfidence: ChangeConfidence | 'unavailable' = 'unavailable';
-  const chronologicalTurns = [...params.turns].sort(compareTurnChronology);
+  const chronologicalTurns = [...params.turns].sort(compareTurnChangeSetChronology);
 
   for (const turn of chronologicalTurns) {
     const turnCheckpointOverlap = readCheckpointOverlap(turn);
@@ -388,7 +397,7 @@ export function mergeTurnChangeSets(params: Readonly<{
       }
       if (previousKey !== file.filePath) byFilePath.delete(previousKey);
       const attributionOwner = pickChronologicalAttributionOwner(previous.file, file);
-      const checkpointEvidenceOverlap = mergeOptionalCheckpointOverlap(
+      const checkpointEvidenceOverlap = foldCrossTurnCheckpointOverlap(
         previous.checkpointEvidenceOverlap,
         selected.checkpointEvidenceOverlap,
       );

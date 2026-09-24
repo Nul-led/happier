@@ -105,8 +105,6 @@ describe('ApiClient Team credential Provider broker methods', () => {
           expiresAt: 2,
           teamId: 'team-1',
           resourceId: 'resource-1',
-          expectedResourceRevision: 1,
-          modelId: 'gpt-5',
           sourceRevision: 'source-revision-1',
           initiator: { accountId: 'account-1', machineId: 'worker-1', endpointId: 'a'.repeat(64) },
           target: { custodianAccountId: 'account-2', machineId: 'broker-1', endpointId: 'b'.repeat(64) },

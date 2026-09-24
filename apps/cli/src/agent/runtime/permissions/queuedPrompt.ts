@@ -5,7 +5,7 @@ import type {
   SessionMediaItemV1,
 } from '@happier-dev/protocol';
 import type { HappierStructuredInputV1 } from '@happier-dev/protocol/runtime';
-import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
+import type { SessionFollowReconciledContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 
 export type PermissionModeQueuedPromptMode = Readonly<{
   permissionMode: PermissionMode;
@@ -36,7 +36,8 @@ export type PermissionModeQueuedPrompt = Readonly<{
   /** Trusted host-only turn input. It is never inserted into MessageQueue/Pending/transcript. */
   hostContextOnly?: Readonly<{
     kind: 'session_follow';
-    prepared: SessionFollowPreparedContext;
+    /** Re-enters Follow admission at the final dispatch boundary before any source text is sent. */
+    prepared: SessionFollowReconciledContext;
   }>;
 }>;
 

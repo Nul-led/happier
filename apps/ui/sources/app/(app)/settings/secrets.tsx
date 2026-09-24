@@ -10,6 +10,7 @@ import { useActionApprovalContinuation } from '@/components/approvals/useActionA
 import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
 import { Modal } from '@/modal';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { useSettingsVersion } from '@/sync/store/hooks';
 import {
@@ -46,6 +47,15 @@ export default React.memo(function SecretsSettingsScreen() {
         onExecuted: () => { void catalog.reload().catch(() => undefined); },
     });
     const approvalId = approval.approvalId;
+    // A conversion is offered only in a direction that can succeed. Into
+    // Plain, the Home's storage policy must admit Plain content (plan 10.08
+    // §10.5 "subject to Home policy"); into E2EE, this Account must hold the
+    // content key that seals the owner's envelope.
+    const plaintextStorageEnabled = useFeatureEnabled('encryption.plaintextStorage', {
+        scopeKind: 'spawn',
+        serverId: scope?.serverId,
+    });
+    const accountHoldsContentKey = getSyncSingleton().encryption !== null;
 
     React.useEffect(() => {
         setSharingPersonal(null);
@@ -141,9 +151,11 @@ export default React.memo(function SecretsSettingsScreen() {
     // write path. Handing an end-to-end encrypted value to the Home lowers its
     // trust level, so that direction is confirmed first; raising protection is
     // not a disclosure and asks nothing.
-    const convertSharedMode = React.useCallback(async (entry: SavedSecretCatalogEntryV1) => {
-        if (entry.encryptionMode === null) return;
-        const toMode = entry.encryptionMode === 'e2ee' ? 'plain' : 'e2ee';
+    const convertSharedMode = React.useCallback(async (
+        entry: SavedSecretCatalogEntryV1,
+        toMode: 'plain' | 'e2ee',
+    ) => {
+        if (entry.encryptionMode === null || entry.encryptionMode === toMode) return;
         if (toMode === 'plain') {
             const confirmed = await Modal.confirm(
                 t('secrets.catalog.convertToPlainTitle'),
@@ -292,6 +304,9 @@ export default React.memo(function SecretsSettingsScreen() {
                 scope={scope}
                 onClose={() => setAccessSelection(null)}
                 onSaved={catalog.reload}
+                onMakeHomeManaged={plaintextStorageEnabled && accessEntry.capabilities.rotate
+                    ? () => { void convertSharedMode(accessEntry, 'plain'); }
+                    : undefined}
                 approvalPending={approval.approvalPending}
                 approvalId={approvalId}
                 requestApproval={approval.requestApproval}
@@ -328,7 +343,12 @@ export default React.memo(function SecretsSettingsScreen() {
             ) : undefined}
             onRenameShared={catalog.sharedEnabled ? (entry) => { void renameShared(entry); } : undefined}
             onRotateShared={catalog.sharedEnabled ? (entry) => { void rotateShared(entry); } : undefined}
-            onConvertShared={catalog.sharedEnabled ? (entry) => { void convertSharedMode(entry); } : undefined}
+            onMakeSharedHomeManaged={catalog.sharedEnabled && plaintextStorageEnabled
+                ? (entry) => { void convertSharedMode(entry, 'plain'); }
+                : undefined}
+            onEncryptShared={catalog.sharedEnabled && accountHoldsContentKey
+                ? (entry) => { void convertSharedMode(entry, 'e2ee'); }
+                : undefined}
             onManageAccessShared={catalog.sharedEnabled && scopeKey ? (entry) => setAccessSelection({ scopeKey, ref: entry.ref }) : undefined}
             onDeleteShared={catalog.sharedEnabled ? (entry) => { void removeShared(entry); } : undefined}
             onDeleteCorruptShared={catalog.sharedEnabled ? (entry) => { void removeCorruptShared(entry); } : undefined}

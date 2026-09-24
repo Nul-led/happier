@@ -924,6 +924,12 @@ export class VoiceAgentManager {
           params.durableUserTranscriptLocalId,
           params.voiceAgentId,
         );
+        // Follow hydration is an awaited network read, so a barge-in or explicit
+        // cancel can land while it is pending. Delivery is the provider effect
+        // boundary: a turn already reported cancelled must not reach the backend
+        // — which is still live at this point — and must not acknowledge the
+        // Follow frontier for content nothing ever consumed.
+        if (settleCancelled()) return;
         await this.deliverPrompt(
           voiceAgent.chatBackend,
           voiceAgent.chatSessionId,

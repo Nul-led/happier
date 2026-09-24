@@ -76,7 +76,7 @@ const authority = {
   payload: {
     v: 1 as const, grantId: 'grant-1', aud: 'happier-provider-broker-route-v1' as const,
     issuedAt: 1, expiresAt: 2, teamId: 'team-1', resourceId: 'resource-1',
-    expectedResourceRevision: 3, modelId: 'gpt-5', sourceRevision: 'catalog:3',
+    sourceRevision: 'catalog:3',
     initiator: { accountId: 'account-1', machineId: 'worker-1', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'account-2', machineId: 'broker-1', endpointId: 'b'.repeat(64) },
     consumer: { kind: 'session' as const, sessionId: 'session-1' },
@@ -362,6 +362,38 @@ describe('Session Team credential Provider binding', () => {
     expect(closeOrder).toEqual(['retire', 'close']);
   });
 
+  it('opens a fresh binding at the revision the catalog owner reports now, not the stale selection revision', async () => {
+    // The Session selected revision 3; a policy edit since advanced the
+    // resource to 8. The revision is a mutation precondition of the selection,
+    // not identity (`04-private-iroh-broker-transport.md:272`, 10.11 A2(4)), so
+    // the open re-reads it through the catalog owner and the Home rechecks it.
+    const current = { ...row, selection: { ...row.selection, expectedResourceRevision: 8 } };
+    const readCatalog = vi.fn(async () => [current]);
+    const openBroker = vi.fn(async () => ({ ok: true as const, authority,
+      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }));
+    const adapter: ProviderAdapter = {
+      v: 1, adapterVersion: 1,
+      prepare: vi.fn(prepareSpawnEnv),
+      materialize: vi.fn(materializeBrokerAuthoritySpawnEnv),
+    };
+
+    const opened = await openSessionTeamCredentialProviderBinding({
+      sessionId: 'session-1', machineId: 'worker-1', agentId: 'codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'gpt-5',
+      binding: { v: 1, slot: { kind: 'provider_model' }, resourceId: 'resource-1', expectedResourceRevision: 3, deliveryMode: 'brokered' },
+      lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
+      signal: new AbortController().signal, readCatalog, openBroker,
+      openTunnel: async () => ({ localPort: 43123, localCapability: 'c'.repeat(64), observedPath: 'direct', retire: async () => undefined, close: async () => undefined }),
+    });
+
+    expect(openBroker).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'resource-1',
+      expectedResourceRevision: 8,
+    }), expect.anything());
+    expect(opened?.providerBinding.source).toEqual({ kind: 'team_resource', resourceId: 'resource-1', resourceRevision: 8 });
+    await opened?.cleanup();
+  });
+
   it('does not revalidate a selected brokered binding against its available direct twin', async () => {
     const directTwin = {
       ...row,
@@ -390,11 +422,13 @@ describe('Session Team credential Provider binding', () => {
     expect(adapter.materialize).not.toHaveBeenCalled();
   });
 
-  it('still closes native transport when the target retirement acknowledgement is lost', async () => {
+  it('retains the native transport when the target retirement acknowledgement is lost, so a retry can still reach it', async () => {
     const order: string[] = [];
+    let retireAttempt = 0;
     const retire = vi.fn(async () => {
+      retireAttempt += 1;
       order.push('retire-attempt');
-      throw new Error('lost close acknowledgement');
+      if (retireAttempt === 1) throw new Error('lost close acknowledgement');
     });
     const close = vi.fn(async () => { order.push('transport-close'); });
     const brokerOpened = {
@@ -440,8 +474,15 @@ describe('Session Team credential Provider binding', () => {
       }),
     });
 
+    // The retirement DELETE travels over this transport, so closing it on a
+    // failed retirement would destroy the only way to release the target's
+    // operation. The failure is reported and the transport survives for the
+    // retry that acknowledges it.
     await expect(opened.cleanup()).rejects.toThrow('lost close acknowledgement');
-    expect(order).toEqual(['retire-attempt', 'transport-close']);
+    expect(order).toEqual(['retire-attempt']);
+    expect(close).not.toHaveBeenCalled();
+    await expect(opened.cleanup()).resolves.toBeUndefined();
+    expect(order).toEqual(['retire-attempt', 'retire-attempt', 'transport-close']);
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -646,8 +687,6 @@ describe('Session Team credential Provider binding', () => {
 
   it.each([
     ['resource', { resourceId: 'substituted-resource' }, 'team_credential_provider_selection_changed'],
-    ['resource revision', { expectedResourceRevision: 4 }, 'team_credential_provider_selection_changed'],
-    ['model', { modelId: 'substituted-model' }, 'team_credential_provider_selection_changed'],
     ['source revision', { sourceRevision: 'catalog:substituted' }, 'team_credential_provider_selection_changed'],
     ['Session', { consumer: { kind: 'session' as const, sessionId: 'substituted-session' } }, 'team_credential_provider_broker_open_changed'],
     ['worker Machine', { initiator: { ...authority.payload.initiator, machineId: 'substituted-worker' } }, 'team_credential_provider_broker_open_changed'],

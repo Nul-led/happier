@@ -50,6 +50,8 @@ async function createConnectPending(params: Readonly<{
     profile: unknown;
     accessToken: string;
     refreshToken?: string;
+    /** `false` for a provider whose token was only the profile proof; see `OAuthFlowProvider#accessTokenCustody`. */
+    retainAccessToken: boolean;
 }>): Promise<string> {
     const pendingKey = `oauth_pending_${randomKeyNaked(24)}`;
     let profileJson: string;
@@ -60,9 +62,11 @@ async function createConnectPending(params: Readonly<{
     } catch {
         throw new Error("invalid_profile");
     }
-    const tokenEnc = privacyKit.encodeBase64(
-        encryptString(["user", params.userId, "connect", params.providerId, "pending", pendingKey], params.accessToken),
-    );
+    const tokenEnc = params.retainAccessToken
+        ? privacyKit.encodeBase64(
+            encryptString(["user", params.userId, "connect", params.providerId, "pending", pendingKey], params.accessToken),
+        )
+        : undefined;
     const profileEnc = privacyKit.encodeBase64(
         encryptString(["user", params.userId, "connect", params.providerId, "pending", pendingKey, "profile"], profileJson),
     );
@@ -81,7 +85,7 @@ async function createConnectPending(params: Readonly<{
                 securityBinding: params.securityBinding,
                 userId: params.userId,
                 profileEnc,
-                accessTokenEnc: tokenEnc,
+                ...(tokenEnc ? { accessTokenEnc: tokenEnc } : {}),
                 ...(refreshTokenEnc ? { refreshTokenEnc } : {}),
             }),
             expiresAt: new Date(Date.now() + resolveOAuthPendingTtlMsFromEnv(process.env)),
@@ -170,6 +174,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
         const statePurpose = oauthState.purpose ?? null;
+        const flowFromState = oauthState.flow;
         const isAccountSecurityAttempt = attemptPurpose === "account_encryption_first_key"
             || attemptPurpose === "account_password_enrollment";
         const isAccountSecurityState = statePurpose === "account_encryption_first_key"
@@ -192,7 +197,15 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         }
         const isIdentityConnectionTest = attemptPurpose === "identity_connection_test";
         const isTeamAdmission = attemptPurpose === "team_admission";
-        if (isTeamAdmission !== (statePurpose === "team_admission")) {
+        // A Team-admission state and its server-written attempt must name the same
+        // journey. `createOauthStateToken` models the purpose only for the
+        // provisioning (`auth`) shape, where no Account exists yet; the
+        // authenticated connect start proves the same journey through that token's
+        // required `userId` and the `sid` this callback used to reach the attempt.
+        // A state that does name the purpose must still match in either flow.
+        if (statePurpose === "team_admission"
+            ? !isTeamAdmission
+            : isTeamAdmission && flowFromState === "auth") {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
                 flow: oauthState.flow,
                 error: "invalid_state",
@@ -721,9 +734,11 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }
 
                 if (authMode === "keyless") {
-                    const tokenEnc = privacyKit.encodeBase64(
-                        encryptString(["auth", "external", providerId, "pending_v2", pendingKey, "token"], accessToken),
-                    );
+                    const tokenEnc = provider.accessTokenCustody === "identity_proof_only"
+                        ? undefined
+                        : privacyKit.encodeBase64(
+                            encryptString(["auth", "external", providerId, "pending_v2", pendingKey, "token"], accessToken),
+                        );
                     const profileEnc = privacyKit.encodeBase64(
                         encryptString(["auth", "external", providerId, "pending_v2", pendingKey, "profile"], profileJson),
                     );
@@ -754,7 +769,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                                 securityBinding: pendingSecurityBinding,
                                 proofHash: proofHash!,
                                 profileEnc,
-                                accessTokenEnc: tokenEnc,
+                                ...(tokenEnc ? { accessTokenEnc: tokenEnc } : {}),
                                 ...(refreshTokenEnc ? { refreshTokenEnc } : {}),
                                 suggestedUsername,
                                 usernameRequired,
@@ -842,9 +857,11 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectParams, pending: pendingKey }));
                 }
 
-                const tokenEnc = privacyKit.encodeBase64(
-                    encryptString(["auth", "external", providerId, "pending", pendingKey, publicKeyHex!], accessToken),
-                );
+                const tokenEnc = provider.accessTokenCustody === "identity_proof_only"
+                    ? undefined
+                    : privacyKit.encodeBase64(
+                        encryptString(["auth", "external", providerId, "pending", pendingKey, publicKeyHex!], accessToken),
+                    );
                 const profileEnc = privacyKit.encodeBase64(
                     encryptString(["auth", "external", providerId, "pending", pendingKey, publicKeyHex!, "profile"], profileJson),
                 );
@@ -875,7 +892,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                             securityBinding: pendingSecurityBinding,
                             publicKeyHex: publicKeyHex!,
                             profileEnc,
-                            accessTokenEnc: tokenEnc,
+                            ...(tokenEnc ? { accessTokenEnc: tokenEnc } : {}),
                             ...(refreshTokenEnc ? { refreshTokenEnc } : {}),
                             suggestedUsername,
                             usernameRequired,
@@ -939,6 +956,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         profile,
                         accessToken,
                         ...(refreshToken ? { refreshToken } : {}),
+                        retainAccessToken: provider.accessTokenCustody !== "identity_proof_only",
                     });
 
                     return reply.redirect(buildRedirectUrl(webAppUrl, {
@@ -974,6 +992,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     profile,
                     accessToken,
                     ...(refreshToken ? { refreshToken } : {}),
+                    retainAccessToken: provider.accessTokenCustody !== "identity_proof_only",
                 });
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
                     ...redirectBaseParams,

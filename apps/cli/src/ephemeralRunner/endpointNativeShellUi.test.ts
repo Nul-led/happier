@@ -12,6 +12,7 @@ import {
   resolveEphemeralRunnerConsentReviewPresentation,
   resolveEphemeralRunnerDirectoryChoicePresentation,
   resolveEphemeralRunnerFailureRecoveryPresentation,
+  resolveEphemeralRunnerRegistryProfilePresentation,
   resolveEphemeralRunnerReviewedRuntimeFacts,
 } from './endpointTerminalUi';
 
@@ -106,7 +107,7 @@ describe('ephemeral Runner native-shell adapter', () => {
       },
       pluginInstallation: null,
       signal: new AbortController().signal,
-    })).resolves.toBe(true);
+    })).resolves.toEqual({ allow: true, optionalSelections: [] });
 
     // The native shell renders exactly what the terminal renders: one owner.
     expect(request).toHaveBeenCalledWith({
@@ -238,7 +239,7 @@ describe('ephemeral Runner native-shell adapter', () => {
       },
       pluginInstallation: null,
       signal: new AbortController().signal,
-    })).resolves.toBe(false);
+    })).resolves.toEqual({ allow: false });
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -298,5 +299,31 @@ describe('ephemeral Runner native-shell adapter', () => {
     expect(payload).not.toContain('exact prompt');
     expect(payload).not.toContain('a'.repeat(64));
     expect(payload).not.toContain('sealed-private-descriptor');
+  });
+
+  it('asks the shell the private-registry question with its closed copy and maps each answer', async () => {
+    const requirement = { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/agent', registryProfileId: 'registry_acme' };
+    const answers = [
+      { v: 1 as const, type: 'registry_profile_decision' as const, decision: 'sign_in' as const, token: 'endpoint-token' },
+      { v: 1 as const, type: 'registry_profile_decision' as const, decision: 'without_token' as const },
+      { v: 1 as const, type: 'registry_profile_decision' as const, decision: 'decline' as const },
+    ];
+    const requests: EphemeralRunnerNativeShellRequest[] = [];
+    const ui = createEphemeralRunnerNativeShellUi({
+      request: async (message) => { requests.push(message); return answers.shift()!; },
+      subscribe: () => () => undefined,
+    }, { locale: 'fr' });
+    const signal = new AbortController().signal;
+
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toEqual({ credential: 'endpoint-token' });
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toEqual({ credential: null });
+    await expect(ui.requestRegistryProfile({ requirement, signal })).resolves.toBeNull();
+    expect(requests[0]).toEqual({
+      v: 1,
+      type: 'registry_profile',
+      registry: resolveEphemeralRunnerRegistryProfilePresentation({ requirement, locale: 'fr' }),
+    });
+    expect((requests[0] as Extract<EphemeralRunnerNativeShellRequest, { type: 'registry_profile' }>).registry.signInAgain)
+      .toContain('https://npm.acme.example.test');
   });
 });

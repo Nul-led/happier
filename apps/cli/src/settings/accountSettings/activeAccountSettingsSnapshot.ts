@@ -31,6 +31,10 @@ export type ActiveAccountSettingsSnapshotCommit = Readonly<{
 }>;
 
 let active: ActiveAccountSettingsSnapshot | null = null;
+// The snapshot listeners last observed. It trails `active` only while a Saved
+// Secret catalog refresh has withdrawn material without publishing, and after
+// a refresh that observed a logically unchanged catalog.
+let published: ActiveAccountSettingsSnapshot | null = null;
 // This token is intentionally owner-local: it advances at Account lifetime
 // boundaries, not when the active Account receives a newer settings revision.
 let activeLifetimeToken = 0;
@@ -66,9 +70,10 @@ function belongsToSameAccount(
 }
 
 function emitActiveAccountSettingsSnapshot(
-  previous: ActiveAccountSettingsSnapshot | null,
   next: ActiveAccountSettingsSnapshot | null,
 ): void {
+  const previous = published;
+  published = next;
   for (const listener of listeners) {
     try {
       listener(previous, next);
@@ -106,7 +111,7 @@ export function commitActiveAccountSettingsSnapshot(
   if (!previous || !belongsToSameAccount(previous, accepted)) {
     activeLifetimeToken += 1;
   }
-  emitActiveAccountSettingsSnapshot(previous, accepted);
+  emitActiveAccountSettingsSnapshot(accepted);
   return { snapshot: accepted, didCommit: true };
 }
 
@@ -150,20 +155,16 @@ export function commitActiveSavedSecretCatalog(input: Readonly<{
     savedSecretCatalogState: input.state,
   };
   active = next;
-  emitActiveAccountSettingsSnapshot(previous, next);
+  publishSavedSecretCatalogIfChanged(next);
   return true;
 }
 
-/**
- * Fails shared material closed when the Home can no longer be observed while
- * retaining only repairable metadata for retry UX.
- */
-export function withdrawActiveSavedSecretCatalog(input: Readonly<{
+function withdrawSavedSecretCatalogMaterial(input: Readonly<{
   scopeKey: string;
   lifetimeToken: number;
-}>): boolean {
+}>): ActiveAccountSettingsSnapshot | null {
   const previous = active;
-  if (!previous || previous.scopeKey !== input.scopeKey || activeLifetimeToken !== input.lifetimeToken) return false;
+  if (!previous || previous.scopeKey !== input.scopeKey || activeLifetimeToken !== input.lifetimeToken) return null;
   const resources = (previous.savedSecretResources ?? []).map(({ resourceDataKey, ...resource }) => {
     resourceDataKey?.fill(0);
     return { ...resource, storedContent: null };
@@ -174,7 +175,71 @@ export function withdrawActiveSavedSecretCatalog(input: Readonly<{
     savedSecretCatalogState: 'temporarily_unavailable',
   };
   active = next;
-  emitActiveAccountSettingsSnapshot(previous, next);
+  return next;
+}
+
+/**
+ * The listener-visible content of a catalog publication. Opened resource DEKs
+ * are derived from the row's envelope and change only with its stored content,
+ * so only their presence is part of the logical catalog.
+ */
+function savedSecretCatalogPublicationKey(snapshot: ActiveAccountSettingsSnapshot): string {
+  return JSON.stringify([
+    snapshot.savedSecretCatalogState ?? null,
+    (snapshot.savedSecretResources ?? []).map(({ resourceDataKey, ...resource }) => [
+      resource,
+      resourceDataKey !== undefined,
+    ]),
+  ]);
+}
+
+/**
+ * A catalog refresh re-observes the Home on every AccountChange wake and every
+ * operation admission. Listeners restart Sessions and prepare direct material,
+ * so they are woken only when the authorized catalog actually changed
+ * (teams-lane-10 08 §5.8; 06 L10D-R13).
+ */
+function publishSavedSecretCatalogIfChanged(next: ActiveAccountSettingsSnapshot): void {
+  if (
+    published
+    && published.scopeKey === next.scopeKey
+    && published.settings === next.settings
+    && savedSecretCatalogPublicationKey(published) === savedSecretCatalogPublicationKey(next)
+  ) {
+    // Consumers already hold this logical snapshot; adopt the current object so
+    // a later unchanged re-publication keeps its identity.
+    published = next;
+    return;
+  }
+  emitActiveAccountSettingsSnapshot(next);
+}
+
+/**
+ * Starts a catalog refresh: a refresh is an authorization observation boundary,
+ * so opened material is retired before waiting on the Home and synchronous
+ * readers fail closed meanwhile. Nothing is published here; the refresh
+ * publishes its outcome once, through `commitActiveSavedSecretCatalog` or
+ * `withdrawActiveSavedSecretCatalog`, and only if it differs from what
+ * listeners last observed.
+ */
+export function beginActiveSavedSecretCatalogRefresh(input: Readonly<{
+  scopeKey: string;
+  lifetimeToken: number;
+}>): boolean {
+  return withdrawSavedSecretCatalogMaterial(input) !== null;
+}
+
+/**
+ * Fails shared material closed when the Home can no longer be observed while
+ * retaining only repairable metadata for retry UX.
+ */
+export function withdrawActiveSavedSecretCatalog(input: Readonly<{
+  scopeKey: string;
+  lifetimeToken: number;
+}>): boolean {
+  const next = withdrawSavedSecretCatalogMaterial(input);
+  if (!next) return false;
+  publishSavedSecretCatalogIfChanged(next);
   return true;
 }
 
@@ -201,7 +266,7 @@ export function clearActiveAccountSettingsSnapshot(): void {
   zeroRetiredSavedSecretResourceDataKeys(previous.savedSecretResources, undefined);
   active = null;
   activeLifetimeToken += 1;
-  emitActiveAccountSettingsSnapshot(previous, null);
+  emitActiveAccountSettingsSnapshot(null);
 }
 
 export function resolveActiveAccountSettingsSnapshotRevision(
@@ -241,13 +306,14 @@ export function notifyActiveAccountConnectedServicesProjection(scopeKey: string)
   const snapshot = active;
   if (snapshot?.scopeKey && snapshot.scopeKey !== scopeKey) return;
   activeConnectedServicesProjectionRevision += 1;
-  emitActiveAccountSettingsSnapshot(snapshot, snapshot);
+  emitActiveAccountSettingsSnapshot(snapshot);
 }
 
 export function resetActiveAccountSettingsSnapshotForTests(): void {
   const previous = active;
   zeroRetiredSavedSecretResourceDataKeys(previous?.savedSecretResources, undefined);
   active = null;
+  published = null;
   if (previous) activeLifetimeToken += 1;
   activeConnectedServicesProjectionRevision = 0;
 }
@@ -257,4 +323,19 @@ export function subscribeActiveAccountSettingsSnapshot(listener: ActiveAccountSe
   return () => {
     listeners.delete(listener);
   };
+}
+
+/**
+ * Subscribes to publications that change the snapshot itself: Settings, the
+ * Saved Secret catalog, or the Account lifetime. A Connected Services
+ * projection re-publication of the unchanged snapshot is excluded; its one
+ * producer pairs it with the consumers' own projection invalidation.
+ */
+export function subscribeActiveAccountSettingsSnapshotChanges(
+  listener: ActiveAccountSettingsSnapshotListener,
+): () => void {
+  return subscribeActiveAccountSettingsSnapshot((previous, next) => {
+    if (previous === next) return;
+    listener(previous, next);
+  });
 }

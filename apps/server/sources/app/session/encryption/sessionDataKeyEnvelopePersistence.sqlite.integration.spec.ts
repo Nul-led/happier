@@ -2,13 +2,14 @@ import {
     openEncryptedDataKeyEnvelopeV1,
     sealEncryptedDataKeyEnvelopeV1,
 } from "@happier-dev/protocol";
+import { encodeBase64 } from "privacy-kit";
 import tweetnacl from "tweetnacl";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
-import { putSessionAccessGrantInTx } from "@/app/session/access/sessionAccessGrantService";
+import { deleteSessionAccessGrantInTx, putSessionAccessGrantInTx } from "@/app/session/access/sessionAccessGrantService";
 import { resolveEffectiveSessionAccess } from "@/app/session/access/sessionAccess";
 import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
@@ -250,7 +251,7 @@ describe("Session data-key envelope persistence (SQLite integration)", () => {
             sessionId: session.id,
             subject: { kind: "account", accountId: recipient.id },
             grant: { accessLevel: "view", canApprovePermissions: false },
-            directEnvelope: { encryptedDataKey: sealFor(recipient.contentPublicKey, dataKey) },
+            accountEnvelopeInput: { v: 1, encryptedDataKey: encodeBase64(sealFor(recipient.contentPublicKey, dataKey)) },
         }));
         expect(result).toMatchObject({ ok: true });
 
@@ -273,9 +274,9 @@ describe("Session data-key envelope persistence (SQLite integration)", () => {
             sessionId: session.id,
             subject: { kind: "account", accountId: recipient.id },
             grant: { accessLevel: "view", canApprovePermissions: false },
-            directEnvelope: { encryptedDataKey: new Uint8Array([7, 7]) },
+            accountEnvelopeInput: { v: 1, encryptedDataKey: encodeBase64(new Uint8Array([7, 7])) },
         }));
-        expect(result).toEqual({ ok: false, error: "session_access_invalid_recipient_envelope" });
+        expect(result).toEqual({ ok: false, error: "invalid_request" });
 
         // No half-applied state: the recipient must not end up authorized with a
         // key they can never open.
@@ -296,11 +297,13 @@ describe("Session data-key envelope persistence (SQLite integration)", () => {
             sessionId: session.id,
             subject: { kind: "account", accountId: recipient.id },
             grant: { accessLevel: "view", canApprovePermissions: false },
-            directEnvelope: {
-                encryptedDataKey: sealFor(recipient.contentPublicKey, dataKey),
-            },
+            accountEnvelopeInput: { v: 1, encryptedDataKey: encodeBase64(sealFor(recipient.contentPublicKey, dataKey)) },
         }));
-        await db.sessionShare.deleteMany({ where: { sessionId: session.id } });
+        expect(await inTx(async (tx) => await deleteSessionAccessGrantInTx(tx, { authentication,
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            subject: { kind: "account", accountId: recipient.id },
+        }))).toMatchObject({ ok: true, changed: true });
 
         // Revocation is an access decision, not a delete: the row survives and is
         // simply never projected again, which is what makes re-granting cheap.

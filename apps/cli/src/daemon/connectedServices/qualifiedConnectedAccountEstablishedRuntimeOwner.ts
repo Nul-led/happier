@@ -56,6 +56,7 @@ import type {
   ConnectedAccountRuntimeEstablishedResult,
 } from '@/plugins/runtime/connectedAccounts/runtimeInvoker';
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
+import type { PluginSourceCustody } from '@/plugins/runtime/sourceAuthority';
 import type { TeamCredentialDirectMaterialPayloadV1 } from '@happier-dev/protocol/teams';
 
 import type { ConnectedAccountDaemonPersistence } from './ConnectedAccountDaemonRuntime';
@@ -186,8 +187,8 @@ export type QualifiedConnectedAccountEstablishedInvocationBasis = Readonly<{
   credentialRevision: string;
   credentialConfigurationRevision: string | null;
   runtimeConfigurationRevision: string;
-  generation: string;
-  immutableGenerationId: string;
+  occurrenceId: string;
+  sourceCustody: PluginSourceCustody;
   isCurrent(): boolean;
   prepareCredentialReplacement(
     mutation: QualifiedConnectedAccountCredentialMutationPreparationInput,
@@ -491,6 +492,12 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
         }),
         snapshots.configuration.configurationRevision,
       );
+    // Direct preparation is an operation boundary: admit the configuration's
+    // Saved Secret refs before their values leave this daemon.
+    await params.configuration.secrets.admit(
+      Object.values(configurationRecord?.secretRefs ?? {}),
+      input.signal ? { signal: input.signal } : undefined,
+    );
     const configuration = await resolveDirectMaterialConfiguration(
       configurationRecord,
       (secretId, options) => params.configuration.secrets.read(secretId, options),
@@ -523,7 +530,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
       ) {
         throw new Error('Connected-account contribution contract is unavailable');
       }
-      contributionContractVersion = contribution.immutableGenerationId;
+      contributionContractVersion = contribution.occurrenceId;
     } finally {
       await registryLease.release();
     }
@@ -575,7 +582,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
             );
             return Boolean(
               latestContribution
-              && latestContribution.immutableGenerationId === contributionContractVersion
+              && latestContribution.occurrenceId === contributionContractVersion
               && latestContribution.isCurrent()
               && params.reloadController.isRuntimeRegistryCurrent(latestRegistryLease.registry),
             );
@@ -750,7 +757,7 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
             },
             async destroyAttempt() {},
             secrets: params.configuration.secrets,
-            isGenerationCurrent: () => (
+            isRuntimeCurrent: () => (
               params.reloadController.isRuntimeRegistryCurrent(lease.registry)
               && runtimeLease.isCurrent()
             ),
@@ -760,8 +767,8 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
           service: input.account.service,
           account: input.account,
           mode,
-          generation: runtimeLease.generation,
-          immutableGenerationId: runtimeLease.immutableGenerationId,
+          occurrenceId: runtimeLease.occurrenceId,
+          sourceCustody: runtimeLease.sourceCustody,
           ...(initialConfigurationRecord === null
             ? {}
             : {
@@ -839,8 +846,8 @@ export function createQualifiedConnectedAccountEstablishedRuntimeOwner(
             credentialConfigurationRevision:
               initial.credential.configurationRevision,
             runtimeConfigurationRevision,
-            generation: runtimeLease.generation,
-            immutableGenerationId: runtimeLease.immutableGenerationId,
+            occurrenceId: runtimeLease.occurrenceId,
+            sourceCustody: runtimeLease.sourceCustody,
             isCurrent,
             prepareCredentialReplacement(
               mutation: QualifiedConnectedAccountCredentialMutationPreparationInput,

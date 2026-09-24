@@ -31,7 +31,13 @@ export type SessionBoardSourceUnavailableReason =
 
 export type SessionBoardSourceAvailabilityResolver = (
     source: SessionSurfaceItemV1['source'],
-    context?: Readonly<{ frame?: SessionSurfaceItemV1['frame'] }>,
+    /**
+     * The embedded presentation this host will actually mount. `SessionWidgetHost` owns
+     * `expanded`, so it is the one place that knows whether the mount fills its host; deriving
+     * it again from the persisted `frame` here made the chrome and the mount answer
+     * "is this renderer admitted" from two different presentations.
+     */
+    context?: Readonly<{ presentation?: 'content' | 'fill' }>,
 ) => SessionBoardSourceAvailability;
 
 const AVAILABLE: SessionBoardSourceAvailability = Object.freeze({ kind: 'available' });
@@ -77,7 +83,7 @@ export function createSessionBoardSourceAvailabilityResolver(
         if (!runtime) return NO_WIDGET_CONTRIBUTION;
         const resolved = resolveInstalledSessionWidgetMount({
             source,
-            presentation: context?.frame === 'card' || context?.frame === undefined ? 'content' : 'fill',
+            presentation: context?.presentation ?? 'content',
             runtime,
         });
         if (resolved.placement
@@ -160,6 +166,8 @@ export function resolveSessionBoardItemPresentation(input: Readonly<{
     /** Whether this host can hand the item to another placement. */
     canOpenElsewhere: boolean;
     resolveSourceAvailability?: SessionBoardSourceAvailabilityResolver;
+    /** The mounting host's own embedded presentation; it owns `expanded`, this module does not. */
+    embeddedPresentation?: 'content' | 'fill';
 }>): SessionBoardItemPresentation {
     const removeAction = input.canEdit ? 'remove' as const : null;
     switch (input.state.kind) {
@@ -217,7 +225,7 @@ export function resolveSessionBoardItemPresentation(input: Readonly<{
 
     const availability = (input.resolveSourceAvailability ?? defaultSessionBoardSourceAvailability)(
         input.state.item.source,
-        { frame: input.state.item.frame },
+        { presentation: input.embeddedPresentation ?? 'content' },
     );
     if (availability.kind === 'unavailable') {
         const pluginScoped = availability.reason !== 'hosted_html_renderer_unavailable';

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createNpmRegistryProfileService } from './service';
 import { createNpmRegistryCredentialStore } from './credentials';
 import { NpmRegistryHttpError } from '../httpsClient';
-import { createPurposeKeyedPluginSecretStore } from '@/plugins/runtime/context/secrets';
+import { createPluginSecretStore } from '@/plugins/runtime/context/secrets';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 
 describe('npm registry profile service', () => {
@@ -147,7 +147,7 @@ describe('npm registry profile service', () => {
       key: Buffer.from(legacyKey).toString('base64'),
     }), 'utf8');
     await chmod(legacyKeyPath, 0o600);
-    const legacy = createPurposeKeyedPluginSecretStore({
+    const legacy = createPluginSecretStore({
       pluginId: 'happier.npm.registry.credentials',
       paths,
       secretKey: legacyKey,
@@ -171,13 +171,13 @@ describe('npm registry profile service', () => {
       key: Buffer.from(legacyKey).toString('base64'),
     }), 'utf8');
     await chmod(legacyKeyPath, 0o600);
-    const legacyNpmStore = createPurposeKeyedPluginSecretStore({
+    const legacyNpmStore = createPluginSecretStore({
       pluginId: 'happier.npm.registry.credentials',
       paths,
       secretKey: legacyKey,
     });
     await legacyNpmStore.set('legacy-npm-credential', 'Bearer keep-npm-readable');
-    const unrelatedLegacyStore = createPurposeKeyedPluginSecretStore({
+    const unrelatedLegacyStore = createPluginSecretStore({
       pluginId: 'another.legacy.plugin',
       paths,
       secretKey: legacyKey,
@@ -214,7 +214,7 @@ describe('npm registry profile service', () => {
   });
 
   it('classifies authentication and offline checks and pauses only the affected origin', async () => {
-    let result: 'available' | 'authentication_failed' | 'offline' = 'authentication_failed';
+    let result: 'available' | 'authentication_failed' | 'offline' = 'available';
     const seenHeaders: Array<string | undefined> = [];
     const { service } = await makeService(async ({ authorizationHeader }) => {
       seenHeaders.push(authorizationHeader);
@@ -225,6 +225,8 @@ describe('npm registry profile service', () => {
       action: 'login', machineId: 'machine-1', profileId: 'registry_acme', expectedRevision: 1,
       mutationId: 'mutation-login-acme', credential: { kind: 'bearer_token', secret: 'boundary-secret' },
     });
+    seenHeaders.length = 0;
+    result = 'authentication_failed';
     expect(await service.mutate({
       action: 'test', machineId: 'machine-1', profileId: 'registry_acme', expectedRevision: 2,
       mutationId: 'mutation-test-auth',
@@ -248,6 +250,39 @@ describe('npm registry profile service', () => {
       action: 'test', machineId: 'machine-1', profileId: 'registry_acme', expectedRevision: 4,
       mutationId: 'mutation-test-recover',
     })).toMatchObject({ status: 'success', snapshot: { profiles: [{ availability: 'available' }], pausedSources: [] } });
+  });
+
+  it('signing in checks the new credential, so the profile is usable or truthfully refused without a separate test', async () => {
+    let result: 'available' | 'authentication_failed' = 'authentication_failed';
+    const seenHeaders: Array<string | undefined> = [];
+    const { service } = await makeService(async ({ authorizationHeader }) => {
+      seenHeaders.push(authorizationHeader);
+      return { status: result };
+    });
+    await service.mutate(addRequest);
+
+    expect(await service.mutate({
+      action: 'login', machineId: 'machine-1', profileId: 'registry_acme', expectedRevision: 1,
+      mutationId: 'mutation-login-refused', credential: { kind: 'bearer_token', secret: 'wrong-secret' },
+    })).toMatchObject({ status: 'error', code: 'authentication_failed', currentRevision: 2 });
+    expect(await service.snapshot()).toMatchObject({
+      revision: 2,
+      profiles: [{ hasCredentials: true, availability: 'sign_in_required' }],
+      pausedSources: [{ origin: 'https://registry.acme.test', reason: 'authentication_failed' }],
+    });
+
+    result = 'available';
+    expect(await service.mutate({
+      action: 'login', machineId: 'machine-1', profileId: 'registry_acme', expectedRevision: 2,
+      mutationId: 'mutation-login-accepted', credential: { kind: 'bearer_token', secret: 'right-secret' },
+    })).toMatchObject({
+      status: 'success',
+      snapshot: { revision: 3, profiles: [{ availability: 'available', lastSuccessfulCheckAtMs: 100 }], pausedSources: [] },
+    });
+    expect(seenHeaders).toEqual(['Bearer wrong-secret', 'Bearer right-secret']);
+    // The accepted credential is the one the profile now uses.
+    expect(await service.withAuthorization('registry_acme', async ({ authorizationHeader }) => authorizationHeader))
+      .toBe('Bearer right-secret');
   });
 
   it('logout and removal preserve source pause state without disabling installed plugins', async () => {

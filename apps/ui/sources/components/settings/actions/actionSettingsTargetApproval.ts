@@ -29,6 +29,20 @@ export function resolveActionSettingsApprovalSurface(
     return null;
 }
 
+/**
+ * What the canonical Actions approval policy answers for this target with these
+ * settings — the confirmation the runtime will actually apply, not a settings-local
+ * restatement of it.
+ *
+ * Every `ui` target on this screen is an in-app surface, and the app's own Action
+ * executor admits those invocations with `authority: 'present_user'`
+ * (`sync/api/session/sessionAccessApi.ts`, `sync/ops/actions/defaultActionExecutor.ts`).
+ * The policy suppresses its dangerous-Action confirmation floor for that pair only
+ * where the app hosts its own confirmation, and keeps it as the default where it
+ * does not (Session responsibility assignment), so the row must ask with the same
+ * authority the runtime supplies. Explicit require/waive settings are evaluated
+ * first either way.
+ */
 export function getActionTargetApprovalRequired(params: Readonly<{
     settings: ActionsSettingsV1;
     actionId: ActionSettingsActionId;
@@ -41,7 +55,10 @@ export function getActionTargetApprovalRequired(params: Readonly<{
         return false;
     }
 
-    return isApprovalRequiredByActionsSettings(params.actionId, normalizedSettings, { surface });
+    return isApprovalRequiredByActionsSettings(params.actionId, normalizedSettings, {
+        surface,
+        ...(surface === 'ui' ? { authority: 'present_user' as const } : {}),
+    });
 }
 
 /**

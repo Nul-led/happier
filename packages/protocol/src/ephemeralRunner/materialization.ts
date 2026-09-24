@@ -62,6 +62,14 @@ export const RunnerMaterializationRequestV1Schema = z.object({
   })) {
     context.addIssue({ code: 'custom', path: ['machine', 'metadata'], message: 'Runner Machine stored content must match its Account mode' });
   }
+  // A Runner bootstrap always mints a fresh Session key, so no legitimate Runner
+  // producer can ask for E2EE without the creator's owner envelope. The shared
+  // Session constructor still permits a keyless e2ee Session for released
+  // owner-secret Sessions; the Runner request has no such mode and refuses here
+  // rather than creating a transcript nobody can ever read.
+  if (value.session.requestedEncryptionMode === 'e2ee' && value.session.dataEncryptionKey === null) {
+    context.addIssue({ code: 'custom', path: ['session', 'dataEncryptionKey'], message: 'An E2EE Runner Session requires its creator owner envelope' });
+  }
 });
 export type RunnerMaterializationRequestV1 = z.infer<typeof RunnerMaterializationRequestV1Schema>;
 
@@ -81,7 +89,19 @@ export const RunnerMaterializationResponseV1Schema = z.discriminatedUnion('statu
   }).strict(),
   z.object({
     status: z.literal('conflict'),
-    reason: z.enum(['binding_mismatch', 'manifest_mismatch', 'encryption_mismatch', 'identity_taken']),
+    reason: z.enum([
+      'binding_mismatch',
+      'manifest_mismatch',
+      'encryption_mismatch',
+      'identity_taken',
+      /**
+       * The shared Session constructor refused the submitted request — an
+       * organization placement, initial access or Team-credential binding that
+       * is no longer valid. It is a typed refusal of the submission, not a
+       * mismatch against the activation binding.
+       */
+      'session_create_rejected',
+    ]),
   }).strict(),
 ]);
 export type RunnerMaterializationResponseV1 = z.infer<typeof RunnerMaterializationResponseV1Schema>;

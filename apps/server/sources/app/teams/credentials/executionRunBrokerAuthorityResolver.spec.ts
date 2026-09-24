@@ -24,6 +24,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
             intent: 'voice_agent',
             runtimeState: 'active_turn',
             activeTurnId: 'voice-turn-1',
+            teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
         } }));
         const resolve = createExecutionRunBrokerCurrentnessResolver({
             app: { forwardRpcForUser } as never,
@@ -37,6 +38,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
             intent: 'voice_agent',
             runtimeState: 'active_turn',
             activeTurnId: 'voice-turn-1',
+            teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
         });
         expect(forwardRpcForUser).toHaveBeenCalledWith({
             userId: request.requestingAccountId,
@@ -63,6 +65,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
             parentSessionId: 'session-one',
             intent: 'delegate',
             runtimeState: 'active_turn',
+            teamCredentialProviderModel: null,
         } }));
         const resolve = createExecutionRunBrokerCurrentnessResolver({
             app: { forwardRpcForUser } as never,
@@ -90,6 +93,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
                 intent: 'voice_agent',
                 runtimeState: 'active_turn',
                 activeTurnId: 'detached-turn-1',
+                teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
             } }) } as never,
             resolveServerIdentityId: async () => 'srv_home_one',
             createNonce: () => '11111111-1111-4111-8111-111111111111',
@@ -102,6 +106,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
             intent: 'voice_agent',
             runtimeState: 'active_turn',
             activeTurnId: 'detached-turn-1',
+            teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
         });
     });
 
@@ -126,6 +131,7 @@ describe('createExecutionRunBrokerCurrentnessResolver', () => {
                 parentSessionId: 'session-one',
                 intent: 'voice_agent',
                 runtimeState: 'idle',
+                teamCredentialProviderModel: null,
                 ...substitution,
             } }) } as never,
             resolveServerIdentityId: async () => 'srv_home_one',

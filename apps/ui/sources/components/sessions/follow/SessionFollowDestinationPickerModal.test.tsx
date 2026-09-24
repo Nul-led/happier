@@ -9,10 +9,15 @@ import { t } from '@/text';
 const api = vi.hoisted(() => ({ set: vi.fn() }));
 const preparation = vi.hoisted(() => ({ run: vi.fn() }));
 const connectivity = vi.hoisted(() => ({ online: true }));
+const querySource = vi.hoisted(() => ({ refresh: vi.fn() }));
+const picker = vi.hoisted(() => ({
+    presentation: { canSelect: true, statusKey: null as string | null, canRetryQuery: false },
+}));
 
 vi.mock('@/sync/api/session/sessionFollowSourcesApi', () => ({ setSessionFollowSource: api.set }));
 vi.mock('./prepareSessionFollowSourceKey', () => ({ prepareSessionFollowSourceKey: preparation.run }));
-vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', () => ({
+vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
     isServerReachabilityNetworkAllowed: () => connectivity.online,
     subscribeServerReachabilityNetworkAllowed: () => () => undefined,
 }));
@@ -22,6 +27,7 @@ vi.mock('@/sync/domains/session/listing/useSessionListQuerySourceState', () => (
         statesByServerId: { 'home-a': { kind: 'ready', complete: true } },
         coverageComplete: true,
         loadNext: vi.fn(),
+        refresh: querySource.refresh,
     }),
 }));
 vi.mock('@/sync/domains/session/sessionAddress', () => ({
@@ -40,12 +46,15 @@ vi.mock('./resolveSessionFollowDestinationTargets', () => ({
 }));
 vi.mock('./sessionFollowPickerPresentation', () => ({
     buildSessionFollowPickerContextTitle: () => 'Follow',
-    resolveSessionFollowPickerPresentation: () => ({ canSelect: true, statusKey: null }),
+    resolveSessionFollowPickerPresentation: () => picker.presentation,
 }));
 vi.mock('@/sync/domains/session/listing/sessionListIndexPresentation', () => ({
     resolveSessionListQueryPresentation: () => ({ kind: 'ready', complete: true }),
 }));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({ getServerProfileById: () => ({ name: 'Home' }) }));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getServerProfileById: () => ({ name: 'Home' }),
+}));
 vi.mock('@/modal/components/card/useModalCardChrome', () => ({ useModalCardChrome: () => undefined }));
 vi.mock('@/components/ui/selectionList', () => ({
     SelectionList: (props: Record<string, unknown>) => React.createElement('SelectionList', props),
@@ -59,7 +68,31 @@ describe('SessionFollowDestinationPickerModal', () => {
     beforeEach(() => {
         api.set.mockReset();
         preparation.run.mockReset();
+        querySource.refresh.mockReset();
         connectivity.online = true;
+        picker.presentation = { canSelect: true, statusKey: null, canRetryQuery: false };
+    });
+
+    it('offers an in-place retry when destination discovery fails for the exact Home', async () => {
+        picker.presentation = {
+            canSelect: false,
+            statusKey: 'sessionsList.queryRefreshFailedTitle',
+            canRetryQuery: true,
+        };
+        const { SessionFollowDestinationPickerModal } = await import('./SessionFollowDestinationPickerModal');
+        const screen = await renderScreen(<SessionFollowDestinationPickerModal
+            source={{ serverId: 'home-a', sessionId: 'source-a' }}
+            onClose={vi.fn()}
+            setChrome={vi.fn()}
+        />);
+
+        const status = screen.findByTestId('session-follow-picker-currentness');
+        expect(status?.props.title).toBe(t('sessionsList.queryRefreshFailedTitle'));
+        expect(status?.props.detail).toBe(t('common.retry'));
+        await act(async () => { status?.props.onPress(); });
+        expect(querySource.refresh).toHaveBeenCalledTimes(1);
+        // The list and its retained search are untouched by the retry.
+        expect(screen.findByTestId('session-follow-destination-list')).not.toBeNull();
     });
 
     it('commits the edge before preparation and keeps a reachable Retry action when preparation waits', async () => {

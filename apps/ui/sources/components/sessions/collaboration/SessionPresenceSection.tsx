@@ -9,6 +9,7 @@ import { useMountedRef } from '@/hooks/ui/useMountedRef';
 import { t } from '@/text';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionHumanPresence } from '@/sync/domains/session/humanPresence/useSessionHumanPresence';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { STALE_PRESENCE_OPACITY } from './SessionViewerFacepile';
 import { formatSessionPresenceViewerNames } from './sessionPresenceNames';
 
@@ -21,6 +22,13 @@ const styles = StyleSheet.create({
 
 export function SessionPresenceSection(target: SessionAddress) {
     const presence = useSessionHumanPresence(target);
+    // The plan announces a viewer arrival or departure only to someone who has
+    // navigated INTO this region; an unfocused polite region speaks every
+    // presence change of every open Session. Focus is read from the existing
+    // summary anchor rather than from a new subscription.
+    const [regionFocused, setRegionFocused] = React.useState(false);
+    const onRegionFocus = React.useCallback(() => setRegionFocused(true), []);
+    const onRegionBlur = React.useCallback(() => setRegionFocused(false), []);
     const mounted = useMountedRef();
     const summaryAnchor = React.useRef<React.ElementRef<typeof View>>(null);
     const modalId = React.useRef<string | null>(null);
@@ -39,6 +47,11 @@ export function SessionPresenceSection(target: SessionAddress) {
                 : hasViewers ? formatSessionPresenceViewerNames(presence.viewers)
                     : t('session.collaboration.justYou');
     const names = formatSessionPresenceViewerNames(presence.viewers, { stale: true });
+    // Membership and reachability are the meaningful transitions. A typing
+    // renewal keeps this key, so the one live-region owner coalesces it away
+    // instead of re-reading the row aloud.
+    const membershipTransitionKey = `${presence.status}|${presence.viewers.map((viewer) => viewer.account.accountId).join(',')}`;
+    const announcement = `${t('session.collaboration.viewingNow')}: ${hasViewers ? names : status}`;
     const openViewers = async () => {
         const { SessionPresenceViewerList } = await import('./SessionPresenceViewerList');
         if (!mounted.current || currentTarget.current.serverId !== target.serverId || currentTarget.current.sessionId !== target.sessionId) return;
@@ -58,17 +71,25 @@ export function SessionPresenceSection(target: SessionAddress) {
     };
     return <View testID="session-presence-section">
         <View ref={summaryAnchor} tabIndex={-1} testID="session-presence-summary-anchor"
+            onFocus={onRegionFocus} onBlur={onRegionBlur}
             style={presence.status === 'stale' ? styles.stale : undefined}>
             <Item testID="session-presence-summary" title={t('session.collaboration.viewingNow')}
-                // Presence changes while the person is already reading this region, so
-                // the change has to be announced where they navigated to, not only in
-                // the header they may never reach.
-                subtitle={<Text testID="session-presence-status" accessibilityLiveRegion="polite"
+                // The visible row always carries the current fact, including typing.
+                // It is deliberately NOT the live region: announcing is owned by the
+                // focus-qualified status below.
+                subtitle={<Text testID="session-presence-status"
                 >{presence.status === 'stale' && hasViewers ? `${names} · ${status}` : status}</Text>}
                 icon={<Icon name="users" size={ICON_SIZE.xl} color={theme.colors.text.secondary} />}
                 showChevron={hasViewers} onPress={hasViewers ? () => { void openViewers(); } : undefined}
                 accessibilityLabel={`${t('session.collaboration.viewingNow')}: ${names}${names ? '. ' : ''}${status}`}
             />
+            {regionFocused ? (
+                <PoliteAccessibilityStatus
+                    statusTestID="session-presence-announcement"
+                    announcement={announcement}
+                    transitionKey={membershipTransitionKey}
+                />
+            ) : null}
         </View>
     </View>;
 }

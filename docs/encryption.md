@@ -752,7 +752,7 @@ the Session's current readable recipients. Follow and notification policy consum
 those facts elsewhere and is not decided by the discussion domain.
 
 The `sessions.conversations` server feature is fail-closed and depends on
-`sessions.collaboration`. These are current development contracts, not a statement
+`sessions` and `sharing.session`. These are current development contracts, not a statement
 that discussions are available in a released build.
 
 ### Session messages
@@ -852,27 +852,38 @@ sequenceDiagram
   materialization — so substituted key material cannot be laundered back into the
   Runner's own content. The SDK degrades further to Account sealing on such a row
   (denial of service, not disclosure), because its Runner path requires the row's kind.
-  Replicating the activation→Machine map into the client-sealed Account record was
-  considered and rejected: a released 0.2 writer can erase V2 fields during an unrelated
-  Settings write, silently locking every Temporary computer, and it would close only one
-  of the two identical doors the unbound envelope opens. Closing it properly means
-  binding the envelope format itself, which is a released-format change.
+  The settled Home-independent verifier fact does not close this: it travels only as
+  `creatorVerifierFactCiphertext` on the same strippable `runnerContentKeyBinding`, so a
+  Home that strips the binding strips the fact with it, and a non-creating device has no
+  `trustedMachineKind` of its own. The only change that closes it is binding released
+  `encryptedDataKeyEnvelopeFormatV1` to its `machineId` — a released-format change for
+  every Machine, not a Runner change — and that is why the residual is accepted.
+  (0.3 is a one-way upgrade, so old-writer erasure of a replicated map is not the
+  reason.) This residual is only the doubly-stripped non-creating-device case; it does
+  not cover Session→Runner correspondence for protected SDK requests, described next.
 - A protected external Action can target that Runner. The API Token-authenticated
   `GET /v1/machines` bootstrap projection names a Runner Machine with its kind, winning
-  installation, Account-sealed `dataEncryptionKey` envelope and that same
-  `runnerContentKeyBinding`; a persistent Machine keeps the released
+  installation, Account-sealed `dataEncryptionKey` envelope, that same
+  `runnerContentKeyBinding` and the activation's persisted `runnerClaim`
+  (`RunnerClaimV1`, the endpoint's activation-signed claim, which carries public keys
+  and signatures only, never a credential); a persistent Machine keeps the released
   content-free projection. The SDK opens the envelope with its Account
   `{ type: 'dataKey', machineKey }` material and resolves the key through
   `resolvePublishedMachineDataEncryptionKeyV1`. The Home identity and creator Account
-  come from the SDK's own locally pinned credential (`encryption.pins`); the exact
-  Machine does not. A `machine` target names it directly, but a `session` target
-  selects the Runner row by the Home-authored `sessionId` correspondence
-  (`packages/sdk/src/machines.ts#resolveMachineProtectedActionMaterial`), so the
-  selected `machineId` is then re-proved against the creator-signed binding rather
-  than trusted. The worst a substituted row can do is name another Runner the same
-  Account's creator activated, which the receiving Runner refuses before opening
-  anything, and one activation owns exactly one Session and one Machine. The SDK then
-  seals the V2 request with the resolved Runner content key. A substituted binding,
+  come from the SDK's own locally pinned credential (`encryption.pins`). A `machine`
+  target names the Machine directly. A `session` target selects the Runner only
+  through its claim (`packages/sdk/src/machines.ts#resolveMachineProtectedActionMaterial`):
+  the resolver opens the verifier fact, verifies the claim under that same activation
+  signing key, and accepts the key only when the claim's `activationId`, `machineId`,
+  `sessionId`, Home, creator Account and installation equal the verified binding, the
+  selected row and the requested Session. The Machine-key binding signs no Session, so
+  an authentic key for Runner B is not proof that B holds Session A; without this check
+  a request for A sealed to B's key would be disclosed to B's key holder even though an
+  honest B refuses the foreign Session before opening it. A Home that rewrites the claim
+  breaks its signature; two rows claiming one Session fail closed; a Session no Runner
+  claims keeps the released Account sealing, which a Runner cannot open (denial of
+  service, not disclosure). The SDK then seals the V2 request with the resolved Runner
+  content key. A substituted binding,
   verifier fact, envelope or Machine fails closed with `invalid_encrypted_envelope`;
   the SDK never downgrades a Runner target to plaintext or to Account-only sealing. The
   Runner opens the request with the same key it received in its verified bootstrap and
@@ -1520,11 +1531,11 @@ readiness, and successful envelope opening remain separate facts. The Home owns 
 and readiness and validates envelope structure; only the recipient can authenticate
 and open the envelope.
 
-The released 0.2 direct-share request remains a narrow compatibility seam. On a 0.3
-Home, its adapter delegates access to the current Session-access owner and envelope
-storage to this tuple owner; it does not restore either removed column or become a
-second authorization or persistence path. Team, Group, and history preparation are
-new 0.3 operations, not capabilities retrofitted onto the 0.2 wire.
+The released 0.2 direct-share routes (`/v1/sessions/:id/shares`) were removed under the
+one-way 0.3 upgrade: no 0.3 client calls them, and a 0.2 client is not a supported peer.
+Direct grants, their envelopes, Team, Group, and history preparation all go through the
+current Session-access owner and this tuple owner. Direct shares and envelopes a 0.2 Home
+persisted stay readable through the same owners.
 
 An absent envelope is not the same as a present unopenable one. Only the Session's own
 owner may resolve genuine absence through the retained cli-v0.2.11 Account-scoped reader.

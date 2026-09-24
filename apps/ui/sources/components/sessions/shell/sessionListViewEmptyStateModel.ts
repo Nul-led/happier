@@ -32,7 +32,8 @@ export type SessionListViewEmptyStateModel =
             | 'sessionsList.queryAssignedEmptyTitle'
             | 'sessionsList.queryFollowingEmptyTitle'
             | 'sessionsList.queryInvolvingEmptyTitle'
-            | 'sessionsList.queryReachableEmptyTitle';
+            | 'sessionsList.queryReachableEmptyTitle'
+            | 'sessionsList.queryHistoricalSharesWithheldTitle';
         descriptionKey:
             | 'sessionsList.querySomeHomesUnavailableDescription'
             | 'sessionsList.queryRefreshFailedRetainedDescription'
@@ -43,6 +44,7 @@ export type SessionListViewEmptyStateModel =
             | 'sessionsList.queryScopeEmptyDescription'
             | 'sessionsList.queryTeamEmptyDescription'
             | 'sessionsList.queryReachableEmptyDescription'
+            | 'sessionsList.queryHistoricalSharesWithheldDescription'
             | null;
         action: SessionListViewEmptyStateAction | null;
     }>;
@@ -110,6 +112,16 @@ export function resolveSessionListViewEmptyState(input: Readonly<{
             action: 'retry',
         };
     }
+    // Every page was read, yet the Home withheld historical shares pending their
+    // owner's upgrade: never present that as an authoritative empty or whole list.
+    if (input.presentation.complete && input.presentation.historicalSharesWithheld) {
+        return {
+            mode: hasRows ? 'status' : 'empty',
+            titleKey: 'sessionsList.queryHistoricalSharesWithheldTitle',
+            descriptionKey: 'sessionsList.queryHistoricalSharesWithheldDescription',
+            action: null,
+        };
+    }
     if (hasRows) {
         return input.presentation.complete
             ? { mode: 'none' }
@@ -159,7 +171,10 @@ export function resolveSessionListViewEmptyState(input: Readonly<{
             action: 'show_inactive',
         };
     }
-    if (input.viewContext.kind === 'team') {
+    // Only a complete Team-wide read is evidence that the Team itself is empty.
+    // Under a personal scope the scope branch below owns the answer, so its
+    // Browse-all recovery survives inside Team Sessions.
+    if (input.viewContext.kind === 'team' && input.filters.scope === 'all_accessible') {
         return {
             mode: 'empty',
             titleKey: 'sessionsList.queryTeamEmptyTitle',

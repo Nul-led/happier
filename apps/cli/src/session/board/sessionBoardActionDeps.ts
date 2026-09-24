@@ -1,6 +1,6 @@
 import axios from 'axios';
 import {
-  applySessionBoardItemPlacementV1, applySessionBoardLayoutOperationV1, removeSessionBoardItemPlacementsV1, isSessionSurfaceItemSourceCompatible,
+  applySessionBoardItemPlacementV1, applySessionBoardLayoutOperationV1, resolveSessionBoardItemPlacementDestinationV1, removeSessionBoardItemPlacementsV1, isSessionSurfaceItemSourceCompatible,
   bindSessionBoardMutationRequestV1,
   classifySessionBoardMutationTransportResultV1,
   createSessionBoardFailureV1,
@@ -20,7 +20,7 @@ import {
   DaemonContributionRegistryProjectionDescribeRequestSchema, DaemonContributionRegistryProjectionDescribeResponseSchema,
   DaemonPluginUiTargetedSurfaceRendererAvailabilityV1Schema,
 } from '@happier-dev/protocol';
-import type { ActionExecutorDeps } from '@happier-dev/protocol/actions';
+import { classifyHomeDomainHttpMutationFailureV1, type ActionExecutorDeps } from '@happier-dev/protocol/actions';
 import { isPluginUiInlineSurfaceBindingForSurfaceV1 } from '@happier-dev/protocol/plugins/ui';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { StoredCredentials } from '@/persistence';
@@ -34,11 +34,14 @@ import { callExactMachineRpc } from '@/session/transport/rpc/machineRpc';
 import { resolveSessionOwningMachineId } from '@/session/services/resolveSessionOwningMachine';
 import { readSessionSystemRecordV1, listSessionSystemRecordsV1 } from '@/session/transport/http/sessionSystemRecordsHttp';
 import { openSessionSystemRecord, sealSessionSystemRecordContent, validateSessionSystemRecordOpenedContent } from '@/session/systemRecords/sessionSystemRecordCodec';
-import { resolveSessionEncryptionContextFromCredentials, resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
-import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionStoredContentCodec';
+import {
+  resolveExactSessionOrCredentialCryptoContext,
+  type SessionTransportEncryptionMaterial,
+} from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolveExternalActionServerRequestHeaders, type ExternalActionHomeBinding } from '@/api/externalActionExecutionAuthorization';
 
-function readTransportErrorCode(error: unknown): string | null {
+/** This carrier's issuance witness only: whether axios itself coded the failure. */
+function readAxiosFailureCode(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null;
   const code = (error as Readonly<{ code?: unknown }>).code;
   return typeof code === 'string' ? code.trim().toUpperCase() : null;
@@ -59,6 +62,17 @@ export function createSessionBoardActionDeps(options: Readonly<{
     | CliServerFeaturesSnapshot
     | undefined
     | Promise<CliServerFeaturesSnapshot | undefined>;
+  /**
+   * Stored-content material this composition already holds for one exact Session.
+   *
+   * A Runner runs under a Session-scoped runtime principal, so its credentials
+   * carry no Account encryption material and the Session key it was bootstrapped
+   * with is the only thing that can open its own Board. The provider is asked
+   * per Session id and answers `null` for any other Session, so possession never
+   * widens beyond the one Session; when it answers, that material decides, and
+   * material that does not match the Session's mode still fails closed.
+   */
+  resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
 }> & ExternalActionHomeBinding & SessionBoardActionFixedHome): Pick<ActionExecutorDeps, 'sessionBoardAction'> {
   if (
     (options.serverId === undefined) !== (options.serverHttpBaseUrl === undefined)
@@ -94,19 +108,14 @@ export function createSessionBoardActionDeps(options: Readonly<{
       data: body, headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), ...authorization.headers, 'Content-Type': 'application/json' },
       timeout: configuration.sessionControlHttpTimeoutMs, validateStatus: () => true, signal,
     }); } catch (error) {
-      const code = readTransportErrorCode(error);
-      // Same disposition the UI Board adapter uses, so one sealed mutation cannot
-      // mean "offline" on one host and "outcome unknown" on the other. A coded
-      // transport failure means axios reached the transport, and only a
-      // connection-establishment failure then proves the Home never received
-      // these exact bytes. Every other post-dispatch loss stays ambiguous: it is
-      // reported with its frozen request and never replayed automatically.
+      // This carrier owns only its axios witness; whether an issued mutation may have committed
+      // is the Protocol seam owner's single decision, shared with the browser carrier, so one
+      // sealed mutation cannot mean "offline" here and "outcome unknown" there.
+      const code = readAxiosFailureCode(error);
       const issued = didAxiosRequestEnterTransport(error) || (code !== null && code !== 'ERR_CANCELED');
-      if (!issued) {
-        return projectSessionBoardAdapterFailureV1(error, signal?.aborted ? 'cancelled' : 'offline');
-      }
-      if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-        return projectSessionBoardAdapterFailureV1(error, 'offline');
+      const disposition = classifyHomeDomainHttpMutationFailureV1({ error, issued, aborted: signal?.aborted === true });
+      if (disposition !== 'outcome_unknown') {
+        return projectSessionBoardAdapterFailureV1(error, disposition === 'cancelled' ? 'cancelled' : 'offline');
       }
       return createSessionBoardOutcomeUnknownFailureV1({
         actionId, serverId, sessionId, requestBody: body, mutationRequest: mutation, intent,
@@ -181,10 +190,13 @@ export function createSessionBoardActionDeps(options: Readonly<{
     if (!rawSession || rawSession.id !== sessionId) return createSessionBoardFailureV1('session_board_forbidden');
     const capabilities = rawSession.effectiveAccess?.capabilities;
     if (!capabilities?.readTranscript || (actionId !== 'session.board.get' && !capabilities.editSessionRecords)) return createSessionBoardFailureV1('session_board_forbidden');
-    const mode = resolveSessionStoredContentEncryptionMode(rawSession);
-    const ctx = mode === 'e2ee' ? resolveSessionEncryptionContextFromCredentials(options.credentials, rawSession) : null;
-    if (mode === 'e2ee' && !ctx) return createSessionBoardFailureV1('encryption_material_unavailable');
-    const crypto: SessionStoredContentCryptoContext = ctx ? { mode: 'e2ee', ctx } : { mode: 'plain', ctx: null };
+    const crypto = resolveExactSessionOrCredentialCryptoContext({
+      credentials: options.credentials,
+      ...(options.resolveExactSessionEncryptionMaterial
+        ? { resolveExactSessionEncryptionMaterial: options.resolveExactSessionEncryptionMaterial }
+        : {}),
+    }, sessionId, rawSession);
+    if (!crypto) return createSessionBoardFailureV1('encryption_material_unavailable');
     const transport = { token: options.credentials.token, serverUrl, sessionId, signal, resolveAuthorizationHeaders };
     const layoutAddress = { owner: 'host' as const, namespace: 'surface' as const, kind: 'layout.v1' as const, localId: 'layout' };
     const readLayout = async () => {
@@ -329,10 +341,10 @@ export function createSessionBoardActionDeps(options: Readonly<{
     });
     const result = await put(actionId, sessionId, request, args, context, signal);
     if (!result.ok) return result;
-    const tab = layout?.tabs.find((entry) => entry.items.some((placement) => placement.itemId === args.itemId));
-    const placement = tab?.items.find((entry) => entry.itemId === args.itemId);
     return SessionBoardMutationActionResultV1Schema.parse({ v: 1, serverId, sessionId, result: result.result,
-      destination: tab && placement ? { tabId: tab.id, width: placement.width } : null,
+      destination: layout && args.placement
+        ? resolveSessionBoardItemPlacementDestinationV1(layout, { itemId: args.itemId, placement: args.placement })
+        : null,
       preview: { title: args.item.title, sourceKind: args.item.source.kind },
     });
   };
@@ -340,7 +352,14 @@ export function createSessionBoardActionDeps(options: Readonly<{
     try {
       return await sessionBoardAction(args);
     } catch (error) {
-      return projectSessionBoardAdapterFailureV1(error);
+      // Record reads reach here too. The shared projection already knows the producer's typed
+      // codes, the connection-establishment codes that mean `offline`, and the feature refusal
+      // that must carry its operation, so this host adds no second failure table.
+      return projectSessionBoardAdapterFailureV1(
+        error,
+        args.signal?.aborted === true ? 'cancelled' : 'invalid_response',
+        args.actionId,
+      );
     }
   } };
 }

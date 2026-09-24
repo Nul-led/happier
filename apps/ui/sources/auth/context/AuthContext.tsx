@@ -237,8 +237,19 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         const activeServerId = String(activeServer.serverId ?? '').trim();
         const activeServerUrl = String(activeServer.serverUrl ?? '').trim();
         const forgottenScope = getActiveServerAccountScope();
+        // PA-CUSTODY1 guards the credential this logout destroys: a focused logout
+        // removes only the active Home's credential, so only that Home's retained
+        // first-key custody blocks it; forgetting every credential (or a logout
+        // with no addressable active Home) stays guarded by custody on any Home.
         const guard =
-            await guardAccountEncryptionFirstKeyCredentialMutation();
+            await guardAccountEncryptionFirstKeyCredentialMutation(
+                options?.scope === 'all-credentials' || !activeServerUrl
+                    ? undefined
+                    : {
+                        serverUrl: activeServerUrl,
+                        ...(activeServerId ? { serverId: activeServerId } : {}),
+                    },
+            );
         if (guard.kind !== 'allowed') {
             return guard;
         }

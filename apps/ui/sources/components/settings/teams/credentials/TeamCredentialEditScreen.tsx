@@ -30,6 +30,7 @@ import {
     TeamCredentialBrokerPlacementSection,
     confirmTeamCredentialDirectDisclosure,
     confirmTeamCredentialDisclosureWidening,
+    narrowTeamCredentialResourceDraftToBrokeredOnly,
     teamCredentialPolicyFromDraft,
     teamCredentialResourceDraftFromSummary,
     teamCredentialUsageLimitDeltaFromDraft,
@@ -121,9 +122,30 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
         enabled: view.featureEnabled
             && resource?.capabilities.manageLimits === true,
     });
+    /**
+     * Whether the draft still points at the saved source and location.
+     *
+     * One answer, consumed by the model-policy catalog request and by the
+     * custodian save payload. They used to disagree: the save submitted the
+     * draft source while the catalog always asked about the saved resource, so
+     * a replacement was configured against the source it replaced.
+     */
+    const custodianSourceDraftChanged = source !== null && (
+        JSON.stringify(source) !== JSON.stringify(resourceDraft.baseline.source)
+        || !teamCredentialBrokerPlacementsEqual(brokerPlacement, resourceDraft.baseline.brokerPlacement)
+    );
     const requestPolicySupport = useTeamCredentialRequestPolicySupport({
         scope: context.scope,
-        input: resource === null ? null : { scope: 'resource', resourceId },
+        input: resource === null
+            ? null
+            : custodianSourceDraftChanged && source !== null
+                ? {
+                    scope: 'source_draft',
+                    teamId: context.address.teamId,
+                    source,
+                    brokerPlacement,
+                }
+                : { scope: 'resource', resourceId },
         enabled: view.featureEnabled && resource?.capabilities.managePolicy === true,
     });
     const currentTargetKey = React.useRef(targetKey);
@@ -234,10 +256,19 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
     const busy = saving || view.writesSuspended;
     const movedUnderEditor = resource.revision !== basis;
     const sourceCustodian = resource.custodianAccountId === context.scope.accountId && resource.source !== null;
-    const selectedSourceCandidate = sourceCandidates.candidates.find((candidate) => (
-        candidate.candidate.offeredByResourceId === resourceId
-        || JSON.stringify(candidate.candidate.source) === JSON.stringify(source)
-    )) ?? null;
+    // The picker names the source this editor would actually save. Matching
+    // this resource's own offered candidate first made the display
+    // order-dependent: a newly chosen candidate ranked after it kept showing the
+    // saved source while Save submitted the new one. The own offer is only the
+    // fallback for an untouched draft whose saved source is not itself listed.
+    const draftSourceIdentity = JSON.stringify(source);
+    const selectedSourceCandidate = sourceCandidates.candidates.find(
+        (candidate) => JSON.stringify(candidate.candidate.source) === draftSourceIdentity,
+    ) ?? (draftSourceIdentity === JSON.stringify(resourceDraft.baseline.source)
+        ? sourceCandidates.candidates.find(
+            (candidate) => candidate.candidate.offeredByResourceId === resourceId,
+        ) ?? null
+        : null);
     const requestPolicy = teamCredentialPolicyFromDraft(policyDraft);
     const requestPolicyChanged = JSON.stringify(policyDraft)
         !== JSON.stringify(resourceDraft.baseline.requestPolicy);
@@ -262,14 +293,13 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
         && limitsValid
         && (resourceDraft.directDisclosureFingerprint === null || resourceDraft.directDisclosureAccepted);
     const custodianFieldsChanged = sourceCustodian && source !== null && (
-        JSON.stringify(source) !== JSON.stringify(resourceDraft.baseline.source)
+        custodianSourceDraftChanged
         || ceiling !== resourceDraft.baseline.disclosureCeiling
-        || !teamCredentialBrokerPlacementsEqual(brokerPlacement, resourceDraft.baseline.brokerPlacement)
     );
 
     return (
         <>
-            {props.section === undefined && resource.capabilities.managePolicy ? <ItemGroup title={t('teams.credentials.edit.nameLabel')} footer={notice ?? undefined}>
+            {props.section === undefined && resource.capabilities.managePolicy ? <ItemGroup title={t('teams.credentials.edit.nameLabel')}>
                 <TextInput
                     testID="team-credential-edit-name"
                     value={name}
@@ -288,6 +318,11 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                 >
                     <TeamCredentialSourcePicker
                         candidates={sourceCandidates.candidates}
+                        // Choosing a replacement must be reversible: this
+                        // resource's own offer is the source the editor started
+                        // from, so it stays pickable while other resources'
+                        // offers remain taken.
+                        reselectableResourceId={resourceId}
                         selected={selectedSourceCandidate}
                         disabled={busy || sourceCandidates.status === 'loading'}
                         unavailableReason={sourceCandidates.status === 'error' && sourceCandidates.candidates.length === 0
@@ -341,8 +376,9 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
             </ItemGroup> : null}
 
             {/* The custodian's own ceiling is a two-option decision whenever the
-                Home says they may move it. Narrowing takes every grant back to
-                brokered with it; widening is confirmed before it is drafted. */}
+                Home says they may move it. Narrowing withdraws only the direct
+                half of each grant, by the one rule the Home applies; widening
+                is confirmed before it is drafted. */}
             {props.section === undefined && (resource.capabilities.narrowDisclosure || resource.capabilities.widenDisclosure) ? <ItemGroup
                 title={t('teams.credentials.edit.ceilingLabel')}
                 footer={t('teams.credentials.edit.ceilingNote')}
@@ -356,15 +392,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                     webRole="radio"
                     selected={ceiling === 'brokered_only'}
                     disabled={busy || !resource.capabilities.narrowDisclosure}
-                    onPress={() => resourceDraft.setDraft((draft) => ({
-                        ...draft,
-                        disclosureCeiling: 'brokered_only',
-                        audience: {
-                            allMembers: draft.audience.allMembers === null ? null : 'brokered',
-                            groups: new Map([...draft.audience.groups].map(([id]) => [id, 'brokered'] as const)),
-                            members: new Map([...draft.audience.members].map(([id]) => [id, 'brokered'] as const)),
-                        },
-                    }))}
+                    onPress={() => resourceDraft.setDraft(narrowTeamCredentialResourceDraftToBrokeredOnly)}
                     showChevron={false}
                 />
                 <Item
@@ -450,9 +478,16 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                 />
             ) : null}
 
-            <ItemGroup footer={movedUnderEditor
+            {/*
+              * The save's own outcome belongs to the save, not to a field group
+              * a focused route never renders: `notice` used to hang off the name
+              * group, which only exists on the full editor for a policy manager,
+              * so every refusal of a Focused Access, Request-policy or Limits
+              * save was written and never shown.
+              */}
+            <ItemGroup footer={notice ?? (movedUnderEditor
                 ? t('teams.credentials.edit.conflict')
-                : view.writesSuspended ? t('teams.credentials.approvalPending') : undefined}>
+                : view.writesSuspended ? t('teams.credentials.approvalPending') : undefined)}>
                 <Item
                     testID="team-credential-edit-save"
                     title={t('common.save')}

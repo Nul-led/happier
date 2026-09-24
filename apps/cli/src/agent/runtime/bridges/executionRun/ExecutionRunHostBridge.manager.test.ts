@@ -2780,6 +2780,52 @@ describe('ExecutionRunManager (long-lived runs)', () => {
     }
   });
 
+  it('attests each Run\'s own accepted provider-model selection, or null when it inherits its parent', async () => {
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => createPromptRuntime(() => {}),
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+    try {
+      const launch = {
+        sessionId: 'parent_run_selection',
+        intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'default',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'request_response',
+      } as const;
+      const selected = await manager.start({
+        ...launch,
+        teamCredentialModel: {
+          kind: 'team_credential_provider_model',
+          resourceId: 'resource-run-b',
+          teamId: 'team-b',
+          expectedResourceRevision: 3,
+          deliveryMode: 'brokered',
+          agentTargetKey: `backend:${TEST_PRIMARY_BACKEND_ID}:built_in` as never,
+          modelId: 'model-b' as never,
+        },
+      });
+      const inheriting = await manager.start(launch);
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1, executionRunId: selected.runId, expectedOccurrenceId: null,
+      })).toMatchObject({
+        status: 'current',
+        parentSessionId: 'parent_run_selection',
+        teamCredentialProviderModel: { resourceId: 'resource-run-b', deliveryMode: 'brokered' },
+      });
+      expect(manager.resolveLiveBrokerAuthority({
+        v: 1, executionRunId: inheriting.runId, expectedOccurrenceId: null,
+      })).toMatchObject({ status: 'current', teamCredentialProviderModel: null });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it('projects idle Voice Follow currentness without accepting an intent substitution', async () => {
     const manager = createExecutionRunManager({
       parentProvider: TEST_PRIMARY_BACKEND_ID,

@@ -861,9 +861,11 @@ describe('Happier SDK client', () => {
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
 
+    // Plan 05.06 §5.6: one typed SDK/Action-domain failure, never a generic
+    // transport error, and never a transcript request.
     await expect(client.sessions.get('session-1').runs.get('run-1').history())
       .rejects.toMatchObject({
-        name: 'HappierTransportError', code: 'invalid_action_output',
+        name: 'HappierActionError', code: 'execution_run_correspondence_unavailable',
       });
     expect(actionIds).toEqual(['execution.run.get']);
     await client.close();

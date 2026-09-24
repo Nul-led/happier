@@ -3,7 +3,8 @@ import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '@/components/ui/icons/Icon';
-import { Popover } from '@/components/ui/popover';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS, Popover } from '@/components/ui/popover';
 import { Text } from '@/components/ui/text/Text';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { Modal } from '@/modal';
@@ -22,10 +23,12 @@ export type SessionListFilterEditorControlProps = Readonly<{
     editor: EditorProps;
 }>;
 
+const MINIMUM_TRIGGER_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
+
 const stylesheet = StyleSheet.create((theme) => ({
     trigger: {
-        minHeight: 44,
-        minWidth: 44,
+        minHeight: MINIMUM_TRIGGER_TARGET_SIZE,
+        minWidth: MINIMUM_TRIGGER_TARGET_SIZE,
         maxWidth: 190,
         paddingHorizontal: 10,
         borderRadius: 10,
@@ -148,6 +151,7 @@ export const SessionListFilterEditorControl = React.memo(function SessionListFil
                 maxWidthCap={420}
                 maxHeightCap={560}
                 autoFocusOnOpen
+                portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
                 onRequestClose={() => setPopoverOpen(false)}
                 closeOnAnchorPress
                 backdrop={false}

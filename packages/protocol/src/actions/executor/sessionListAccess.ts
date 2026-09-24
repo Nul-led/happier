@@ -6,6 +6,23 @@ export function isAutonomousSessionListSurface(surface: unknown): boolean {
   return surface === 'agent' || surface === 'mcp' || surface === 'plugin';
 }
 
+/**
+ * A plugin surface is a presentation, not an origin.
+ *
+ * The host stamps the origin it observed: a plugin surface mounted in front of
+ * the person, driven by that person, carries present-user authority plus the
+ * mounted plugin caller. Such an invocation is the person reading their own
+ * list through a trusted plugin, so it reads the corpus a `ui` caller reads.
+ * A plugin invoked autonomously (no present user, or no mounted contribution)
+ * carries neither fact and stays bound to its declared current-Session corpus.
+ */
+function hasPresentUserPluginOrigin(context: ActionExecutorContext | undefined): boolean {
+  if (context?.surface !== 'plugin' || context.authority !== 'present_user') return false;
+  const caller = context.actionCaller;
+  return caller?.kind === 'plugin'
+    && (caller.contributionLocalId?.trim() ?? '').length > 0;
+}
+
 /** Shared admission for hosts that cannot supply an authorized Session-list corpus. */
 export function resolveActionSessionListAccessFailure(
   actionId: ActionId,
@@ -13,6 +30,7 @@ export function resolveActionSessionListAccessFailure(
 ): ActionExecuteFailure | null {
   if (actionId !== 'session.list') return null;
   if (!isAutonomousSessionListSurface(context?.surface)) return null;
+  if (hasPresentUserPluginOrigin(context)) return null;
 
   const defaultSessionId = context?.defaultSessionId?.trim() ?? '';
   return context?.sessionListAccess === 'current_session' && defaultSessionId.length > 0

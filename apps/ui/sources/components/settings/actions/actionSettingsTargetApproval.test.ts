@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ActionId } from '@happier-dev/protocol';
+import { DEFAULT_ACTIONS_SETTINGS_V1, type ActionId } from '@happier-dev/protocol';
 
 import {
+    getActionTargetApprovalRequired,
     isActionSettingsApprovalAction,
     resolveActionSettingsApprovalSurface,
 } from './actionSettingsTargetApproval';
+import { normalizeActionsSettings } from './normalizeActionsSettings';
 
 describe('actionSettingsTargetApproval', () => {
     it.each([
@@ -31,5 +33,72 @@ describe('actionSettingsTargetApproval', () => {
         expect(isActionSettingsApprovalAction('approval.request.create' as ActionId)).toBe(true);
         expect(isActionSettingsApprovalAction('approval.request.decide' as ActionId)).toBe(true);
         expect(isActionSettingsApprovalAction('review.start' as ActionId)).toBe(false);
+    });
+});
+
+/**
+ * The settings screen must report the confirmation the runtime actually applies.
+ * Every `ui` target here is an in-app surface the app's own Action executor admits
+ * with `authority: 'present_user'` (`sync/api/session/sessionAccessApi.ts`). The
+ * canonical policy suppresses its dangerous-Action floor for that pair only where
+ * the app hosts its own confirmation; assignment has none, so its confirmation is
+ * the policy default (teams-lane-04/11-responsible-assignment.md §7.1).
+ */
+describe('getActionTargetApprovalRequired', () => {
+    it('reports assignment confirmation as required by default on the app, and a ui waiver as not', () => {
+        expect(getActionTargetApprovalRequired({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+        })).toBe(true);
+        expect(getActionTargetApprovalRequired({
+            settings: normalizeActionsSettings({
+                v: 1,
+                actions: {},
+                approvalWaivedSurfaces: { 'session.responsibility.set': ['ui'] },
+            }),
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+        })).toBe(false);
+    });
+
+    it('reports an explicit require', () => {
+        expect(getActionTargetApprovalRequired({
+            settings: normalizeActionsSettings({
+                v: 1,
+                actions: { 'session.responsibility.set': { approvalRequiredSurfaces: ['ui'] } },
+            }),
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+        })).toBe(true);
+    });
+
+    it.each(['agent', 'mcp', 'cli'] as const)('keeps the dangerous-Action floor on %s, which has no present user', (targetId) => {
+        expect(getActionTargetApprovalRequired({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId: 'session.responsibility.set',
+            targetId,
+        })).toBe(true);
+    });
+
+    it.each([
+        'session.access.grant.set',
+        'session.access.grant.remove',
+        'session.access.context.set',
+    ] as const)('reports %s the same way for the mounted Session access editor, with or without an explicit ui waiver', (actionId) => {
+        expect(getActionTargetApprovalRequired({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId,
+            targetId: 'contextual_ui',
+        })).toBe(false);
+        expect(getActionTargetApprovalRequired({
+            settings: normalizeActionsSettings({
+                v: 1,
+                actions: {},
+                approvalWaivedSurfaces: { [actionId]: ['ui'] },
+            }),
+            actionId,
+            targetId: 'contextual_ui',
+        })).toBe(false);
     });
 });

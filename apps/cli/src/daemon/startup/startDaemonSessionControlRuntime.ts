@@ -40,7 +40,6 @@ import {
     DEFAULT_LOCAL_SERVICE_PAGE_TITLE_TIMEOUT_MS,
     deriveAccountMachineKeyFromRecoverySecret,
     parseBooleanEnv,
-    WorkspaceSyncStatusV1Schema,
     projectProviderAccountUsageSnapshotToConnectedServiceQuotaSnapshotV1,
     readConnectedServiceMaterializationIdentityV1FromMetadata,
     readBuiltInLegacyConnectedAccountServiceKeyIngress,
@@ -69,6 +68,7 @@ import {
     type RuntimeDescriptorV1,
     type SessionContinuationResumePromptModeV1,
     type SessionRunnerRestartDisabledReason,
+    pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import {
     TeamCredentialErrorCodeV1Schema,
@@ -329,6 +329,7 @@ import { applyTrackedSessionTurnLifecycle } from '../sessions/applyTrackedSessio
 import {
     isSessionRunnerActive as isSessionRunnerActiveInDaemon,
     probeSessionRunnerServiceability,
+    resolveSessionRunnerResumeDecision,
 } from '../sessions/isSessionRunnerActive';
 import {
     createStopSession,
@@ -421,7 +422,6 @@ import {
     readCurrentPluginHardRevocationRevision,
     readCurrentPluginImmutableGenerationIntegrityCurrentness,
 } from '@/plugins/store/registry/generationStore';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
 import {
     isPluginRunningSessionDispositionTarget,
 } from '@/plugins/runtime/reload/controller';
@@ -432,6 +432,7 @@ import {
 } from '@/plugins/runtime/invocation/services/managedServiceDurability';
 import type {
     ManagedServiceSessionBaseUrlResolver,
+    ManagedServiceSessionClientAccessResolver,
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import {
     executeRunnerManagedServiceEndpointProjectionBridgeOperation,
@@ -487,7 +488,10 @@ import {
     type ExternalSessionHostOperationOwner,
     type ExternalSessionHostOperationSet,
 } from '@/session/external/hostOperationOwner';
-import { prepareForegroundAgentRuntimeAdmission } from '../agentRuntime/prepareForegroundAdmission';
+import {
+    prepareForegroundAgentRuntimeAdmission,
+    type PrepareForegroundAgentRuntimeAdmissionDependencies,
+} from '../agentRuntime/prepareForegroundAdmission';
 import { isPidSafeHappySessionProcess } from '../pidSafety';
 import { computeDaemonSpawnRequestKey, createSpawnRequestCoalescer } from '../spawn/spawnRequestCoalescer';
 import { DEFAULT_SESSION_WEBHOOK_TIMEOUT_MS } from '../spawn/sessionWebhookTimeoutPolicy';
@@ -2101,6 +2105,9 @@ export async function startDaemonSessionControlRuntime(
         onManagedServiceSessionBaseUrlResolverReady?: (
             resolver: ManagedServiceSessionBaseUrlResolver,
         ) => void;
+        onManagedServiceSessionClientAccessResolverReady?: (
+            resolver: ManagedServiceSessionClientAccessResolver,
+        ) => void;
         onBrowserDiagnosticsRoutesReady?: (routes: BrowserDiagnosticsRoutes) => void;
         onBrowserRecordingRoutesReady?: (routes: BrowserRecordingRoutes) => void;
         onBrowserControlRoutesReady?: (routes: BrowserDaemonControlRoutes) => void;
@@ -2158,6 +2165,10 @@ export async function startDaemonSessionControlRuntime(
         resolveCurrentSessionPurposeBindingSnapshot?: ConnectedAccountPurposeBindingOwner[
             'resolveCurrentSessionPurposeBindingSnapshot'
         ];
+        /** Home-backed Team slot bindings for a foreground Session's durable Team purpose targets. */
+        resolveSessionTeamCredentialBindingIntents?: NonNullable<
+            PrepareForegroundAgentRuntimeAdmissionDependencies['resolveSessionTeamCredentialBindingIntents']
+        >;
         resolveCurrentRequestAuthBinding?: ConnectedAccountPurposeBindingOwner[
             'resolveCurrentRequestAuthBinding'
         ];
@@ -3476,9 +3487,11 @@ export async function startDaemonSessionControlRuntime(
                 if (
                     !retainedAuthority
                     || retainedAuthority.retainedAgent.agentId !== agentId
-                    || tracked.runnerAgentImmutableGenerationId
-                        !== retainedAuthority.retainedAgent
-                            .immutableGenerationId
+                    || !tracked.runnerAgentSourceCustodyV1
+                    || !pluginSourceCustodyV1Equal(
+                        tracked.runnerAgentSourceCustodyV1,
+                        retainedAuthority.retainedAgent.sourceCustody,
+                    )
                     || !acquireRetainedPurposeContributions
                 ) {
                     unavailable(
@@ -4090,7 +4103,23 @@ export async function startDaemonSessionControlRuntime(
                         } catch {
                             logger.debug('[DAEMON RUN] Failed to publish resume target terminal control serviceability');
                         }
-                        if (serviceability.state !== 'servable') {
+                        const resumeDecision = resolveSessionRunnerResumeDecision({
+                            state: 'runner_present',
+                            control: serviceability,
+                        });
+                        if (resumeDecision.action === 'wait_for_exit') {
+                            return {
+                                action: 'wait_for_exit',
+                                timeoutResult: {
+                                    type: 'error',
+                                    errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
+                                    errorMessage: serviceability.state === 'unknown'
+                                        ? 'The existing session runtime could not be verified. Retry resume after connectivity recovers.'
+                                        : 'The existing session process is alive but its controls are unavailable. Stop it explicitly before retrying resume.',
+                                },
+                            };
+                        }
+                        if (resumeDecision.action === 'fence') {
                             return {
                                 action: 'error',
                                 result: {
@@ -4144,6 +4173,12 @@ export async function startDaemonSessionControlRuntime(
                             params.getApiMachineForSessions()
                                 ?.getSessionSyncPendingInputServerContractResult()
                             ?? null,
+                        ...(params.pluginChangeService?.controlPluginDevelopment
+                            ? {
+                                controlPluginDevelopment:
+                                    params.pluginChangeService.controlPluginDevelopment,
+                            }
+                            : {}),
                         providerAccountUsageStore,
                         authGroupSwitchCoordinator: connectedServiceAuthGroupPreTurnSwitchCoordinator,
                         predictiveSwitchGuard: connectedServicePredictiveSwitchGuard ?? undefined,
@@ -5612,6 +5647,12 @@ export async function startDaemonSessionControlRuntime(
                                         }),
                         }
                         : {}),
+                    ...(params.resolveSessionTeamCredentialBindingIntents
+                        ? {
+                            resolveSessionTeamCredentialBindingIntents:
+                                params.resolveSessionTeamCredentialBindingIntents,
+                        }
+                        : {}),
                     resolveConnectedServiceAuthForSpawn: async (input) => {
                         const entry = findCatalogEntry(input.agentId);
                         if (
@@ -5953,8 +5994,11 @@ export async function startDaemonSessionControlRuntime(
                             === retainedAgent.pluginVersion
                         && registration.agentId
                             === retainedAgent.agentId
-                        && registration.immutableGenerationId
-                            === retainedAgent.immutableGenerationId
+                        && registration.sourceCustody
+                        && pluginSourceCustodyV1Equal(
+                            registration.sourceCustody,
+                            retainedAgent.sourceCustody,
+                        )
                         && isDeepStrictEqual(binding, retainedAgent),
                     );
                     const capturedAgentRegistration =
@@ -6201,16 +6245,15 @@ export async function startDaemonSessionControlRuntime(
                                 currentHardRevocationRevision
                                     !== retained
                                         .providerPluginHardRevocationRevisionAtAdmission
-                                || !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
-                                    paths: storePaths,
-                                    pluginId: scope.pluginId,
-                                    immutableGenerationId:
-                                        scope.immutableGenerationId,
-                                    bundledArtifacts:
-                                        BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                                    retainedManifestAuthority:
-                                        scope.manifestAuthority,
-                                })
+                                || (
+                                    scope.sourceCustody.kind === 'managed'
+                                    && !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
+                                        paths: storePaths,
+                                        pluginId: scope.pluginId,
+                                        immutableGenerationId:
+                                            scope.sourceCustody.immutableGenerationId,
+                                    })
+                                )
                             ) {
                                 throw new PluginError({
                                     code:
@@ -6232,10 +6275,10 @@ export async function startDaemonSessionControlRuntime(
                                             localId:
                                                 scope.providerLocalId,
                                         },
-                                        activationGeneration:
-                                            scope.activationGeneration,
-                                        immutableGenerationId:
-                                            scope.immutableGenerationId,
+                                        occurrenceId:
+                                            scope.occurrenceId,
+                                        sourceCustody:
+                                            scope.sourceCustody,
                                         manifestAuthority:
                                             scope.manifestAuthority,
                                         operationClaimId:
@@ -6264,10 +6307,12 @@ export async function startDaemonSessionControlRuntime(
                                     !== scope.pluginId
                                 || bootstrap.identity.localId
                                     !== scope.providerLocalId
-                                || bootstrap.activationGeneration
-                                    !== scope.activationGeneration
-                                || bootstrap.immutableGenerationId
-                                    !== scope.immutableGenerationId
+                                || bootstrap.occurrenceId
+                                    !== scope.occurrenceId
+                                || !pluginSourceCustodyV1Equal(
+                                    bootstrap.sourceCustody,
+                                    scope.sourceCustody,
+                                )
                                 || bootstrap.manifestAuthority
                                     !== scope.manifestAuthority
                                 || bootstrap.operationClaimId
@@ -6276,16 +6321,15 @@ export async function startDaemonSessionControlRuntime(
                                     paths: storePaths,
                                     pluginId: scope.pluginId,
                                 }) !== currentHardRevocationRevision
-                                || !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
-                                    paths: storePaths,
-                                    pluginId: scope.pluginId,
-                                    immutableGenerationId:
-                                        scope.immutableGenerationId,
-                                    bundledArtifacts:
-                                        BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                                    retainedManifestAuthority:
-                                        scope.manifestAuthority,
-                                })
+                                || (
+                                    scope.sourceCustody.kind === 'managed'
+                                    && !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
+                                        paths: storePaths,
+                                        pluginId: scope.pluginId,
+                                        immutableGenerationId:
+                                            scope.sourceCustody.immutableGenerationId,
+                                    })
+                                )
                             ) {
                                 throw new PluginError({
                                     code:
@@ -6308,17 +6352,13 @@ export async function startDaemonSessionControlRuntime(
                                                 scope.pluginId,
                                         }),
                                     readGenerationIntegrityCurrentness:
-                                        async () =>
-                                            await readCurrentPluginImmutableGenerationIntegrityCurrentness({
+                                        async () => scope.sourceCustody.kind !== 'managed'
+                                            || await readCurrentPluginImmutableGenerationIntegrityCurrentness({
                                                 paths: storePaths,
                                                 pluginId:
                                                     scope.pluginId,
                                                 immutableGenerationId:
-                                                    scope.immutableGenerationId,
-                                                bundledArtifacts:
-                                                    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                                                retainedManifestAuthority:
-                                                    scope.manifestAuthority,
+                                                    scope.sourceCustody.immutableGenerationId,
                                             }),
                                     hardRevocationRevisionAtAdmission:
                                         currentHardRevocationRevision,
@@ -6689,12 +6729,12 @@ export async function startDaemonSessionControlRuntime(
                                                         custodyScope
                                                             .identity
                                                             .localId,
-                                                    activationGeneration:
+                                                    occurrenceId:
                                                         custodyScope
-                                                            .activationGeneration,
-                                                    immutableGenerationId:
+                                                            .occurrenceId,
+                                                    sourceCustody:
                                                         custodyScope
-                                                            .immutableGenerationId,
+                                                            .sourceCustody,
                                                     manifestAuthority:
                                                         custodyScope
                                                             .manifestAuthority,
@@ -6776,14 +6816,15 @@ export async function startDaemonSessionControlRuntime(
                                 pluginId: identity.pluginId,
                             })
                                 !== providerPluginHardRevocationRevisionAtAdmission
-                            || !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
+                            || (
+                                bootstrap.sourceCustody.kind === 'managed'
+                                && !await readCurrentPluginImmutableGenerationIntegrityCurrentness({
                                 paths: storePaths,
                                 pluginId: identity.pluginId,
                                 immutableGenerationId:
-                                    bootstrap.immutableGenerationId,
-                                bundledArtifacts:
-                                    BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                            })
+                                    bootstrap.sourceCustody.immutableGenerationId,
+                                })
+                            )
                         ) {
                             throw new PluginError({
                                 code:
@@ -6908,16 +6949,14 @@ export async function startDaemonSessionControlRuntime(
                                             identity.pluginId,
                                     }),
                                 readGenerationIntegrityCurrentness:
-                                    async () =>
-                                        await readCurrentPluginImmutableGenerationIntegrityCurrentness({
+                                    async () => bootstrap.sourceCustody.kind !== 'managed'
+                                        || await readCurrentPluginImmutableGenerationIntegrityCurrentness({
                                             paths: storePaths,
                                             pluginId:
                                                 identity.pluginId,
                                             immutableGenerationId:
-                                                bootstrap
+                                                bootstrap.sourceCustody
                                                     .immutableGenerationId,
-                                            bundledArtifacts:
-                                                BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
                                         }),
                                 hardRevocationRevisionAtAdmission:
                                     providerPluginHardRevocationRevisionAtAdmission,
@@ -6934,12 +6973,10 @@ export async function startDaemonSessionControlRuntime(
                                         identity.pluginId,
                                     providerLocalId:
                                         identity.localId,
-                                    activationGeneration:
-                                        bootstrap
-                                            .activationGeneration,
-                                    immutableGenerationId:
-                                        bootstrap
-                                            .immutableGenerationId,
+                                    occurrenceId:
+                                        bootstrap.occurrenceId,
+                                    sourceCustody:
+                                        bootstrap.sourceCustody,
                                     manifestAuthority:
                                         bootstrap.manifestAuthority,
                                     operationClaimId:
@@ -7143,7 +7180,7 @@ export async function startDaemonSessionControlRuntime(
                                     .runnerManagedDependencyRetentionV1
                                 ?? {
                                     v: 1 as const,
-                                    sourceGenerationIds: [],
+                                    sourceCustodies: [],
                                     qualifiedDependencyIds: [],
                                 },
                             correlationId:
@@ -7162,7 +7199,7 @@ export async function startDaemonSessionControlRuntime(
                                 invocationContext
                                     .providerBindingActive,
                             signal,
-                            isGenerationCurrent:
+                            isOccurrenceCurrent:
                                 () => authorizeOperation(undefined),
                         });
                     const executeCurrentGlobalAction:
@@ -7207,7 +7244,7 @@ export async function startDaemonSessionControlRuntime(
                                         signal,
                                         readActiveTurnAdmissionWitness:
                                             () => operationWitness ?? null,
-                                        isGenerationCurrent:
+                                        isOccurrenceCurrent:
                                             () => authorizeOperation(
                                                 operationWitness,
                                                 {
@@ -7277,7 +7314,7 @@ export async function startDaemonSessionControlRuntime(
                                         sessionId,
                                         correlationId: invocationId,
                                         signal,
-                                        isGenerationCurrent:
+                                        isOccurrenceCurrent:
                                             () => authorizeOperation(undefined),
                                     })).list(query);
                                 } finally {
@@ -7307,7 +7344,7 @@ export async function startDaemonSessionControlRuntime(
                                         sessionId,
                                         correlationId: invocationId,
                                         signal,
-                                        isGenerationCurrent:
+                                        isOccurrenceCurrent:
                                             () => authorizeOperation(undefined),
                                     })).discover(provider, query, options);
                                 } finally {
@@ -7339,7 +7376,7 @@ export async function startDaemonSessionControlRuntime(
                                             sessionId,
                                             correlationId: invocationId,
                                             signal,
-                                            isGenerationCurrent:
+                                            isOccurrenceCurrent:
                                                 () => authorizeOperation(undefined),
                                         })).connect(ref, options);
                                     let disposed = false;
@@ -7441,7 +7478,7 @@ export async function startDaemonSessionControlRuntime(
                                         sessionId,
                                         correlationId: invocationId,
                                         signal,
-                                        isGenerationCurrent:
+                                        isOccurrenceCurrent:
                                             () => authorizeOperation(undefined),
                                     }),
                                 );
@@ -7509,7 +7546,7 @@ export async function startDaemonSessionControlRuntime(
                                             sessionId,
                                             correlationId: invocationId,
                                             signal,
-                                            isGenerationCurrent:
+                                        isOccurrenceCurrent:
                                                 () => authorizeOperation(undefined),
                                         })
                                     ).followTranscript(
@@ -7761,7 +7798,8 @@ export async function startDaemonSessionControlRuntime(
                         });
                     if (!voiceAuthority) return null;
                     return {
-                        agentGeneration: voiceAuthority.generation,
+                        agentSourceCustody:
+                            verifiedRetainedAgent.binding.sourceCustody,
                         providers:
                             snapshotAgentSessionRealtimeVoiceProviders({
                                 runtimeRegistry: lease.registry,
@@ -7776,15 +7814,15 @@ export async function startDaemonSessionControlRuntime(
                                     || !voiceAuthority.isCurrent(
                                         provider.identity,
                                     )
-                                    || voiceAuthority.resolveProviderGeneration(
+                                    || voiceAuthority.resolveProviderOccurrenceId(
                                         provider.identity,
-                                    ) !== lifecycle.generation
+                                    ) !== lifecycle.occurrenceId
                                 ) {
                                     return [];
                                 }
                                 return [{
                                     provider: provider.identity,
-                                    providerGeneration: lifecycle.generation,
+                                    providerGeneration: lifecycle.occurrenceId,
                                     declaration,
                                 }];
                             }),
@@ -7828,7 +7866,7 @@ export async function startDaemonSessionControlRuntime(
                     retirementSignal =
                         voiceAuthority
                         && voiceAuthority.isCurrent(provider)
-                        && voiceAuthority.resolveProviderGeneration(provider)
+                        && voiceAuthority.resolveProviderOccurrenceId(provider)
                             === providerGeneration
                             ? voiceAuthority.resolveRetirementSignal(provider)
                             : null;
@@ -9650,15 +9688,14 @@ export async function startDaemonSessionControlRuntime(
                     const identity = lease.registry.contributes
                         .agentDefinitionsById.get(agentId)?.identity;
                     if (!identity) return null;
-                    const immutableGenerationId = await lease.registry
-                        .resolveCurrentPluginImmutableGenerationId?.(
-                            identity.pluginId,
-                        ) ?? null;
-                    if (!immutableGenerationId) return null;
+                    const sourceCustody = lease.registry.readPluginSourceCustody?.(
+                        identity.pluginId,
+                    ) ?? null;
+                    if (!sourceCustody) return null;
                     return Object.freeze({
                         pluginId: identity.pluginId,
                         localId: identity.localId,
-                        immutableGenerationId,
+                        sourceCustody,
                     });
                 },
                 isCurrent: () =>
@@ -10517,7 +10554,7 @@ export async function startDaemonSessionControlRuntime(
                         ?? {
                             retention: {
                                 v: 1 as const,
-                                sourceGenerationIds: [],
+                                sourceCustodies: [],
                                 qualifiedDependencyIds: [],
                             },
                             release() {},
@@ -10607,12 +10644,20 @@ export async function startDaemonSessionControlRuntime(
                         });
                     if (
                         !authority
-                        || tracked.runnerAgentImmutableGenerationId
-                            !== authority.retainedAgent
-                                .immutableGenerationId
+                        || !tracked.runnerAgentSourceCustodyV1
+                        || !pluginSourceCustodyV1Equal(
+                            tracked.runnerAgentSourceCustodyV1,
+                            authority.retainedAgent.sourceCustody,
+                        )
                         || !isPluginRunningSessionDispositionTarget(
                             result,
-                            authority.retainedAgent,
+                            {
+                                pluginId: authority.retainedAgent.pluginId,
+                                immutableGenerationId:
+                                    authority.retainedAgent.sourceCustody.kind === 'managed'
+                                        ? authority.retainedAgent.sourceCustody.immutableGenerationId
+                                        : '',
+                            },
                         )
                     ) {
                         return false;
@@ -10714,7 +10759,13 @@ export async function startDaemonSessionControlRuntime(
                         && managedProviderAuthority
                         && isPluginRunningSessionDispositionTarget(
                             result,
-                            managedProviderAuthority,
+                            {
+                                pluginId: managedProviderAuthority.pluginId,
+                                immutableGenerationId:
+                                    managedProviderAuthority.sourceCustody.kind === 'managed'
+                                        ? managedProviderAuthority.sourceCustody.immutableGenerationId
+                                        : '',
+                            },
                         ),
                     );
                     if (
@@ -10751,15 +10802,8 @@ export async function startDaemonSessionControlRuntime(
                                 kind: 'fenceHardRevocation',
                                 pluginId:
                                     managedProviderAuthority.pluginId,
-                                ...(result
-                                    .runningSessionRevocationScope
-                                    ? {
-                                        immutableGenerationId:
-                                            result
-                                                .runningSessionRevocationScope
-                                                .immutableGenerationId,
-                                    }
-                                    : {}),
+                                sourceCustody:
+                                    managedProviderAuthority.sourceCustody,
                             });
                             if (
                                 fenced.kind
@@ -10858,6 +10902,9 @@ export async function startDaemonSessionControlRuntime(
     params.onManagedServiceEndpointReadHostReady?.(
         managedServiceEndpointReadOwner
             .bindHost,
+    );
+    params.onManagedServiceSessionClientAccessResolverReady?.(
+        managedServiceEndpointReadOwner.resolveSessionClientAccess,
     );
     params.onManagedServiceSessionBaseUrlResolverReady?.(async (input) => {
         const projection = await managedServiceDurabilityOwner!
@@ -11013,6 +11060,12 @@ export async function startDaemonSessionControlRuntime(
             resolveCurrentMachineExecutionOriginContext: async (signal) =>
                 await params.resolveCurrentMachineExecutionOriginContext?.(signal) ?? null,
             resolveTarget: externalActionTargetResolver,
+            // This explicit checker wins over the executor's own fallback, so it
+            // carries the same Workflow accepted-authorization owner the live
+            // Workflow admission uses; without it a Workflow origin fails closed.
+            ...(params.workflowAcceptedAuthorizationCurrentness
+                ? { isWorkflowRunAuthorizationCurrent: params.workflowAcceptedAuthorizationCurrentness }
+                : {}),
             listAccountApiTokens: async (signal) => {
                 const result = await externalActionAccountServerDeps.accountApiTokensListAction!({
                     input: {},
@@ -11179,20 +11232,6 @@ export async function startDaemonSessionControlRuntime(
                                     .getPeerMediationMachineRpcHandlerManager()
                                     .invokeLocal(method, request, options),
                         },
-                    }
-                    : {}),
-                ...(apiMachineForSessions
-                    ? {
-                        workspaceSyncConflictResolve: async ({ actionReceiptId, input, signal }) =>
-                            WorkspaceSyncStatusV1Schema.parse(
-                                await apiMachineForSessions
-                                    .getPeerMediationMachineRpcHandlerManager()
-                                    .invokeLocal(
-                                        RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
-                                        { actionReceiptId, actionInput: input },
-                                        signal ? { signal } : undefined,
-                                    ),
-                            ),
                     }
                     : {}),
                 ...(apiMachineForSessions
@@ -11535,22 +11574,55 @@ export async function startDaemonSessionControlRuntime(
                 }
                 if (request.operation.kind === 'provider_broker.binding.open') {
                     const tracked = trackedSession;
-                    const selection = tracked?.spawnOptions?.modelSelection?.ref;
-                    const teamBinding = tracked?.spawnOptions?.teamCredentialBindings?.find((candidate) => (
-                        candidate.slot.kind === 'provider_model'
-                    ));
-                    const teamId = teamBinding?.resourceId !== null
-                        ? teamBinding?.teamId ?? tracked?.spawnOptions?.primaryTeamId
-                        : tracked?.spawnOptions?.primaryTeamId;
+                    const operation = request.operation;
+                    // One admission, two binding owners (`PLAN.md` §2.3): an
+                    // Execution Run that selected its own model carries its own
+                    // accepted Team and route, and is admitted on them, never on
+                    // its parent Session's binding, which a later parent edit may
+                    // change. A Session, or a Run that selected nothing and so
+                    // inherits, is admitted only on its tracked Session binding.
+                    // The Home authorizes either one at open and per request.
+                    const carriesRunSelection = operation.teamId !== undefined
+                        || operation.deliveryMode !== undefined;
+                    // A Run materializes for its own Agent, never its parent
+                    // Session's retained one; a Session never names another.
+                    const consumerAgentId = operation.consumer?.kind === 'execution_run'
+                        ? operation.agentId ?? null
+                        : operation.agentId === undefined ? retainedAgent.agentId : null;
+                    const binding = ((): Readonly<{
+                        teamId: string;
+                        deliveryMode: TeamCredentialProviderModelSelectionV1['deliveryMode'];
+                    }> | null => {
+                        if (!tracked || consumerAgentId === null) return null;
+                        if (carriesRunSelection) {
+                            return operation.consumer?.kind === 'execution_run'
+                                && operation.teamId !== undefined
+                                && operation.deliveryMode !== undefined
+                                ? { teamId: operation.teamId, deliveryMode: operation.deliveryMode }
+                                : null;
+                        }
+                        const selection = tracked.spawnOptions?.modelSelection?.ref;
+                        const teamBinding = tracked.spawnOptions?.teamCredentialBindings?.find((candidate) => (
+                            candidate.slot.kind === 'provider_model'
+                        ));
+                        const teamId = teamBinding?.resourceId !== null
+                            ? teamBinding?.teamId ?? tracked.spawnOptions?.primaryTeamId
+                            : tracked.spawnOptions?.primaryTeamId;
+                        if (
+                            typeof teamId !== 'string'
+                            || teamBinding?.slot.kind !== 'provider_model'
+                            || teamBinding.resourceId !== operation.resourceId
+                            || teamBinding.expectedResourceRevision !== operation.expectedResourceRevision
+                            || selection?.agentTargetKey !== operation.agentTargetKey
+                            || selection.modelId !== operation.modelId
+                        ) return null;
+                        return { teamId, deliveryMode: teamBinding.deliveryMode };
+                    })();
                     if (
                         !tracked
                         || !params.openTeamCredentialProviderBinding
-                        || typeof teamId !== 'string'
-                        || teamBinding?.slot.kind !== 'provider_model'
-                        || teamBinding.resourceId !== request.operation.resourceId
-                        || teamBinding.expectedResourceRevision !== request.operation.expectedResourceRevision
-                        || selection?.agentTargetKey !== request.operation.agentTargetKey
-                        || selection.modelId !== request.operation.modelId
+                        || !binding
+                        || consumerAgentId === null
                     ) {
                         return {
                             ok: false as const,
@@ -11564,11 +11636,11 @@ export async function startDaemonSessionControlRuntime(
                     try {
                         opened = await params.openTeamCredentialProviderBinding({
                             sessionId,
-                            teamId,
+                            teamId: binding.teamId,
                             resourceId: request.operation.resourceId,
                             expectedResourceRevision: request.operation.expectedResourceRevision,
-                            deliveryMode: teamBinding.deliveryMode,
-                            agentId: retainedAgent.agentId,
+                            deliveryMode: binding.deliveryMode,
+                            agentId: consumerAgentId,
                             agentTargetKey: request.operation.agentTargetKey,
                             modelId: request.operation.modelId,
                             ...(request.operation.consumer ? { consumer: request.operation.consumer } : {}),
@@ -12587,10 +12659,10 @@ export async function startDaemonSessionControlRuntime(
                                 sessionId,
                                 request: {
                                     ...request.operation,
-                                    immutableGenerationId:
+                                    sourceCustody:
                                         managedProviderAuthority
                                             .bootstrap.scope
-                                            .immutableGenerationId,
+                                            .sourceCustody,
                                 },
                                 bootstrap:
                                     managedProviderAuthority.bootstrap,
@@ -12606,9 +12678,9 @@ export async function startDaemonSessionControlRuntime(
                                 binding: retainedAgent,
                                 request: {
                                     ...request.operation,
-                                    immutableGenerationId:
+                                    sourceCustody:
                                         retainedAgent
-                                            .immutableGenerationId,
+                                            .sourceCustody,
                                 },
                                 ...(context.signal
                                     ? { signal: context.signal }

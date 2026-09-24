@@ -18,6 +18,7 @@ import { resolveEffectiveHomeAuthMethodsInTx } from "@/app/auth/methods/effectiv
 import { checkHomeAuthenticationPolicyRetainsLoginRoutesInTx } from "@/app/auth/methods/effectiveAccountLoginMethods";
 import { isAuthEmailDeliveryReady } from "@/app/auth/email/resolveAuthEmailDelivery";
 import { validateManagedIdentityNetworkPolicyForSave } from "@/app/auth/providers/managed/managedIdentityNetworkPolicyValidation";
+import { isHomeTeamProviderPolicyWithinDeploymentCeiling } from "@/app/auth/providers/teamProviderDeploymentCeiling";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 import { inTx, type Tx } from "@/storage/inTx";
 
@@ -106,10 +107,13 @@ export function resolveTeamProviderKindPolicy(
     kind: ManagedIdentityProviderKindV1,
 ): "allowed" | "prohibited" | "unavailable" {
     if (policy.teamProviders.status === "unreadable") return "unavailable";
-    // Inheritance is not an implicit allow-all default. It can become usable
-    // only when the Homes/Lane 03 producer supplies the current deployment
-    // ceiling; no such projection exists in the repository today.
-    if (policy.teamProviders.status === "inherited") return "unavailable";
+    // An absent policy inherits the deployment ceiling (teams-lane-01/02 :230,
+    // :234): the Home adds no narrowing of its own. Whether the deployment can
+    // run a kind is Lane 03's `resolveTeamProviderKindDeploymentAvailability`,
+    // which every setup choice and managed runtime already enforces on top of
+    // this answer. Team JIT and approved GHES origins stay off under
+    // inheritance because each requires an explicit Home allowance.
+    if (policy.teamProviders.status === "inherited") return "allowed";
     return policy.teamProviders.policy.allowedTeamProviderKinds.includes(kind)
         ? "allowed"
         : "prohibited";
@@ -260,14 +264,16 @@ export async function setHomeGovernancePolicyInTx(
         return { status: "revision_conflict", policy: projectPolicyRow(current) };
     }
 
-    // The strict document codec proves shape, not whether a provider kind,
-    // Team JIT, or a GHES origin is actually permitted by this deployment.
-    // Until the canonical Homes/Lane 03 owner projects that complete current
-    // ceiling, an inherited/unreadable Home cannot manufacture its first
-    // narrowed policy through the API. Existing narrowed policies remain
-    // editable (including recovery/contraction) through the same CAS owner.
+    // The strict codec proves shape; Lane 03's deployment ceiling decides which
+    // provider kinds a save may add. A fresh (inherited) or unreadable Home can
+    // therefore save its first narrowing, and clearing back to inheritance is
+    // always a recoverable write.
     if (input.patch.teamProviderPolicy !== undefined
-        && projectPolicyRow(current).teamProviders.status !== "narrowed") {
+        && !isHomeTeamProviderPolicyWithinDeploymentCeiling({
+            env: input.env,
+            current: projectPolicyRow(current).teamProviders,
+            next: input.patch.teamProviderPolicy,
+        })) {
         return { status: "invalid_policy" };
     }
 

@@ -160,6 +160,12 @@ function readHttpStatus(error: unknown): number | null {
     return null;
 }
 
+function readWorkosRetryAfterSeconds(error: unknown): unknown {
+    return typeof error === "object" && error !== null && "retryAfter" in error
+        ? error.retryAfter
+        : undefined;
+}
+
 function mapWorkosError(error: unknown): DirectoryProjectionScanResult {
     const status = readHttpStatus(error);
     switch (status) {
@@ -169,9 +175,13 @@ function mapWorkosError(error: unknown): DirectoryProjectionScanResult {
         case 404:
             return { ok: false, code: "directory_source_identity_mismatch" };
         case 429: {
-            const retryAfterMs = parseDirectoryRetryAfterMs(
-                readUpstreamResponseHeader(error, "retry-after"),
-            );
+            // WorkOS' SDK parses `Retry-After` into
+            // `RateLimitExceededException.retryAfter` (seconds) and builds no
+            // `response` object at all, so the shared header reader finds
+            // nothing on it. Read the SDK's own field first and keep the header
+            // reader as the fallback for a raw transport error.
+            const retryAfterMs = parseDirectoryRetryAfterMs(readWorkosRetryAfterSeconds(error))
+                ?? parseDirectoryRetryAfterMs(readUpstreamResponseHeader(error, "retry-after"));
             return {
                 ok: false,
                 code: "directory_sync_rate_limited",
@@ -324,7 +334,12 @@ export async function scanWorkosDirectorySnapshot(params: Readonly<{
 type PreparedEvent =
     | Readonly<{ status: "advance"; delta: Parameters<Parameters<DirectoryProjectionCatchUp>[0]["writeWorkosEvent"]>[0] }>
     | Readonly<{ status: "source_deleted" }>
-    | Readonly<{ status: "invalid"; code: DirectoryProjectionScanFailureCode; reconcileRunId?: string }>;
+    | Readonly<{
+        status: "invalid";
+        code: DirectoryProjectionScanFailureCode;
+        reconcileRunId?: string;
+        retryAfterMs?: number;
+    }>;
 
 function isSameDirectory(
     value: Readonly<{ directoryId: string; organizationId: string | null }>,
@@ -423,7 +438,15 @@ async function prepareEvent(params: Readonly<{
                     });
                 },
             });
-            if (!current.ok) return { status: "invalid", code: current.code, reconcileRunId: attemptId };
+            if (!current.ok) {
+                return {
+                    status: "invalid",
+                    code: current.code,
+                    reconcileRunId: attemptId,
+                    // The roster read's provider Retry-After (child 05 §9).
+                    ...(current.retryAfterMs === undefined ? {} : { retryAfterMs: current.retryAfterMs }),
+                };
+            }
             return {
                 status: "advance",
                 delta: {
@@ -522,6 +545,7 @@ export async function consumeWorkosDirectoryEvents(params: Readonly<{
                 ok: false,
                 code: prepared.code,
                 ...(prepared.reconcileRunId === undefined ? {} : { reconcileRunId: prepared.reconcileRunId }),
+                ...(prepared.retryAfterMs === undefined ? {} : { retryAfterMs: prepared.retryAfterMs }),
             };
             if (!await params.writeWorkosEvent(prepared.delta)) return { ok: false, code: "stale_run" };
             expectedPosition = { eventCursor: envelope.id };

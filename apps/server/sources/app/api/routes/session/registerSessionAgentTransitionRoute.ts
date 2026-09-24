@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
     SessionMetadataInactiveModelIntentOwnerPatchV1Schema,
 } from "@happier-dev/protocol";
+import { SessionTeamCredentialBindingIntentsV1Schema } from "@happier-dev/protocol/teams";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
 import { buildMessageUpdatedUpdate, buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
 import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
@@ -64,6 +66,11 @@ export function registerSessionAgentTransitionRoute(
                     localId: z.string().min(1),
                     content: SessionStoredMessageContentSchema,
                 }).strict(),
+                // The target Agent's Team slot bindings. The cutover is the
+                // transition's one Session switch mutation, so the witness the
+                // Home admits Team credential use through is written here, in the
+                // current-view transaction (lane 10 child 01 principle 3).
+                teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.min(1).optional(),
             }).strict(),
             response: {
                 200: z.object({
@@ -126,6 +133,14 @@ export function registerSessionAgentTransitionRoute(
                 localId: request.body.divider.localId,
                 content: request.body.divider.content,
             },
+            ...(request.body.teamCredentialBindings
+                ? {
+                    teamCredentialBindings: {
+                        intents: request.body.teamCredentialBindings,
+                        authentication: readSessionAccessAuthenticationFromRequest(request),
+                    },
+                }
+                : {}),
         });
 
         if (!result.ok) {

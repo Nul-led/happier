@@ -196,8 +196,9 @@ export type TeamCredentialBrokerMachineAdmission =
 /**
  * Admission of one presented broker Machine against the resource's current
  * placement, in the caller's selection mode (see
- * `TeamCredentialBrokerPlacementSelection`). Every external API request is its
- * own selection and stays `per_request`.
+ * `TeamCredentialBrokerPlacementSelection`). An external API key's requests
+ * present the Machine its per-key operation was established on, so they are
+ * `established`; a resource Test request is its own selection.
  *
  * Eligibility is then rechecked by the one Machine owner.
  */

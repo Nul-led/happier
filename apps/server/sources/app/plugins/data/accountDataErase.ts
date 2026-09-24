@@ -464,6 +464,25 @@ export type AccountErasureActor =
 type AccountErasureActorRejection = "home_governance_forbidden" | "home_account_not_found";
 
 /**
+ * The independent administrator whose current authority this erasure must
+ * recheck, or `null` when the invocation erases the Account that asked for it.
+ *
+ * Home People always names the verified actor, including when that actor is the
+ * target, so an owner deleting their own People row arrives here as
+ * `home_administration` pointing at itself. That is the same erasure the
+ * released present-user route performs, and it must be admitted the same way:
+ * self-targeted, never rechecked. Deciding it once, here, is what keeps the two
+ * entry points from disagreeing about who admitted an erasure.
+ */
+function resolveAccountErasureAdministrator(
+    actor: AccountErasureActor,
+    accountId: string,
+): Extract<AccountErasureActor, { kind: "home_administration" }> | null {
+    if (actor.kind === "self" || actor.actorAccountId === accountId) return null;
+    return actor;
+}
+
+/**
  * Rereads an administrative actor's current `eraseAccounts` authority inside
  * the deciding transaction.
  *
@@ -477,9 +496,10 @@ async function admitAccountErasureActorInTx(tx: Tx, input: Readonly<{
     actor: AccountErasureActor;
     accountId: string;
 }>): Promise<AccountErasureActorRejection | null> {
-    if (input.actor.kind === "self") return null;
+    const administrator = resolveAccountErasureAdministrator(input.actor, input.accountId);
+    if (administrator === null) return null;
     const admission = await authorizeHomeGovernanceMutationInTx(tx, {
-        actorAccountId: input.actor.actorAccountId,
+        actorAccountId: administrator.actorAccountId,
         request: { operation: "erase_account", targetAccountId: input.accountId },
     });
     return admission.status === "authorized" ? null : admission.code;
@@ -488,9 +508,11 @@ async function admitAccountErasureActorInTx(tx: Tx, input: Readonly<{
 async function admitAccountErasureActorForAbsentTargetInTx(
     tx: Tx,
     actor: AccountErasureActor,
+    accountId: string,
 ): Promise<"home_governance_forbidden" | null> {
-    if (actor.kind === "self") return null;
-    const admission = await authorizeHomeAccountErasureActorInTx(tx, actor.actorAccountId);
+    const administrator = resolveAccountErasureAdministrator(actor, accountId);
+    if (administrator === null) return null;
+    const admission = await authorizeHomeAccountErasureActorInTx(tx, administrator.actorAccountId);
     return admission.status === "authorized" ? null : admission.code;
 }
 
@@ -578,7 +600,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             input.accountId,
         );
         if (fence.status === "account_not_found") {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
             return actorRejection
                 ? { status: "rejected" as const, code: actorRejection }
                 : { status: "already-deleted" as const };
@@ -653,7 +675,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             input.accountId,
         );
         if (fence.status === "account_not_found") {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
             return actorRejection
                 ? { status: "failed", code: actorRejection }
                 : { status: "already-deleted" };
@@ -670,7 +692,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             select: { status: true },
         });
         if (!lifecycle) {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
             return actorRejection
                 ? { status: "failed", code: actorRejection }
                 : { status: "already-deleted" };

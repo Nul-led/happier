@@ -3,8 +3,9 @@ import chalk from 'chalk';
 import type { StoredCredentials } from '@/persistence';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 
+import { parseWorkflowActionCliInput } from '@/cli/actions/workflowActionInput';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { readCommandPositionals, readFlagValue } from '@/cli/commands/shared/argvFlags';
+import { invalidCommandArguments } from '@/cli/commands/shared/argvFlags';
 import { SESSION_HELP_LINES } from '../shared/sessionCommandUsage';
 import { normalizeSessionStartActionResults } from '../shared/sessionStartActionResults';
 
@@ -16,45 +17,44 @@ function splitCsv(value: string | null): string[] {
     .filter((v) => v.length > 0);
 }
 
+/**
+ * Retained workflow (plan §10.2): the Session selector, the `--engines` list and
+ * the `--base-branch`/`--base-commit` shorthand are workflow options; every
+ * `review.start` field goes through the shared compiled field parser and the
+ * Action's own schema.
+ */
 export async function cmdSessionReviewStart(
   argv: string[],
   deps: Readonly<{ readCredentialsFn: () => Promise<StoredCredentials | null> }>,
 ): Promise<void> {
-  const json = wantsJson(argv);
-  const [idOrPrefix = ''] = readCommandPositionals(argv, {
+  const usage = `Usage: ${SESSION_HELP_LINES.reviewStart}`;
+  const args = parseWorkflowActionCliInput(argv, {
+    actionId: 'review.start',
+    usage,
     startIndex: 2,
-    valueFlags: ['--engines', '--engine', '--instructions', '--change-type', '--base-branch', '--base-commit', '--permission-mode'],
+    maxPositionals: 1,
+    workflowValueFlags: ['--engines', '--engine', '--base-branch', '--base-commit'],
+    workflowOwnedFields: ['sessionId', 'engineIds', 'base'],
   });
-  if (!idOrPrefix) {
-    throw new Error(`Usage: ${SESSION_HELP_LINES.reviewStart}`);
-  }
+  const json = wantsJson(argv);
+  const [idOrPrefix = ''] = args.positionals;
+  if (!idOrPrefix.trim()) throw invalidCommandArguments(usage, 'Missing Session.');
 
-  const enginesRaw = readFlagValue(argv, '--engines') ?? readFlagValue(argv, '--engine');
-  const engineIds = splitCsv(enginesRaw);
-  const instructions = readFlagValue(argv, '--instructions') ?? '';
-
-  const changeType = readFlagValue(argv, '--change-type') ?? undefined;
-  const baseBranch = readFlagValue(argv, '--base-branch') ?? undefined;
-  const baseCommit = readFlagValue(argv, '--base-commit') ?? undefined;
-  const permissionMode = readFlagValue(argv, '--permission-mode') ?? undefined;
-
-  if (engineIds.length === 0 || !instructions.trim()) {
-    throw new Error(`Usage: ${SESSION_HELP_LINES.reviewStart}`);
-  }
-
-  const base = (() => {
-    if (baseCommit) return { kind: 'commit', baseCommit };
-    if (baseBranch) return { kind: 'branch', baseBranch };
-    return undefined;
-  })();
-
-  const input: any = {
-    engineIds,
-    instructions,
-    ...(changeType ? { changeType } : null),
-    ...(base ? { base } : null),
-    ...(permissionMode ? { permissionMode } : null),
-  };
+  const engineIds = splitCsv(args.readWorkflowValue('--engines') ?? args.readWorkflowValue('--engine'));
+  if (engineIds.length === 0 && !args.supplies('engineIds')) throw invalidCommandArguments(usage, 'Missing --engines.');
+  if (!args.supplies('instructions')) throw invalidCommandArguments(usage, 'Missing --instructions.');
+  const baseCommit = args.readWorkflowValue('--base-commit');
+  const baseBranch = args.readWorkflowValue('--base-branch');
+  const base = baseCommit
+    ? { kind: 'commit', baseCommit }
+    : baseBranch
+      ? { kind: 'branch', baseBranch }
+      : undefined;
+  const composed = args.compose({
+    ...(engineIds.length > 0 ? { engineIds } : {}),
+    ...(base ? { base } : {}),
+  });
+  if (!composed.ok) throw invalidCommandArguments(usage, composed.message);
 
   const credentials = await deps.readCredentialsFn();
   if (!credentials) {
@@ -81,7 +81,7 @@ export async function cmdSessionReviewStart(
   }
   const { sessionId } = sessionTarget;
 
-  const started = await executor.execute('review.start', input, {
+  const started = await executor.execute('review.start', composed.input, {
     authority: 'present_user',
     defaultSessionId: sessionId,
   });

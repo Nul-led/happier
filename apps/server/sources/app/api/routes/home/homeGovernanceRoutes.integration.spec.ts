@@ -453,10 +453,13 @@ describe("Home governance routes", () => {
         const owner = await createAccount("owner");
 
         const withoutServices = (await post(app, "/v1/home/governance/get", owner.token, {})).json();
-        expect(withoutServices.identityServices).toEqual({
+        expect(withoutServices.identityServices).toMatchObject({
             workos: "not_configured",
             privateIdentityNetworkAllowed: false,
         });
+        // The Team-provider ceiling an inherited Home resolves to excludes what the
+        // deployment cannot run.
+        expect(withoutServices.identityServices.teamProviderKinds).not.toContain("workos_sso");
         expect(JSON.stringify(withoutServices)).not.toContain("wos_test_key");
 
         process.env.WORKOS_API_KEY = "wos_test_key";
@@ -464,10 +467,11 @@ describe("Home governance routes", () => {
         process.env.HAPPIER_FEATURE_AUTH_MANAGED_IDENTITY__PRIVATE_NETWORK_ENABLED = "true";
         try {
             const withServices = (await post(app, "/v1/home/governance/get", owner.token, {})).json();
-            expect(withServices.identityServices).toEqual({
+            expect(withServices.identityServices).toMatchObject({
                 workos: "configured",
                 privateIdentityNetworkAllowed: true,
             });
+            expect(withServices.identityServices.teamProviderKinds).toContain("workos_sso");
             expect(JSON.stringify(withServices)).not.toContain("wos_test_key");
 
             delete process.env.WORKOS_CLIENT_ID;
@@ -1053,6 +1057,48 @@ describe("Home governance routes", () => {
         })).json().accounts).toHaveLength(10);
     });
 
+    it("answers a username prefix in Home scope but never in Team scope", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const manager = await createAccount("member");
+        const newcomer = await createAccount("member");
+        await db.account.update({ where: { id: newcomer.accountId }, data: { username: "priya" } });
+        await db.accountEmail.create({ data: {
+            accountId: newcomer.accountId, address: "Priya@acme.test", normalizedEmail: "priya@acme.test",
+        } });
+        const team = await db.team.create({ data: { name: "Exact only" }, select: { id: true } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.accountId, role: "admin" } });
+
+        // Home scope keeps the prefix arm: `manageAccounts` already pages the
+        // entire roster through `home.accounts.list`, so exact-only there would
+        // protect nothing and only degrade the administrator's picker.
+        expect((await post(app, "/v1/home/accounts/search", owner.token, {
+            query: "priy",
+            scope: { kind: "home" },
+        })).json().accounts).toEqual([expect.objectContaining({ accountId: newcomer.accountId })]);
+
+        // Team scope resolves exact identifiers only, so the same prefix finds
+        // nobody — and neither does a prefix of the verified mailbox.
+        const teamScope = { kind: "team", teamId: team.id } as const;
+        expect((await post(app, "/v1/home/accounts/search", manager.token, {
+            query: "priy",
+            scope: teamScope,
+        })).json()).toEqual({ accounts: [] });
+        expect((await post(app, "/v1/home/accounts/search", manager.token, {
+            query: "priya@acme",
+            scope: teamScope,
+        })).json()).toEqual({ accounts: [] });
+
+        // The two exact identifiers the Team picker is built on still answer.
+        for (const query of [newcomer.accountId, " PRIYA@Acme.test "]) {
+            const found = await post(app, "/v1/home/accounts/search", manager.token, { query, scope: teamScope });
+            expect(found.statusCode, found.body).toBe(200);
+            expect(found.json().accounts).toEqual([
+                expect.objectContaining({ accountId: newcomer.accountId, eligible: true }),
+            ]);
+        }
+    });
+
     it("shows a disabled Account as found but ineligible instead of hiding it", async () => {
         const app = createTestApp();
         const owner = await createAccount("owner");
@@ -1103,5 +1149,78 @@ describe("Home governance routes", () => {
             expect.objectContaining({ accountId: newcomer.accountId, eligible: true }),
         ]));
         expect(found.json().accounts).toHaveLength(2);
+    });
+
+    it("qualifies the Team-scoped search against that Team's restricted policy", async () => {
+        const app = createTestApp();
+        const previousKeyChallenge = process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
+        // The accepted method has to be one this Home currently offers,
+        // otherwise every credential is unavailable rather than unqualified and
+        // the two legs below would prove nothing about qualification.
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "1";
+        try {
+            const owner = await createAccount("owner");
+            const manager = await createAccount("member");
+            // `key_challenge` is a keyed login route, so only a key-bearing
+            // Account can currently prove it — the same fixture fact the Team
+            // directory suite relies on.
+            await db.account.update({ where: { id: manager.accountId }, data: { encryptionMode: "e2ee" } });
+            const newcomer = await createAccount("member");
+            await db.account.update({ where: { id: newcomer.accountId }, data: { username: "priya" } });
+            const team = await db.team.create({
+                data: {
+                    name: "Restricted picker",
+                    authenticationPolicy: {
+                        v: 1,
+                        mode: "restricted",
+                        accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                    },
+                },
+                select: { id: true },
+            });
+            await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.accountId, role: "admin" } });
+            // The same manager, on a credential that proves no accepted method.
+            // Their Team-derived authority is unqualified, so the disclosure the
+            // picker performs is refused exactly where the member mutation it
+            // feeds is refused.
+            const unqualified = await auth.createToken(manager.accountId, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
+
+            expect((await post(app, "/v1/home/accounts/search", unqualified, {
+                query: "priy",
+                scope: { kind: "team", teamId: team.id },
+            })).statusCode).toBe(403);
+
+            // Team scope is exact-only, so the qualified leg asks by exact
+            // Account id; what it proves is qualification, not reach.
+            const qualified = await post(app, "/v1/home/accounts/search", manager.token, {
+                query: newcomer.accountId,
+                scope: { kind: "team", teamId: team.id },
+            });
+            expect(qualified.statusCode, qualified.body).toBe(200);
+            expect(qualified.json().accounts).toEqual([
+                expect.objectContaining({ accountId: newcomer.accountId, eligible: true }),
+            ]);
+
+            // Home scope is independent Home authority and no Team's policy
+            // narrows it, on either credential.
+            const homeUnqualified = await auth.createToken(owner.accountId, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
+            const homeScoped = await post(app, "/v1/home/accounts/search", homeUnqualified, {
+                query: "priy",
+                scope: { kind: "home" },
+            });
+            expect(homeScoped.statusCode, homeScoped.body).toBe(200);
+            expect(homeScoped.json().accounts).toEqual([
+                expect.objectContaining({ accountId: newcomer.accountId }),
+            ]);
+        } finally {
+            if (previousKeyChallenge === undefined) delete process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
+            else process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = previousKeyChallenge;
+        }
     });
 });

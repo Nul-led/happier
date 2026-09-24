@@ -29,7 +29,7 @@ import { resolveSessionMachineId } from '@/sync/domains/session/external/resolve
 
 import { createServerRequestForResolvedServerScope } from './createServerRequestWithServerScope';
 import { normalizeServerScopeId } from './localSessionRouteReadiness';
-import { resolveScopedSessionDataKey } from './resolveScopedSessionDataKey';
+import { initializeScopedSessionReader, resolveScopedSessionCryptoContext } from './resolveScopedSessionDataKey';
 import { resolveServerAccountRequestContext, type ResolvedServerAccountRequestContext } from './resolveServerAccountRequestContext';
 import { fetchSessionByIdWithServerScope } from './fetchSessionByIdWithServerScope';
 
@@ -75,16 +75,26 @@ async function defaultGetScopedSessionEncryption(params: Readonly<{
   }
   const existing = encryption.getSessionEncryption(params.sessionId);
   if (existing) return existing as unknown as ScopedSessionEncryptionLike;
-  const sessionDataKey = await resolveScopedSessionDataKey({
+  const cryptoContext = await resolveScopedSessionCryptoContext({
     serverId: context.targetServerId,
     serverUrl: context.targetServerUrl,
     ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
+    ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
     token: context.token,
+    ...(context.credentials ? { credentials: context.credentials } : {}),
     sessionId: params.sessionId,
     timeoutMs: context.timeoutMs,
     decryptEncryptionKey: (value) => encryption.decryptEncryptionKey(value),
   });
-  await encryption.initializeSessions(new Map([[params.sessionId, sessionDataKey]]));
+  // Only a standalone DEK or the owner-only historical reader may seal this Session's input;
+  // an unavailable envelope must never become the Account-scoped reader by passing `null`.
+  const installed = await initializeScopedSessionReader({
+    sessionId: params.sessionId,
+    serverId: context.targetServerId,
+    context: cryptoContext,
+    encryption,
+  });
+  if (!installed) throw new Error(`Session encryption is unavailable for ${params.sessionId}`);
   const sessionEncryption = encryption.getSessionEncryption(params.sessionId);
   if (!sessionEncryption) throw new Error(`Session encryption not found for ${params.sessionId}`);
   return sessionEncryption as unknown as ScopedSessionEncryptionLike;
@@ -230,7 +240,10 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           timeoutMs: context.timeoutMs,
         });
         const acquiredSession = acquired.find((session) => session.id === sessionId && session.serverId === context.targetServerId);
-        if (!fetched.ok) return { ok: false, errorCode: fetched.errorCode, error: fetched.errorCode };
+        if (!fetched.ok) {
+          const errorCode = fetched.errorCode ?? 'session_fetch_failed';
+          return { ok: false, errorCode, error: errorCode };
+        }
         if (!acquiredSession) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
         // Fetching exact-Home Session facts is read-only and can complete after
         // the invoking Voice/Action was cancelled. Stop before creating local

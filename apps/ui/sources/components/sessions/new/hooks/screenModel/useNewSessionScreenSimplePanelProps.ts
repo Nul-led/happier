@@ -43,6 +43,7 @@ export function useNewSessionScreenSimplePanelProps(params: Readonly<{
         | 'composerDocument'
         | 'setSessionPrompt'
         | 'handleCreateSession'
+        | 'registerTemporaryComputerReplacementLaunch'
         | 'canCreate'
         | 'isCreating'
         | 'pendingLaunchAttempt'

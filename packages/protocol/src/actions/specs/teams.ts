@@ -130,6 +130,7 @@ function teamIdentityActionRow<
   path: string;
   projectObservationInput?: PreNormalizedActionSpec['projectObservationInput'];
   projectObservationOutput?: PreNormalizedActionSpec['projectObservationOutput'];
+  approvalResultCustody?: PreNormalizedActionSpec['approvalResultCustody'];
 }>): HomeDomainActionRow<TActionId, TInputSchema, TOutputSchema> {
   const row = homeDomainActionRow(input);
   const presentUser = input.presentUser ?? input.sideEffectClass !== 'read';
@@ -925,6 +926,10 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'identity', 'workos', 'admin-portal-link', 'create'],
     projectObservationOutput: () => ({ redacted: true }),
+    // The Portal URL is a short-lived bearer for full external SSO/Directory
+    // administration of the organization. It stays on the invocation that
+    // asked for it and never becomes durable Artifact result state.
+    approvalResultCustody: 'live_only',
   }),
   teamIdentityActionRow({
     id: 'teams.identity.workos.reconcile',

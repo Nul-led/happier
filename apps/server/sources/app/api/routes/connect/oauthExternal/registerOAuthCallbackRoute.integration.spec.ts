@@ -13,6 +13,8 @@ import { createAppCloseTracker } from "../../../testkit/appLifecycle";
 import { startOidcStubServer, type OidcStubServer } from "../../../testkit/oidcStub";
 import { createExternalAuthorizeAttempt, createExternalAuthorizeUrl } from "./createExternalAuthorizeUrl";
 import { registerOAuthCallbackRoute } from "./registerOAuthCallbackRoute";
+import { connectConnectExternalRoutes } from "../connectRoutes.connectExternal";
+import { resolveAuthEntry } from "@/app/auth/entry/resolveAuthEntry";
 import { encryptString } from "@/modules/encrypt";
 import { inTx } from "@/storage/inTx";
 
@@ -51,8 +53,9 @@ describe("OAuth callback provider security binding", () => {
         oidc.reset();
         await db.repeatKey.deleteMany();
         await db.accountIdentity.deleteMany();
-        await db.account.deleteMany();
+        await db.teamMembership.deleteMany();
         await db.teamProvisionedIdentity.deleteMany();
+        await db.account.deleteMany();
         await db.teamDirectorySource.deleteMany();
         await db.teamIdentityConnection.deleteMany();
         await db.identityProviderInstance.deleteMany();
@@ -383,15 +386,6 @@ describe("OAuth callback provider security binding", () => {
             WORKOS_API_KEY: "sk_test",
             WORKOS_CLIENT_ID: "client_test",
         });
-        await db.homeGovernancePolicy.create({ data: {
-            id: "home",
-            teamProviderPolicy: {
-                v: 1,
-                allowedTeamProviderKinds: ["workos_sso"],
-                teamJitAllowed: false,
-                approvedGitHubEnterpriseOrigins: [],
-            },
-        } });
         const team = await db.team.create({ data: { name: "Provisioned Team", admissionMode: "provisioned" } });
         const providerRow = await db.identityProviderInstance.create({ data: {
             ownerTeamId: team.id, kind: "workos_sso", displayName: "SSO", enabled: true,
@@ -459,5 +453,102 @@ describe("OAuth callback provider security binding", () => {
         expect(await db.account.count()).toBe(0);
         expect(await db.accountIdentity.count()).toBe(0);
         expect(await db.teamMembership.count()).toBe(0);
+    });
+    it.each([
+        { subject: "idp_exact", admitted: true },
+        { subject: "idp_someone_else", admitted: false },
+    ])("lets a signed-in existing Account join a provisioned Team through the offered connect ($subject)", async ({ subject, admitted }) => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            HAPPIER_WEBAPP_URL: "https://app.example.test",
+            HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+            WORKOS_API_KEY: "sk_test",
+            WORKOS_CLIENT_ID: "client_test",
+        });
+        const team = await db.team.create({ data: { name: "Provisioned Team", admissionMode: "provisioned" } });
+        const providerRow = await db.identityProviderInstance.create({ data: {
+            ownerTeamId: team.id, kind: "workos_sso", displayName: "Company SSO", enabled: true,
+            firstEnabledAt: new Date(), config: { v: 1, kind: "workos_sso" },
+        } });
+        const connection = await db.teamIdentityConnection.create({ data: {
+            teamId: team.id, providerInstanceId: providerRow.id, enabled: true, firstEnabledAt: new Date(),
+            externalReference: { v: 1, kind: "workos_sso", organizationId: "org_exact", connectionId: "conn_exact" },
+            settings: { v: 1, kind: "workos_sso" },
+        } });
+        const source = await db.teamDirectorySource.create({ data: {
+            teamId: team.id, kind: "workos_directory", state: "active", displayName: "Directory",
+            externalSourceKey: "directory_exact", bindingConfig: { v: 1, kind: "workos_directory" },
+            teamIdentityConnectionId: connection.id,
+            activeReconcileRunId: null,
+            lastSuccessAt: new Date("2026-09-07T10:01:00.000Z"),
+            lastFullReconcileAt: new Date("2026-09-07T10:01:00.000Z"),
+        } });
+        const person = await db.teamProvisionedIdentity.create({ data: {
+            teamId: team.id, directorySourceId: source.id, externalUserId: "directory_user_exact",
+            externalSubjectId: "idp_exact", state: "active", lastSeenReconcileRunId: "complete-run",
+        } });
+        // An ordinary Home Account that signed in with another method before the Team existed.
+        const account = await db.account.create({ data: { publicKey: "b".repeat(64), encryptionMode: "plain" } });
+
+        const entry = await resolveAuthEntry(
+            { v: 1, scope: { kind: "team", teamId: team.id } },
+            { env: process.env, principal: { accountId: account.id } },
+        );
+        if (entry.state !== "admission_required") throw new Error(`expected admission, got ${JSON.stringify(entry)}`);
+        expect(entry.actions).toContainEqual(expect.objectContaining({
+            kind: "authenticate", methodId: providerRow.id, action: "connect", origin: "team",
+        }));
+
+        const app = Fastify({ logger: false });
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        trackApp(app);
+        app.decorate("authenticate", async (request: { userId: string }) => {
+            request.userId = account.id;
+        });
+        const typed = app.withTypeProvider<ZodTypeProvider>() as any;
+        connectConnectExternalRoutes(typed);
+        registerOAuthCallbackRoute(typed);
+        await app.ready();
+
+        const start = await app.inject({ method: "GET", url: `/v1/connect/external/${providerRow.id}/params?${new URLSearchParams({
+            purpose: "team_admission", origin: "team", teamId: team.id, connectionId: connection.id,
+        }).toString()}` });
+        expect(start.statusCode, start.body).toBe(200);
+        workosExchange.mockResolvedValue({ accessToken: "ephemeral", profile: {
+            id: `profile_${subject}`, idpId: subject, email: "person@example.test",
+            organizationId: "org_exact", connectionId: "conn_exact",
+        } });
+        const state = new URL(start.json().url).searchParams.get("state")!;
+        const callback = await app.inject({ method: "GET", url:
+            `/v1/oauth/${providerRow.id}/callback?state=${encodeURIComponent(state)}&code=code`,
+        });
+        expect(callback.statusCode).toBe(302);
+        const pending = new URL(callback.headers.location as string).searchParams.get("pending");
+        expect(pending).toBeTruthy();
+
+        const finalized = await app.inject({
+            method: "POST",
+            url: `/v1/connect/external/${providerRow.id}/finalize`,
+            payload: { pending, username: "person" },
+        });
+        if (admitted) {
+            expect(finalized.statusCode, finalized.body).toBe(200);
+            await expect(db.teamMembership.findFirst({ where: { teamId: team.id, accountId: account.id } }))
+                .resolves.toMatchObject({ status: "active" });
+            await expect(db.teamProvisionedIdentity.findUniqueOrThrow({ where: { id: person.id } }))
+                .resolves.toMatchObject({ boundAccountId: account.id });
+            await expect(db.accountIdentity.count({ where: { accountId: account.id, provider: providerRow.id } }))
+                .resolves.toBe(1);
+            expect(await db.account.count()).toBe(1);
+        } else {
+            // Same mailbox, different immutable subject: no binding, no access, no partial link.
+            expect(finalized.statusCode, finalized.body).toBe(403);
+            expect(finalized.json()).toEqual({ error: "team_authentication_required" });
+            await expect(db.teamMembership.count({ where: { teamId: team.id } })).resolves.toBe(0);
+            await expect(db.teamProvisionedIdentity.findUniqueOrThrow({ where: { id: person.id } }))
+                .resolves.toMatchObject({ boundAccountId: null });
+            await expect(db.accountIdentity.count()).resolves.toBe(0);
+        }
     });
 });

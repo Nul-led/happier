@@ -35,6 +35,8 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
      * selection keys are the canonical qualified keys of these declarations.
      */
     connectedAccounts?: ResolvedAgentCatalogEntry['connectedAccounts'];
+    /** The selected Agent's contribution identity; it keys the Agent's default authentication. */
+    agentIdentity?: ResolvedAgentCatalogEntry['identity'];
     teamCredentialResources?: ConnectedServicesParams['teamCredentialResources'];
     teamNameById?: ConnectedServicesParams['teamNameById'];
     applyTeamCredentialPolicy?: ConnectedServicesParams['applyTeamCredentialPolicy'];
@@ -71,6 +73,7 @@ export function useNewSessionConnectedServicesAgentOptions(params: Readonly<{
     const { connectedServicesBindingsPayload, connectedServicesModelProbeCacheIdentity, connectedServicesAuthChip } = useNewSessionConnectedServices({
         agentCore,
         defaultAuthAgentId: behaviorAgentId,
+        defaultAuthConsumer: params.agentIdentity ?? null,
         connectedAccounts: params.connectedAccounts ?? [],
         agentOptionState: params.agentOptionState,
         settings: params.settings,

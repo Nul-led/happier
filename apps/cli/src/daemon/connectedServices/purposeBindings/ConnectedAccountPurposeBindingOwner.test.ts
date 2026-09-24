@@ -12,7 +12,6 @@ import {
   type ConnectedAccountPurposeBindingOwnerDependencies,
   type ConnectedAccountPurposeBindingOwner,
   type ConnectedAccountPurposeBindingStore,
-  type ConnectedAccountPurposeResolvedTarget,
 } from './ConnectedAccountPurposeBindingOwner';
 
 const purpose = {
@@ -62,9 +61,7 @@ function createOwner(input: Readonly<{
   selectTarget?: () => Promise<QualifiedConnectedAccountPurposeBindingTargetV1>;
   currentGroupAccountId?: () => string;
   resolveAvailable?: () => boolean;
-  resolveTarget?: (
-    target: QualifiedConnectedAccountPurposeBindingTargetV1,
-  ) => Promise<ConnectedAccountPurposeResolvedTarget | null>;
+  resolveTarget?: ConnectedAccountPurposeBindingOwnerDependencies['resolveTarget'];
   resolveCredentialRevision?: ConnectedAccountPurposeBindingOwnerDependencies[
     'resolveCredentialRevision'
   ];
@@ -161,6 +158,33 @@ describe('ConnectedAccountPurposeBindingOwner', () => {
         }],
       },
     ])).toThrow('connected_account_session_binding_snapshot_duplicate_purpose');
+  });
+
+  it('carries each composed snapshot\'s direct Team material origins into the session snapshot', () => {
+    const managedPurpose = {
+      consumer: { pluginId: 'happier.provider.test', localId: 'managed-runtime' },
+      purpose: 'upstream-request',
+    } as const;
+    const teamMember = { service, accountId: 'team-member' };
+    const agentBinding = {
+      purpose,
+      target: { kind: 'account' as const, account: teamMember },
+    };
+    const managedBinding = {
+      purpose: managedPurpose,
+      target: {
+        kind: 'account' as const,
+        account: { service, accountId: 'managed' },
+      },
+    };
+    const origin = { purpose, resourceId: 'team-resource', disclosedMember: teamMember };
+
+    const composed = composeConnectedAccountSessionPurposeBindingSnapshot([
+      { purposes: [purpose], bindings: [agentBinding], directMaterialOrigins: [origin] },
+      { purposes: [managedPurpose], bindings: [managedBinding] },
+    ]);
+
+    expect(composed.directMaterialOrigins).toEqual([origin]);
   });
 
   it('resolves one authorized logical intent without persisting or applying a group member', async () => {
@@ -305,6 +329,8 @@ describe('ConnectedAccountPurposeBindingOwner', () => {
           groupId: 'external-fallbacks',
         },
       }],
+      directMaterialOrigins: [],
+      teamResourceSelections: [],
     });
   });
 

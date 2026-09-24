@@ -3,7 +3,9 @@ import type {
   PluginContributionIdentityV1,
   QualifiedConnectedAccountPurposeBindingTargetV1,
   QualifiedConnectedAccountRef,
+  TeamResourceConnectedServiceSelectionV2,
 } from '@happier-dev/protocol';
+import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 
 import { t } from '@/text';
 import type { ConnectedAccountUiNegotiation } from './resolveConnectedAccountUiNegotiation';
@@ -172,6 +174,43 @@ export function presentQualifiedConnectedAccountTarget(input: Readonly<{
     primaryLabel,
     secondaryParts: [
       primaryLabel === serviceTitle ? null : serviceTitle,
+    ],
+  });
+}
+
+/**
+ * Present a Team resource purpose default (lane 10 child 09 §10.4): the
+ * resource name, its Team and delivery mode, all from the viewer's entitled
+ * Team catalog. A resource the catalog no longer offers presents as
+ * unavailable; no source Account or Pool fact is ever shown.
+ */
+export function presentConnectedAccountPurposeTeamResource(input: Readonly<{
+  teamResource: Readonly<{ teamId: string; selection: TeamResourceConnectedServiceSelectionV2 }>;
+  teamResources: readonly TeamCredentialResourceCatalogEntryV1[];
+  teamNameById?: Readonly<Record<string, string>>;
+  serviceTitle: string | null | undefined;
+}>): QualifiedConnectedAccountTargetPresentation {
+  const serviceTitle = nonEmptyText(input.serviceTitle)
+    ?? t('connectedServices.fallbackName');
+  const resource = input.teamResources.find((candidate) => (
+    candidate.id === input.teamResource.selection.resourceId && candidate.teamId === input.teamResource.teamId
+  ));
+  if (!resource) {
+    return createPresentation({
+      serviceTitle,
+      primaryLabel: t('common.unavailable'),
+      secondaryParts: [],
+    });
+  }
+  return createPresentation({
+    serviceTitle,
+    primaryLabel: nonEmptyText(resource.displayName) ?? serviceTitle,
+    secondaryParts: [
+      nonEmptyText(input.teamNameById?.[resource.teamId]),
+      t(input.teamResource.selection.deliveryMode === 'brokered'
+        ? 'teams.credentials.delivery.brokered'
+        : 'teams.credentials.delivery.direct'),
+      serviceTitle,
     ],
   });
 }

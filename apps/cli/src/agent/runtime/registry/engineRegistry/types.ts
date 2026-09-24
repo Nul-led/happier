@@ -35,7 +35,10 @@ import type {
 import type {
     RunnerManagedServicesCustodyPortV1,
 } from '@/agent/runtime/session/process/runnerManagedServicesCustody';
-import type { SessionEnvOverlayV1 } from '@happier-dev/protocol';
+import type {
+    PluginSourceCustodyV1,
+    SessionEnvOverlayV1,
+} from '@happier-dev/protocol';
 import type {
     ProviderBindingLaunchHandoffV1,
 } from '@/plugins/runtime/providerBindings/handoff';
@@ -58,7 +61,7 @@ export type RunnerAgentExternalSessionProviderOps = Required<Pick<
 >>;
 
 export type RunnerAgentSessionRuntimeSource = Readonly<{
-    /** Exact generation-pinned Agent contribution used to construct this Session. */
+    /** Exact Agent contribution used to construct this Session. */
     agentContribution: ResolvedAgentContribution;
     identity: Readonly<{
         pluginId: string;
@@ -66,8 +69,8 @@ export type RunnerAgentSessionRuntimeSource = Readonly<{
         /** Host routing id; qualified for installed Agents. */
         agentId: string;
         backendId: string;
-        generation: string;
-        immutableGenerationId?: string | null;
+        occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
         runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
         isCurrent(): boolean;
     }>;
@@ -108,6 +111,13 @@ export type RunnerAgentSessionRuntimeSource = Readonly<{
         agentTargetKey: string;
         modelId: string;
         consumer?: import('@happier-dev/protocol').ProviderBrokerConsumerV1;
+        /** An Execution Run's own accepted Team and route; absent when it inherits the Session binding. */
+        executionRunSelection?: Readonly<{
+            teamId: string;
+            deliveryMode: import('@happier-dev/protocol/teams').TeamCredentialRouteV1;
+        }>;
+        /** The Agent an Execution Run consumer runs; absent for the Session's own open. */
+        executionRunAgentId?: string;
         signal: AbortSignal;
     }>): Promise<Readonly<{
         providerBinding: import('@happier-dev/plugin-sdk/agents/runtime').AgentSessionProviderBinding;

@@ -136,7 +136,7 @@ const FEATURE_CATALOG_DEFINITION = {
     representation: 'server',
   },
   'sharing.session': {
-    description: 'Session sharing capability (share session with other users/devices).',
+    description: 'Session sharing with Accounts, Teams and Groups: access grants, responsibility and atomic initial access.',
     defaultFailMode: 'fail_closed',
     dependencies: [],
     representation: 'server',
@@ -207,16 +207,10 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: ['sessions'],
     representation: 'server',
   },
-  'sessions.collaboration': {
-    description: 'Current Account, Team and Group Session access, responsibility and atomic initial access.',
-    defaultFailMode: 'fail_closed',
-    dependencies: ['sessions', 'sharing.session'],
-    representation: 'server',
-  },
   'sessions.conversations': {
     description: 'Human conversations inside a shared Session: discussions, authored messages, mentions and private read cursors.',
     defaultFailMode: 'fail_closed',
-    dependencies: ['sessions.collaboration'],
+    dependencies: ['sessions', 'sharing.session'],
     representation: 'server',
   },
   'sessions.board': {
@@ -490,12 +484,6 @@ const FEATURE_CATALOG_DEFINITION = {
     defaultFailMode: 'fail_closed',
     dependencies: ['plugins.ui'],
     representation: 'server',
-  },
-  'plugins.ui.reactNativeBundles.devHotReload': {
-    description: 'Development hot reload for React Native plugin UI bundles.',
-    defaultFailMode: 'fail_closed',
-    dependencies: ['plugins.ui.reactNativeBundles'],
-    representation: 'client',
   },
   devices: {
     description: 'Device and simulator preview/control surfaces.',

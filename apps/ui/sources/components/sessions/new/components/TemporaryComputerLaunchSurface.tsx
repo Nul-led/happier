@@ -4,7 +4,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
-import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -85,25 +85,27 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
         : null;
     // iOS has no declarative live-region support (`accessibilityLiveRegion` is
     // Android + web only), so VoiceOver would otherwise stay silent while every
-    // declarative test passes. The imperative announcement below reuses the
-    // canonical announcer with the same transition-deduped semantics as
-    // `ExternalSessionOperationAccessibilityStatus`: it speaks once when the
-    // semantic phase changes and stays silent on refetch while unchanged.
-    // `announceForAccessibility` is the strongest announcement iOS offers;
-    // web and Android keep their declarative live-region priority (assertive
-    // for failures, polite otherwise) and never reach the imperative path.
-    const announcementTransitionKey = `${status}|${terminalCloseReason ?? ''}|${packageExportFailed ? 'export-failed' : 'export-ok'}`;
-    const lastIosAnnouncementKeyRef = React.useRef<string | null>(null);
+    // declarative test passes. iOS therefore speaks through the shared
+    // `PoliteAccessibilityStatus` (rendered below on iOS only), keyed by the
+    // semantic phase: it speaks once per phase change, stays silent on refetch,
+    // and never re-speaks the phase a reopened request mounts with (it is
+    // already on screen). Web and Android keep their declarative live-region
+    // priority (assertive for failures, polite otherwise).
+    //
+    // The composer mounts this surface only after the user presses Launch, so a
+    // mount in `preparing` IS the launch starting. The announcer mounts on an idle
+    // key and moves to the launch key right after, which makes the launch start
+    // the owner's ordinary transition instead of a silent mount state.
+    const [launchStartPending, setLaunchStartPending] = React.useState(
+        () => Platform.OS === 'ios' && status === 'preparing',
+    );
     React.useEffect(() => {
-        if (Platform.OS !== 'ios' || status === 'idle') return;
-        if (lastIosAnnouncementKeyRef.current === announcementTransitionKey) return;
-        // Recorded even when there is nothing to say, so a silent phase
-        // between two identical messages does not swallow the second one.
-        lastIosAnnouncementKeyRef.current = announcementTransitionKey;
-        announceAccessibilityMessage(
-            terminalReasonLabel ? `${statusLabel}. ${terminalReasonLabel}` : statusLabel,
-        );
-    }, [announcementTransitionKey, status, statusLabel, terminalReasonLabel]);
+        if (launchStartPending) setLaunchStartPending(false);
+    }, [launchStartPending]);
+    const announcementTransitionKey = launchStartPending
+        ? 'temporary-computer-launch:idle'
+        : `${status}|${terminalCloseReason ?? ''}|${packageExportFailed ? 'export-failed' : 'export-ok'}`;
+    const iosAnnouncement = terminalReasonLabel ? `${statusLabel}. ${terminalReasonLabel}` : statusLabel;
     if (status === 'idle') return null;
     const dependencyUnavailable = status === 'review_unavailable' || status === 'materialization_unavailable';
     // The reviewed Profile or its exact target-Account secrets stopped resolving
@@ -143,6 +145,15 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
     const showExportAction = (props.packageCustodyOnThisDevice === true || props.onExportPackage != null)
         && !terminalProjection
         && (exportEnabled || packageExporting || packageClaimed);
+    // Custody is device-local and unsynchronized, so another device of the same
+    // Account can open this synchronized draft at any point in the lifecycle. It
+    // can inspect and cancel, and nothing else — which is exactly what it has to
+    // be told. Keying this on `waiting_for_computer` alone removed the guidance
+    // at the claim transition, the one moment it is most needed.
+    const observingWithoutPackageCustody = props.packageCustodyOnThisDevice !== true
+        && props.packageAvailableOnThisDevice === false
+        && !terminalProjection
+        && status !== 'succeeded';
     // The endpoint seals its folder and host details to the creating Account.
     // Another device — or an Account whose content key has since changed — simply
     // cannot read them, and saying so is better than an empty space where the
@@ -185,6 +196,13 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
                         </Text>
                     ) : null}
                 </View>
+            ) : null}
+            {Platform.OS === 'ios' ? (
+                <PoliteAccessibilityStatus
+                    announcement={iosAnnouncement}
+                    statusTestID="temporary-computer-launch-ios-announcement"
+                    transitionKey={announcementTransitionKey}
+                />
             ) : null}
             <View
                 testID="temporary-computer-launch-progress"
@@ -273,7 +291,7 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
                         </Text>
                     ) : null}
                 </View>
-            ) : status === 'waiting_for_computer' && props.packageAvailableOnThisDevice === false ? (
+            ) : observingWithoutPackageCustody ? (
                 // No custody here means this device can neither re-export the
                 // package nor be told to prepare one. The two things it can
                 // actually do are the two the plan names, and Cancel — which is

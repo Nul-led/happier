@@ -12,7 +12,7 @@ describe('resolveToolSessionId', () => {
   afterEach(() => {
     useVoiceTargetStore.setState(previousVoiceState, true);
   });
-  it('rejects an explicit bare id shared by two Homes instead of borrowing the current Home', () => {
+  it('rejects an explicit bare id shared by two Homes instead of borrowing the current Home', async () => {
     const previous = storage.getState();
     storage.setState({
       sessions: {},
@@ -28,25 +28,25 @@ describe('resolveToolSessionId', () => {
       },
     } as never);
     try {
-      expect(resolveToolSessionAddress({ explicitSessionId: 'same', currentSessionId: 'other', currentServerId: 'home-a' })).toBeNull();
-      expect(resolveToolSessionAddress({ explicitSessionId: 'same', explicitServerId: 'home-b', currentServerId: 'home-a' }))
+      expect(await resolveToolSessionAddress({ explicitSessionId: 'same', currentSessionId: 'other', currentServerId: 'home-a' })).toBeNull();
+      expect(await resolveToolSessionAddress({ explicitSessionId: 'same', explicitServerId: 'home-b', currentServerId: 'home-a' }))
         .toEqual({ serverId: 'home-b', sessionId: 'same' });
       storage.setState((state) => ({
         sessionListRowsByServerId: { 'home-a': state.sessionListRowsByServerId['home-a'] },
         ordinarySessionListMembershipByServerId: { 'home-a': ['same'] },
         concurrentSessionListCacheByServerId: { 'home-a': state.concurrentSessionListCacheByServerId['home-a'] },
       }));
-      expect(resolveToolSessionAddress({ explicitSessionId: 'same', currentServerId: 'home-a' })).toBeNull();
+      expect(await resolveToolSessionAddress({ explicitSessionId: 'same', currentServerId: 'home-a' })).toBeNull();
     } finally {
       storage.setState(previous);
     }
   });
-  it('prefers explicit sessionId', () => {
+  it('prefers explicit sessionId', async () => {
     useVoiceTargetStore.setState({
       scope: 'global',
       primaryActionSessionAddress: { serverId: 'home', sessionId: 's_global' },
     });
-    expect(resolveToolSessionId({
+    expect(await resolveToolSessionId({
       explicitSessionId: 's_explicit',
       explicitServerId: 'home',
       currentSessionId: 's_current',
@@ -54,43 +54,43 @@ describe('resolveToolSessionId', () => {
     })).toBe('s_explicit');
   });
 
-  it('prefers currentSessionId over a stale global primaryActionSessionId when scope is global', () => {
+  it('prefers currentSessionId over a stale global primaryActionSessionId when scope is global', async () => {
     useVoiceTargetStore.setState({
       scope: 'global',
       primaryActionSessionAddress: { serverId: 'home', sessionId: 's_global' },
     });
-    expect(resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
+    expect(await resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
   });
 
-  it('falls back to currentSessionId when scope is global but no target is set', () => {
+  it('falls back to currentSessionId when scope is global but no target is set', async () => {
     useVoiceTargetStore.setState({ scope: 'global', primaryActionSessionAddress: null, lastFocusedSessionAddress: null });
-    expect(resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
+    expect(await resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
   });
 
-  it('falls back to lastFocusedSessionId when scope is global and no explicit/current target is set', () => {
+  it('falls back to lastFocusedSessionId when scope is global and no explicit/current target is set', async () => {
     useVoiceTargetStore.setState({
       scope: 'global',
       primaryActionSessionAddress: null,
       lastFocusedSessionAddress: { serverId: 'home', sessionId: 's_last' },
     });
-    expect(resolveToolSessionId({ explicitSessionId: null, currentSessionId: null })).toBe('s_last');
+    expect(await resolveToolSessionId({ explicitSessionId: null, currentSessionId: null })).toBe('s_last');
   });
 
-  it('uses currentSessionId when scope is session', () => {
+  it('uses currentSessionId when scope is session', async () => {
     useVoiceTargetStore.setState({
       scope: 'session',
       primaryActionSessionAddress: { serverId: 'home', sessionId: 's_global' },
       lastFocusedSessionAddress: { serverId: 'home', sessionId: 's_last' },
     });
-    expect(resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
+    expect(await resolveToolSessionId({ explicitSessionId: null, currentSessionId: 's_current', currentServerId: 'home' })).toBe('s_current');
   });
 
-  it('trims stored global target ids before falling back to them', () => {
+  it('trims stored global target ids before falling back to them', async () => {
     useVoiceTargetStore.setState({
       scope: 'global',
       primaryActionSessionAddress: { serverId: ' home ', sessionId: ' s_primary ' },
       lastFocusedSessionAddress: { serverId: ' home ', sessionId: ' s_last ' },
     });
-    expect(resolveToolSessionId({ explicitSessionId: null, currentSessionId: null })).toBe('s_primary');
+    expect(await resolveToolSessionId({ explicitSessionId: null, currentSessionId: null })).toBe('s_primary');
   });
 });

@@ -369,6 +369,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       return resolveProviderContributionRegistryView(
         lease.registry.contributes,
         lease.registry.generation,
+        lease.registry.readPluginOccurrenceId,
       );
     } finally {
       await lease.release();
@@ -469,6 +470,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       const registry = resolveProviderContributionRegistryView(
         lease.registry.contributes,
         lease.registry.generation,
+        lease.registry.readPluginOccurrenceId,
       );
       let dnsEvidenceByConnectionId;
       try {
@@ -770,7 +772,11 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
               resolvedConnection.connectionSecurityFingerprint,
               resolvedConnection.endpointSetFingerprint,
               String(connection.revision),
-              String(registry.runtimeRegistryGeneration ?? 'no-runtime-generation'),
+              resolvedConnection.source.kind === 'contribution'
+                ? registry.providerActivationOccurrenceIdsByPluginId?.get(
+                    resolvedConnection.source.pluginId,
+                  ) ?? 'no-provider-activation-occurrence'
+                : 'custom-provider',
               JSON.stringify(group.rows.map((row) => ({
                 descriptor: row.descriptor,
                 catalog: row.presentation.catalog,
@@ -1222,6 +1228,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
       const registry = resolveProviderContributionRegistryView(
         lease.registry.contributes,
         lease.registry.generation,
+        lease.registry.readPluginOccurrenceId,
       );
       const providerSettings = readProviderSettingsForCli(snapshot.settings).settings;
       let dnsEvidenceByEndpointUrl;

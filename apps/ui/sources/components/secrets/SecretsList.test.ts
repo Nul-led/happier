@@ -109,6 +109,8 @@ async function renderSecretsList(params?: {
     onDeleteCorruptShared?: (entry: Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }>) => void;
     onRenameShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onRotateShared?: (entry: SavedSecretCatalogEntryV1) => void;
+    onMakeSharedHomeManaged?: (entry: SavedSecretCatalogEntryV1) => void;
+    onEncryptShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onManageAccessShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onDeleteShared?: (entry: SavedSecretCatalogEntryV1) => void;
     onSharePersonal?: (secret: SavedSecret) => void;
@@ -140,6 +142,8 @@ async function renderSecretsList(params?: {
             onDeleteCorruptShared: params?.onDeleteCorruptShared,
             onRenameShared: params?.onRenameShared,
             onRotateShared: params?.onRotateShared,
+            onMakeSharedHomeManaged: params?.onMakeSharedHomeManaged,
+            onEncryptShared: params?.onEncryptShared,
             onManageAccessShared: params?.onManageAccessShared,
             onDeleteShared: params?.onDeleteShared,
             onSharePersonal: params?.onSharePersonal,
@@ -182,6 +186,31 @@ describe('SecretsList', () => {
 
         expect(actions.props.actions.map((action: { id: string }) => action.id))
             .toEqual(['rename', 'rotate', 'manageAccess', 'delete']);
+    });
+
+    it('offers the one conversion out of each row\'s current mode, and only where the screen allows it', async () => {
+        const ownedEntry = (encryptionMode: 'e2ee' | 'plain'): SavedSecretCatalogEntryV1 => ({
+            ref: `happier:shared-secret:v1:${encryptionMode}`, source: 'shared_resource', relationship: 'owner',
+            name: `${encryptionMode} key`, kind: 'apiKey', encryptionMode, owner: null, accessSources: [],
+            audience: null, ownerAccountId: 'owner-a', revision: 2, materialStatus: 'ready',
+            capabilities: { use: true, rename: false, rotate: true, manageAccess: false, delete: false },
+        });
+        const e2ee = ownedEntry('e2ee');
+        const plain = ownedEntry('plain');
+        const onMakeSharedHomeManaged = vi.fn();
+        const actionsFor = (screen: Awaited<ReturnType<typeof renderSecretsList>>['screen'], ref: string) =>
+            findTestInstanceByTypeWithProps(screen, 'ItemRowActions', { overflowTriggerTestID: `saved-secret:${ref}:more` })
+                ?.props.actions as Array<{ id: string; title: string; onPress: () => void }> | undefined;
+
+        const { screen } = await renderSecretsList({ sharedEntries: [e2ee, plain], onMakeSharedHomeManaged });
+        const e2eeActions = actionsFor(screen, e2ee.ref)!;
+        expect(e2eeActions.map((action) => [action.id, action.title]))
+            .toContainEqual(['convertMode', 'secrets.catalog.actions.convertToPlain']);
+        // No handler for the other direction, so the Plain row offers nothing.
+        expect(actionsFor(screen, plain.ref)?.map((action) => action.id) ?? []).not.toContain('convertMode');
+
+        e2eeActions.find((action) => action.id === 'convertMode')!.onPress();
+        expect(onMakeSharedHomeManaged).toHaveBeenCalledWith(e2ee);
     });
 
     it('states who shared a recipient row and which access carries it', async () => {
@@ -395,5 +424,55 @@ describe('SecretsList', () => {
         await pressTestInstanceAsync(noneItem, 'secrets.none row');
 
         expect(onSelectId).toHaveBeenCalledWith('');
+    });
+
+    it('keeps a selected shared secret visible, unavailable and repairable after the Home stops authorizing it', async () => {
+        const {
+            applySavedSecretCatalogPage,
+            resetSavedSecretCatalogSnapshotsForTests,
+            resolveSavedSecretReference,
+        } = await import('@/sync/store/settings/savedSecretCatalogSnapshot');
+        resetSavedSecretCatalogSnapshotsForTests();
+        const scope = { serverId: 'home-a', accountId: 'account-a' };
+        const ref = 'happier:shared-secret:v1:revoked-a';
+        const entry = {
+            ref, source: 'shared_resource', relationship: 'recipient',
+            name: 'Team key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 3, materialStatus: 'ready',
+            capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+            accessSources: [], encryptionMode: 'plain',
+        } as unknown as SavedSecretCatalogEntryV1;
+        // The real catalog owner: first authorized, then the Home's next
+        // authorized answer omits the row after the last grant was removed.
+        applySavedSecretCatalogPage({ scope, entries: [entry], observedAt: 1 });
+        applySavedSecretCatalogPage({ scope, entries: [], observedAt: 2 });
+        const onSelectId = vi.fn<(id: string) => void>();
+
+        const screen = await renderScreen(React.createElement(SecretsList, {
+            secrets: [],
+            sharedEntries: [],
+            includeNoneRow: true,
+            selectedId: ref,
+            onSelectId,
+            resolveSharedReference: (candidate: string) => resolveSavedSecretReference(scope, [], candidate),
+        }));
+
+        // The row component itself (a non-pressable row's host view carries
+        // only the testID).
+        const row = screen.findAllByTestId(`saved-secret:${ref}`)[0];
+        expect(row).toBeTruthy();
+        expect(row?.props.selected).toBe(true);
+        // It says why it cannot be used and cannot be chosen again.
+        expect(row?.props.subtitle).toContain('secrets.catalog.status.access_removed');
+        expect(row?.props.onPress).toBeUndefined();
+        // The list does not claim the account has no secrets while a
+        // configured one is still selected.
+        expect(screen.findByTestId('saved-secret:empty')).toBeFalsy();
+        // Choosing None repairs the binding.
+        await pressTestInstanceAsync(
+            findTestInstanceByTypeContainingText(screen, 'Pressable', 'secrets.noneTitle'),
+            'none row',
+        );
+        expect(onSelectId).toHaveBeenCalledWith('');
+        resetSavedSecretCatalogSnapshotsForTests();
     });
 });

@@ -54,6 +54,7 @@ export {
   isFreshAwarenessTimestampV1,
   isLiveSessionRuntimeV1,
   normalizeAwarenessSequenceV1,
+  resolveAwarenessCurrentnessV1,
   projectSessionAwarenessRuntimeV1,
   resolveSessionAwarenessLifecycleV1,
   type ProjectSessionAwarenessRuntimeV1Input,

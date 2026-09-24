@@ -21,6 +21,10 @@ import {
   replayRememberedEngineSelectionReplacementIntent,
 } from '../domains/settings/sessionAuthoringSelectionPersistence';
 import { removeAiLaunchProfileFromAccountSettings } from '../domains/profiles/aiLaunchProfileCollection';
+import {
+  applySessionReminderPresetIntentToAccountSettings,
+  type SessionReminderPresetIntent,
+} from '../domains/session/organization/sessionReminderPreset';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import { getStorage } from '@/sync/domains/state/storageStore';
@@ -76,6 +80,20 @@ export function useApplySettings(): (delta: SettingsWriteDelta) => void {
       source: 'ui' satisfies SettingsAnalyticsSource,
     });
   }, [expectedSettingsScope]);
+}
+
+/**
+ * Reminder-preset edits apply as an intent through the existing one-shot Account-settings write, so
+ * the list the user ends up with is the current one plus their change — never a whole array
+ * captured before a modal and a network round trip.
+ */
+export function useApplySessionReminderPresetIntent(): (intent: SessionReminderPresetIntent) => Promise<void> {
+  const settingsSnapshot = useAccountSettingsMutationSnapshot();
+  return React.useCallback(async (intent: SessionReminderPresetIntent) => {
+    await persistAccountSettingsOnce(settingsSnapshot.scope, requireSettingsVersion(settingsSnapshot.version), (raw) => (
+      applySessionReminderPresetIntentToAccountSettings(raw, intent)
+    ));
+  }, [settingsSnapshot]);
 }
 
 export function useApplyProfileSave(): (input: Readonly<{

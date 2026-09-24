@@ -7,7 +7,8 @@ import { auth } from "@/app/auth/auth";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { SessionHumanPresenceSnapshotV1Schema, type SessionHumanPresenceSnapshotV1 } from "@happier-dev/protocol/sessions";
-import { afterTx, inTx } from "@/storage/inTx";
+import { inTx } from "@/storage/inTx";
+import { deleteSessionAccessGrantInTx, putSessionAccessGrantInTx } from "@/app/session/access/sessionAccessGrantService";
 import { notifySessionHumanPresenceAccessChanged } from "./sessionHumanPresenceService";
 
 const visibleEvent = "session-human-presence:visible-replace";
@@ -16,6 +17,7 @@ const snapshotEvent = "session-human-presence:snapshot";
 // Staying below it keeps this a meaningful bound while absorbing the first cold
 // Prisma/SQLite access query, which a 1s budget could not.
 const ACK_TIMEOUT_MS = 5_000;
+const ownerAuthentication = () => ({ env: process.env, authority: "present_user" as const, authenticationEvidence: [] });
 
 function deferred<T = void>(): Readonly<{
     promise: Promise<T>;
@@ -94,7 +96,6 @@ describe("authenticated human presence over real memory-adapter sockets", () => 
     let harness: LightSqliteHarness;
     beforeAll(async () => {
         harness = await createLightSqliteHarness({ tempDirPrefix: "happier-human-presence-", initAuth: true, initEncrypt: true,
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1" },
         });
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
@@ -192,14 +193,18 @@ describe("authenticated human presence over real memory-adapter sockets", () => 
                 titleContent: { t: "plain", v: { v: 1, title } },
                 lastMessageAt: new Date(),
             } })));
-        const shares = await Promise.all([sessionViewer, discussionAViewer, discussionBViewer, everywhereViewer].map(account =>
-            db.sessionShare.create({ data: {
+        // Access is granted and later revoked through the real grant owner, whose
+        // committed transition is the production publisher of the presence recheck.
+        for (const account of [sessionViewer, discussionAViewer, discussionBViewer, everywhereViewer]) {
+            await db.userRelationship.create({ data: { fromUserId: owner.id, toUserId: account.id, status: "friend" } });
+            expect(await inTx(tx => putSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
                 sessionId: session.id,
-                sharedByUserId: owner.id,
-                sharedWithUserId: account.id,
-                accessLevel: "edit",
-            } })));
-        const everywhereShare = shares.at(-1)!;
+                subject: { kind: "account", accountId: account.id },
+                grant: { accessLevel: "edit", canApprovePermissions: false },
+                authentication: ownerAuthentication(),
+            }))).toMatchObject({ ok: true, changed: true });
+        }
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
         await app.listen({ port: 0, host: "127.0.0.1" });
@@ -313,10 +318,12 @@ describe("authenticated human presence over real memory-adapter sockets", () => 
             await expectLocation(observerSocket, [owner.id, discussionAViewer.id, everywhereViewer.id], discussionA.id);
             await expectLocation(observerSocket, [owner.id, discussionBViewer.id, everywhereViewer.id], discussionB.id);
 
-            await inTx(async tx => {
-                await tx.sessionShare.delete({ where: { id: everywhereShare.id } });
-                afterTx(tx, () => notifySessionHumanPresenceAccessChanged({ sessionId: session.id }));
-            });
+            expect(await inTx(tx => deleteSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
+                sessionId: session.id,
+                subject: { kind: "account", accountId: everywhereViewer.id },
+                authentication: ownerAuthentication(),
+            }))).toMatchObject({ ok: true, changed: true });
             await expectLocation(observerSocket, [owner.id]);
             await expectLocation(observerSocket, [owner.id, discussionAViewer.id], discussionA.id);
             await expectLocation(observerSocket, [owner.id, discussionBViewer.id], discussionB.id);
@@ -441,12 +448,18 @@ describe("authenticated human presence over real memory-adapter sockets", () => 
             titleContent: { t: "plain", v: { v: 1, title: "Presence" } },
             lastMessageAt: new Date(),
         } });
-        const editorShare = await db.sessionShare.create({ data: {
-            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: editor.id, accessLevel: "edit",
-        } });
-        await db.sessionShare.create({ data: {
-            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: viewer.id, accessLevel: "view",
-        } });
+        const putDirect = (accountId: string, accessLevel: "view" | "edit") => inTx(tx => putSessionAccessGrantInTx(tx, {
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            subject: { kind: "account", accountId },
+            grant: { accessLevel, canApprovePermissions: false },
+            authentication: ownerAuthentication(),
+        }));
+        for (const account of [editor, viewer]) {
+            await db.userRelationship.create({ data: { fromUserId: owner.id, toUserId: account.id, status: "friend" } });
+        }
+        expect(await putDirect(editor.id, "edit")).toMatchObject({ ok: true, changed: true });
+        expect(await putDirect(viewer.id, "view")).toMatchObject({ ok: true, changed: true });
         const team = await db.team.create({ data: { name: crypto.randomUUID() } });
         const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: guest.id, role: "guest" } });
         const group = await db.teamGroup.create({ data: { teamId: team.id, name: "Guests", nameKey: "guests" } });
@@ -534,26 +547,34 @@ describe("authenticated human presence over real memory-adapter sockets", () => 
                 v: 1, sessionId: session.id, discussionId: discussion.id, typing: true,
             });
             await expect.poll(() => lastDiscussion()?.viewers.find(value => value.account.accountId === editor.id)?.typing).toBe(true);
-            await inTx(async tx => {
-                await tx.sessionShare.update({ where: { id: editorShare.id }, data: { accessLevel: "view" } });
-                afterTx(tx, () => notifySessionHumanPresenceAccessChanged({ sessionId: session.id }));
-            });
+            // Presence itself writes no read state, Follow or AccountChange; the
+            // grant transitions below legitimately do, so the invariant is checked
+            // around each presence-only phase.
+            expect(await db.accountSessionReadState.count()).toBe(beforeReadStates);
+            expect(await db.accountSessionFollow.count()).toBe(beforeFollows);
+            expect(await db.accountChange.count()).toBe(beforeChanges);
+            expect(await putDirect(editor.id, "view")).toMatchObject({ ok: true, changed: true });
             await expect.poll(() => lastDiscussion()?.viewers.find(value => value.account.accountId === editor.id)?.typing).toBe(false);
             expect(last()?.viewers.some(value => value.account.accountId === editor.id)).toBe(true);
-            await inTx(async tx => {
-                await tx.sessionShare.delete({ where: { id: editorShare.id } });
-                afterTx(tx, () => notifySessionHumanPresenceAccessChanged({ sessionId: session.id }));
-            });
+            expect(await inTx(tx => deleteSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
+                sessionId: session.id,
+                subject: { kind: "account", accountId: editor.id },
+                authentication: ownerAuthentication(),
+            }))).toMatchObject({ ok: true, changed: true });
             await expect.poll(() => last()?.viewers.some(value => value.account.accountId === editor.id)).toBe(false);
             await expect.poll(() => lastDiscussion()?.viewers.some(value => value.account.accountId === editor.id)).toBe(false);
+            const afterRevocationReadStates = await db.accountSessionReadState.count();
+            const afterRevocationFollows = await db.accountSessionFollow.count();
+            const afterRevocationChanges = await db.accountChange.count();
             expect(await declare(editorSocket, [session.id], [{ sessionId: session.id, discussionId: discussion.id }]))
                 .toEqual({ v: 1, ok: true, admittedSessionIds: [], admittedLocations: [] });
             expect(await declare(guestSocket, [])).toEqual({ v: 1, ok: true, admittedSessionIds: [] });
             secondGuestSocket.close();
             await expect.poll(() => last()?.viewers.some(value => value.account.accountId === guest.id)).toBe(false);
-            expect(await db.accountSessionReadState.count()).toBe(beforeReadStates);
-            expect(await db.accountSessionFollow.count()).toBe(beforeFollows);
-            expect(await db.accountChange.count()).toBe(beforeChanges);
+            expect(await db.accountSessionReadState.count()).toBe(afterRevocationReadStates);
+            expect(await db.accountSessionFollow.count()).toBe(afterRevocationFollows);
+            expect(await db.accountChange.count()).toBe(afterRevocationChanges);
         } finally {
             clients.forEach(client => client.close());
             await app.close();

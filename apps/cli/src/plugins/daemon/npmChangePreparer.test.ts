@@ -11,7 +11,7 @@ import {
   type MarketplaceIndexSourceSnapshotV1,
 } from '@happier-dev/protocol';
 
-import type { NpmRegistryHttpsClient } from '@/plugins/distribution/npm/httpsClient';
+import { NpmRegistryHttpError, type NpmRegistryHttpsClient } from '@/plugins/distribution/npm/httpsClient';
 import { createTestNpmTarball, sriSha512 } from '@/plugins/distribution/testkit/npmTarball';
 import {
   createPluginRegistryStateStore,
@@ -155,7 +155,7 @@ async function createNpmPackageFixture(params: Readonly<{
         dist: {
           integrity,
           tarball: params.tarballUrl
-            ?? `https://registry.example.test/${encodeURIComponent(packageName)}/-/candidate-${version}.tgz`,
+            ?? `https://registry.npmjs.org/${encodeURIComponent(packageName)}/-/candidate-${version}.tgz`,
         },
       },
     },
@@ -226,7 +226,7 @@ function curatedListing(
     pluginId: 'acme.npm-candidate',
     publisher: { id: 'acme', displayName: 'Acme' },
     packageName: fixture.packageName,
-    registryOrigin: 'https://registry.example.test',
+    registryOrigin: 'https://registry.npmjs.org',
     ...(source.registryProfileId ? { registryProfileId: source.registryProfileId } : {}),
     version: fixture.version,
     integrity: fixture.integrity,
@@ -278,7 +278,7 @@ function exactMarketplaceIndexSourceSnapshot(params: Readonly<{
       distribution: {
         kind: 'npm',
         packageName: params.fixture.packageName,
-        registryOrigin: params.listingOverrides?.registryOrigin ?? 'https://registry.example.test',
+        registryOrigin: params.listingOverrides?.registryOrigin ?? 'https://registry.npmjs.org',
         version: params.fixture.version,
         integrity: params.fixture.integrity,
         ...(registryProfileId ? { registryProfileId } : {}),
@@ -417,7 +417,7 @@ async function installReviewedCuratedCandidate(params: Readonly<{
     kind: 'installNpm',
     packageName: params.fixture.packageName,
     selector: params.fixture.version,
-    registryOrigin: 'https://registry.example.test',
+    registryOrigin: 'https://registry.npmjs.org',
     expectedMarketplaceListing: curatedListing(
       params.fixture,
       params.source,
@@ -441,7 +441,7 @@ async function requestCuratedUpdate(params: Readonly<{
     integrity: string;
     manifestDigest: string;
   }>;
-  source: Readonly<{ id: string; sourceUrl: string }>;
+  source: Readonly<{ id: string; sourceUrl: string; registryProfileId?: string | null }>;
   listingOverrides?: Partial<ExpectedMarketplaceListingV1>;
   registryOrigin?: string;
 }>) {
@@ -449,7 +449,8 @@ async function requestCuratedUpdate(params: Readonly<{
     kind: 'installNpm',
     packageName: params.fixture.packageName,
     selector: params.fixture.version,
-    registryOrigin: params.registryOrigin ?? 'https://registry.example.test',
+    registryOrigin: params.registryOrigin ?? 'https://registry.npmjs.org',
+    ...(params.source.registryProfileId ? { registryProfileId: params.source.registryProfileId } : {}),
     expectedMarketplaceListing: curatedListing(
       params.fixture,
       params.source,
@@ -481,7 +482,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const begun = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected npm installation review');
     await expect(service.decidePluginChange({
@@ -497,7 +498,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     roots.push(happyHomeDir);
     const fixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'never'),
-      tarballUrl: 'https://registry.example.test/@acme/npm-candidate/-/candidate-1.2.3.tgz?token=private-registry-secret',
+      tarballUrl: 'https://registry.npmjs.org/@acme/npm-candidate/-/candidate-1.2.3.tgz?token=private-registry-secret',
     });
     const service = createDaemonPluginChangeService({
       prepare: createDaemonNpmPluginChangePreparer({
@@ -512,7 +513,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const result = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -560,7 +561,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         kind: 'installNpm',
         packageName: fixture.packageName,
         selector: fixture.version,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         expectedMarketplaceListing: {
           source: {
             id: COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
@@ -570,7 +571,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           pluginId: 'acme.npm-candidate',
           publisher: { id: 'acme', displayName: 'Acme' },
           packageName: fixture.packageName,
-          registryOrigin: 'https://registry.example.test',
+          registryOrigin: 'https://registry.npmjs.org',
           version: fixture.version,
           integrity: fixture.integrity,
           manifestDigest: fixture.manifestDigest,
@@ -631,7 +632,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       expectedMarketplaceListing: {
         source: {
           id: marketplaceSource.id,
@@ -641,7 +642,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         version: fixture.version,
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
@@ -659,7 +660,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         updateChannel: {
           kind: 'npm',
           packageName: fixture.packageName,
-          registryOrigin: 'https://registry.example.test',
+          registryOrigin: 'https://registry.npmjs.org',
           marketplaceSource: {
             id: marketplaceSource.id,
             kind: 'curated',
@@ -696,7 +697,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         trust: {
           distribution: {
             kind: 'npm',
-            registryOrigin: 'https://registry.example.test',
+            registryOrigin: 'https://registry.npmjs.org',
             packageName: fixture.packageName,
           },
         },
@@ -935,7 +936,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: compatibleFixture.packageName,
       selector: 'latest',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -954,7 +955,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     expect(bodyRequests).toEqual([
-      `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
+      `https://registry.npmjs.org/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
     if (result.kind === 'reviewRequired') {
       await expect(service.decidePluginChange({
@@ -1022,7 +1023,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: compatibleFixture.packageName,
       selector: 'latest',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -1041,7 +1042,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     expect(bodyRequests).toEqual([
-      `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
+      `https://registry.npmjs.org/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
     if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     expect(PluginInstallationReviewSchema.safeParse(result.review).success).toBe(true);
@@ -1109,7 +1110,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: compatibleFixture.packageName,
       selector: 'latest',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -1128,7 +1129,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     expect(bodyRequests).toEqual([
-      `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
+      `https://registry.npmjs.org/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
     if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     const diagnostic = result.review.compatibility.blockedNewerVersions?.[0]?.diagnostics[0];
@@ -1214,7 +1215,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: compatibleFixture.packageName,
       selector: 'latest',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -1233,7 +1234,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     expect(bodyRequests).toEqual([
-      `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
+      `https://registry.npmjs.org/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
     if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     const diagnostic = result.review.compatibility.blockedNewerVersions?.[0]?.diagnostics[0];
@@ -1269,7 +1270,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: 'latest',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(result).toMatchObject({
@@ -1341,7 +1342,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(updateService.requestPluginChange({
       kind: 'installNpm',
       packageName: updateFixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     })).resolves.toMatchObject({
       kind: 'committed',
       pluginId: 'acme.npm-candidate',
@@ -1405,7 +1406,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(updateService.requestPluginChange({
       kind: 'installNpm',
       packageName: updateFixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     })).resolves.toMatchObject({
       kind: 'failed',
       code: 'plugin_change_preparation_failed',
@@ -1434,7 +1435,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     expect(exact.requiresReview).toBe(true);
     expect(getBody).toHaveBeenCalledOnce();
@@ -1446,7 +1447,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         kind: 'installNpm',
         packageName: fixture.packageName,
         ...(selector === undefined ? {} : { selector }),
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
       })).rejects.toThrow(/compatible generated compatibility projection/i);
       expect(getBody).not.toHaveBeenCalled();
     }
@@ -1484,7 +1485,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     })).rejects.toThrow(/compatibility projection.*staged/i);
   });
 
@@ -1806,19 +1807,40 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
     await installReviewedCuratedCandidate({ service, fixture: initialFixture, source: marketplaceSource });
 
+    // A listing moved to another, private registry is reachable only once this
+    // Home binds a signed-in profile for that registry to the source.
+    const otherRegistryProfiles = createNpmRegistryProfileService({
+      happyHomeDir,
+      probe: async () => ({ status: 'available' }),
+    });
+    await otherRegistryProfiles.mutate({
+      action: 'add', machineId: 'machine-1', expectedRevision: 0, mutationId: 'mutation-add-other-registry',
+      profileId: 'registry_other',
+      profile: {
+        displayName: 'Other', origin: 'https://other-registry.example.test', scopes: ['@acme'],
+        useAsDefault: false, allowPrivateNetwork: false,
+      },
+    });
+    await otherRegistryProfiles.mutate({
+      action: 'test', machineId: 'machine-1', expectedRevision: 1, mutationId: 'mutation-test-other-registry',
+      profileId: 'registry_other',
+    });
+    const reboundSource = await createMarketplaceSourceRegistryStore({ happyHomeDir })
+      .upsertSource({ sourceUrl: marketplaceSource.sourceUrl, registryProfileId: 'registry_other' });
     activeClient = channelFixture.client;
     activeMarketplaceFixture = channelFixture;
     activeMarketplaceListingOverrides = { registryOrigin: 'https://other-registry.example.test' };
     const channelResult = await requestCuratedUpdate({
       service,
       fixture: channelFixture,
-      source: marketplaceSource,
+      source: reboundSource,
       registryOrigin: 'https://other-registry.example.test',
       listingOverrides: { registryOrigin: 'https://other-registry.example.test' },
     });
     expect(channelResult).toMatchObject({ kind: 'reviewRequired' });
     if (channelResult.kind !== 'reviewRequired') throw new Error('Expected channel-substitution review');
     await service.decidePluginChange({ pendingChangeId: channelResult.pendingChangeId, decision: 'cancel' });
+    await createMarketplaceSourceRegistryStore({ happyHomeDir }).setSourceRegistryProfile(marketplaceSource.id, null);
 
     activeClient = publisherFixture.client;
     activeMarketplaceFixture = publisherFixture;
@@ -2020,7 +2042,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       expectedMarketplaceListing: {
         source: {
           id: marketplaceSource.id,
@@ -2030,7 +2052,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         version: fixture.version,
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
@@ -2078,13 +2100,13 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       expectedMarketplaceListing: {
         source: { id: marketplaceSource.id, kind: 'curated', sourceUrl: marketplaceSource.sourceUrl },
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         version: fixture.version,
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
@@ -2120,7 +2142,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       expectedMarketplaceListing: {
         source: {
           id: 'marketplace:missing-curated-source',
@@ -2130,7 +2152,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         version: fixture.version,
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
@@ -2156,7 +2178,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       action: 'add', machineId: 'machine-1', expectedRevision: 0, mutationId: 'mutation-add-private',
       profileId: 'registry_private',
       profile: {
-        displayName: 'Private', origin: 'https://registry.example.test', scopes: ['@acme'],
+        displayName: 'Private', origin: 'https://registry.npmjs.org', scopes: ['@acme'],
         useAsDefault: false, allowPrivateNetwork: false,
       },
     });
@@ -2193,14 +2215,14 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       registryProfileId: 'registry_private',
       expectedMarketplaceListing: {
         source: { id: marketplaceSource.id, kind: 'curated', sourceUrl: marketplaceSource.sourceUrl },
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         registryProfileId: 'registry_private',
         version: fixture.version,
         integrity: fixture.integrity,
@@ -2222,7 +2244,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(prepared.review.updateChannel).toEqual({
       kind: 'npm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       registryProfileId: 'registry_private',
       marketplaceSource: {
         id: marketplaceSource.id,
@@ -2237,7 +2259,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(createClient).toHaveBeenCalledOnce();
     expect(installedBeforeLogout.plugins['acme.npm-candidate']?.install.trust?.distribution).toEqual({
       kind: 'npm',
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       registryProfileId: 'registry_private',
       packageName: fixture.packageName,
     });
@@ -2251,9 +2273,113 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       action: 'logout', machineId: 'machine-1', expectedRevision: 3, mutationId: 'mutation-logout-private',
       profileId: 'registry_private',
     });
-    await expect(prepare(request)).rejects.toMatchObject({ code: 'authentication_required' });
+    // A signed-out bound profile is a registry selection the user still owes,
+    // named exactly, and nothing reaches the registry.
+    await expect(prepare(request)).rejects.toMatchObject({
+      requirement: {
+        registryOrigin: 'https://registry.npmjs.org',
+        packageName: fixture.packageName,
+        registryProfileId: 'registry_private',
+      },
+    });
     expect(createClient).toHaveBeenCalledOnce();
     await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toEqual(installedBeforeLogout);
+  });
+
+  it('names the private registry a marketplace source still needs a profile for, before contacting it', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-unbound-private-npm-change-home-'));
+    roots.push(happyHomeDir);
+    const fixture = await createNpmPackageFixture({ markerPath: join(happyHomeDir, 'never') });
+    const createClient = vi.fn(() => fixture.client);
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonNpmPluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle: { prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }) },
+        createClient,
+      }),
+    });
+    const sourceStore = createMarketplaceSourceRegistryStore({ happyHomeDir });
+    const userSource = await sourceStore.upsertSource({ sourceUrl: 'https://catalog.acme.example.test/index.json', origin: 'user' });
+    const request = {
+      kind: 'installNpm',
+      packageName: fixture.packageName,
+      selector: fixture.version,
+      registryOrigin: 'https://npm.acme.example.test',
+      expectedMarketplaceListing: {
+        source: { id: userSource.id, kind: 'user', sourceUrl: userSource.sourceUrl },
+        pluginId: 'acme.npm-candidate',
+        publisher: { id: 'acme', displayName: 'Acme' },
+        packageName: fixture.packageName,
+        registryOrigin: 'https://npm.acme.example.test',
+        version: fixture.version,
+        integrity: fixture.integrity,
+        manifestDigest: fixture.manifestDigest,
+        review: { status: 'unreviewed', reviewedAt: null },
+        updatePolicy: 'allowed',
+      },
+    } as const;
+
+    await expect(service.requestPluginChange(request)).resolves.toEqual({
+      kind: 'registryProfileRequired',
+      registryOrigin: 'https://npm.acme.example.test',
+      packageName: fixture.packageName,
+      registryProfileId: null,
+    });
+
+    // An existing profile for that registry on this Home is named as the one
+    // to select; it is still not used until the source is bound to it.
+    await createNpmRegistryProfileService({ happyHomeDir }).mutate({
+      action: 'add', machineId: 'machine-1', expectedRevision: 0, mutationId: 'mutation-add-unbound-private',
+      profileId: 'registry_acme',
+      profile: {
+        displayName: 'Acme', origin: 'https://npm.acme.example.test', scopes: ['@acme'],
+        useAsDefault: false, allowPrivateNetwork: false,
+      },
+    });
+    await expect(service.requestPluginChange(request)).resolves.toEqual({
+      kind: 'registryProfileRequired',
+      registryOrigin: 'https://npm.acme.example.test',
+      packageName: fixture.packageName,
+      registryProfileId: 'registry_acme',
+    });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(await candidateRoots(happyHomeDir)).toEqual([]);
+  });
+
+  it('asks for a registry profile when a registry refuses an anonymous direct npm request', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-anonymous-refused-npm-change-home-'));
+    roots.push(happyHomeDir);
+    const fixture = await createNpmPackageFixture({ markerPath: join(happyHomeDir, 'never') });
+    const refusing: NpmRegistryHttpsClient = {
+      ...fixture.client,
+      getJson: async () => { throw new NpmRegistryHttpError(401); },
+      getBody: async () => { throw new NpmRegistryHttpError(401); },
+    };
+    const createClient = vi.fn((options: Readonly<{ authorizationHeader?: string }>) => {
+      expect(options.authorizationHeader).toBeUndefined();
+      return refusing;
+    });
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonNpmPluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle: { prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }) },
+        createClient,
+      }),
+    });
+
+    await expect(service.requestPluginChange({
+      kind: 'installNpm',
+      packageName: fixture.packageName,
+      selector: fixture.version,
+      registryOrigin: 'https://npm.acme.example.test',
+    })).resolves.toEqual({
+      kind: 'registryProfileRequired',
+      registryOrigin: 'https://npm.acme.example.test',
+      packageName: fixture.packageName,
+      registryProfileId: null,
+    });
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(await candidateRoots(happyHomeDir)).toEqual([]);
   });
 
   it('binds an implicitly resolved registry profile and rejects approval after that profile mapping rebounds', async () => {
@@ -2272,7 +2398,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       profileId: 'registry_private_a',
       profile: {
         displayName: 'Private A',
-        origin: 'https://registry.example.test',
+        origin: 'https://registry.npmjs.org',
         scopes: ['@acme'],
         useAsDefault: false,
         allowPrivateNetwork: false,
@@ -2320,7 +2446,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       profileId: 'registry_private_b',
       profile: {
         displayName: 'Private B',
-        origin: 'https://registry.example.test',
+        origin: 'https://registry.npmjs.org',
         scopes: ['@acme'],
         useAsDefault: false,
         allowPrivateNetwork: false,
@@ -2364,7 +2490,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       kind: 'installNpm',
       packageName: fixture.packageName,
       selector: fixture.version,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
       expectedMarketplaceListing: {
         source: {
           id: marketplaceSource.id,
@@ -2374,7 +2500,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         pluginId: 'acme.npm-candidate',
         publisher: { id: 'acme', displayName: 'Acme' },
         packageName: fixture.packageName,
-        registryOrigin: 'https://registry.example.test',
+        registryOrigin: 'https://registry.npmjs.org',
         version: fixture.version,
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
@@ -2415,7 +2541,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const begun = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
 
     expect(begun).toEqual(expect.objectContaining({
@@ -2446,7 +2572,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(committed.appliedGeneration).toBe(committed.desiredGeneration);
 
     expect(createClient).toHaveBeenCalledWith(expect.objectContaining({
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     }));
     expect(prepareRuntime).toHaveBeenCalledTimes(1);
     expect(adopt).toHaveBeenCalledTimes(1);
@@ -2466,7 +2592,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         trust: {
           distribution: {
             kind: 'npm',
-            registryOrigin: 'https://registry.example.test',
+            registryOrigin: 'https://registry.npmjs.org',
             packageName: fixture.packageName,
           },
         },
@@ -2500,7 +2626,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const begun = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected npm installation review');
 
@@ -2530,7 +2656,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const begun = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected npm installation review');
     const rootsBeforeDecision = await candidateRoots(happyHomeDir);
@@ -2568,7 +2694,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const initial = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     if (initial.kind !== 'reviewRequired') throw new Error('Expected initial npm review');
     await service.decidePluginChange({
@@ -2579,7 +2705,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const prepared = await prepare({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     const takeoverStore = createPluginRegistryStateStore({ happyHomeDir, runtimeLifecycle });
     await takeoverStore.update((state) => ({
@@ -2616,7 +2742,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(prepare({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     })).rejects.toThrow(/package_identity_mismatch/);
 
     expect(prepareRuntime).not.toHaveBeenCalled();
@@ -2639,7 +2765,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const begun = await service.requestPluginChange({
       kind: 'installNpm',
       packageName: fixture.packageName,
-      registryOrigin: 'https://registry.example.test',
+      registryOrigin: 'https://registry.npmjs.org',
     });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected npm installation review');
     expect(await candidateRoots(happyHomeDir)).toHaveLength(1);

@@ -4,6 +4,8 @@ import {
   QualifiedConnectedAccountProfileV4Schema,
 } from '@happier-dev/protocol';
 
+import { TeamCredentialResourceCatalogEntryV1Schema } from '@happier-dev/protocol/teams';
+
 import { t } from '@/text';
 
 import {
@@ -259,5 +261,116 @@ describe('buildConnectedAccountPurposeTargetChoices', () => {
     expect(groupChoice?.id).toContain(opaqueGroup.ref.groupId);
     expect(resolveConnectedAccountPurposeTargetDisplay(accountDisplayInput)).toBe('Personal OpenAI');
     expect(resolveConnectedAccountPurposeTargetDisplay(groupDisplayInput)).toBe('Acme Gateway');
+  });
+
+  describe('Team resource targets from the entitled catalog', () => {
+    const disclosedMember = { service, accountId: 'source-member' };
+    const catalogEntry = (overrides: Readonly<Record<string, unknown>> = {}) => (
+      TeamCredentialResourceCatalogEntryV1Schema.parse({
+        id: 'resource-pool',
+        teamId: 'team-acme',
+        displayName: 'Acme shared pool',
+        resourceRevision: 3,
+        readiness: { kind: 'available' },
+        recoveryAction: null,
+        mayBroker: true,
+        mayReceiveDirect: true,
+        directMaterialState: 'current',
+        sessionUsePolicy: 'personal_allowed',
+        providerModels: [],
+        connectedServiceSelections: [
+          { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'brokered' },
+          { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'direct', disclosedMember },
+        ],
+        sourcePresentation: { kind: 'connected_service', service },
+        ...overrides,
+      })
+    );
+    const otherServiceEntry = TeamCredentialResourceCatalogEntryV1Schema.parse({
+      id: 'resource-other',
+      teamId: 'team-acme',
+      displayName: 'Other service',
+      resourceRevision: 1,
+      readiness: { kind: 'available' },
+      recoveryAction: null,
+      mayBroker: true,
+      mayReceiveDirect: false,
+      directMaterialState: 'never_delivered',
+      sessionUsePolicy: 'personal_allowed',
+      providerModels: [],
+      connectedServiceSelections: [
+        { source: 'team_resource', resourceId: 'resource-other', deliveryMode: 'brokered' },
+      ],
+      sourcePresentation: {
+        kind: 'connected_service',
+        service: { pluginId: 'acme.other', localId: 'other' },
+      },
+    });
+    const build = (input: Readonly<{
+      teamResources: readonly ReturnType<typeof catalogEntry>[];
+      selectedTeamResource?: Parameters<typeof buildConnectedAccountPurposeTargetChoices>[0]['selectedTeamResource'];
+    }>) => buildConnectedAccountPurposeTargetChoices({
+      declaration: { purpose: 'request-auth', service, required: true },
+      selectedTarget: null,
+      selectedTeamResource: input.selectedTeamResource ?? null,
+      accounts: [connectedAccount],
+      groups: [],
+      labelsByKey: {},
+      serviceTitle: 'Acme Gateway',
+      resolveAuthentication,
+      teamResources: input.teamResources,
+      teamNameById: { 'team-acme': 'Acme' },
+    });
+
+    it('offers each exact Team selection for the declared service without copying source accounts', () => {
+      const choices = build({ teamResources: [catalogEntry(), otherServiceEntry] });
+      const teamChoices = choices.filter((choice) => choice.kind === 'team_resource');
+
+      // A Team choice is the canonical Team selection of its Team, never a
+      // purpose target (lane 10 child 02 :271, child 06 :506).
+      expect(teamChoices.map((choice) => choice.target)).toEqual([null, null]);
+      expect(teamChoices.map((choice) => choice.teamResource)).toEqual([
+        {
+          teamId: 'team-acme',
+          selection: { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'brokered' },
+        },
+        {
+          teamId: 'team-acme',
+          selection: { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'direct', disclosedMember },
+        },
+      ]);
+      expect(teamChoices.every((choice) => choice.selectable)).toBe(true);
+      expect(teamChoices[0]?.presentation).toEqual(expect.objectContaining({
+        primaryLabel: 'Acme shared pool',
+        secondaryLabel: expect.stringContaining('Acme'),
+      }));
+      // The recipient's own inventory is unchanged: no source member became an account choice.
+      expect(choices.filter((choice) => choice.kind === 'account').map((choice) => choice.target))
+        .toEqual([{ kind: 'account', account: connectedAccount.ref }]);
+    });
+
+    it('keeps an unready Team resource visible but not selectable', () => {
+      const choices = build({ teamResources: [catalogEntry({ readiness: { kind: 'source_unavailable' } })] });
+      const teamChoices = choices.filter((choice) => choice.kind === 'team_resource');
+
+      expect(teamChoices).toHaveLength(2);
+      expect(teamChoices.every((choice) => !choice.selectable)).toBe(true);
+    });
+
+    it('retains a withdrawn selected Team resource as an unavailable selection with no personal fallback', () => {
+      const selectedTeamResource = {
+        teamId: 'team-acme',
+        selection: { source: 'team_resource' as const, resourceId: 'resource-pool', deliveryMode: 'direct' as const, disclosedMember },
+      };
+      const choices = build({ teamResources: [], selectedTeamResource });
+      const current = choices.filter((choice) => choice.current);
+
+      expect(current).toEqual([expect.objectContaining({
+        target: null,
+        teamResource: selectedTeamResource,
+        kind: 'unavailable',
+        selectable: false,
+      })]);
+    });
   });
 });

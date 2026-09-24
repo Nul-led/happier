@@ -14,12 +14,9 @@ import {
     SessionDraftReadRequestV1Schema,
     SessionDraftReadRequestV2Schema,
     SessionDraftReadResponseV2Schema,
-    SessionDraftStoredContentEnvelopeV1Schema,
     isSessionDraftAddressV1,
     isSessionDraftContentV1,
-    restoreSupportedPredecessorNewSessionDraftPayloadV2,
     type SessionDraftAddressV2,
-    type SupportedPredecessorNewSessionDraftContentV1,
 } from '@happier-dev/protocol';
 
 import type { SessionDraftRepositoryTransport } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
@@ -27,39 +24,6 @@ import { SessionDraftEpochUnavailableError, isSessionDraftEpochUnavailableError 
 
 /** Statuses a Home without the V2 draft epoch returns for these exact paths. */
 const EPOCH_UNAVAILABLE_STATUSES = new Set([404, 405, 501]);
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isSupportedPredecessorV1Content(
-    content: SupportedPredecessorNewSessionDraftContentV1,
-): boolean {
-    if (SessionDraftStoredContentEnvelopeV1Schema.safeParse(content).success) return true;
-    return content.t === 'plain'
-        && restoreSupportedPredecessorNewSessionDraftPayloadV2(content.v) !== null;
-}
-
-function normalizeSupportedPredecessorRecord(value: unknown): unknown {
-    if (!isRecord(value) || !isRecord(value.content) || value.content.t !== 'plain') return value;
-    const payload = restoreSupportedPredecessorNewSessionDraftPayloadV2(value.content.v);
-    return payload ? { ...value, content: { t: 'plain', v: payload } } : value;
-}
-
-/** Lift only the strict response positions owned by the Session-draft routes. */
-function normalizeSupportedPredecessorResponse(value: unknown): unknown {
-    if (!isRecord(value)) return value;
-    if (Array.isArray(value.items)) {
-        return { ...value, items: value.items.map(normalizeSupportedPredecessorRecord) };
-    }
-    if (value.status === 'present' || value.status === 'deleted' || value.status === 'updated') {
-        return { ...value, record: normalizeSupportedPredecessorRecord(value.record) };
-    }
-    if (value.status === 'conflict' && isRecord(value.current) && value.current.status !== 'absent') {
-        return { ...value, current: normalizeSupportedPredecessorRecord(value.current) };
-    }
-    return value;
-}
 
 async function postJson(params: Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
@@ -93,8 +57,15 @@ async function postJson(params: Readonly<{
 }
 
 /**
- * One transport over both route epochs. Compatible content retains V1 writes;
- * successor addresses or new-session intent use V2 at the same service owner.
+ * One transport over both route epochs.
+ *
+ * A V1-addressed draft is shared with a Session and keeps its released V1
+ * route, upgrading to V2 only when this Home proves the V1 epoch is gone. There
+ * is deliberately no write in the other direction: 0.3 is a one-way upgrade, so
+ * a Home without the V2 draft epoch is not a supported peer and the local draft
+ * settles unsupported instead of being re-posted in a predecessor shape.
+ * Reading stays unaffected — a draft a 0.2 client wrote is a closed V1 payload
+ * the V2 payload union already admits.
  */
 export function createApiSessionDraftsTransport(params: Readonly<{
     /** Exact Home/Account request captured by the canonical scoped-request owner. */
@@ -121,7 +92,7 @@ export function createApiSessionDraftsTransport(params: Readonly<{
                 if (epoch !== 'v1' || !isSessionDraftEpochUnavailableError(error)) throw error;
                 raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_READ, body: request, epoch: 'v2' });
             }
-            const parsed = SessionDraftReadResponseV2Schema.safeParse(normalizeSupportedPredecessorResponse(raw));
+            const parsed = SessionDraftReadResponseV2Schema.safeParse(raw);
             if (!parsed.success) throw new Error('Invalid session draft response');
             return parsed.data;
         },
@@ -134,11 +105,11 @@ export function createApiSessionDraftsTransport(params: Readonly<{
                 if (request.addressKinds || !isSessionDraftEpochUnavailableError(error)) throw error;
                 raw = await postJson({ request: params.request, path: SESSION_DRAFT_ROUTE_LIST, body, epoch: 'v1' });
             }
-            const parsed = SessionDraftListResponseV2Schema.safeParse(normalizeSupportedPredecessorResponse(raw));
+            const parsed = SessionDraftListResponseV2Schema.safeParse(raw);
             if (!parsed.success) throw new Error('Invalid session draft response');
             return parsed.data;
         },
-        mutate: async (request, compatibility) => {
+        mutate: async (request) => {
             const epoch = epochOf(request.address) === 'v1' && isSessionDraftContentV1(request.content) ? 'v1' : 'v2';
             const body = epoch === 'v1'
                 ? SessionDraftMutateRequestV1Schema.parse(request)
@@ -152,30 +123,10 @@ export function createApiSessionDraftsTransport(params: Readonly<{
                 epoch,
                 });
             } catch (error) {
-                if (epoch === 'v1' && isSessionDraftEpochUnavailableError(error)) {
-                    raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_MUTATE, body, epoch: 'v2' });
-                } else if (
-                    epoch === 'v2'
-                    && request.address.kind === 'newSession'
-                    && compatibility
-                    && isSupportedPredecessorV1Content(compatibility.supportedPredecessorV1Content)
-                    && isSessionDraftEpochUnavailableError(error)
-                ) {
-                    raw = await postJson({
-                        request: params.request,
-                        path: SESSION_DRAFT_ROUTE_MUTATE,
-                        body: {
-                            address: request.address,
-                            expectedRevision: request.expectedRevision,
-                            content: compatibility.supportedPredecessorV1Content,
-                        },
-                        epoch: 'v1',
-                    });
-                } else {
-                    throw error;
-                }
+                if (epoch !== 'v1' || !isSessionDraftEpochUnavailableError(error)) throw error;
+                raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_MUTATE, body, epoch: 'v2' });
             }
-            const parsed = SessionDraftMutateResponseV2Schema.safeParse(normalizeSupportedPredecessorResponse(raw));
+            const parsed = SessionDraftMutateResponseV2Schema.safeParse(raw);
             if (!parsed.success) throw new Error('Invalid session draft response');
             return parsed.data;
         },

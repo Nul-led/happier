@@ -275,8 +275,8 @@ async function materializeQualifiedConnectedAccountLaunchForSpawn(params: Readon
       ? await lease.registry.acquireAgentCatalogEntry(params.agentId)
       : contribution?.catalogEntry ?? null;
     const identity = contribution?.identity;
-    const currentGeneration = identity
-      ? lease.registry.pluginFinalPolicyCurrentGenerationsById?.get(identity.pluginId)
+    const currentRuntime = identity
+      ? lease.registry.pluginFinalPolicyCurrentRuntimesById?.get(identity.pluginId)
       : null;
     const credentialFileOwner =
       lease.registry.resolveManagedServiceCredentialFileOwner?.();
@@ -300,10 +300,10 @@ async function materializeQualifiedConnectedAccountLaunchForSpawn(params: Readon
           : {}),
         signal: signalController.signal,
         expectedAccountsByPurposeKey,
-        ...(identity && currentGeneration
+        ...(identity && currentRuntime
           ? {
               credentialFileScope: Object.freeze({
-                generation: currentGeneration.immutableGenerationId,
+                occurrenceId: currentRuntime.occurrenceId,
                 pluginId: identity.pluginId,
                 contributionQualifiedId: resolveAgentContributionQualifiedId({
                   pluginId: identity.pluginId,

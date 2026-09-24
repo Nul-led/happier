@@ -221,9 +221,10 @@ function createTrayItemId(candidate: SessionActivityCandidate): string {
 function createTrayItem(
     candidate: SessionActivityCandidate,
     signals: PetCompanionSessionSignals | undefined,
-    contextLine: string | null,
+    context: Readonly<{ contextLine: string | null; accessibilityContext: string | null }>,
     nowMs: number,
 ): PetCompanionTrayItem {
+    const { contextLine } = context;
     const isStatusOnly = candidate.session.viewer?.attention.presentation === 'status_only';
     const mayShowPrivateContent = !isStatusOnly
         && isSessionAwarenessContentReadableV1(projectUiSessionAwareness(candidate.session, nowMs).encryption);
@@ -235,17 +236,21 @@ function createTrayItem(
         address: candidate.address,
         sessionId: candidate.session.id,
         contextLine,
+        accessibilityContext: context.accessibilityContext,
         status: candidate.status,
         priority: PET_COMPANION_ACTIVITY_PRIORITY[candidate.status],
         title: mayShowPrivateContent ? getSessionName(candidate.session) : t('sessionBoard.item.locked.title'),
-        // The shared context line is authorized structural context and survives a locked envelope;
-        // only the message-derived fallback waits for content readiness (L07-R42). Lane 09's
-        // status-only presentation still withholds everything but runtime state.
-        subtitle: isStatusOnly
-            ? null
-            : contextLine ?? (!mayShowPrivateContent || (isLiveActivity && candidate.status === 'running')
+        // The shared context line is authorized structural context and survives a locked
+        // envelope and Lane 09's status-only presentation: Home, audience, responsibility and
+        // freshness are never private content (L07-R42, child 04 :255). Only the
+        // message-derived fallback waits for content readiness and status-only admission.
+        subtitle: contextLine ?? (
+            isStatusOnly
+            || !mayShowPrivateContent
+            || (isLiveActivity && candidate.status === 'running')
                 ? null
-                : signals?.lastMessageSubtitle ?? null),
+                : signals?.lastMessageSubtitle ?? null
+        ),
         activityAtMs: isLiveActivity ? null : candidate.activityAtMs,
         expiresAtMs: candidate.expiresAtMs,
         actions: {
@@ -312,19 +317,23 @@ export function buildPetCompanionActivityModel(
             const signals = input.signalsByAddressKey?.[addressKey]
                 ?? input.signalsBySessionId?.[session.id];
             const candidate = resolveCandidate(address, session, signals, nowMs);
+            const context = input.contextsByAddressKey?.[addressKey] ?? null;
             return candidate ? {
                 candidate,
                 signals,
-                contextLine: input.contextsByAddressKey?.[addressKey]?.contextLine ?? null,
+                context: {
+                    contextLine: context?.contextLine ?? null,
+                    accessibilityContext: context?.accessibilityContext ?? null,
+                },
             } : null;
         })
         .filter((entry): entry is Readonly<{
             candidate: SessionActivityCandidate;
             signals: PetCompanionSessionSignals | undefined;
-            contextLine: string | null;
+            context: Readonly<{ contextLine: string | null; accessibilityContext: string | null }>;
         }> => entry !== null)
         .filter(({ candidate }) => !isExpired(candidate, nowMs))
-        .map(({ candidate, signals, contextLine }) => createTrayItem(candidate, signals, contextLine, nowMs))
+        .map(({ candidate, signals, context }) => createTrayItem(candidate, signals, context, nowMs))
         .filter((item) => !dismissedKeys.has(item.dismissKey))
         .sort((a, b) => compareTrayItems(selectedAddress, a, b));
     const primary = trayItems[0] ?? null;

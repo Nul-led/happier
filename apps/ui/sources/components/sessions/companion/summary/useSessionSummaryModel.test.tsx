@@ -5,6 +5,8 @@ import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { Session } from '@/sync/domains/state/storageTypes';
 
 const awarenessTimes = vi.hoisted(() => [] as number[]);
+const awarenessSessions = vi.hoisted(() => [] as unknown[]);
+const liveSessionRow = vi.hoisted(() => ({ current: null as unknown }));
 const approvalSessionTargets = vi.hoisted(() => [] as Array<{ serverId: string; sessionId: string } | null | undefined>);
 const activityInputs = vi.hoisted(() => [] as unknown[]);
 const scmInputs = vi.hoisted(() => [] as unknown[]);
@@ -34,6 +36,7 @@ const usageState = vi.hoisted(() => ({ current: null as null | {
 vi.mock('@/sync/domains/session/awareness/sessionAwareness', () => ({
     projectUiSessionAwareness: (_session: Session, nowMs: number) => {
         awarenessTimes.push(nowMs);
+        awarenessSessions.push(_session);
         return {
             v: 1,
             sessionId: 'session-1',
@@ -49,6 +52,7 @@ vi.mock('@/sync/domains/session/awareness/sessionAwareness', () => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', () => ({
+    useSession: (_id: string) => liveSessionRow.current,
     useOpenApprovalArtifactsForSession: (target: { serverId: string; sessionId: string } | null | undefined) => {
         approvalSessionTargets.push(target);
         return [];
@@ -96,6 +100,8 @@ afterEach(() => {
     activityCounts.current = { live: 0, total: 0 };
     activityEntries.current = [];
     usageState.current = null;
+    awarenessSessions.length = 0;
+    liveSessionRow.current = null;
 });
 
 describe('useSessionSummaryModel', () => {
@@ -114,6 +120,27 @@ describe('useSessionSummaryModel', () => {
 
         expect(hook.getCurrent().stale).toBe(true);
         expect(awarenessTimes.at(-1)).toBe(61_000);
+        await hook.unmount();
+    });
+
+    it('projects awareness from the live Session row, not the stabilised shell object', async () => {
+        // The shell's stable signature deliberately omits `activeAt` and `runtimeActivity*`,
+        // so the object it hands down keeps reporting the heartbeat it was frozen with.
+        const shellSession = { id: 'session-1', serverId: 'home-a', activeAt: 1_000 } as Session;
+        liveSessionRow.current = { id: 'session-1', serverId: 'home-a', activeAt: 90_000, runtimeActivityActiveCount: 3 };
+        const hook = await renderHook(() => useSessionSummaryModel({ session: shellSession, serverId: 'home-a' }));
+
+        expect(awarenessSessions.at(-1)).toMatchObject({ activeAt: 90_000, runtimeActivityActiveCount: 3 });
+
+        // A runtimeActivity-only update reaches the Summary while the shell reference is unchanged.
+        liveSessionRow.current = { id: 'session-1', serverId: 'home-a', activeAt: 90_000, runtimeActivityActiveCount: 5 };
+        await hook.rerender();
+        expect(awarenessSessions.at(-1)).toMatchObject({ runtimeActivityActiveCount: 5 });
+
+        // A row for another Home is never substituted for the exact Session this card describes.
+        liveSessionRow.current = { id: 'session-1', serverId: 'home-other', activeAt: 500_000 };
+        await hook.rerender();
+        expect(awarenessSessions.at(-1)).toBe(shellSession);
         await hook.unmount();
     });
 

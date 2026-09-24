@@ -14,6 +14,7 @@ import { encodeBase64 } from '@/encryption/base64';
 
 import { createDeferred, renderHook } from '@/dev/testkit';
 import {
+    createRunnerActivationClient,
     RunnerActivationClientError,
     type RunnerActivationClient,
 } from '@/sync/api/ephemeralRunner/runnerActivationClient';
@@ -569,6 +570,58 @@ describe('useTemporaryComputerLaunch', () => {
         expect(readByDraft).toHaveBeenCalledTimes(2);
     });
 
+    it('keeps one live review producer when an identical projection is refetched mid-review', async () => {
+        // Real activation client; only the Home HTTP boundary is held open so the
+        // review's first safe request is still pending when the refetch lands.
+        const claimed = projection('claimed');
+        const reviewSignals: AbortSignal[] = [];
+        const client = createRunnerActivationClient(async (path, init) => {
+            if (path.includes('credential-selection')) {
+                const signal = init?.signal;
+                if (!signal) throw new Error('Expected a cancellable review request');
+                reviewSignals.push(signal);
+                return await new Promise<Response>((_, reject) => {
+                    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+                });
+            }
+            return Response.json(claimed);
+        });
+        const hook = await renderHook(() => useTemporaryComputerLaunch({
+            serverId: 'server-1',
+            client,
+            draftId: 'draft-a',
+            existingPublicRef: null,
+            prepareActivation: vi.fn(),
+            persistPublicRef: vi.fn(),
+            prepareReview: async (current, signal) => {
+                await client.resolveCredentialSelection(current.activationId, {
+                    v: 1,
+                    selection: {
+                        kind: 'team_credential_provider_model', resourceId: 'resource-1', teamId: 'team-1',
+                        expectedResourceRevision: 1, agentTargetKey: 'agent:happier.agent.codex/codex',
+                        modelId: 'gpt-5', deliveryMode: 'brokered',
+                    },
+                    application: {
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
+                        implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+                        endpointTemplateId: 'responses', protocol: 'openai_responses',
+                    },
+                    sourceRevision: 'source-1',
+                    plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
+                }, signal);
+            },
+            onMaterialized: vi.fn(),
+        }));
+
+        await vi.waitFor(() => expect(reviewSignals).toHaveLength(1));
+        await act(async () => { await hook.getCurrent().refresh(); });
+
+        // The claimed, unreviewed activation still has a live producer.
+        expect(reviewSignals.some((signal) => !signal.aborted)).toBe(true);
+        expect(hook.getCurrent().status).toBe('preparing_encryption');
+        await hook.unmount();
+    });
+
     it('retires creator signing-key custody once for a published creator proof', async () => {
         const claimed = projection('claimed', { reviewed: true });
         const onClaimed = vi.fn(async () => undefined);
@@ -902,24 +955,33 @@ describe('useTemporaryComputerLaunch', () => {
         expect(hook.getCurrent().projection).toBe(pending);
     });
 
-    it('replaces an acknowledged terminal activation through one controller action', async () => {
+    it('replaces an acknowledged terminal activation through the one submission owner', async () => {
         const closed: RunnerActivationProjectionV1 = { ...projection('closed'), closeReason: 'revoked' };
         const pending = projection('pending');
         const client = {
             readByDraft: vi.fn(async () => closed),
             create: vi.fn(async () => pending),
         } as unknown as RunnerActivationClient;
+        // A replacement package needs a fresh submission and its settlement, and
+        // only the composer's Send owner can allocate those. Starting the
+        // controller directly reuses custody the closure already released, so
+        // the advertised action could never succeed.
+        const requestReplacementLaunch = vi.fn(async () => undefined);
+        const prepareActivation = vi.fn(async () => ({ request: { v: 1 }, createdOnDeviceLabel: 'This device' }) as never);
         const hook = await renderHook(() => useTemporaryComputerLaunch({
             serverId: 'server-1', client, draftId: 'draft-replacement', existingPublicRef: null,
-            prepareActivation: vi.fn(async () => ({ request: { v: 1 }, createdOnDeviceLabel: 'This device' }) as never),
+            prepareActivation,
+            requestReplacementLaunch,
             persistPublicRef: vi.fn(), onMaterialized: vi.fn(), onClosed: vi.fn(async () => undefined),
         }));
 
         await vi.waitFor(() => expect(hook.getCurrent().projection).toBe(closed));
         await act(async () => { await hook.getCurrent().replaceTerminal(); });
 
-        expect(client.create).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent().projection).toBe(pending);
+        expect(requestReplacementLaunch).toHaveBeenCalledTimes(1);
+        expect(prepareActivation).not.toHaveBeenCalled();
+        expect(client.create).not.toHaveBeenCalled();
+        expect(hook.getCurrent().projection).toBeNull();
     });
 
     // A frozen submission that names a Profile the target Account no longer

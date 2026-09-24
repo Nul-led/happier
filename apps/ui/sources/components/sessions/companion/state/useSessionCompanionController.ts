@@ -178,8 +178,20 @@ export type SessionCompanionController = Readonly<{
     removeItem: (item: SessionCompanionItemRefV1) => SessionCompanionMutationOutcome | null;
     moveItem: (item: SessionCompanionItemRefV1, toIndex: number) => SessionCompanionMutationOutcome | null;
     openFullSurface: () => void;
-    /** Restores an outcome's previous value, or reports `false` when it went stale. */
-    applyLocalInverse: (outcome: SessionCompanionMutationOutcome) => boolean;
+    /**
+     * Restores an outcome's previous value, or reports `false` when it went stale.
+     *
+     * `expectedRealmKey` binds the inverse to the exact Account/Home/Session that produced it.
+     * The write key is resolved from CURRENT state at invocation, so without this an Undo
+     * published by one Account could write the next Account's preference after a same-Home
+     * switch; the mounted-owner check covers a retired publisher the same way.
+     */
+    applyLocalInverse: (
+        outcome: SessionCompanionMutationOutcome,
+        expectedRealmKey?: string | null,
+    ) => boolean;
+    /** The exact realm-qualified key this controller currently writes through. */
+    realmKey: string | null;
 }>;
 
 /**
@@ -202,7 +214,7 @@ export function useSessionCompanionController(input: Readonly<{
     openFullSurface: () => void;
 }>): SessionCompanionController {
     const { sessionId, serverId = null, openFullSurface } = input;
-    const { preference, availability, preferenceExists } = useSessionCompanionPreference({ sessionId, serverId });
+    const { preference, availability, preferenceExists, realmKey } = useSessionCompanionPreference({ sessionId, serverId });
     const mutate = useMutateSessionCompanionPreference();
 
     const applyMutation = React.useCallback((
@@ -223,8 +235,22 @@ export function useSessionCompanionController(input: Readonly<{
         return outcome;
     }, [mutate, serverId, sessionId]);
 
-    const applyLocalInverse = React.useCallback((outcome: SessionCompanionMutationOutcome): boolean => {
-        if (!sessionId) return false;
+    // Same guard shape the Board pane inverses already use in the Session shell: the mounted
+    // owner plus the exact realm, read live rather than from the publishing render's closure.
+    const realmKeyRef = React.useRef(realmKey);
+    realmKeyRef.current = realmKey;
+    const mountedRef = React.useRef(true);
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+
+    const applyLocalInverse = React.useCallback((
+        outcome: SessionCompanionMutationOutcome,
+        expectedRealmKey?: string | null,
+    ): boolean => {
+        if (!sessionId || !mountedRef.current) return false;
+        if (expectedRealmKey !== undefined && realmKeyRef.current !== expectedRealmKey) return false;
         return mutate(sessionId, (stored) => {
             const current = normalizeSessionCompanionPreference(stored);
             const restored = resolveSessionCompanionLocalInverse(outcome, current);
@@ -261,5 +287,6 @@ export function useSessionCompanionController(input: Readonly<{
         ),
         openFullSurface,
         applyLocalInverse,
-    }), [applyLocalInverse, applyMutation, availability, openFullSurface, preference, preferenceExists]);
+        realmKey,
+    }), [applyLocalInverse, applyMutation, availability, openFullSurface, preference, preferenceExists, realmKey]);
 }

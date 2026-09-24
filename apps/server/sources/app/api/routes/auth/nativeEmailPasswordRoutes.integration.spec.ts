@@ -290,7 +290,12 @@ describe("native password authentication through the registered method", () => {
         }
     });
 
-    it("rejects E2EE unlock when only the keyless email-password login action remains available", async () => {
+    it("releases the E2EE envelope when the Key Challenge method's own login policy is disabled", async () => {
+        // The finalizer qualifies a password-stamped challenge as
+        // `email_password` and gates on that method's decision
+        // (`registerKeyChallengeAuthRoute.ts`), so `key_challenge` policy does
+        // not bound keyed password login. Refusing here would let a Home create
+        // E2EE password Accounts it then refuses to sign in.
         harness.resetEnv({
             HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "true",
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0",
@@ -350,14 +355,17 @@ describe("native password authentication through the registered method", () => {
                     authKey: encodePasswordCredentialFieldV1(authKey),
                 },
             });
-            expect(response.statusCode, response.body).toBe(403);
-            expect(response.json()).toEqual({ error: "method_not_available" });
-            expect(response.body).not.toContain("envelope");
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toMatchObject({
+                expectedAccountId: account.id,
+                challenge: { challengeId: expect.any(String) },
+            });
             await expect(db.keyChallengeV2.count({
                 where: { expectedAccountId: account.id },
-            })).resolves.toBe(0);
+            })).resolves.toBe(1);
         } finally {
             harness.resetEnv();
+            await db.keyChallengeV2.deleteMany({ where: { expectedAccountId: account.id } });
             await db.account.delete({ where: { id: account.id } });
             await app.close();
         }

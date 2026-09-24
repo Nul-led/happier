@@ -9,6 +9,7 @@ import {
 } from '@happier-dev/plugin-sdk/connected-accounts';
 import {
   createProviderErrorV1,
+  pluginSourceCustodyV1Equal,
   qualifiedPurposeKey,
   registerSensitiveDiagnosticValues,
   sameQualifiedConnectedAccountRef,
@@ -16,6 +17,7 @@ import {
   type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import { configuration } from '@/configuration';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
 import { resolveCliFeatureDecisionForServer } from '@/features/featureDecisionService';
@@ -79,6 +81,7 @@ import {
   type ConnectedAccountPurposeAuthorizationScope,
   type ConnectedAccountPurposeBindingOwner,
   type ConnectedAccountSessionPurposeBindingLease,
+  type ConnectedAccountCurrentSessionPurposeBindingSnapshot,
   type ConnectedAccountSessionPurposeBindingSnapshot,
 } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type {
@@ -155,7 +158,16 @@ export type PrepareForegroundAgentRuntimeAdmissionDependencies = Readonly<{
     agentId: string;
     authorizedPurposes: readonly ConnectedAccountPurposeAuthorizationScope[];
     signal: AbortSignal;
-  }>) => Promise<ConnectedAccountSessionPurposeBindingSnapshot | null>;
+  }>) => Promise<ConnectedAccountCurrentSessionPurposeBindingSnapshot | null>;
+  /**
+   * The Session Team slot bindings that the foreground Session must be created
+   * with so the Home admits the snapshot's durable Team resource defaults
+   * (resolved by the canonical defaults owner against the Home's catalog).
+   */
+  resolveSessionTeamCredentialBindingIntents?: (input: Readonly<{
+    teamResourceSelections: ConnectedAccountCurrentSessionPurposeBindingSnapshot['teamResourceSelections'];
+    signal: AbortSignal;
+  }>) => Promise<SessionTeamCredentialBindingIntentListV1>;
   resolveConnectedServiceAuthForSpawn?: (
     input: Omit<Pick<
       Parameters<typeof resolveConnectedServiceAuthForSpawn>[0],
@@ -628,7 +640,12 @@ export async function prepareForegroundAgentRuntimeAdmission(
     if (
       !registration?.hasPrimaryRuntime
       || registration.pluginId !== bridge.authorization.descriptor.pluginId
-      || registration.generation !== bridge.authorization.descriptor.generation
+      || registration.occurrenceId
+        !== bridge.authorization.descriptor.occurrenceId
+      || !pluginSourceCustodyV1Equal(
+        registration.sourceCustody,
+        bridge.authorization.descriptor.sourceCustody,
+      )
       || !registration.isCurrent()
     ) {
       return refusal(createProviderErrorV1(
@@ -667,6 +684,7 @@ export async function prepareForegroundAgentRuntimeAdmission(
           contributions: lease.registry.contributes,
         })
       : null;
+    let sessionTeamCredentialBindings: SessionTeamCredentialBindingIntentListV1 | null = null;
     let sessionPurposeBindingSnapshot: AgentSpawnQualifiedPurposeBindingSnapshot | null =
       legacyConnectedServiceCatalogAgent && effectiveConnectedServices
       ? resolveQualifiedPurposeBindingSnapshotForAgentSpawn({
@@ -712,9 +730,40 @@ export async function prepareForegroundAgentRuntimeAdmission(
           { machineId: request.machineId },
         ));
       }
+      if (externalSnapshot.teamResourceSelections.length > 0) {
+        if (!dependencies.resolveSessionTeamCredentialBindingIntents) {
+          return refusal(createProviderErrorV1(
+            'provider_agent_runtime_unsupported',
+            { machineId: request.machineId },
+          ));
+        }
+        try {
+          sessionTeamCredentialBindings =
+            await dependencies.resolveSessionTeamCredentialBindingIntents({
+              teamResourceSelections: externalSnapshot.teamResourceSelections,
+              signal: registration.retirementSignal,
+            });
+        } catch {
+          // The durable Team default no longer resolves to a resource this
+          // Home offers: refuse typed rather than launch without it.
+          return refusal(createProviderErrorV1(
+            'provider_binding_changed',
+            { machineId: request.machineId },
+          ));
+        }
+        if (registration.retirementSignal.aborted || !registration.isCurrent()) {
+          return refusal(createProviderErrorV1(
+            'provider_agent_runtime_unsupported',
+            { machineId: request.machineId },
+          ));
+        }
+      }
       sessionPurposeBindingSnapshot = Object.freeze({
         purposes: externalSnapshot.purposes,
         bindings: externalSnapshot.bindings,
+        ...(externalSnapshot.directMaterialOrigins.length > 0
+          ? { directMaterialOrigins: externalSnapshot.directMaterialOrigins }
+          : {}),
         authorizedPurposes:
           externalPurposeDeclarations.authorizedPurposes,
         fileMaterializationPurposes:
@@ -926,6 +975,9 @@ export async function prepareForegroundAgentRuntimeAdmission(
       ok: true,
       prepared: {
         authorization: bridge.authorization,
+        ...(sessionTeamCredentialBindings && sessionTeamCredentialBindings.length > 0
+          ? { teamCredentialBindings: sessionTeamCredentialBindings }
+          : {}),
         reservedEnvironmentVariableNames:
           requirements?.authIsolation.ownedEnvKeys ?? [],
         profileSecretRequirementNamesMissingBinding:
@@ -1055,6 +1107,9 @@ export async function prepareForegroundAgentRuntimeAdmission(
                   sessionId: canonicalSessionId,
                   purposes: sessionPurposeBindingSnapshot.purposes,
                   bindings: sessionPurposeBindingSnapshot.bindings,
+                  ...(sessionPurposeBindingSnapshot.directMaterialOrigins
+                    ? { directMaterialOrigins: sessionPurposeBindingSnapshot.directMaterialOrigins }
+                    : {}),
                 });
             }
             const expectedConnectedAccountByPurposeKey =
@@ -1211,7 +1266,7 @@ export async function prepareForegroundAgentRuntimeAdmission(
                   expectedAccountsByPurposeKey:
                     expectedConnectedAccountByPurposeKey,
                   credentialFileScope: Object.freeze({
-                    generation: registration.generation,
+                    occurrenceId: registration.occurrenceId,
                     pluginId: registration.pluginId,
                     contributionQualifiedId: resolveAgentContributionQualifiedId({
                       pluginId: registration.pluginId,
@@ -1468,8 +1523,12 @@ export async function prepareForegroundAgentRuntimeAdmission(
               || !connectedAccountLaunchCurrent
               || registration.pluginId
                 !== bridge.authorization.descriptor.pluginId
-              || registration.generation
-                !== bridge.authorization.descriptor.generation
+              || registration.occurrenceId
+                !== bridge.authorization.descriptor.occurrenceId
+              || !pluginSourceCustodyV1Equal(
+                registration.sourceCustody,
+                bridge.authorization.descriptor.sourceCustody,
+              )
             ) {
               throw new Error(
                 'Foreground Agent runtime process authority is unavailable',
@@ -1537,7 +1596,7 @@ export async function prepareForegroundAgentRuntimeAdmission(
               ?? {
                 retention: {
                   v: 1 as const,
-                  sourceGenerationIds: [],
+                  sourceCustodies: [],
                   qualifiedDependencyIds: [],
                 },
                 release() {},
@@ -1555,9 +1614,10 @@ export async function prepareForegroundAgentRuntimeAdmission(
                 paths: resolvePluginStorePaths({
                   happyHomeDir: configuration.happyHomeDir,
                 }),
-                immutableGenerationIds: [
-                  retainedAgent.immutableGenerationId,
-                ],
+                immutableGenerationIds:
+                  retainedAgent.sourceCustody.kind === 'managed'
+                    ? [retainedAgent.sourceCustody.immutableGenerationId]
+                    : [],
                 attach: async () => {
                   authorityState.authority =
                     await publishAgentRuntimeDaemonServiceAuthority({

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AttentionDeliveryEventIdSchema } from '../account/settings/attentionDeliveryPolicy.js';
+import { resolveActivityRequestEventIdentityV1 } from '../activity/eventIdentity.js';
 
 import {
   ACTIVITY_REMOTE_ALERT_EVENT_TYPES_V1,
@@ -108,6 +109,32 @@ describe('ActivityRemoteAlertV1', () => {
     expect(resolveActivityRemoteAlertEventForPersonalEventV2('ready')).toBeNull();
     expect(resolveActivityRemoteAlertEventForPersonalEventV2('permission_required'))
       .toEqual({ type: 'permission_request' });
+    // The committed request id is the cross-leg identity a device uses to show
+    // one alert per request, so the writer carries it and the reader names it
+    // exactly as the device-local notification leg does.
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2(
+      'permission_required', undefined, undefined, 'req-9',
+    )).toEqual({ type: 'permission_request', requestId: 'req-9' });
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2(
+      'user_action_required', undefined, undefined, 'req-10',
+    )).toEqual({ type: 'user_action_request', requestId: 'req-10' });
+    expect(resolveActivityRemoteAlertEventForPersonalEventV2(
+      'permission_required', undefined, undefined, '  ',
+    )).toBeNull();
+    expect(resolveActivityRemoteAlertEventIdentity({
+      type: 'activity_alert', v: 2,
+      serverId: 'home-a', sessionId: 'session-a', accountId: 'account-b',
+      event: { type: 'permission_request', requestId: 'req-9' },
+      previewBehavior: 'title_only',
+    })).toBe(resolveActivityRequestEventIdentityV1('req-9'));
+    // A category without a committed request stays grouped, never collapsed
+    // onto an invented identity.
+    expect(resolveActivityRemoteAlertEventIdentity({
+      type: 'activity_alert', v: 2,
+      serverId: 'home-a', sessionId: 'session-a', accountId: 'account-b',
+      event: { type: 'permission_request' },
+      previewBehavior: 'title_only',
+    })).toBeUndefined();
     expect(resolveActivityRemoteAlertEventForPersonalEventV2('user_action_required'))
       .toEqual({ type: 'user_action_request' });
     expect(resolveActivityRemoteAlertEventForPersonalEventV2('assigned'))

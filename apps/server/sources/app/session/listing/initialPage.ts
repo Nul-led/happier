@@ -276,7 +276,7 @@ export async function createV2SessionListInitialPage(params: V2SessionListInitia
         : undefined;
 
     return measurePage(() => ({
-        sessions: mapV2SessionListRows({
+        ...mapV2SessionListRows({
             rows: mergedRows,
             userId: params.userId,
             ownerAccountModes,

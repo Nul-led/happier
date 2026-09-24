@@ -16,6 +16,7 @@ import {
 } from '@happier-dev/protocol/rpc';
 
 import {
+  providerBrokerRouteGrantExpectedBindingV1 as expectedBinding,
   verifyProviderBrokerRouteGrantV1,
   type ProviderBrokerRouteGrantVerificationResultV1,
 } from '@/daemon/peer/mediation/verifyProviderBrokerRouteGrantV1';
@@ -49,6 +50,15 @@ import {
 type SelectedProviderBrokerRequestAdmission = ProviderBrokerRequestAdmission & Readonly<{
   sourceMemberKey: string;
 }>;
+
+/** Home refusals that mean the Session/Run operation itself has lost its
+ * authority, as opposed to one request being refused (limits, turn state,
+ * source rotation, an unreachable Home). */
+const PROVIDER_BROKER_OPERATION_AUTHORITY_LOST: ReadonlySet<ProviderBrokerAdmissionFailureCodeV1> = new Set([
+  'resource_forbidden',
+  'execution_run_not_found',
+  'execution_run_terminal',
+]);
 
 type VerifiedAuthority = Extract<
   ProviderBrokerRouteGrantVerificationResultV1,
@@ -167,19 +177,6 @@ export type DaemonProviderBrokerRuntime = Readonly<{
   close(): Promise<void>;
 }>;
 
-function expectedBinding(authority: SignedProviderBrokerRouteGrantV1) {
-  return {
-    teamId: authority.payload.teamId,
-    resourceId: authority.payload.resourceId,
-    modelId: authority.payload.modelId,
-    sourceRevision: authority.payload.sourceRevision,
-    initiator: authority.payload.initiator,
-    target: authority.payload.target,
-    consumer: authority.payload.consumer,
-    application: authority.payload.application,
-  } as const;
-}
-
 async function responseWithCleanup(
   response: ManagedServiceResponse,
   cleanup: () => Promise<void>,
@@ -293,14 +290,19 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
   return Object.freeze({
     async acquireSource({ source, resourceId, brokerMachineId, operation, expectedResourceRevision, application, modelId, sourceRevision }) {
       if (retired) return null;
+      // The resource revision is a mutable policy fact the Home rechecks on
+      // every request, not stream identity: a harmless policy edit must not
+      // retire a still-valid stream (`04-private-iroh-broker-transport.md:272`).
+      // The model is a request fact (`:270`): one stream serves every model
+      // the resource currently allows, each evaluated by the request-policy
+      // owner. The stream's source projection is the one its first request
+      // established for this operation's exact source and application.
       const nextBindingKey = JSON.stringify([
         resourceId,
-        expectedResourceRevision,
         brokerMachineId,
         operation,
         source,
         application,
-        modelId,
         sourceRevision,
       ]);
       if (bindingKey !== null && bindingKey !== nextBindingKey) {
@@ -423,6 +425,8 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     authority: unknown;
     authenticatedRemoteEndpointId: string;
     expected: ReturnType<typeof expectedBinding>;
+    /** Only stream admission asks; application requests never do. */
+    enforceExpiry?: boolean;
   }>) => ProviderBrokerRouteGrantVerificationResultV1;
   resolveRequestPolicy(input: Readonly<{
     authority: SignedProviderBrokerRouteGrantV1['payload'];
@@ -498,7 +502,7 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
       authority: request.authority,
       trustRoots: input.resolveTrustRoots(),
       nowMs: input.nowMs(),
-      enforceExpiry: false,
+      enforceExpiry: request.enforceExpiry ?? false,
       expected: request.expected,
       authenticatedRemoteEndpointId: request.authenticatedRemoteEndpointId,
     }));
@@ -541,7 +545,35 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     } : {}),
     createRequestId: input.createRequestId,
     admit: async (request) => {
-      const selected = await request.streamLifetime?.acquireSource({
+      const unavailable = { ok: false as const, reasonCode: 'resource_unavailable' as const };
+      const streamLifetime = request.streamLifetime;
+      if (!streamLifetime) return unavailable;
+      // Home admission precedes every source effect (L10/03 request path,
+      // L10/11 BROKER-05): the member it attributes the request to is read
+      // without starting or joining managed custody, so a refused request
+      // materializes nothing.
+      const sourceMemberKey = await input.sourceOwner.selectSourceMemberKey({
+        source: request.selectedSource,
+        application: request.authority.payload.application,
+        signal: request.request.signal ?? new AbortController().signal,
+      });
+      if (!sourceMemberKey) return unavailable;
+      const admitted = await input.admitRequest({ ...request, sourceMemberKey });
+      if (!admitted.ok) {
+        // Actual authority loss ends the operation's custody (L10/11 A2(8));
+        // a limit, a turn boundary or an unreachable Home does not.
+        if (PROVIDER_BROKER_OPERATION_AUTHORITY_LOST.has(admitted.reasonCode)) {
+          await streamLifetime.retire().catch(() => undefined);
+        }
+        return admitted;
+      }
+      if (
+        admitted.resourceId !== request.authority.payload.resourceId
+        || admitted.brokerMachineId !== input.machineId
+        || JSON.stringify(admitted.source) !== JSON.stringify(request.selectedSource)
+        || JSON.stringify(admitted.operation) !== JSON.stringify(request.authority.payload.consumer)
+      ) return unavailable;
+      const selected = await streamLifetime.acquireSource({
         source: request.selectedSource,
         resourceId: request.authority.payload.resourceId,
         brokerMachineId: request.authority.payload.target.machineId,
@@ -551,20 +583,12 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
         modelId: request.requestFacts.modelId,
         sourceRevision: request.expectedSourceRevision,
       });
-      if (!selected) {
-        return {
-          ok: false as const,
-          reasonCode: 'resource_unavailable' as const,
-        };
+      if (!selected) return unavailable;
+      // A Pool that switched members between admission and acquisition must
+      // not forward under a member the Home did not admit.
+      if (selected.sourceMemberKey !== sourceMemberKey) {
+        return { ok: false as const, reasonCode: 'resource_changed' as const };
       }
-      const admitted = await input.admitRequest({ ...request, sourceMemberKey: selected.sourceMemberKey });
-      if (!admitted.ok) return admitted;
-      if (
-        admitted.resourceId !== request.authority.payload.resourceId
-        || admitted.brokerMachineId !== input.machineId
-        || JSON.stringify(admitted.source) !== JSON.stringify(request.selectedSource)
-        || JSON.stringify(admitted.operation) !== JSON.stringify(request.authority.payload.consumer)
-      ) return { ok: false as const, reasonCode: 'resource_unavailable' as const };
       return {
         ok: true as const,
         access: selected.access,
@@ -630,6 +654,9 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
         if (!acquired.ok) {
           await terminalUsage?.record({
             outcome: request.request.signal?.aborted ? 'cancelled' : 'failed',
+            // Nothing reached the Provider, so no token fact exists.
+            actualModelId: null,
+            tokens: null,
           }).catch(() => undefined);
           return {
             ok: false as const,
@@ -759,11 +786,23 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
         || authoritative.authority.payload.application.protocol
           !== expected.application.protocol
       ) return null;
+      // Expiry bounds new work, not the operation (L10/04 §5.6, L10/11 A3):
+      // a stream admitted on an expired authority exists only to release
+      // the exact claim that authority already names, so a long-lived
+      // Session/Run can still retire its custody after the handshake TTL.
+      const current = verify({
+        authority: request.authority,
+        authenticatedRemoteEndpointId: request.authenticatedRemoteEndpointId,
+        expected,
+        enforceExpiry: true,
+      });
+      if (!current.valid && current.reasonCode !== 'grant_expired') return null;
       request.signal.throwIfAborted();
       return await application.createStreamTarget({
         authenticatedRemoteEndpointId: request.authenticatedRemoteEndpointId,
         authority: authoritative.authority,
         expected,
+        releaseOnly: !current.valid,
         streamLifetime: createPrivateProviderBrokerStreamLifetime({
           sourceOwner: input.sourceOwner,
           application: authoritative.authority.payload.application,

@@ -3,10 +3,15 @@ import * as React from 'react';
 import type {
     SessionAccessAccountSummaryV1,
     SessionResponsibilityCandidateV1,
+    SetSessionResponsibilityResponse,
 } from '@happier-dev/protocol';
+import { createActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
+import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
 import {
     SessionResponsibilityError,
     listSessionResponsibilityCandidates,
+    provesSessionResponsibilityAuthorityLoss,
+    readResponsibilityFailureCode,
     readSessionResponsibleAccount,
     setSessionResponsibleAccount,
     type SessionResponsibilityMutationFailure,
@@ -39,6 +44,15 @@ export type SessionResponsibilityController = Readonly<{
     responsibleAccount: SessionAccessAccountSummaryV1 | null;
     pending: boolean;
     failure: SessionResponsibilityMutationFailure | null;
+    /**
+     * Set while an assignment waits on the approval Artifact the canonical Action
+     * policy created for it (confirmation is required by default). The shared
+     * approval continuation owner follows that Artifact and delivers its executed
+     * result once; nothing has committed until then, `pending` stays true so the
+     * same intent cannot be submitted twice, and the mutation is never replayed
+     * from here.
+     */
+    pendingApproval: Readonly<{ artifactId: string; actionId: string; serverId: string }> | null;
     /** One in-context explanation for this Account's committed assignment-triggered Follow. */
     assignmentAutoFollowed: boolean;
     candidates: SessionResponsibilityCandidatesState;
@@ -47,6 +61,20 @@ export type SessionResponsibilityController = Readonly<{
     /** Fixed canonical-self option; derived from the authenticated Account, never page one. */
     canAssignToSelf: boolean;
 }>;
+
+const NO_APPROVAL_REFRESH = () => {};
+
+/**
+ * A declined or canceled approval is the person's own answer: nothing changed,
+ * so it is not reported as a failure. Every other terminal outcome is the
+ * approved execution's recorded failure, projected through the same typed
+ * outcomes a direct execution uses.
+ */
+function readApprovalSettlementFailure(code: string): SessionResponsibilityMutationFailure | null {
+    if (code === 'approval_rejected' || code === 'approval_canceled') return null;
+    if (code === 'approval_execution_outcome_unknown' || code === 'outcome_unknown') return 'unknown';
+    return readResponsibilityFailureCode(code);
+}
 
 const EMPTY_CANDIDATES: SessionResponsibilityCandidatesState = {
     loading: false,
@@ -95,6 +123,10 @@ export function useSessionResponsibilityController(
     const projectedSummary = (session as { responsibleAccount?: SessionAccessAccountSummaryV1 | null } | null | undefined)?.responsibleAccount ?? null;
     const [pending, setPending] = React.useState(false);
     const [failure, setFailure] = React.useState<SessionResponsibilityMutationFailure | null>(null);
+    const [pendingApproval, setPendingApproval] = React.useState<Readonly<{ artifactId: string; actionId: string; serverId: string }> | null>(null);
+    // A refusal proved by the Home outranks the cached capability projection
+    // this controller reads, until the projection itself catches up.
+    const [authorityLost, setAuthorityLost] = React.useState(false);
     const [assignmentAutoFollowed, setAssignmentAutoFollowed] = React.useState(false);
     const [candidates, setCandidates] = React.useState<SessionResponsibilityCandidatesState>(EMPTY_CANDIDATES);
     // Last-good safe projection survives refresh/offline/candidate failure.
@@ -102,11 +134,21 @@ export function useSessionResponsibilityController(
     const requestRevision = React.useRef(0);
     const mutationInFlight = React.useRef(false);
     const mutationRevision = React.useRef(0);
+    // The one shared approval owner, keyed by this exact target: a target change
+    // releases custody, exactly like this controller's own reset below.
+    const approval = useActionApprovalContinuation({
+        scopeKey: targetKey,
+        serverId: scope.serverId,
+        onExecuted: NO_APPROVAL_REFRESH,
+    });
+    const approvalPending = pendingApproval !== null || approval.approvalPending;
 
     React.useEffect(() => {
         requestRevision.current += 1;
         setCandidates(EMPTY_CANDIDATES);
         setFailure(null);
+        setPendingApproval(null);
+        setAuthorityLost(false);
         setAssignmentAutoFollowed(false);
         setPending(false);
         mutationRevision.current += 1;
@@ -132,11 +174,19 @@ export function useSessionResponsibilityController(
         }
     }, [responsibleAccountId, scope.accountId]);
 
+    // The proven refusal only stands in for a projection that has not caught up
+    // yet. Once the canonical projection itself withdraws the capability it owns
+    // the answer again, so a later regrant restores the control normally.
+    const projectedAssignResponsibility = session?.access?.capabilities.assignResponsibility === true;
+    React.useEffect(() => {
+        if (!projectedAssignResponsibility) setAuthorityLost(false);
+    }, [projectedAssignResponsibility]);
+
     const availability: SessionResponsibilityAvailability = session == null
         ? 'loading'
-        : responsibleAccountId === undefined || collaborationAvailability !== 'full_collaboration'
+        : responsibleAccountId === undefined || collaborationAvailability !== 'available'
             ? 'unsupported'
-        : session?.access?.capabilities.assignResponsibility === true
+        : session?.access?.capabilities.assignResponsibility === true && !authorityLost
             ? 'editable'
             : 'read_only';
 
@@ -188,6 +238,17 @@ export function useSessionResponsibilityController(
             const authenticationFailed = error instanceof SessionResponsibilityError
                 && (error.failure === 'session_access_authentication_required'
                     || error.failure === 'session_access_authentication_unavailable');
+            // A refused page is a fresh authoritative answer about this Account's
+            // standing: the identities already on screen were disclosed under a
+            // basis the Home has just withdrawn, so they go with the control.
+            if (error instanceof SessionResponsibilityError
+                && provesSessionResponsibilityAuthorityLoss(error.failure)) {
+                requestRevision.current += 1;
+                setAuthorityLost(true);
+                setCandidates(EMPTY_CANDIDATES);
+                setFailure(error.failure);
+                return;
+            }
             setCandidates((current) => authenticationFailed
                 ? { ...EMPTY_CANDIDATES, failed: true }
                 : {
@@ -205,13 +266,89 @@ export function useSessionResponsibilityController(
         }
     }, [scope.serverId, scope.accountId, sessionId, availability, collaborationAvailability, isCurrent, targetKey]);
 
+    // Consume the authoritative id/summary plus this exact transition's transient
+    // auto-Follow result, whether it came back directly or through an executed
+    // approval. `changed=false` is an acknowledged no-op with no
+    // write/wake/baseline/handoff; `changed=true` hands the committed
+    // previous/new transition once to Lane 09 server-side. The auto-Follow result
+    // drives one in-context explanation only and is never persisted as
+    // assignment origin or inferred client-side.
+    const applyCommittedAssignment = React.useCallback((result: SetSessionResponsibilityResponse) => {
+        if (result.responsibleAccount !== undefined) {
+            setLastGoodSummary(result.responsibleAccount);
+        } else if (result.responsibleAccountId === null) {
+            setLastGoodSummary(null);
+        }
+        storage.getState().applySessionResponsibleAccount(
+            sessionId,
+            result.responsibleAccountId,
+            scope,
+            result.responsibleAccount ?? null,
+        );
+        setAssignmentAutoFollowed(
+            result.autoFollowed === true && result.responsibleAccountId === scope.accountId,
+        );
+    }, [sessionId, scope.serverId, scope.accountId]);
+
+    // One typed-failure reaction for a direct refusal and an approved execution's
+    // recorded failure.
+    const handleMutationFailure = React.useCallback(async (
+        failureKind: SessionResponsibilityMutationFailure,
+        isOutcomeCurrent: () => boolean,
+    ): Promise<void> => {
+        if (provesSessionResponsibilityAuthorityLoss(failureKind)) {
+            // The Home refused in the deciding transaction, so the cached
+            // capability is stale and the disclosed candidate identities lose
+            // their basis. Reloading the page under the same refused basis
+            // would only be refused again, so the control closes instead.
+            requestRevision.current += 1;
+            setAuthorityLost(true);
+            setCandidates(EMPTY_CANDIDATES);
+            return;
+        }
+        if (failureKind === 'session_access_authentication_required'
+            || failureKind === 'session_access_authentication_unavailable') {
+            // Team authentication loss revokes the basis on which private
+            // candidate identities were disclosed. Invalidate any in-flight
+            // page and clear the last accepted page immediately.
+            requestRevision.current += 1;
+            setCandidates(EMPTY_CANDIDATES);
+        }
+        if (failureKind === 'assignee-unavailable') {
+            // The chosen person's access changed between the picker and the
+            // commit. This Account's own authority is intact, so the page is
+            // reloaded rather than guessing which row went stale.
+            void loadCandidates();
+        }
+        if (failureKind === 'unknown') {
+            try {
+                const reconciled = await readSessionResponsibleAccount(scope, sessionId, { isCurrent: isOutcomeCurrent });
+                if (isOutcomeCurrent()) {
+                    setLastGoodSummary(reconciled.responsibleAccount);
+                    storage.getState().applySessionResponsibleAccount(
+                        sessionId,
+                        reconciled.responsibleAccountId,
+                        scope,
+                        reconciled.responsibleAccount,
+                    );
+                }
+            } catch {
+                // Preserve the last accepted projection and the original
+                // unknown outcome. A later reconnect/change refresh can
+                // reconcile it; never replay a mutation from this branch.
+            }
+        }
+    }, [loadCandidates, sessionId, scope.serverId, scope.accountId]);
+
+    const requestApproval = approval.requestApproval;
     const setResponsibleAccount = React.useCallback(async (accountId: string | null): Promise<boolean> => {
-        if (availability !== 'editable' || mutationInFlight.current || !isCurrent()) return false;
+        if (availability !== 'editable' || mutationInFlight.current || approvalPending || !isCurrent()) return false;
         mutationInFlight.current = true;
         const mutation = ++mutationRevision.current;
         const isMutationCurrent = () => mutationRevision.current === mutation && isCurrent();
         setPending(true);
         setFailure(null);
+        setPendingApproval(null);
         setAssignmentAutoFollowed(false);
         try {
             const result = await setSessionResponsibleAccount(scope, {
@@ -222,63 +359,44 @@ export function useSessionResponsibilityController(
                 isCurrent: isMutationCurrent,
             });
             if (!isMutationCurrent()) return false;
-            // Consume the authoritative id/summary plus this exact transition's
-            // transient auto-Follow result. `changed=false` is an acknowledged
-            // no-op with no write/wake/baseline/handoff; `changed=true` hands
-            // the committed previous/new transition once to Lane 09 server-side.
-            // The auto-Follow result drives one in-context explanation only and
-            // is never persisted as assignment origin or inferred client-side.
-            if (result.responsibleAccount !== undefined) {
-                setLastGoodSummary(result.responsibleAccount);
-            } else if (result.responsibleAccountId === null) {
-                setLastGoodSummary(null);
-            }
-            storage.getState().applySessionResponsibleAccount(
-                sessionId,
-                result.responsibleAccountId,
-                scope,
-                result.responsibleAccount ?? null,
-            );
-            setAssignmentAutoFollowed(
-                result.autoFollowed === true && result.responsibleAccountId === scope.accountId,
-            );
+            applyCommittedAssignment(result);
             return true;
         } catch (error) {
             if (!isMutationCurrent()) return false;
             const failureKind = error instanceof SessionResponsibilityError ? error.failure : 'unknown';
+            const pendingIdentity = error instanceof SessionResponsibilityError ? error.approval : null;
+            if (failureKind === 'approval-pending' && pendingIdentity) {
+                // The canonical Action policy routed this intent to an approval
+                // Artifact: nothing committed and the previous assignee is still
+                // the truth. The shared continuation owner follows the Artifact and
+                // settles this exact intent once; never a reconciliation read or a
+                // retry from here.
+                setFailure('approval-pending');
+                setPendingApproval({ ...pendingIdentity, serverId: scope.serverId });
+                const isSettlementCurrent = () => isMutationCurrent() && mounted.current;
+                requestApproval(createActionApprovalContinuation<SetSessionResponsibilityResponse, 'session.responsibility.set'>({
+                    artifactId: pendingIdentity.artifactId,
+                    actionId: 'session.responsibility.set',
+                    scope,
+                    expectedInput: { sessionId, responsibleAccountId: accountId },
+                    onSucceeded: (result) => {
+                        if (!isSettlementCurrent()) return;
+                        setPendingApproval(null);
+                        setFailure(null);
+                        applyCommittedAssignment(result);
+                    },
+                    onFailed: (code) => {
+                        if (!isSettlementCurrent()) return;
+                        setPendingApproval(null);
+                        const settled = readApprovalSettlementFailure(code);
+                        setFailure(settled);
+                        if (settled) void handleMutationFailure(settled, isSettlementCurrent);
+                    },
+                }));
+                return false;
+            }
             setFailure(failureKind);
-            if (failureKind === 'session_access_authentication_required'
-                || failureKind === 'session_access_authentication_unavailable') {
-                // Team authentication loss revokes the basis on which private
-                // candidate identities were disclosed. Invalidate any in-flight
-                // page and clear the last accepted page immediately.
-                requestRevision.current += 1;
-                setCandidates(EMPTY_CANDIDATES);
-            }
-            if (failureKind === 'assignee-unavailable' || failureKind === 'forbidden') {
-                // The chosen person's access changed between the picker and the
-                // commit, or our own capability was revoked: refresh candidates
-                // and Session rather than guessing.
-                void loadCandidates();
-            }
-            if (failureKind === 'unknown') {
-                try {
-                    const reconciled = await readSessionResponsibleAccount(scope, sessionId, { isCurrent: isMutationCurrent });
-                    if (isMutationCurrent()) {
-                        setLastGoodSummary(reconciled.responsibleAccount);
-                        storage.getState().applySessionResponsibleAccount(
-                            sessionId,
-                            reconciled.responsibleAccountId,
-                            scope,
-                            reconciled.responsibleAccount,
-                        );
-                    }
-                } catch {
-                    // Preserve the last accepted projection and the original
-                    // unknown outcome. A later reconnect/change refresh can
-                    // reconcile it; never replay a mutation from this branch.
-                }
-            }
+            await handleMutationFailure(failureKind, isMutationCurrent);
             return false;
         } finally {
             if (mutationRevision.current === mutation) {
@@ -286,7 +404,7 @@ export function useSessionResponsibilityController(
                 if (isCurrent()) setPending(false);
             }
         }
-    }, [loadCandidates, sessionId, scope.serverId, scope.accountId, availability, collaborationAvailability, isCurrent, targetKey]);
+    }, [applyCommittedAssignment, approvalPending, handleMutationFailure, requestApproval, sessionId, scope.serverId, scope.accountId, availability, collaborationAvailability, isCurrent, targetKey]);
 
     // "Assign to me" is a fixed canonical-self option derived from the
     // authenticated Home Account plus current Session-read eligibility. It never
@@ -309,8 +427,9 @@ export function useSessionResponsibilityController(
         availability,
         responsibleAccountId,
         responsibleAccount: responsibleAccount ?? null,
-        pending,
+        pending: pending || approvalPending,
         failure,
+        pendingApproval,
         assignmentAutoFollowed,
         candidates,
         loadCandidates,

@@ -8,9 +8,13 @@ const apiMocks = vi.hoisted(() => ({
     setSessionPin: vi.fn(),
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
-    fetchAccountEncryptionMode: apiMocks.fetchAccountEncryptionMode,
-}));
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => {
+    const { createAccountEncryptionModeModuleMock } = await import('@/dev/testkit/mocks/accountEncryptionMode');
+    return await createAccountEncryptionModeModuleMock({
+        importOriginal,
+        overrides: { fetchAccountEncryptionMode: apiMocks.fetchAccountEncryptionMode },
+    });
+});
 
 vi.mock('@/sync/api/session/sessionOrganizationApi', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/api/session/sessionOrganizationApi')>();

@@ -217,4 +217,52 @@ describe('Account-scoped Session System Record repository', () => {
         expect(repository.getSnapshot(session, query)).toMatchObject({ data: null, lastError: { status: 'forbidden' } });
         stop();
     });
+
+    it('serves a Session addressed by the device-local id of a Home its scope names by published identity', async () => {
+        // The captured Account scope names an identity-bearing Home by its `srv_*` scope id,
+        // while a Board or Workflow surface addresses its Session by the device-local profile
+        // id. Both name one Home, so reads and invalidation must reach the same projection.
+        const { adoptHomeProfile, removeServerProfile, resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+        const home = await adoptHomeProfile({
+            descriptor: {
+                serverUrl: 'https://records-identity-home.example',
+                homeServerIdentityId: 'srv_records-home',
+                displayName: 'Records Home',
+            },
+            source: 'manual',
+            suggestedName: 'Records Home',
+        });
+        try {
+            const scopeId = resolveServerProfileScopeIdForIdentifier(home.id);
+            expect(scopeId).not.toBe(home.id);
+            let requests = 0;
+            const repository = createSessionSystemRecordRepository({
+                scope: { serverId: scopeId, accountId: 'alice' },
+                request: async () => {
+                    requests += 1;
+                    return page();
+                },
+            });
+            const localAddress = { serverId: home.id, sessionId: 'session-one' };
+
+            const stop = repository.subscribe(localAddress, query, () => {});
+            await repository.refresh(localAddress, query);
+            expect(requests).toBe(1);
+            expect(repository.getSnapshot(localAddress, query)).toMatchObject({ freshness: 'fresh', lastError: null });
+            // The scope's own address reads the same entry rather than a second projection.
+            expect(repository.getSnapshot({ serverId: scopeId, sessionId: 'session-one' }, query).data)
+                .toBe(repository.getSnapshot(localAddress, query).data);
+
+            repository.invalidate({ serverId: scopeId, sessionId: 'session-one' });
+            expect(repository.getSnapshot(localAddress, query).freshness).toBe('stale');
+            await repository.refresh(localAddress, query);
+            expect(requests).toBe(2);
+
+            // A different Home is still refused without a request.
+            expect(repository.getSnapshot({ serverId: 'home-b', sessionId: 'session-one' }, query).lastError).toEqual({ status: 'forbidden' });
+            stop();
+        } finally {
+            await removeServerProfile(home.id);
+        }
+    });
 });

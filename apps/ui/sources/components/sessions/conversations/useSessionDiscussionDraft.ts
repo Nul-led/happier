@@ -230,13 +230,20 @@ export function useSessionDiscussionDraft(params: Readonly<{
             ...(composerIsCurrent ? COMPOSER_FIELD_IDS : []),
             ...(titleIsCurrent ? ['title' as const] : []),
         ];
-        if (fieldIds.length === 0) return false;
-        const cleared = await clearSessionDraftCurrentness({
-            scope,
-            address,
-            currentness: submission.currentness,
-            fieldIds,
-        });
+        // Field currentness decides which drafted fields are cleared, never
+        // whether the attempt is retired. The attempt identifies a submission
+        // the server already accepted, so once every captured field has moved
+        // on there is nothing to clear and the identity must still go — keeping
+        // it would let a remount adopt an accepted create/post and repeat it.
+        // A thrown persistence write still leaves the attempt in place.
+        const cleared = fieldIds.length === 0
+            ? false
+            : await clearSessionDraftCurrentness({
+                scope,
+                address,
+                currentness: submission.currentness,
+                fieldIds,
+            });
         writeSessionDraftLocalSupplement({ scope, address, patch: { discussionMutationAttempt: null } });
         return cleared;
     }, [address, scope]);

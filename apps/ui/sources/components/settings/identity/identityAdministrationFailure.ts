@@ -244,7 +244,32 @@ export function isIdentityAdministrationFailureRetryable(code: string): boolean 
     return RETRYABLE.has(classify(code));
 }
 
+/**
+ * Whether the Retry an administration client offers can still succeed.
+ *
+ * A named refusal carries the Home's own retryability and that answer stands.
+ * OR-ing the name-shaped fallback into it could only ever add retryability, so
+ * a declared `retryable: false` would never survive a code whose name merely
+ * sounds transient, and the Retry the screen then offers can never succeed. The
+ * fallback remains for transport outcomes the Home never classified at all.
+ */
+export function resolveIdentityAdministrationFailureRetryable(
+    failure: Readonly<{ code: string | null; retryable: boolean }>,
+    code: string,
+): boolean {
+    return failure.code !== null
+        ? failure.retryable
+        : failure.retryable || isIdentityAdministrationFailureRetryable(code);
+}
+
 export function identityAdministrationFailureMessage(code: string): string {
+    // The Home refuses Sync with this code only for a PAUSED source, whose
+    // recovery is the explicit Resume (Teams child 05 :498). A failed source
+    // is retried with Sync itself, so the recorded failures keep the generic
+    // needs-attention sentence.
+    if (code.trim().toLowerCase() === 'directory_sync_needs_attention') {
+        return t('identityAdministration.errorSyncPaused');
+    }
     switch (classify(code)) {
         case 'approval_pending': return t('approvals.status.open');
         case 'forbidden': return t('identityAdministration.errorForbidden');

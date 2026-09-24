@@ -49,6 +49,7 @@ import {
     resolveWorkosAuthProviderFeatures,
 } from "@/app/auth/providers/workos/workosProviderModuleFactory";
 import { resolveWorkosPlatformRuntimeMetadata } from "@/app/integrations/workos/workosPlatform";
+import { resolveTeamProviderKindDeploymentAvailability } from "./teamProviderDeploymentCeiling";
 import {
     listTeamIdentityConnectionsInTx,
     readTeamIdentityConnectionsByIdInTx,
@@ -97,6 +98,8 @@ export type ProviderRuntimeResult =
 export type ProviderDescriptorResolution = Readonly<{
     descriptor: ReturnType<AuthProviderResolver["resolveFeatures"]>;
     reference: ProviderReference;
+    /** The catalog identity-provider kind; absent for a built-in OAuth provider. */
+    providerKind?: TeamIdentityProviderKindV1;
 }>;
 
 function unavailableEligibleProvider(
@@ -127,7 +130,6 @@ export async function listEligibleTeamIdentityProvidersInTx(
     ]);
     const snapshot = resolveDeploymentProviderSnapshot(input.env);
     const platform = resolveWorkosPlatformRuntimeMetadata(input.env);
-    const publicServerAvailable = resolveConfiguredPublicServerUrl(input.env) !== null;
 
     const projectExisting = async (
         resolved: (typeof homeRows)[number],
@@ -230,12 +232,8 @@ export async function listEligibleTeamIdentityProvidersInTx(
         const policy = resolveTeamProviderKindPolicy(home, providerKind);
         if (policy === "unavailable") return unavailableEligibleProvider(base, "home_policy_unavailable");
         if (policy === "prohibited") return unavailableEligibleProvider(base, "home_policy_prohibited");
-        if (providerKind === "workos_sso" && !platform.available) {
-            return unavailableEligibleProvider(base, "workos_platform_unavailable");
-        }
-        if (providerKind !== "workos_sso" && !publicServerAvailable) {
-            return unavailableEligibleProvider(base, "provider_setup_unavailable");
-        }
+        const deployment = resolveTeamProviderKindDeploymentAvailability(input.env, providerKind);
+        if (deployment !== "available") return unavailableEligibleProvider(base, deployment);
         const actionId = providerKind === "oidc"
             ? "identity.providers.create" as const
             : providerKind === "workos_sso"
@@ -291,6 +289,7 @@ export async function listProviderDescriptorsInTx(
                 runtimeFingerprint: runtime.runtimeFingerprint,
                 context,
             },
+            ...(module.auth.providerKind ? { providerKind: module.auth.providerKind } : {}),
         }];
     });
 
@@ -329,6 +328,7 @@ export async function listProviderDescriptorsInTx(
                             }),
                             context,
                         },
+                        providerKind: instance.kind,
                     };
                 }
                 if (instance.kind === "github_app_identity") {
@@ -352,6 +352,7 @@ export async function listProviderDescriptorsInTx(
                             runtimeFingerprint: metadata.runtimeFingerprint,
                             context,
                         },
+                        providerKind: instance.kind,
                     };
                 }
                 return null;

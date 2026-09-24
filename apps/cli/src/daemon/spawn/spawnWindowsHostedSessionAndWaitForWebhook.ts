@@ -47,6 +47,8 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
     options: SpawnSessionOptions;
     trackedSpawnOptions: SpawnSessionOptions;
     normalizedExistingSessionId: string;
+    /** Creation outcome of a Session the daemon committed before launch; its attaching runner reports none. */
+    sessionCreationOutcome?: TrackedSession['sessionCreationOutcome'];
     effectiveResume: string;
     reservedSessionId?: string;
     directoryCreated: boolean;
@@ -102,6 +104,9 @@ export async function spawnWindowsHostedSessionAndWaitForWebhook(params: Readonl
                 || `PID-${waitParams.pid}`,
             pid: waitParams.pid,
             spawnOptions: params.trackedSpawnOptions,
+            ...(params.sessionCreationOutcome
+                ? { sessionCreationOutcome: params.sessionCreationOutcome }
+                : {}),
             acceptedSpawnMarkerGate,
             hostedTerminal: waitParams.terminal,
             ...(waitParams.windowsTerminalLaunchCustody

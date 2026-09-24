@@ -11,6 +11,7 @@ const en = {
     responsibilityNoCandidates: 'No one else can access this session yet.',
     responsibilityAccessChanged: 'Access changed. This person can no longer be made responsible.',
     responsibilityUpdateFailed: 'Happier could not update the responsible person. Try again.',
+    responsibilityApprovalPending: 'Waiting for approval. Nothing changed yet — the responsible person updates once it is approved.',
     responsibilityA11yEditable: ({ name }: { name: string }) =>
         `Responsible person, ${name}. Change responsible person.`,
     responsibilityA11yReadOnly: ({ name }: { name: string }) => `Responsible person, ${name}.`,
@@ -39,6 +40,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Encara no hi ha ningú més amb accés a aquesta sessió.',
         responsibilityAccessChanged: 'L’accés ha canviat. Aquesta persona ja no pot ser responsable.',
         responsibilityUpdateFailed: 'Happier no ha pogut actualitzar la persona responsable. Torna-ho a provar.',
+        responsibilityApprovalPending: 'Pendent d’aprovació. Encara no ha canviat res: la persona responsable s’actualitzarà quan s’aprovi.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Persona responsable, ${name}. Canvia la persona responsable.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsable, ${name}.`,
@@ -59,6 +61,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Bisher hat sonst niemand Zugriff auf diese Session.',
         responsibilityAccessChanged: 'Der Zugriff hat sich geändert. Diese Person kann nicht mehr verantwortlich sein.',
         responsibilityUpdateFailed: 'Happier konnte die verantwortliche Person nicht ändern. Versuch es noch einmal.',
+        responsibilityApprovalPending: 'Warten auf Genehmigung. Es hat sich noch nichts geändert – die verantwortliche Person wird nach der Genehmigung aktualisiert.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Verantwortliche Person, ${name}. Verantwortliche Person ändern.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Verantwortliche Person, ${name}.`,
@@ -79,6 +82,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Todavía nadie más puede acceder a esta sesión.',
         responsibilityAccessChanged: 'El acceso cambió. Esta persona ya no puede ser responsable.',
         responsibilityUpdateFailed: 'Happier no pudo actualizar a la persona responsable. Inténtalo de nuevo.',
+        responsibilityApprovalPending: 'Esperando aprobación. Aún no ha cambiado nada: la persona responsable se actualizará cuando se apruebe.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Persona responsable, ${name}. Cambiar la persona responsable.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsable, ${name}.`,
@@ -99,6 +103,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Personne d’autre n’a encore accès à cette session.',
         responsibilityAccessChanged: 'L’accès a changé. Cette personne ne peut plus être responsable.',
         responsibilityUpdateFailed: 'Happier n’a pas pu changer la personne responsable. Réessaie.',
+        responsibilityApprovalPending: 'En attente d’approbation. Rien n’a encore changé : la personne responsable sera mise à jour après l’approbation.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Personne responsable, ${name}. Changer la personne responsable.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Personne responsable, ${name}.`,
@@ -119,6 +124,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Per ora nessun altro può accedere a questa sessione.',
         responsibilityAccessChanged: 'L’accesso è cambiato. Questa persona non può più essere responsabile.',
         responsibilityUpdateFailed: 'Happier non è riuscito ad aggiornare la persona responsabile. Riprova.',
+        responsibilityApprovalPending: 'In attesa di approvazione. Non è ancora cambiato nulla: la persona responsabile verrà aggiornata dopo l’approvazione.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Persona responsabile, ${name}. Cambia la persona responsabile.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsabile, ${name}.`,
@@ -139,6 +145,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'このセッションにアクセスできる人はまだ他にいません。',
         responsibilityAccessChanged: 'アクセス権が変わりました。この人は担当者にできません。',
         responsibilityUpdateFailed: '担当者を更新できませんでした。もう一度お試しください。',
+        responsibilityApprovalPending: '承認待ちです。まだ変更されていません。承認されると担当者が更新されます。',
         responsibilityA11yEditable: ({ name }: { name: string }) => `担当者、${name}。担当者を変更。`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `担当者、${name}。`,
         responsibilityA11yEmpty: '担当者、なし。担当者を変更。',
@@ -158,6 +165,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Nikt inny nie ma jeszcze dostępu do tej sesji.',
         responsibilityAccessChanged: 'Dostęp się zmienił. Ta osoba nie może już być odpowiedzialna.',
         responsibilityUpdateFailed: 'Happier nie mógł zmienić osoby odpowiedzialnej. Spróbuj ponownie.',
+        responsibilityApprovalPending: 'Oczekiwanie na zatwierdzenie. Nic się jeszcze nie zmieniło — osoba odpowiedzialna zostanie zaktualizowana po zatwierdzeniu.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Osoba odpowiedzialna, ${name}. Zmień osobę odpowiedzialną.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Osoba odpowiedzialna, ${name}.`,
@@ -178,6 +186,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Ainda não há mais ninguém com acesso a esta sessão.',
         responsibilityAccessChanged: 'O acesso mudou. Esta pessoa já não pode ser responsável.',
         responsibilityUpdateFailed: 'O Happier não conseguiu atualizar a pessoa responsável. Tenta novamente.',
+        responsibilityApprovalPending: 'A aguardar aprovação. Ainda não mudou nada: a pessoa responsável é atualizada quando for aprovado.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Pessoa responsável, ${name}. Mudar a pessoa responsável.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Pessoa responsável, ${name}.`,
@@ -198,6 +207,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: 'Пока больше ни у кого нет доступа к этой сессии.',
         responsibilityAccessChanged: 'Доступ изменился. Этот человек больше не может быть ответственным.',
         responsibilityUpdateFailed: 'Happier не смог обновить ответственного. Попробуйте ещё раз.',
+        responsibilityApprovalPending: 'Ожидается подтверждение. Пока ничего не изменилось — ответственный обновится после подтверждения.',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `Ответственный, ${name}. Изменить ответственного.`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Ответственный, ${name}.`,
@@ -218,6 +228,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: '目前还没有其他人可以访问此会话。',
         responsibilityAccessChanged: '访问权限已更改。此人不能再被设为负责人。',
         responsibilityUpdateFailed: 'Happier 无法更新负责人。请重试。',
+        responsibilityApprovalPending: '正在等待批准。目前尚未更改，批准后将更新负责人。',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `负责人：${name}。更改负责人。`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `负责人：${name}。`,
@@ -238,6 +249,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityNoCandidates: '目前還沒有其他人可以存取此工作階段。',
         responsibilityAccessChanged: '存取權已變更。此人不能再被設為負責人。',
         responsibilityUpdateFailed: 'Happier 無法更新負責人。請重試。',
+        responsibilityApprovalPending: '正在等待核准。目前尚未變更，核准後將更新負責人。',
         responsibilityA11yEditable: ({ name }: { name: string }) =>
             `負責人：${name}。變更負責人。`,
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `負責人：${name}。`,

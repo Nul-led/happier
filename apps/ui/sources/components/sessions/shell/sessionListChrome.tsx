@@ -17,6 +17,11 @@ import {
     type SessionFolderWorkspaceRefV1,
 } from '@/sync/domains/session/folders';
 
+import {
+    useSessionListLayoutChoice,
+    useYieldSessionListLayoutIntent,
+} from '@/hooks/session/sessionListLayoutIntent';
+
 import { sessionListStyles } from './sessionListStyles';
 import { resolveProjectGroupHeaderMenuItems } from './resolveProjectGroupHeaderMenuItems';
 import {
@@ -30,6 +35,7 @@ import { resolveWorkspaceRootTreeRowId, treeRowId } from './drop-resolution/tree
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { useApplySettings } from '@/sync/store/settingsWriters';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const HEADER_ACTION_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
 const HEADER_ACTION_TARGET_STYLE = {
@@ -143,10 +149,15 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
         : { scopeKind: 'main_selection' });
     const [menuOpen, setMenuOpen] = React.useState(false);
     const actionIconColor = theme.colors.text.secondary;
+    // The rendered arrangement is the one this menu describes, so the checkmark
+    // and the dependent controls read the effective-layout owner, not the raw
+    // settings a visit intent may currently be overriding.
+    const effectiveLayout = useSessionListLayoutChoice();
+    const yieldLayoutIntent = useYieldSessionListLayoutIntent();
     const presentation = resolveSessionListViewOptionsPresentation({
         ...settings,
         foldersFeatureEnabled: sessionFoldersFeatureEnabled,
-    });
+    }, effectiveLayout);
     const withSelection = React.useCallback((
         items: ReadonlyArray<SessionListViewOptionDescriptor>,
         selectedId: string,
@@ -271,9 +282,12 @@ export const SessionListViewOptionsButton = React.memo(function SessionListViewO
     const handleMenuSelect = React.useCallback((itemId: string) => {
         const delta = resolveSessionListViewOptionSelectionDelta(itemId, settings);
         if (!delta) return;
+        // An explicit layout choice retires the host's opening intent, so the
+        // choice applies here and now instead of only after leaving the route.
+        if (itemId.startsWith('layout:')) yieldLayoutIntent();
         applySettings(delta);
         setMenuOpen(false);
-    }, [applySettings, settings]);
+    }, [applySettings, settings, yieldLayoutIntent]);
 
     return (
         <DropdownMenu
@@ -353,7 +367,7 @@ export const SessionFolderFocusBreadcrumbs = React.memo(function SessionFolderFo
                         borderRadius: 6,
                         borderWidth: 1,
                         borderColor: focused ? theme.colors.border.focus : 'transparent',
-                        opacity: pressed ? 0.8 : 1,
+                        opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                     }]}
                 >
                     <Text style={styles.groupHeaderSubtitle}>{props.rootTitle ?? t('sessionsList.workspaceRoot')}</Text>
@@ -382,7 +396,7 @@ export const SessionFolderFocusBreadcrumbs = React.memo(function SessionFolderFo
                                 borderRadius: 6,
                                 borderWidth: 1,
                                 borderColor: focused ? theme.colors.border.focus : 'transparent',
-                                opacity: pressed ? 0.8 : 1,
+                                opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                             }]}
                         >
                             <Text style={styles.groupHeaderSubtitle}>{breadcrumb.name}</Text>

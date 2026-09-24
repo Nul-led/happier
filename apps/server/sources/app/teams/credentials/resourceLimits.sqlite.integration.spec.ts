@@ -18,6 +18,7 @@ import {
 } from './teamCredentialUsageLimits';
 import { admitTeamCredentialUsageInTx } from './teamCredentialUsageAdmission';
 import { readTeamCredentialCatalogInTx } from './resourceRead';
+import { updateTeamCredentialResourceInTx } from './resourceUpdate';
 
 const TEST_AUTHENTICATION = {
     env: process.env,
@@ -33,7 +34,7 @@ describe('Team credential usage-limit administration', () => {
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
 
-    async function fixture() {
+    async function fixture(options?: Readonly<{ sessionUsePolicy?: 'personal_allowed' | 'team_context_required' }>) {
         const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
         const custodian = await db.account.create({ data: { encryptionMode: 'plain' } });
         const member = await db.account.create({ data: { encryptionMode: 'plain' } });
@@ -62,7 +63,7 @@ describe('Team credential usage-limit administration', () => {
             custodianAccountId: custodian.id,
             displayName: 'Shared provider',
             disclosureCeiling: 'brokered_only',
-            sessionUsePolicy: 'personal_allowed',
+            sessionUsePolicy: options?.sessionUsePolicy ?? 'personal_allowed',
             sourceBindingJson: '{}',
             allMembersDeliveryMode: 'brokered',
         } });
@@ -92,15 +93,37 @@ describe('Team credential usage-limit administration', () => {
         }))).resolves.toEqual({ ok: false, error: 'team_authentication_required' });
     });
 
-    it('rejects an enabled token limit on a detached Run route with no terminal producer', async () => {
-        const f = await fixture();
-        const limit = await db.teamCredentialUsageLimit.create({ data: {
-            resourceId: f.resource.id,
-            subjectKind: 'team_member',
-            subjectId: f.member.id,
-            period: 'day',
-            metric: 'total_tokens',
-            maximum: '100',
+    it('offers a token ceiling on a Team-context resource and enforces it on the Session route', async () => {
+        // Plan 10.07 §12.5: token limits need observation on every ALLOWED use
+        // path. A Team-context resource is reachable only through Happier
+        // Sessions and their attached Runs, whose Agent observations are
+        // complete; detached Runs and the external API cannot admit it.
+        const f = await fixture({ sessionUsePolicy: 'team_context_required' });
+        const created = await inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            body: {
+                resourceId: f.resource.id,
+                expectedRevision: 0,
+                limit: {
+                    subjectKind: 'team_member', subjectId: f.member.id,
+                    period: 'month', metric: 'total_tokens', maximum: '10', enabled: true,
+                },
+            },
+        }));
+        expect(created).toMatchObject({ ok: true, limit: expect.objectContaining({ metric: 'total_tokens' }) });
+        if (!created.ok) throw new Error('expected the token limit to be created');
+        // The ordinary Agent observation of a later Session turn.
+        await db.usageEvent.create({ data: {
+            accountId: f.member.id,
+            observedAt: new Date(),
+            agentId: 'claude',
+            source: 'agent',
+            scope: 'turn_delta',
+            totalTokens: 12,
+            teamCredentialResourceId: f.resource.id,
+            teamCredentialActorAccountId: f.member.id,
+            credentialDeliveryMode: 'brokered',
         } });
 
         await expect(inTx((tx) => admitTeamCredentialUsageInTx(tx, {
@@ -108,9 +131,9 @@ describe('Team credential usage-limit administration', () => {
             sessionId: null,
             turnId: null,
             observedAt: new Date(),
-            requestId: 'detached-run-request-1',
+            requestId: 'session-request-over-token-ceiling',
             modelId: 'model-a',
-            usageRoute: 'agent_runtime_detached_execution_run',
+            usageRoute: 'agent_runtime_session_turn',
             authority: {
                 kind: 'teamCredentialAdmission',
                 requestingAccountId: f.member.id,
@@ -120,17 +143,93 @@ describe('Team credential usage-limit administration', () => {
                 workerMachineId: null,
                 brokerMachineId: 'broker-a',
                 deliveryMode: 'brokered',
-                executionRunId: 'detached-run',
+                executionRunId: null,
             },
-        }))).resolves.toEqual({
+        }))).resolves.toMatchObject({
             ok: false,
-            reasonCode: 'token_limit_unavailable',
-            limitId: limit.id,
+            reasonCode: 'team_credential_usage_limit',
+            usageLimit: { metric: 'total_tokens', remaining: '0' },
         });
         await expect(db.usageEvent.count({ where: {
             accountId: f.member.id,
-            externalKey: 'detached-run-request-1',
+            externalKey: 'session-request-over-token-ceiling',
         } })).resolves.toBe(0);
+
+        // Opening the personal routes would leave the ceiling silently partial,
+        // so the policy change fails closed while the limit is enabled.
+        await expect(inTx((tx) => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: f.resource.id, expectedRevision: created.revision, sessionUsePolicy: 'personal_allowed' },
+        }))).resolves.toEqual({ ok: false, error: 'token_limit_unavailable' });
+        await expect(db.teamCredentialResource.findUniqueOrThrow({ where: { id: f.resource.id } }))
+            .resolves.toMatchObject({ sessionUsePolicy: 'team_context_required', revision: created.revision });
+
+        // Once the manager disables the ceiling nothing claims to cover those
+        // routes, so the ceiling no longer refuses the change. (This fixture's
+        // placeholder source is refused later by the placement owner, which
+        // is not what this case is about.)
+        const disabled = await inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            body: {
+                resourceId: f.resource.id,
+                expectedRevision: created.revision,
+                limit: {
+                    id: created.limit.id, subjectKind: 'team_member', subjectId: f.member.id,
+                    period: 'month', metric: 'total_tokens', maximum: '10', enabled: false,
+                },
+            },
+        }));
+        if (!disabled.ok) throw new Error(`expected the limit to be disabled, received ${disabled.error}`);
+        await expect(inTx((tx) => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: f.resource.id, expectedRevision: disabled.revision, sessionUsePolicy: 'personal_allowed' },
+        }))).resolves.not.toEqual({ ok: false, error: 'token_limit_unavailable' });
+    });
+
+    it('keeps a personal-use resource request-count-only because detached Runs and the external API cannot report tokens', async () => {
+        const f = await fixture();
+        await expect(inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            body: {
+                resourceId: f.resource.id,
+                expectedRevision: 0,
+                limit: {
+                    subjectKind: 'resource', subjectId: '',
+                    period: 'day', metric: 'total_tokens', maximum: '100', enabled: true,
+                },
+            },
+        }))).resolves.toEqual({ ok: false, error: 'token_limit_unavailable' });
+        await expect(inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
+            actorAccountId: f.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            body: {
+                resourceId: f.resource.id,
+                expectedRevision: 0,
+                limit: {
+                    subjectKind: 'resource', subjectId: '',
+                    period: 'day', metric: 'inference_requests', maximum: '100', enabled: true,
+                },
+            },
+        }))).resolves.toMatchObject({ ok: true });
+        // No canonical price exists for any route, so cost stays unavailable
+        // even where tokens are observed (§2.6, §12.6).
+        const teamContext = await fixture({ sessionUsePolicy: 'team_context_required' });
+        await expect(inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
+            actorAccountId: teamContext.manager.id,
+            authentication: TEST_AUTHENTICATION,
+            body: {
+                resourceId: teamContext.resource.id,
+                expectedRevision: 0,
+                limit: {
+                    subjectKind: 'resource', subjectId: '',
+                    period: 'day', metric: 'cost_usd', maximum: '1.00', enabled: true,
+                },
+            },
+        }))).resolves.toEqual({ ok: false, error: 'cost_limit_unavailable' });
     });
 
     it.each([
@@ -173,43 +272,6 @@ describe('Team credential usage-limit administration', () => {
             accountId: f.member.id,
             externalKey: requestId,
         } })).resolves.toMatchObject({ requestCount: 1, totalTokens: 0 });
-    });
-
-    it('fails a stale enabled cost limit closed even on a token-observed Session route', async () => {
-        const f = await fixture();
-        const limit = await db.teamCredentialUsageLimit.create({ data: {
-            resourceId: f.resource.id,
-            subjectKind: 'team_member',
-            subjectId: f.member.id,
-            period: 'day',
-            metric: 'cost_usd',
-            maximum: '1.00',
-        } });
-
-        await expect(inTx((tx) => admitTeamCredentialUsageInTx(tx, {
-            storageAccountId: f.member.id,
-            sessionId: 'session-with-current-turn',
-            turnId: 'turn-1',
-            observedAt: new Date(),
-            requestId: 'session-cost-without-price-coverage',
-            modelId: 'model-a',
-            usageRoute: 'agent_runtime_session_turn',
-            authority: {
-                kind: 'teamCredentialAdmission',
-                requestingAccountId: f.member.id,
-                resourceId: f.resource.id,
-                externalApiKeyId: null,
-                sourceCredentialId: null,
-                workerMachineId: null,
-                brokerMachineId: 'broker-a',
-                deliveryMode: 'brokered',
-                executionRunId: null,
-            },
-        }))).resolves.toEqual({
-            ok: false,
-            reasonCode: 'cost_limit_unavailable',
-            limitId: limit.id,
-        });
     });
 
     it('applies only Group limits for the actor\'s current Groups at admission, never event attribution alone', async () => {
@@ -1015,65 +1077,5 @@ describe('Team credential usage-limit administration', () => {
             expect.objectContaining({ limitId: daily.id, recorded: 20 }),
             expect.objectContaining({ limitId: monthly.id, recorded: 50 }),
         ]));
-    });
-
-    it('enforces recorded ordinary-runtime tokens while canonical cost coverage remains unavailable', async () => {
-        const f = await fixture();
-        const createdAt = new Date(Date.now() - 60_000);
-        const existing = await db.teamCredentialUsageLimit.create({ data: {
-            resourceId: f.resource.id,
-            subjectKind: 'team_member',
-            subjectId: f.member.id,
-            period: 'month',
-            metric: 'total_tokens',
-            maximum: '100',
-            createdAt,
-        } });
-        await db.usageEvent.create({ data: {
-            accountId: f.member.id,
-            observedAt: new Date(),
-            agentId: 'claude',
-            source: 'agent',
-            scope: 'turn_delta',
-            totalTokens: 12,
-            teamCredentialResourceId: f.resource.id,
-            teamCredentialActorAccountId: f.member.id,
-            credentialDeliveryMode: 'brokered',
-        } });
-        const updated = await inTx((tx) => upsertTeamCredentialUsageLimitInTx(tx, {
-            actorAccountId: f.manager.id,
-            authentication: TEST_AUTHENTICATION,
-            body: {
-                resourceId: f.resource.id,
-                expectedRevision: 0,
-                limit: {
-                    id: existing.id, subjectKind: 'team_member', subjectId: f.member.id,
-                    period: 'month', metric: 'total_tokens', maximum: '10', enabled: true,
-                },
-            },
-        }));
-        // A resource-wide token ceiling is unavailable while any enabled
-        // consumption route lacks a complete terminal token observation. The
-        // existing Session event is real, but it cannot make the detached Run,
-        // external ingress, and resource-test routes disappear from the
-        // resource's advertised capability.
-        expect(updated).toEqual({ ok: false, error: 'token_limit_unavailable' });
-        await db.teamCredentialUsageLimit.delete({ where: { id: existing.id } });
-
-        const costLimit = await db.teamCredentialUsageLimit.create({ data: {
-            resourceId: f.resource.id,
-            subjectKind: 'resource',
-            subjectId: '',
-            period: 'day',
-            metric: 'cost_usd',
-            maximum: '10.00',
-            createdAt,
-        } });
-        expect(costLimit.id).toBeTruthy();
-        await expect(inTx((tx) => listTeamCredentialUsageLimitsInTx(tx, {
-            actorAccountId: f.manager.id,
-            authentication: TEST_AUTHENTICATION,
-            resourceId: f.resource.id,
-        }))).resolves.toEqual({ ok: false, error: 'cost_limit_unavailable' });
     });
 });

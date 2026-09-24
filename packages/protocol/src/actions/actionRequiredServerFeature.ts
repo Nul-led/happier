@@ -41,8 +41,9 @@ export function getActionRequiredServerFeatureId(actionId: string): FeatureId | 
   if (isSessionAccessActionIdV1(actionId)) {
     // The public-link intents are served by the public-share routes, whose
     // availability owner is `sharing.public`; the grant, context and
-    // responsibility intents are the collaboration routes.
-    return actionId.startsWith('session.public_link.') ? 'sharing.public' : 'sessions.collaboration';
+    // responsibility intents are the collaboration routes, served wherever
+    // `sharing.session` is enabled.
+    return actionId.startsWith('session.public_link.') ? 'sharing.public' : 'sharing.session';
   }
   if (MachinePoolActionIdV1Schema.safeParse(actionId).success) return 'machines.pools';
   if (EphemeralRunnerActionIdV1Schema.safeParse(actionId).success) return 'sessions.ephemeralRunner';

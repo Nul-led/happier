@@ -9,6 +9,16 @@ import type {
 
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
+import {
+    createIdleSessionFollowMutationIntent,
+    reduceSessionFollowMutationIntent,
+    type SessionFollowMutationIntentEvent,
+} from './sessionFollowMutationIntent';
+
+type AccountSessionFollowIntent =
+    | Readonly<{ kind: 'set'; preferences: SetSessionFollowRequest }>
+    | Readonly<{ kind: 'remove' }>;
+
 export type FollowTransportResult<T> =
     | Readonly<{ kind: 'ok'; value: T }>
     | Readonly<{ kind: 'failed'; error: SessionFollowErrorCodeV1 | 'unavailable' }>;
@@ -54,7 +64,12 @@ export function createAccountSessionFollowController(
     let disposed = false;
     let activeRead: object | null = null;
     let refreshAfterSave = false;
-    let retryOperation: 'load' | 'set' | 'remove' = 'load';
+    // The shared Follow retry owner: this editor's failed intent, its error and the rule that a
+    // passive refresh reconciles the Home projection *beneath* it rather than erasing it.
+    let mutation = createIdleSessionFollowMutationIntent<
+        AccountSessionFollowIntent,
+        SessionFollowErrorCodeV1 | 'unavailable'
+    >();
 
     function update(patch: Partial<AccountSessionFollowEditorSnapshot>) {
         if (disposed) return;
@@ -62,15 +77,32 @@ export function createAccountSessionFollowController(
         for (const listener of listeners) listener();
     }
 
+    function applyMutation(
+        event: SessionFollowMutationIntentEvent<AccountSessionFollowIntent, SessionFollowErrorCodeV1 | 'unavailable'>,
+        patch: Partial<AccountSessionFollowEditorSnapshot> = {},
+    ) {
+        mutation = reduceSessionFollowMutationIntent(mutation, event);
+        const outstanding = mutation.pending ?? mutation.failed;
+        update({
+            draft: outstanding?.kind === 'set' ? { ...outstanding.preferences } : null,
+            error: mutation.error,
+            ...patch,
+        });
+    }
+
     function failed(error: SessionFollowErrorCodeV1 | 'unavailable') {
         const accessLost = error === 'session_not_found' || error === 'account_inactive' || error === 'feature_unavailable';
-        if (accessLost) retryOperation = 'load';
-        update({
-            error,
-            loading: false,
-            saving: false,
-            ...(accessLost ? { projection: null, draft: null, voiceInitialSnapshotPending: false } : {}),
-        });
+        if (accessLost) {
+            applyMutation({ kind: 'abandoned' }, {
+                error,
+                loading: false,
+                saving: false,
+                projection: null,
+                voiceInitialSnapshotPending: false,
+            });
+            return;
+        }
+        applyMutation({ kind: 'failed', error }, { loading: false, saving: false });
     }
 
     async function refresh(): Promise<void> {
@@ -81,18 +113,16 @@ export function createAccountSessionFollowController(
         }
         const read = {};
         activeRead = read;
-        const mutationRetryPending = retryOperation !== 'load' && snapshot.error !== null;
-        update({ loading: true, error: mutationRetryPending ? snapshot.error : null });
+        update({ loading: true, ...(mutation.failed === null ? { error: null } : {}) });
         try {
             const result = await transport.get(target);
             if (disposed || activeRead !== read) return;
             activeRead = null;
             if (result.kind === 'failed') {
-                if (!mutationRetryPending) retryOperation = 'load';
                 failed(result.error);
                 return;
             }
-            update({
+            applyMutation({ kind: 'refreshed' }, {
                 projection: result.value,
                 loading: false,
                 voiceInitialSnapshotPending: result.value.voiceInitialSnapshotPending,
@@ -100,7 +130,6 @@ export function createAccountSessionFollowController(
         } catch {
             if (disposed || activeRead !== read) return;
             activeRead = null;
-            if (!mutationRetryPending) retryOperation = 'load';
             failed('unavailable');
         }
     }
@@ -114,8 +143,7 @@ export function createAccountSessionFollowController(
     async function set(preferences: SetSessionFollowRequest): Promise<void> {
         if (disposed || !snapshot.online || snapshot.saving || snapshot.projection?.capabilities.manageFollow !== true) return;
         activeRead = null;
-        retryOperation = 'set';
-        update({ draft: { ...preferences }, saving: true, loading: false, error: null });
+        applyMutation({ kind: 'started', intent: { kind: 'set', preferences } }, { saving: true, loading: false });
         try {
             const result = await transport.set(target, preferences);
             if (disposed) return;
@@ -123,14 +151,13 @@ export function createAccountSessionFollowController(
                 failed(result.error);
                 return;
             }
-            update({
+            applyMutation({ kind: 'succeeded' }, {
                 projection: {
                     follow: result.value.follow,
                     isSessionOwner: snapshot.projection?.isSessionOwner === true,
                     capabilities: { manageFollow: true },
                     voiceInitialSnapshotPending: result.value.voiceInitialSnapshotPending,
                 },
-                draft: null,
                 saving: false,
                 voiceInitialSnapshotPending: result.value.voiceInitialSnapshotPending,
             });
@@ -144,8 +171,7 @@ export function createAccountSessionFollowController(
     async function remove(): Promise<void> {
         if (disposed || !snapshot.online || snapshot.saving || !snapshot.projection) return;
         activeRead = null;
-        retryOperation = 'remove';
-        update({ saving: true, loading: false, error: null, draft: null });
+        applyMutation({ kind: 'started', intent: { kind: 'remove' } }, { saving: true, loading: false });
         try {
             const result = await transport.remove(target);
             if (disposed) return;
@@ -153,7 +179,7 @@ export function createAccountSessionFollowController(
                 failed(result.error);
                 return;
             }
-            update({
+            applyMutation({ kind: 'succeeded' }, {
                 projection: {
                     follow: { sessionId: target.sessionId, ...EXPLICIT_SESSION_UNFOLLOW_STATE_V1 },
                     isSessionOwner: snapshot.projection?.isSessionOwner === true,
@@ -180,8 +206,9 @@ export function createAccountSessionFollowController(
         set,
         remove,
         retry: async () => {
-            if (retryOperation === 'set' && snapshot.draft) await set(snapshot.draft);
-            else if (retryOperation === 'remove') await remove();
+            const intent = mutation.failed;
+            if (intent?.kind === 'set') await set(intent.preferences);
+            else if (intent?.kind === 'remove') await remove();
             else await refresh();
         },
         setOnline(online: boolean) {

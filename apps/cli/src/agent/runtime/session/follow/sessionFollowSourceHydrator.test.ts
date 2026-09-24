@@ -1,11 +1,17 @@
 import {
   isSessionAwarenessContentReadableV1,
   SessionFollowUpdateEnvelopeV1Schema,
+  type SessionFollowFrontierV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
-import { createSessionFollowSourceHydrator } from './sessionFollowSourceHydrator';
+import { createSessionFollowContextReconciler } from './sessionFollowContextReconciler';
+import {
+  createSessionFollowSourceHydrator,
+  resolveAccountVoiceFollowDisclosure,
+} from './sessionFollowSourceHydrator';
 
 const observation = {
   sourceSessionId: 'source',
@@ -149,6 +155,108 @@ describe('Session Follow source hydrator', () => {
     expect(envelope?.sourceRecencyMs).toBe(2345);
     expect(envelope?.recentMessages.map((message) => message.seq)).toEqual([2]);
     expect(envelope?.recentMessages[0]?.authorLabel).toBe('Ada Lovelace');
+  });
+
+  it('withholds source transcript text and the work headline when the Account Voice disclosure policy does', async () => {
+    const hydrate = createSessionFollowSourceHydrator({
+      session: destinationSession,
+      credentials: { token: 'token' } as never,
+      // The one owner both Voice hosts ask. `shareRecentMessages` is off while
+      // this Session is explicitly included in Voice, which is exactly the case
+      // the foreground path already withholds transcript text for.
+      disclosure: resolveAccountVoiceFollowDisclosure({
+        voice: {
+          privacy: { shareSessionSummary: false, shareRecentMessages: false },
+          ui: { updates: { activeSession: 'snippets' } },
+        },
+      }),
+      deps: {
+        resolveSourceTransport: (async () => ({
+          ok: true,
+          sessionId: 'source',
+          rawSession: { id: 'source', encryptionMode: 'plain', updatedAt: 1234, activeAt: 2345 },
+          accountEncryptionCurrentness: { mode: 'plain' },
+          ctx: null,
+          mode: 'plain',
+        })) as never,
+        fetchTranscriptPage: (async () => ({
+          messages: [
+            { seq: 2, createdAt: 2, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'private transcript text' } } } },
+            { seq: 3, createdAt: 3, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'more private text' } } } },
+          ],
+          hasMore: false,
+          nextBeforeSeq: null,
+          nextAfterSeq: null,
+        })) as never,
+        projectSourceAwareness: () => ({
+          ...awareness,
+          title: 'Source Session',
+          currentWork: { title: 'refactoring the billing module' },
+        }) as never,
+      },
+    });
+
+    const envelope = await hydrate({ observation: observation as never, signal: new AbortController().signal });
+
+    expect(envelope?.recentMessages).toEqual([]);
+    expect(JSON.stringify(envelope)).not.toContain('private transcript text');
+    expect(JSON.stringify(envelope)).not.toContain('refactoring the billing module');
+    // Source awareness is still disclosed: this is the activity-only projection,
+    // not a withheld source.
+    expect(envelope?.reason).toBe('source_changed');
+    expect(envelope?.awareness.title).toBe('Source Session');
+    // The exact frontier this read represents still settles, so Voice does not
+    // replay an undisclosable observation forever.
+    expect(envelope?.observed.transcriptSeq).toBe(3);
+    expect(envelope?.transcriptConsumedThroughByRenderedMessageCount).toEqual([3]);
+    const {
+      sourceRecencyMs: _sourceRecencyMs,
+      transcriptConsumedThroughByRenderedMessageCount: _checkpoints,
+      ...wireEnvelope
+    } = envelope!;
+    expect(() => SessionFollowUpdateEnvelopeV1Schema.parse(wireEnvelope)).not.toThrow();
+  });
+
+  it('keeps source transcript text when the Account Voice disclosure policy permits snippets', async () => {
+    const hydrate = createSessionFollowSourceHydrator({
+      session: destinationSession,
+      credentials: { token: 'token' } as never,
+      // The row is the user's own message, so the Account must also opt user
+      // messages into snippets, exactly as the foreground Voice path requires.
+      disclosure: resolveAccountVoiceFollowDisclosure({
+        voice: {
+          privacy: { shareSessionSummary: true, shareRecentMessages: true },
+          ui: { updates: { activeSession: 'snippets', includeUserMessagesInSnippets: true } },
+        },
+      }),
+      deps: {
+        resolveSourceTransport: (async () => ({
+          ok: true,
+          sessionId: 'source',
+          rawSession: { id: 'source', encryptionMode: 'plain', updatedAt: 1234, activeAt: 2345 },
+          accountEncryptionCurrentness: { mode: 'plain' },
+          ctx: null,
+          mode: 'plain',
+        })) as never,
+        fetchTranscriptPage: (async () => ({
+          messages: [
+            { seq: 2, createdAt: 2, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'shared transcript text' } } } },
+          ],
+          hasMore: false,
+          nextBeforeSeq: null,
+          nextAfterSeq: null,
+        })) as never,
+        projectSourceAwareness: () => ({
+          ...awareness,
+          currentWork: { title: 'refactoring the billing module' },
+        }) as never,
+      },
+    });
+
+    const envelope = await hydrate({ observation: observation as never, signal: new AbortController().signal });
+
+    expect(envelope?.recentMessages.map((message) => message.text)).toEqual(['shared transcript text']);
+    expect(envelope?.awareness.currentWork?.title).toBe('refactoring the billing module');
   });
 
   it('uses the canonical semantic summary for durable tool calls and results', async () => {
@@ -832,5 +940,126 @@ describe('Session Follow source hydrator', () => {
 
     const envelope = await hydrate({ observation: observation as never, signal: new AbortController().signal });
     expect(envelope?.reason).toBe('source_unavailable');
+  });
+});
+
+describe('Account Voice Follow disclosure, through the real reconciler and hydrator', () => {
+  const voiceDelivered: SessionFollowFrontierV1 = { transcriptSeq: 1, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+  const voiceObserved: SessionFollowFrontierV1 = { transcriptSeq: 5, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+
+  function createAccountVoiceFixture(accountSettings: unknown) {
+    const acknowledgeAccountVoiceFollow = vi.fn(async () => ({ ok: true as const }));
+    const session = {
+      sessionId: 'destination',
+      runSessionFollowSourceRequest: <T>(input: Readonly<{ request: () => T }>): T => input.request(),
+      observePendingAccountVoiceFollow: vi.fn(async () => ({
+        ok: true as const,
+        v: 1 as const,
+        voiceSessionId: 'destination',
+        publisherGeneration: '3',
+        executionRunOccurrenceId: 'voice-occurrence',
+        observations: [{ sourceSessionId: 'source', voiceSessionId: 'destination', expected: voiceDelivered, observed: voiceObserved }],
+      })),
+      acknowledgeAccountVoiceFollow,
+    } as unknown as ApiSessionClient;
+    const resolveSourceTransport = vi.fn(async () => ({
+      ok: true,
+      sessionId: 'source',
+      rawSession: { id: 'source', encryptionMode: 'plain' },
+      accountEncryptionCurrentness: { mode: 'plain' },
+      ctx: null,
+      mode: 'plain',
+    }));
+    const fetchTranscriptPage = vi.fn(async () => ({
+      messages: [
+        { seq: 2, createdAt: 2, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'human private words' } } } },
+        { seq: 3, createdAt: 3, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'assistant one' } } } },
+        { seq: 4, createdAt: 4, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'assistant two' } } } },
+        { seq: 5, createdAt: 5, content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'assistant three' } } } },
+      ],
+      hasMore: false,
+      nextBeforeSeq: null,
+      nextAfterSeq: null,
+    }));
+    const hydrateObservation = createSessionFollowSourceHydrator({
+      session,
+      credentials: { token: 'token' } as never,
+      disclosure: resolveAccountVoiceFollowDisclosure(accountSettings),
+      deps: {
+        resolveSourceTransport: resolveSourceTransport as never,
+        fetchTranscriptPage: fetchTranscriptPage as never,
+        projectSourceAwareness: () => awareness as never,
+      },
+    });
+    const reconcile = createSessionFollowContextReconciler({
+      session,
+      observer: { kind: 'account_voice', accountId: 'account', voiceSessionId: 'destination' },
+      maxFollowContextUtf8Bytes: 8_192,
+      hydrateObservation,
+    });
+    return {
+      acknowledgeAccountVoiceFollow,
+      resolveSourceTransport,
+      fetchTranscriptPage,
+      prepare: async () => await reconcile({ signal: new AbortController().signal, executionRunId: 'voice-run' }),
+    };
+  }
+
+  it('withholds the user\'s own messages by default, keeps only the Account\'s newest represented messages, and settles the withheld rows on acceptance', async () => {
+    const fixture = createAccountVoiceFixture({
+      voice: {
+        privacy: { shareSessionSummary: true, shareRecentMessages: true },
+        ui: { updates: { activeSession: 'snippets', snippetsMaxMessages: 2 } },
+      },
+    });
+
+    const prepared = await fixture.prepare();
+
+    expect(prepared?.updates[0]?.recentMessages.map((message) => message.text)).toEqual(['assistant two', 'assistant three']);
+    expect(JSON.stringify(prepared?.updates)).not.toContain('human private words');
+    expect(JSON.stringify(prepared?.updates)).not.toContain('assistant one');
+    prepared!.acknowledgeAccepted({ kind: 'admitted_input', localInputId: 'voice-input', userMessageSeq: null });
+    await vi.waitFor(() => expect(fixture.acknowledgeAccountVoiceFollow).toHaveBeenCalledOnce());
+    // Policy-withheld rows are a deliberate disclosure decision, not deferred work:
+    // the represented frontier settles instead of replaying them every Voice turn.
+    expect(fixture.acknowledgeAccountVoiceFollow).toHaveBeenCalledWith(expect.objectContaining({
+      expected: voiceDelivered,
+      observed: voiceObserved,
+      consumed: voiceObserved,
+    }));
+  });
+
+  it('quotes the user\'s own messages when the Account explicitly shares them in snippets', async () => {
+    const fixture = createAccountVoiceFixture({
+      voice: {
+        privacy: { shareSessionSummary: true, shareRecentMessages: true },
+        ui: { updates: { activeSession: 'snippets', includeUserMessagesInSnippets: true, snippetsMaxMessages: 10 } },
+      },
+    });
+
+    const prepared = await fixture.prepare();
+
+    expect(prepared?.updates[0]?.recentMessages.map((message) => message.text)).toEqual([
+      'human private words',
+      'assistant one',
+      'assistant two',
+      'assistant three',
+    ]);
+  });
+
+  it('produces no source update at all when the Account Voice update level is none', async () => {
+    const fixture = createAccountVoiceFixture({
+      voice: {
+        privacy: { shareSessionSummary: true, shareRecentMessages: true },
+        ui: { updates: { activeSession: 'none' } },
+      },
+    });
+
+    const prepared = await fixture.prepare();
+
+    expect(prepared).toBeNull();
+    expect(fixture.resolveSourceTransport).not.toHaveBeenCalled();
+    expect(fixture.fetchTranscriptPage).not.toHaveBeenCalled();
+    expect(fixture.acknowledgeAccountVoiceFollow).not.toHaveBeenCalled();
   });
 });

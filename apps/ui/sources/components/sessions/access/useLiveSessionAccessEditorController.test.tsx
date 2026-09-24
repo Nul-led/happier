@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import tweetnacl from 'tweetnacl';
 import {
+    convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
+    createAccountScopedCryptoMaterialSnapshotV1,
+    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
     encodeSessionDataKeyEnvelopeCursorV1,
     signAccountContentKeyBindingV1,
     tryWriteServerEnabledBitInPlace,
@@ -10,6 +13,8 @@ import {
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
+import { createArtifactStoreBoundary } from '@/dev/testkit/harness/artifactStoreBoundary';
 import { encodeBase64 } from '@/encryption/base64';
 import { encodeHex } from '@/encryption/hex';
 import { primeServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -21,12 +26,20 @@ import { encryptDataKeyForRecipientV0 } from '@/sync/encryption/directShareEncry
 import { setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { runTeamAction } from '@/sync/ops/teams/teamActionClient';
+import { isDataKeyAuthCredentials, type AuthCredentials } from '@/auth/storage/tokenStorage';
+import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 
 import { useLiveSessionAccessEditorController } from './useLiveSessionAccessEditorController';
 import type { SessionAccessEditorController } from './sessionAccessEditorTypes';
 
 /** The manager's real content key pair; persisted credentials carry its secret as `machineKey`. */
-const MANAGER = vi.hoisted(() => ({ serverId: '', accountId: 'manager', keys: null as null | { publicKey: Uint8Array; secretKey: Uint8Array } }));
+const MANAGER = vi.hoisted(() => ({ serverId: '', accountId: 'manager', keys: null as null | { publicKey: Uint8Array; secretKey: Uint8Array },
+    /**
+     * Data-key credentials as a current device persists them: the Account content
+     * key pair and no legacy recovery secret. Suites that predate owner-metadata
+     * sealing keep their historical placeholder secret beside the key pair.
+     */
+    dataKeyOnly: false }));
 const TEAM_DIRECTORY = vi.hoisted(() => ({ items: [] as Array<{
     id: string;
     name: string;
@@ -43,7 +56,7 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
         tokenStorage: {
             getCredentialsForServerUrl: async (_url, options) => options?.serverId !== MANAGER.serverId ? null : {
                 token: `e30.${Buffer.from(JSON.stringify({ sub: MANAGER.accountId })).toString('base64url')}.signature`,
-                secret: 'test-secret',
+                ...(MANAGER.dataKeyOnly ? {} : { secret: 'test-secret' }),
                 ...(MANAGER.keys ? {
                     encryption: {
                         publicKey: base64.encodeBase64(MANAGER.keys.publicKey, 'base64'),
@@ -55,9 +68,24 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     });
 });
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({
-    runTeamAction: vi.fn(async () => TEAM_DIRECTORY.failed
-        ? { kind: 'failed', failure: { kind: 'unreachable', retryable: true, code: null } }
-        : { kind: 'succeeded', value: { items: TEAM_DIRECTORY.items, nextCursor: null } }),
+    runTeamAction: vi.fn(async (params: Readonly<{ actionId: string; input: Readonly<{ query?: string }> }>) => {
+        if (TEAM_DIRECTORY.failed) return { kind: 'failed', failure: { kind: 'unreachable', retryable: true, code: null } };
+        // The Home answers the bounded member lookup with exact `accountId` equality,
+        // which is what the ratified `teams.members.list` query already supports.
+        if (params.actionId === 'teams.members.list') {
+            TEAM_MEMBER_LOOKUPS.queries.push(params.input.query ?? '');
+            return { kind: 'succeeded', value: {
+                items: TEAM_MEMBER_LOOKUPS.members.filter((member) => member.accountId === params.input.query),
+                nextCursor: null,
+            } };
+        }
+        return { kind: 'succeeded', value: { items: TEAM_DIRECTORY.items, nextCursor: null } };
+    }),
+}));
+
+const TEAM_MEMBER_LOOKUPS = vi.hoisted(() => ({
+    queries: [] as string[],
+    members: [] as Array<{ accountId: string; account: { firstName: string | null; lastName: string | null; username: string | null; avatarUrl: string | null } }>,
 }));
 
 const SESSION_ID = 'collaboration-session';
@@ -135,7 +163,7 @@ function waiveSharedActionConfirmation(scope: Readonly<{ serverId: string; accou
     );
 }
 
-async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: boolean; sessionEncrypted?: boolean }>) {
+async function setupHome(options: Readonly<{ sharing: boolean; encrypted: boolean; sessionEncrypted?: boolean }>) {
     const sessionEncrypted = options.sessionEncrypted ?? options.encrypted;
     TEAM_DIRECTORY.items = [];
     const profile = await upsertServerProfile({ name: 'Access Home', serverUrl: 'https://collaboration.example.test' });
@@ -143,8 +171,8 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
     MANAGER.keys = options.encrypted ? tweetnacl.box.keyPair() : null;
 
     const features = createRootLayoutFeaturesResponse();
-    if (!tryWriteServerEnabledBitInPlace(features, 'sessions.collaboration', options.collaboration)) {
-        throw new Error('The collaboration feature bit could not be written by its own writer');
+    if (!tryWriteServerEnabledBitInPlace(features, 'sharing.session', options.sharing)) {
+        throw new Error('The Session sharing feature bit could not be written by its own writer');
     }
     primeServerFeaturesSnapshot({ serverId: profile.id, snapshot: { status: 'ready', features } });
     waiveSharedActionConfirmation({ serverId: profile.id, accountId: MANAGER.accountId });
@@ -167,8 +195,36 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
         uploaded: null as null | { recipientAccountId: string; encryptedDataKey: string },
         directEnvelope: null as null | string,
         sessionSnapshotGates: new Map<string, Promise<void>>(),
+        /** A Session row exactly as a Home stores one a 0.2 client created (layout 0). */
+        predecessorSession: null as null | Record<string, unknown>,
+        metadataPatches: [] as Array<Record<string, unknown>>,
     };
+    /**
+     * This Home's Artifact rows, answered statefully with the Home's versioned
+     * compare-and-set. The client's real codec seals and opens them, so an E2EE
+     * Account's approval is stored encrypted exactly as it is in production.
+     */
+    const artifacts = createArtifactStoreBoundary();
     const sessionDataKey = new Uint8Array(32).fill(11);
+    // The Home stores the fingerprint of the content key this Account published:
+    // the one its persisted credentials derive, exactly as the client derives it.
+    const managerCredentials = MANAGER.keys && MANAGER.dataKeyOnly ? {
+        token: 'manager-token',
+        encryption: {
+            publicKey: encodeBase64(MANAGER.keys.publicKey, 'base64'),
+            machineKey: encodeBase64(MANAGER.keys.secretKey, 'base64'),
+        },
+    } as AuthCredentials : null;
+    const contentKeyFingerprint = managerCredentials
+        ? convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
+            createAccountScopedCryptoMaterialSnapshotV1({
+                accountEncryptionMode: 'e2ee',
+                material: resolveAccountScopedCryptoMaterialFromCredentials(managerCredentials),
+                ...(isDataKeyAuthCredentials(managerCredentials) && MANAGER.keys
+                    ? { dataKeyPublicKey: MANAGER.keys.publicKey } : {}),
+            }).contentPublicKeyFingerprint,
+        )
+        : null;
 
     setRuntimeFetch(async (url, init) => {
         const path = new URL(String(url)).pathname;
@@ -177,6 +233,24 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
         // The shared Action front door reads the Account's own settings before it
         // dispatches; this Home has never stored any.
         if (path === '/v2/account/settings') return new Response(JSON.stringify({ content: null, version: 0 }));
+        // A plain-Account approval Artifact write first asks the canonical
+        // stored-content compatibility owner, then stores the Artifact.
+        if (path === '/v1/features' || path.startsWith('/v1/features/')) {
+            // The same Home features the snapshot was primed with, plus the
+            // stored-content compatibility declaration a current Home publishes.
+            const published = features as unknown as Readonly<{ capabilities?: Readonly<Record<string, unknown>> }>;
+            return new Response(JSON.stringify({ ...features, capabilities: {
+                ...(published.capabilities ?? {}),
+                accountStoredContentCompatibility: {
+                    v: 1,
+                    minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                    currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                    declarationTransport: 'http-header-and-socket-auth-v1',
+                },
+            } }));
+        }
+        const artifactResponse = artifacts.handle(path, init);
+        if (artifactResponse) return await artifactResponse;
         // The Home answers the mode and the currentness reads with their own exact
         // response schemas; both are strict, so the boundary must not blur them.
         if (path === '/v1/account/encryption') {
@@ -184,7 +258,7 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
         }
         if (path === '/v1/account/encryption/currentness') {
             return new Response(JSON.stringify(options.encrypted
-                ? { mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1, recipientEnvelopeReadiness: { status: 'available' } }
+                ? { mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: contentKeyFingerprint ?? 'content', updatedAt: 1, recipientEnvelopeReadiness: { status: 'available' } }
                 : { mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1, recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' } }));
         }
         if (path === `/v1/user/${RECIPIENT_ID}`) {
@@ -196,15 +270,6 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
                 recipientEnvelopeReadiness: { status: 'available' },
                 contentPublicKey: key.contentPublicKey, contentPublicKeySig: key.contentPublicKeySignature,
             } }));
-        }
-        // A `direct_only` Home has no current access-grant operation at all: the
-        // released Account-direct route is the real transport the seam-owned
-        // adapter must use, so this suite serves it rather than the current one.
-        if (path === `/v1/sessions/${SESSION_ID}/shares`) {
-            return new Response(JSON.stringify({ shares: state.granted ? [{
-                id: 'released-share', accessLevel: state.grantAccessLevel, canApprovePermissions: false,
-                sharedWithUser: { id: RECIPIENT_ID, firstName: 'Alice', lastName: null, username: 'alice', avatar: null },
-            }] : [] }));
         }
         if (path === '/v2/sessions/access-grants/list') {
             return new Response(JSON.stringify({
@@ -240,10 +305,23 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
             state.granted = false;
             return new Response(JSON.stringify({ changed: true, subject: GRANT_ROW.grant.subject }));
         }
-        if (path === `/v1/sessions/${SESSION_ID}/shares`) {
-            return new Response(JSON.stringify({ shares: [] }));
-        }
         const sessionSnapshotMatch = path.match(/^\/v2\/sessions\/([^/]+)$/);
+        if (sessionSnapshotMatch && init?.method === 'PATCH') {
+            // The Home's tuple CAS for this Session: it stores the owner's split and
+            // answers with the committed layout-1 versions.
+            const patch = JSON.parse(String(init.body)) as { mode: string; source?: { metadata: { version: number }; agentState: { version: number } } };
+            state.metadataPatches.push(patch);
+            if (patch.mode !== 'owner_migration' || !patch.source) return new Response(JSON.stringify({ error: 'unexpected' }), { status: 400 });
+            state.predecessorSession = null;
+            return new Response(JSON.stringify({
+                success: true, metadataLayoutVersion: 1,
+                sharedMetadata: { version: patch.source.metadata.version + 1 },
+                agentState: { version: patch.source.agentState.version + 1 },
+            }));
+        }
+        if (sessionSnapshotMatch && state.predecessorSession && decodeURIComponent(sessionSnapshotMatch[1]!) === SESSION_ID) {
+            return new Response(JSON.stringify({ session: state.predecessorSession }));
+        }
         if (sessionSnapshotMatch) {
             const sessionId = decodeURIComponent(sessionSnapshotMatch[1]!);
             await state.sessionSnapshotGates.get(sessionId);
@@ -287,27 +365,34 @@ async function setupHome(options: Readonly<{ collaboration: boolean; encrypted: 
         throw new Error(`Unexpected request ${path}`);
     });
 
-    return { profile, paths, envelopeStates, state, sessionDataKey };
+    return { profile, paths, envelopeStates, state, sessionDataKey, artifacts };
 }
 
-function Probe(props: Readonly<{ serverId: string; sessionId?: string; onRender: (controller: SessionAccessEditorController) => void }>) {
+function Probe(props: Readonly<{ serverId: string; sessionId?: string; metadataLayoutVersion?: number; onRender: (controller: SessionAccessEditorController) => void }>) {
     props.onRender(useLiveSessionAccessEditorController({
         scope: { serverId: props.serverId, accountId: MANAGER.accountId },
         sessionId: props.sessionId ?? SESSION_ID,
+        ...(props.metadataLayoutVersion !== undefined ? { metadataLayoutVersion: props.metadataLayoutVersion } : {}),
     }));
     return null;
 }
 
-async function mountController(serverId: string) {
+async function mountController(serverId: string, options?: Readonly<{ metadataLayoutVersion?: number }>) {
     let latest: SessionAccessEditorController | null = null;
-    await renderScreen(<Probe serverId={serverId} onRender={(controller) => { latest = controller; }} />);
+    await renderScreen(<Probe serverId={serverId} metadataLayoutVersion={options?.metadataLayoutVersion}
+        onRender={(controller) => { latest = controller; }} />);
     await vi.waitFor(() => expect(latest!.model.content).toEqual(expect.objectContaining({
         hasLastAcknowledgedSnapshot: true,
     })), { timeout: 5000 });
     return () => latest!;
 }
 
-beforeEach(() => { TEAM_DIRECTORY.failed = false; });
+beforeEach(() => {
+    MANAGER.dataKeyOnly = false;
+    TEAM_DIRECTORY.failed = false;
+    TEAM_MEMBER_LOOKUPS.queries = [];
+    TEAM_MEMBER_LOOKUPS.members = [];
+});
 
 afterEach(() => {
     standardCleanup();
@@ -315,19 +400,8 @@ afterEach(() => {
 });
 
 describe('useLiveSessionAccessEditorController encrypted-access preparation', () => {
-    it('keeps a direct-only Home Account-only and exposes no current Team-context control', async () => {
-        // `direct_only` reaches the Home through the released Account-direct
-        // adapter, so this Home must be the encryption-capable one the released
-        // seam expects while the Session itself stays plain.
-        const home = await setupHome({ collaboration: false, encrypted: true, sessionEncrypted: false });
-        const controller = await mountController(home.profile.id);
-
-        expect(controller().model.context).toBeUndefined();
-        expect(controller().model.directory.sections.map((section) => section.kind)).toEqual(['account']);
-    });
-
     it('starts preparation for a replacement Session while the previous scope is still in flight', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.envelopePages = [
             { summary: { prepared: 0, pending: 1, invalid: 0, recipientKeyUnavailable: 0 }, items: [createRecipientEnvelopeItem()] },
             // Replacement Session discovery.
@@ -362,7 +436,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps a plain Session free of encrypted-access warnings when discovery is not required', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true, sessionEncrypted: false });
+        const home = await setupHome({ sharing: true, encrypted: true, sessionEncrypted: false });
         const controller = await mountController(home.profile.id);
 
         await vi.waitFor(() => expect(home.paths).toContain(`/v2/sessions/${SESSION_ID}/data-key/envelopes`));
@@ -372,7 +446,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('offers eligible ungranted Teams and confirms required-floor and external-policy consequences before mutation', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         TEAM_DIRECTORY.items = [{
             id: 'team-acme',
             name: 'Acme',
@@ -398,7 +472,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps a typed context denial visible without changing the acknowledged context', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         TEAM_DIRECTORY.items = [{
             id: 'team-acme',
             name: 'Acme',
@@ -420,7 +494,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('reconciles an unknown context response from the authoritative inspection', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         TEAM_DIRECTORY.items = [{
             id: 'team-acme',
             name: 'Acme',
@@ -441,7 +515,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps an outcome-unknown context error when inspection disproves the requested change', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         TEAM_DIRECTORY.items = [{
             id: 'team-acme',
             name: 'Acme',
@@ -463,7 +537,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('allows Personal recovery when the current Team relaxed a stale required marker', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.primaryTeamId = 'team-acme';
         home.state.includeRequiredTeamGrant = true;
         TEAM_DIRECTORY.items = [{
@@ -480,7 +554,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps an active team_required context locked from Personal and replacement Teams', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.primaryTeamId = 'team-acme';
         home.state.includeRequiredTeamGrant = true;
         TEAM_DIRECTORY.items = [
@@ -499,7 +573,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('allows context recovery when the complete active Team directory no longer contains the current Team', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.primaryTeamId = 'team-acme';
         home.state.includeRequiredTeamGrant = true;
         const controller = await mountController(home.profile.id);
@@ -511,7 +585,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('fails closed while the exact current Team policy is transiently unknown', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.primaryTeamId = 'team-acme';
         home.state.includeRequiredTeamGrant = true;
         TEAM_DIRECTORY.failed = true;
@@ -524,7 +598,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('starts the recipient-key pass only after the Home acknowledges the grant, and renders the Home summary', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.envelopePages = [
             { summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] },
             { summary: { prepared: 0, pending: 1, invalid: 0, recipientKeyUnavailable: 0 }, items: [createRecipientEnvelopeItem()] },
@@ -569,7 +643,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps an acknowledged grant successful when preparation fails', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.envelopeStatus = 500;
         const controller = await mountController(home.profile.id);
 
@@ -586,8 +660,28 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         expect(controller().model.encryption?.error?.code).toBe('session_data_key_envelope_request_failed');
     });
 
+    it('clears the typed search only after an add, never under a level change', async () => {
+        const home = await setupHome({ sharing: true, encrypted: true });
+        home.state.granted = true;
+        home.state.envelopePages.push({ summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] });
+        const controller = await mountController(home.profile.id);
+        await vi.waitFor(() => expect(controller().model.grants[0]?.level).toMatchObject({ value: 'view' }));
+
+        await act(async () => { controller().actions.setQuery('ada'); });
+        expect(controller().model.directory.query).toBe('ada');
+
+        await act(async () => { controller().actions.setAccessLevel(GRANT_ROW.grant.subject, 'edit'); });
+        await vi.waitFor(() => expect(controller().model.grants[0]?.level).toMatchObject({ value: 'edit' }));
+        // Editing a live row is not a new search: the candidate list the user was
+        // reading must not be rebuilt under the pointer.
+        expect(controller().model.directory.query).toBe('ada');
+
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        await vi.waitFor(() => expect(controller().model.directory.query).toBe(''));
+    });
+
     it('settles a lost set response when the authoritative inspection proves the exact mutation committed', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
         home.state.grantMode = 'malformed_after_commit';
         home.state.envelopePages.push({ summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] });
@@ -600,7 +694,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('keeps a retryable row error when the authoritative inspection disproves the requested mutation', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
         home.state.grantMode = 'malformed_without_commit';
         home.state.envelopePages.push({ summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] });
@@ -616,7 +710,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('refreshes the aggregate but does not seal anything for an audience a revocation just made smaller', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
         home.state.envelopePages.push({ summary: { prepared: 0, pending: 0, invalid: 0, recipientKeyUnavailable: 0 }, items: [] });
         const controller = await mountController(home.profile.id);
@@ -636,7 +730,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('refreshes an open editor when the exact Session is invalidated elsewhere, and ignores unrelated wakes', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true, sessionEncrypted: false });
+        const home = await setupHome({ sharing: true, encrypted: true, sessionEncrypted: false });
         home.state.granted = true;
         const controller = await mountController(home.profile.id);
         await vi.waitFor(() => expect(controller().model.grants).toHaveLength(1));
@@ -661,7 +755,7 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
     });
 
     it('loads the all-people diagnostic only when asked, then pages and collapses it', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
         home.state.envelopePages.push(
             // The explicit diagnostic: healthy rows included, and more behind a cursor.
@@ -719,8 +813,34 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         expect(controller().model.encryption?.showAllLabel).toBe('Show all people');
     });
 
+    it('names a recipient reachable only through the Team grant, and asks once per visible Account', async () => {
+        const home = await setupHome({ sharing: true, encrypted: true });
+        home.state.granted = true;
+        home.state.includeRequiredTeamGrant = true;
+        TEAM_MEMBER_LOOKUPS.members = [{
+            accountId: 'carol',
+            account: { firstName: 'Carol', lastName: 'Shaw', username: 'carol', avatarUrl: null },
+        }];
+        home.state.envelopePages = [{
+            summary: { prepared: 0, pending: 2, invalid: 0, recipientKeyUnavailable: 0 },
+            items: [
+                { ...createRecipientEnvelopeItem(), recipientAccountId: 'carol' },
+                // Nobody in this Team: the identifier is the honest presentation.
+                { ...createRecipientEnvelopeItem(), recipientAccountId: 'dora' },
+            ],
+        }];
+        const controller = await mountController(home.profile.id);
+        await vi.waitFor(() => expect(controller().model.encryption?.recipients?.rows).toHaveLength(2));
+        await vi.waitFor(() => expect(controller().model.encryption?.recipients?.rows[0]?.label).toBe('Carol Shaw'));
+        expect(controller().model.encryption?.recipients?.rows[1]?.label).toBe('dora');
+
+        // Exactly the visible Accounts, exactly once each: no roster paging, and no
+        // second question about an answer the Home already gave.
+        expect([...TEAM_MEMBER_LOOKUPS.queries].sort()).toEqual(['carol', 'dora']);
+    });
+
     it('lists the discovered exceptions beneath the aggregate by default and re-reads them after a pass', async () => {
-        const home = await setupHome({ collaboration: true, encrypted: true });
+        const home = await setupHome({ sharing: true, encrypted: true });
         home.state.granted = true;
         home.state.envelopePages = [
             // Discovery already carries the exception rows the aggregate counts.
@@ -749,5 +869,187 @@ describe('useLiveSessionAccessEditorController encrypted-access preparation', ()
         await vi.waitFor(() => expect(controller().model.encryption?.summaryLabel).toBe('Encrypted access ready'));
         await vi.waitFor(() => expect(controller().model.encryption?.recipients).toBeUndefined());
         expect(home.envelopeStates.at(-1)).toBe('action_required');
+    });
+});
+
+/**
+ * The Account's own explicit choice, in the canonical Actions settings owner, to
+ * confirm these in-app Actions — activated for the live Account the way the sync
+ * owner activates it (`activateAccountSettingsScope`: settings and profile scopes
+ * together), which is what lets the approval writer publish the settled Artifact
+ * to the mounted continuation.
+ */
+async function requireSharedActionConfirmation(scope: Readonly<{ serverId: string; accountId: string }>, actionIds: readonly string[]) {
+    const settingsScope = createAccountSettingsScope(scope.serverId, scope.accountId);
+    if (!settingsScope) throw new Error('The settings scope owner rejected this Home/Account pair');
+    storage.getState().applySettingsForScope(settingsScope, {
+        ...settingsParse({}),
+        actionsSettingsV1: {
+            v: 1,
+            actions: Object.fromEntries(actionIds.map((actionId) => [actionId, {
+                enabledPlacements: [], disabledSurfaces: [], disabledPlacements: [],
+                approvalRequiredSurfaces: ['ui'], toolExposureModes: {},
+            }])),
+            approvalWaivedSurfaces: {},
+        },
+    // A later settings version than the waiver `setupHome` stored: the scoped
+    // settings owner accepts only a newer version.
+    }, 2);
+    await storage.getState().activateSettingsScope(settingsScope, []);
+    storage.getState().activateProfileScope(settingsScope, []);
+}
+
+/** The ids of the approval Artifacts this Home persisted, in creation order. */
+function approvalIds(home: Readonly<{ artifacts: ReturnType<typeof createArtifactStoreBoundary> }>): string[] {
+    return home.artifacts.list().map((row) => row.id);
+}
+
+// teams-lane-04-session-access-sharing-authorship-presence.md §5: "Pending Action
+// approval, known rejection, unknown outcome ... are rendered and recoverable."
+//
+// The Account is E2EE: the approval is sealed by the real Artifact codec, stored by
+// the Home's stateful Artifact routes, decided through the Inbox's generic executor,
+// and observed by the editor through the real approval reader.
+describe('useLiveSessionAccessEditorController deferred approval', () => {
+    it('renders an approval-routed add as pending, holds further edits, and applies the executed approval once', async () => {
+        MANAGER.dataKeyOnly = true;
+        const home = await setupHome({ sharing: true, encrypted: true, sessionEncrypted: false });
+        await requireSharedActionConfirmation({ serverId: home.profile.id, accountId: MANAGER.accountId }, ['session.access.grant.set']);
+        const controller = await mountController(home.profile.id);
+
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        await vi.waitFor(() => expect(approvalIds(home)).toHaveLength(1));
+        const approvalId = approvalIds(home)[0]!;
+        // An E2EE Account's approval never reaches its Home as plaintext.
+        expect(home.artifacts.readPlainBody(approvalId)).toBeNull();
+        await vi.waitFor(() => expect(controller().model.pendingApproval).toEqual({
+            artifactId: approvalId, serverId: home.profile.id,
+        }));
+        // The real front door routed the intent to an approval: nothing reached the
+        // grant writer, nothing is committed, and it is not an unknown outcome.
+        expect(home.paths).not.toContain('/v2/sessions/access-grants/set');
+        expect(controller().model.grants).toHaveLength(0);
+        expect(controller().model.content.issue).toBeUndefined();
+
+        // One approval at a time: a second intent is held, not silently submitted.
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        expect(approvalIds(home)).toEqual([approvalId]);
+
+        // The Inbox approves: its replay is the one grant write on the Home.
+        await expect(decideApprovalAsInbox(home.profile.id, approvalId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
+        await vi.waitFor(() => expect(controller().model.grants).toHaveLength(1));
+        expect(controller().model.pendingApproval).toBeUndefined();
+        expect(controller().model.grants[0]?.operation).toEqual({ kind: 'idle' });
+        expect(home.paths.filter((path) => path === '/v2/sessions/access-grants/set')).toHaveLength(1);
+    });
+
+    it('releases the pending state without any change when the approval is rejected', async () => {
+        MANAGER.dataKeyOnly = true;
+        const home = await setupHome({ sharing: true, encrypted: true, sessionEncrypted: false });
+        await requireSharedActionConfirmation({ serverId: home.profile.id, accountId: MANAGER.accountId }, ['session.access.grant.set']);
+        const controller = await mountController(home.profile.id);
+
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        await vi.waitFor(() => expect(approvalIds(home)).toHaveLength(1));
+        const approvalId = approvalIds(home)[0]!;
+        await vi.waitFor(() => expect(controller().model.pendingApproval?.artifactId).toBe(approvalId));
+
+        await expect(decideApprovalAsInbox(home.profile.id, approvalId, 'reject')).resolves.toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(controller().model.pendingApproval).toBeUndefined());
+        expect(controller().model.grants).toHaveLength(0);
+        expect(controller().model.content.issue).toBeUndefined();
+        expect(home.paths).not.toContain('/v2/sessions/access-grants/set');
+
+        // The editor is usable again: the next intent opens a fresh approval.
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        await vi.waitFor(() => expect(approvalIds(home)).toHaveLength(2));
+        await vi.waitFor(() => expect(controller().model.pendingApproval?.artifactId).toBe(approvalIds(home)[1]));
+    });
+});
+
+// PA-L2: "Reachable layout-0 Sessions migrate through the canonical owner/tuple CAS
+// before sharing or other non-owner projection. There is no background sweep."
+describe('useLiveSessionAccessEditorController historical (0.2) Session', () => {
+    /** Metadata exactly as a 0.2 client wrote it: one bag mixing presentation with machine-local owner facts. */
+    const PREDECESSOR_METADATA = {
+        path: '/Users/owner/private-repo',
+        host: 'owner-laptop',
+        os: 'darwin',
+        machineId: 'machine-owner',
+        summary: { text: 'Historical shared work', updatedAt: 42 },
+        claudeSessionId: 'claude-private-session',
+    };
+
+    async function storePredecessorSession(home: Awaited<ReturnType<typeof setupHome>>) {
+        const { AES256Encryption } = await import('@/sync/encryption/encryptor');
+        const cipher = new AES256Encryption(home.sessionDataKey);
+        const [metadata, agentState] = await cipher.encrypt([PREDECESSOR_METADATA, { controlledByUser: false }]);
+        if (!MANAGER.keys) throw new Error('Expected the owner content key pair');
+        home.state.predecessorSession = {
+            id: SESSION_ID, createdAt: 1, updatedAt: 2, seq: 3, active: false, activeAt: 2,
+            encryptionMode: 'e2ee',
+            dataEncryptionKey: encryptDataKeyForRecipientV0(home.sessionDataKey, encodeBase64(MANAGER.keys.publicKey, 'base64')),
+            metadataLayoutVersion: 0, metadataVersion: 4, metadata: encodeBase64(metadata!, 'base64'),
+            agentStateVersion: 5, agentState: encodeBase64(agentState!, 'base64'), share: null,
+            effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }], capabilities: CAPABILITIES },
+            responsibleAccountId: null, responsibleAccount: null,
+        };
+    }
+
+    it('offers its owner an explicit update that splits it through the one tuple owner without changing content', async () => {
+        MANAGER.dataKeyOnly = true;
+        const home = await setupHome({ sharing: true, encrypted: true });
+        await storePredecessorSession(home);
+        const controller = await mountController(home.profile.id, { metadataLayoutVersion: 0 });
+        await vi.waitFor(() => expect(controller().model.historicalLayout).toEqual({ updating: false }));
+
+        await act(async () => { controller().actions.updateHistoricalLayout?.(); });
+        await vi.waitFor(() => expect(home.paths).toContain(`PATCH /v2/sessions/${SESSION_ID}`));
+        await vi.waitFor(() => expect(controller().model.historicalLayout).toBeUndefined());
+
+        expect(home.state.metadataPatches).toHaveLength(1);
+        const patch = home.state.metadataPatches[0] as {
+            mode: string;
+            source: { metadataLayoutVersion: number; metadata: { version: number }; agentState: { version: number } };
+            target: { metadataLayoutVersion: number; sharedMetadata: { ciphertext: string }; ownerMetadata: unknown };
+        };
+        // Exact CAS from the stored predecessor tuple; nothing but the split changes.
+        expect(patch.mode).toBe('owner_migration');
+        expect(patch.source).toMatchObject({ metadataLayoutVersion: 0, metadata: { version: 4 }, agentState: { version: 5 } });
+        expect(patch.target.metadataLayoutVersion).toBe(1);
+        // Recipients receive only the strict shared projection; owner-private facts
+        // stay in the owner's own envelope.
+        const { AES256Encryption } = await import('@/sync/encryption/encryptor');
+        const { decodeBase64 } = await import('@/encryption/base64');
+        const [shared] = await new AES256Encryption(home.sessionDataKey).decrypt([decodeBase64(patch.target.sharedMetadata.ciphertext, 'base64')]);
+        expect(shared).toMatchObject({ summary: { text: 'Historical shared work' } });
+        expect(JSON.stringify(shared)).not.toContain('/Users/owner/private-repo');
+        expect(JSON.stringify(shared)).not.toContain('owner-laptop');
+        expect(JSON.stringify(shared)).not.toContain('claude-private-session');
+        expect(patch.target.ownerMetadata).toBeTruthy();
+    });
+
+    it('splits the Session before a new share reaches the grant writer', async () => {
+        MANAGER.dataKeyOnly = true;
+        const home = await setupHome({ sharing: true, encrypted: true });
+        await storePredecessorSession(home);
+        const controller = await mountController(home.profile.id, { metadataLayoutVersion: 0 });
+
+        await act(async () => { controller().actions.addPrincipal({ kind: 'account', accountId: RECIPIENT_ID }); });
+        await vi.waitFor(() => expect(controller().model.grants).toHaveLength(1));
+        expect(home.state.metadataPatches).toHaveLength(1);
+        expect(home.paths.indexOf(`PATCH /v2/sessions/${SESSION_ID}`))
+            .toBeLessThan(home.paths.indexOf('/v2/sessions/access-grants/set'));
+        expect(controller().model.historicalLayout).toBeUndefined();
+    });
+
+    it('offers nothing to a Session already on the current layout, or when its layout is unknown', async () => {
+        const home = await setupHome({ sharing: true, encrypted: true });
+        const current = await mountController(home.profile.id, { metadataLayoutVersion: 1 });
+        expect(current().model.historicalLayout).toBeUndefined();
+        const unknown = await mountController(home.profile.id);
+        expect(unknown().model.historicalLayout).toBeUndefined();
     });
 });

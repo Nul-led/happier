@@ -5,6 +5,11 @@ export type OrdinarySessionListFrontier = Readonly<{
     hasNext: boolean;
     attentionNextCursor: string | null;
     attentionHasNext: boolean;
+    /**
+     * Historical rows this corpus withheld pending their owner's metadata upgrade.
+     * A replace read sets it; a continuation page adds its own.
+     */
+    metadataUpgradeRequiredCount?: number;
 }>;
 
 export type OrdinarySessionListContinuation =
@@ -16,6 +21,7 @@ export const EMPTY_ORDINARY_SESSION_LIST_FRONTIER: OrdinarySessionListFrontier =
     hasNext: false,
     attentionNextCursor: null,
     attentionHasNext: false,
+    metadataUpgradeRequiredCount: 0,
 };
 
 export function resolveOrdinarySessionListContinuation(
@@ -42,6 +48,7 @@ export function advanceOrdinarySessionListFrontier(params: Readonly<{
             hasNext: result.hasNext,
             attentionNextCursor: result.attentionHasNext ? result.attentionNextCursor : null,
             attentionHasNext: result.attentionHasNext,
+            metadataUpgradeRequiredCount: result.metadataUpgradeRequiredCount ?? 0,
         };
     }
     if (continuation.kind === 'ordinary') {
@@ -52,6 +59,7 @@ export function advanceOrdinarySessionListFrontier(params: Readonly<{
             ...previous,
             nextCursor: result.hasNext ? result.nextCursor : null,
             hasNext: result.hasNext,
+            metadataUpgradeRequiredCount: (previous.metadataUpgradeRequiredCount ?? 0) + (result.metadataUpgradeRequiredCount ?? 0),
         };
     }
     if (
@@ -64,6 +72,7 @@ export function advanceOrdinarySessionListFrontier(params: Readonly<{
         ...previous,
         attentionNextCursor: result.attentionHasNext ? result.attentionNextCursor : null,
         attentionHasNext: result.attentionHasNext,
+        metadataUpgradeRequiredCount: (previous.metadataUpgradeRequiredCount ?? 0) + (result.metadataUpgradeRequiredCount ?? 0),
     };
 }
 

@@ -5,7 +5,18 @@ export type SessionCollaborationFocusTarget = 'top' | 'access' | 'responsible' |
 export type SessionCollaborationIntent = Readonly<{
     intentId: number;
     focusTarget: SessionCollaborationFocusTarget;
+    /**
+     * The root-step search text a compact presentation handed over, including an
+     * explicitly emptied field; absent when the entry carried no field at all.
+     * The compact composer editor and the full surface mount separate controllers, so this is the one piece of state the handoff loses;
+     * it rides the focus intent rather than a second channel or a shared
+     * controller mounted above every Session screen.
+     */
+    query?: string;
 }>;
+
+/** What a handing-off presentation may carry to the Collaboration destination. */
+export type SessionCollaborationHandoff = Readonly<{ query: string }>;
 
 let nextIntentId = 0;
 const pendingByAddress = new Map<string, SessionCollaborationIntent>();
@@ -23,8 +34,12 @@ function addressKey(target: SessionAddress): string {
 export function publishSessionCollaborationIntent(
     target: SessionAddress,
     focusTarget: SessionCollaborationFocusTarget,
+    query?: string,
 ): SessionCollaborationIntent {
-    const intent = Object.freeze({ intentId: ++nextIntentId, focusTarget });
+    // Absence and an empty field differ: an ordinary entry hands over no field
+    // and leaves the destination's search alone, while the compact editor always
+    // hands over its field, so `''` clears a retained destination's old search.
+    const intent = Object.freeze({ intentId: ++nextIntentId, focusTarget, ...(query !== undefined ? { query } : {}) });
     const key = addressKey(target);
     pendingByAddress.set(key, intent);
     listenersByAddress.get(key)?.forEach((listener) => listener());

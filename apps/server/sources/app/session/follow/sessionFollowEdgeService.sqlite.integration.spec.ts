@@ -110,7 +110,6 @@ describe('SessionFollowEdge service', () => {
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: 'happier-session-follow-edge-',
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: 'true' },
         });
     }, 180_000);
 
@@ -268,11 +267,15 @@ describe('SessionFollowEdge service', () => {
             destinationSessionId: destination.id,
             request: { ...historicalRequest, afterTranscriptSeq: 2, observedTranscriptSeq: 2 },
         }))).resolves.toMatchObject({ source: { id: source.id }, messages: [], hasMore: false });
+        // A wake scan continues past a full page from a cursor beyond the delivered
+        // frontier (09D §6.3 "that exact new range"). That never replays history at
+        // or below the frontier, so the continuation is admitted and still bounded
+        // by the same observed ceiling.
         await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, {
             principal,
             destinationSessionId: destination.id,
             request: { ...historicalRequest, afterTranscriptSeq: 3, observedTranscriptSeq: 3 },
-        }))).resolves.toBeNull();
+        }))).resolves.toMatchObject({ source: { id: source.id }, messages: [], hasMore: false });
         const request = { ...historicalRequest, afterTranscriptSeq: 2, observedTranscriptSeq: 3 };
         await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, {
             principal, destinationSessionId: destination.id, request,

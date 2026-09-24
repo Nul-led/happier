@@ -7,6 +7,7 @@ import type {
     AccountProfile,
     ConnectedServicesDefaultAuthByAgentIdV1,
     PluginProjectedAgentConnectedAccountPurposeV2,
+    QualifiedConnectedAccountPurposeBindingsV1,
 } from '@happier-dev/protocol';
 import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import type { ConnectedServicesServiceBinding } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
@@ -21,6 +22,35 @@ const ENCODED_CODEX_SERVICE_KEY = encodeURIComponent(CODEX_SERVICE_KEY);
 const CLAUDE_ACCOUNT_PURPOSES: readonly PluginProjectedAgentConnectedAccountPurposeV2[] = [
     { purpose: 'primary', service: { pluginId: 'happier.agent.claude', localId: 'anthropic' } },
 ];
+const CLAUDE_IDENTITY = { pluginId: 'happier.agent.claude', localId: 'claude' } as const;
+const CODEX_IDENTITY = { pluginId: 'happier.agent.codex', localId: 'codex' } as const;
+/** The Agent default-authentication write: one purpose-binding store, released entries folded away. */
+function agentDefaultWrite(
+    consumer: Readonly<{ pluginId: string; localId: string }>,
+    target: Record<string, unknown>,
+) {
+    return {
+        connectedAccountPurposeBindingsV1: {
+            v: 1,
+            bindings: [{ purpose: { consumer, purpose: 'primary' }, target }],
+        },
+        connectedServicesDefaultAuthByAgentIdV1: { v: 1, bindingsByAgentId: {} },
+    };
+}
+/** A Team default persists as the canonical Team selection of its Team (lane 10 child 02 :271). */
+function agentTeamDefaultWrite(
+    consumer: Readonly<{ pluginId: string; localId: string }>,
+    teamResource: Readonly<{ teamId: string; selection: Record<string, unknown> }>,
+) {
+    return {
+        connectedAccountPurposeBindingsV1: {
+            v: 1,
+            bindings: [],
+            teamResourceSelections: [{ purpose: { consumer, purpose: 'primary' }, ...teamResource }],
+        },
+        connectedServicesDefaultAuthByAgentIdV1: { v: 1, bindingsByAgentId: {} },
+    };
+}
 const CODEX_ACCOUNT_PURPOSES: readonly PluginProjectedAgentConnectedAccountPurposeV2[] = [
     { purpose: 'primary', service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' }, credentialKinds: ['oauth'] },
 ];
@@ -227,6 +257,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         return (await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="claude"
+                agentIdentity={CLAUDE_IDENTITY}
                 agentTitle="Claude"
                 connectedAccountPurposes={CLAUDE_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CLAUDE_SERVICE_KEY]}
@@ -269,6 +300,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="claude"
+                agentIdentity={CLAUDE_IDENTITY}
                 agentTitle="Claude"
                 connectedAccountPurposes={CLAUDE_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CLAUDE_SERVICE_KEY]}
@@ -296,17 +328,10 @@ describe('ConnectedServicesDefaultAuthRow', () => {
             findSelectionOption(modalTree, `connected-service:${ENCODED_CLAUDE_SERVICE_KEY}:profile:work`).onSelect();
         });
 
-        expect(setDefaultAuthSettings).toHaveBeenCalledWith({
-            v: 1,
-            bindingsByAgentId: {
-                claude: {
-                    v: 1,
-                    bindingsByServiceId: {
-                        [CLAUDE_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'work' },
-                    },
-                },
-            },
-        });
+        expect(setDefaultAuthSettings).toHaveBeenCalledWith(agentDefaultWrite(CLAUDE_IDENTITY, {
+            kind: 'account',
+            account: { service: { pluginId: 'happier.agent.claude', localId: 'anthropic' }, accountId: 'work' },
+        }));
     });
 
     it('translates released bundled scalar declarations through the generated built-in mapping', async () => {
@@ -316,6 +341,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="claude"
+                agentIdentity={CLAUDE_IDENTITY}
                 agentTitle="Claude"
                 connectedAccountPurposes={CLAUDE_ACCOUNT_PURPOSES}
                 // No machine projection passed: the released bundled scalar
@@ -339,10 +365,10 @@ describe('ConnectedServicesDefaultAuthRow', () => {
             findSelectionOption(modalTree, `connected-service:${ENCODED_CLAUDE_SERVICE_KEY}:profile:work`).onSelect();
         });
 
-        const written = setDefaultAuthSettings.mock.calls[0]?.[0] as {
-            bindingsByAgentId: Record<string, { bindingsByServiceId: Record<string, unknown> }>;
-        };
-        expect(Object.keys(written.bindingsByAgentId.claude.bindingsByServiceId)).toEqual([CLAUDE_SERVICE_KEY]);
+        expect(setDefaultAuthSettings).toHaveBeenCalledWith(agentDefaultWrite(CLAUDE_IDENTITY, {
+            kind: 'account',
+            account: { service: { pluginId: 'happier.agent.claude', localId: 'anthropic' }, accountId: 'work' },
+        }));
     });
 
     it('reflects the persisted qualified binding as the selected option in the picker list', async () => {
@@ -351,6 +377,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="claude"
+                agentIdentity={CLAUDE_IDENTITY}
                 agentTitle="Claude"
                 connectedAccountPurposes={CLAUDE_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CLAUDE_SERVICE_KEY]}
@@ -390,6 +417,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="codex"
+                agentIdentity={CODEX_IDENTITY}
                 agentTitle="Codex"
                 connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
@@ -417,46 +445,39 @@ describe('ConnectedServicesDefaultAuthRow', () => {
             findSelectionOption(modalTree, `connected-service:${ENCODED_CODEX_SERVICE_KEY}:group:primary`).onSelect();
         });
 
-        expect(setDefaultAuthSettings).toHaveBeenCalledWith({
-            v: 1,
-            bindingsByAgentId: {
-                codex: {
-                    v: 1,
-                    bindingsByServiceId: {
-                        [CODEX_SERVICE_KEY]: { source: 'connected', selection: 'group', groupId: 'primary' },
-                    },
-                },
-            },
-        });
+        expect(setDefaultAuthSettings).toHaveBeenCalledWith(agentDefaultWrite(CODEX_IDENTITY, {
+            kind: 'group',
+            service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
+            groupId: 'primary',
+        }));
     });
 
     it.each(['brokered', 'direct'] as const)(
-        'persists and reloads an exact Home-qualified %s Team resource default',
+        'persists and reloads an exact Team-qualified %s Team resource default',
         async (deliveryMode) => {
             const { ConnectedServicesDefaultAuthRow } = await import('./ConnectedServicesDefaultAuthRow');
             const setDefaultAuthSettings = vi.fn();
             const selection = TEAM_RESOURCE.connectedServiceSelections.find((candidate) => candidate.deliveryMode === deliveryMode)!;
 
             const renderRow = async (
-                persisted: ConnectedServicesDefaultAuthByAgentIdV1 = { v: 1, bindingsByAgentId: {} },
+                persisted: QualifiedConnectedAccountPurposeBindingsV1 = { v: 1, bindings: [] },
             ) => (await renderScreen(
                 <ConnectedServicesDefaultAuthRow
                     agentId="codex"
+                    agentIdentity={CODEX_IDENTITY}
                     agentTitle="Codex"
                     connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
                     connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
                     connectedAccountsV4={[]}
                     connectedAccountGroupsV4={[]}
                     accountGroupsEnabled={true}
-                    serverId="home-a"
-                    accountId="recipient-account"
                     teamCredentialResources={[TEAM_RESOURCE]}
                     teamNameById={{ 'team-a': 'Acme' }}
                     currentTeamCredentialResourceKeys={new Set(['team-a:resource-a'])}
                     settings={{
                         connectedServicesProfileLabelByKey: {},
                         connectedServicesDefaultProfileByServiceId: {},
-                        connectedServicesDefaultAuthByAgentIdV1: persisted,
+                        connectedAccountPurposeBindingsV1: persisted,
                     }}
                     setDefaultAuthSettings={setDefaultAuthSettings}
                     onOpenConnectedServicesSettings={vi.fn()}
@@ -471,32 +492,21 @@ describe('ConnectedServicesDefaultAuthRow', () => {
             await act(async () => findSelectionOption(modalTree, optionId).onSelect());
 
             const written = setDefaultAuthSettings.mock.calls[0]![0];
-            expect(written).toEqual({
-                v: 1,
-                bindingsByAgentId: {
-                    codex: {
-                        v: 2,
-                        bindingsByServiceId: {
-                            [CODEX_SERVICE_KEY]: {
-                                ...selection,
-                                serverId: 'home-a',
-                                accountId: 'recipient-account',
-                                teamId: 'team-a',
-                                expectedResourceRevision: 7,
-                            },
-                        },
-                    },
-                },
-            });
+            // A default is a Team-qualified reference, never a pinned revision.
+            expect(written).toEqual(agentTeamDefaultWrite(CODEX_IDENTITY, {
+                teamId: 'team-a',
+                selection,
+            }));
 
-            const reloadedTree = await renderRow(written);
+            const reloadedTree = await renderRow(written.connectedAccountPurposeBindingsV1);
             const reloadedModal = await openPickerModal(reloadedTree, 'codex', 1);
             expect(findSelectionListProps(reloadedModal).selectedOptionId).toBe(optionId);
         },
     );
 
-    it('keeps a stale Team resource default selected and unavailable without native fallback', async () => {
+    it('keeps an earlier-0.3 Team resource default the Home no longer offers selected and unavailable, without native fallback', async () => {
         const { ConnectedServicesDefaultAuthRow } = await import('./ConnectedServicesDefaultAuthRow');
+        // Exactly what an earlier 0.3 build's row persisted (service-keyed, Home-qualified).
         const persisted: ConnectedServicesDefaultAuthByAgentIdV1 = {
             v: 1,
             bindingsByAgentId: {
@@ -519,17 +529,16 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="codex"
+                agentIdentity={CODEX_IDENTITY}
                 agentTitle="Codex"
                 connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
                 connectedAccountsV4={[]}
                 connectedAccountGroupsV4={[]}
                 accountGroupsEnabled={true}
-                serverId="home-a"
-                accountId="recipient-account"
                 teamCredentialResources={[TEAM_RESOURCE]}
                 teamNameById={{ 'team-a': 'Acme' }}
-                currentTeamCredentialResourceKeys={new Set(['team-a:resource-a'])}
+                currentTeamCredentialResourceKeys={new Set<string>()}
                 settings={{
                     connectedServicesProfileLabelByKey: {},
                     connectedServicesDefaultProfileByServiceId: {},
@@ -554,6 +563,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="codex"
+                agentIdentity={CODEX_IDENTITY}
                 agentTitle="Codex"
                 connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}
@@ -595,6 +605,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const { tree } = await renderScreen(
             <ConnectedServicesDefaultAuthRow
                 agentId="codex"
+                agentIdentity={CODEX_IDENTITY}
                 agentTitle="Codex"
                 connectedAccountPurposes={CODEX_ACCOUNT_PURPOSES}
                 connectedAccountServiceKeys={[CODEX_SERVICE_KEY]}

@@ -30,6 +30,7 @@ import {
 } from '@happier-dev/protocol/plugins/ui';
 
 import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+import { scopedHomeActionExecutor } from '@/sync/ops/actions/scopedHomeActionExecutor';
 import {
     useEndpointStatus,
     useMachineCliDetectionTarget,
@@ -164,6 +165,8 @@ export type BoundPluginSurfaceFacts = Readonly<{
     serverId?: string | null;
     /** The projection generation this mount is bound to. */
     projectionGeneration?: number | string | null;
+    /** Exact occurrence of the plugin that owns this mounted surface. */
+    occurrenceId?: string | null;
     /**
      * The one CurrentUiContextProvider reader, borrowed at action-dispatch
      * time. A mounted surface never snapshots, stores, or resolves context on
@@ -456,19 +459,19 @@ export function resolveBoundPluginSurfaceContext(
 function resolveDaemonBinding(facts: BoundPluginSurfaceFacts): Readonly<{
     machineId: string;
     serverId?: string | null;
-    expectedGeneration: string;
+    expectedOccurrenceId: string;
 }> | null {
     const machineId = typeof facts.machineId === 'string' && facts.machineId.trim().length > 0
         ? facts.machineId
         : null;
-    const generation = facts.projectionGeneration;
-    if (!machineId || generation === null || generation === undefined) {
+    const occurrenceId = facts.occurrenceId?.trim();
+    if (!machineId || !occurrenceId) {
         return null;
     }
     return {
         machineId,
         serverId: facts.serverId ?? null,
-        expectedGeneration: String(generation),
+        expectedOccurrenceId: occurrenceId,
     };
 }
 
@@ -484,18 +487,23 @@ function resolvePluginSurfaceCallerBinding(
     const machineId = typeof facts.machineId === 'string' && facts.machineId.trim().length > 0
         ? facts.machineId
         : null;
+    const occurrenceId = facts.occurrenceId?.trim();
     const materializationRef = facts.executionOrigin?.materializationRef;
     if (
         !machineId
-        || !materializationRef
-        || materializationRef.pluginId !== facts.pluginId
-        || materializationRef.machineId !== machineId
+        || !occurrenceId
+        || (materializationRef !== undefined && (
+            materializationRef.pluginId !== facts.pluginId
+            || materializationRef.machineId !== machineId
+        ))
     ) {
         return null;
     }
     return Object.freeze({
+        pluginId: facts.pluginId,
         contributionLocalId: facts.contributionId,
-        materializationRef,
+        occurrenceId,
+        ...(materializationRef === undefined ? {} : { materializationRef }),
     });
 }
 
@@ -627,22 +635,15 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     binding?: BoundPluginSurfaceBinding;
 }>): BoundPluginSurfaceController {
     const surfaceContext = resolveBoundPluginSurfaceContext(input.facts);
-    const interactionGeneration = typeof input.facts.projectionGeneration === 'number'
-        ? Number.isFinite(input.facts.projectionGeneration)
-            ? String(input.facts.projectionGeneration)
-            : null
-        : typeof input.facts.projectionGeneration === 'string'
-            && input.facts.projectionGeneration.trim().length > 0
-            ? input.facts.projectionGeneration
-            : null;
+    const interactionOccurrenceId = input.facts.occurrenceId?.trim() || null;
     // The mounted contribution owns the only exact requester provenance for
     // app-scope confirmation. A context-only surface with no projection
     // generation cannot mint one, so confirmation remains unavailable there.
-    const interactionRequester = interactionGeneration
+    const interactionRequester = interactionOccurrenceId
         ? Object.freeze({
             pluginId: input.facts.pluginId,
             contributionId: input.facts.contributionId,
-            generationId: interactionGeneration,
+            occurrenceId: interactionOccurrenceId,
             invocationId: input.facts.surfaceId,
         })
         : null;
@@ -854,20 +855,14 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     // reconnect must make the existing facade capable again without replacing
     // its adapter or aborting an author-held signal.
     const daemon = resolveDaemonBinding(input.facts);
-    // Client-targeted Actions need the same exact projection generation but no
-    // daemon reachability. The generic executable index, not this controller,
-    // resolves the target/origin/registration under this fact.
-    const clientAction = typeof input.facts.projectionGeneration === 'number'
-        && Number.isInteger(input.facts.projectionGeneration)
-        && input.facts.projectionGeneration >= 0
-        ? {
-            projectionGeneration: input.facts.projectionGeneration,
+    // The generic executable index resolves client targets by exact occurrence,
+    // executable target and execution origin without aggregate admission.
+    const clientAction = {
             ...(surfaceContext.sessionId ? { sessionId: surfaceContext.sessionId } : {}),
             ...(input.facts.readCurrentUiContext
                 ? { currentUiContext: input.facts.readCurrentUiContext }
                 : {}),
-        }
-        : null;
+        };
     const isDaemonInteractionEnabled = input.facts.isDaemonInteractionEnabled
         ?? (() => input.facts.daemonInteractionEnabled);
     const isMethodAvailable = (method: PluginUiHostMethodV1): boolean => (
@@ -903,6 +898,14 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     // daemon owns admission and bounds, and the transport adapter owns the
     // subscription registry it publishes into.
     const resourceInvalidationListeners = new Set<(event: PluginUiResourceSubscriptionEventV1) => void>();
+    // The exact Home/Account this mount may address the Home family as. A mount
+    // whose surface names a different Home than the current Account scope has
+    // no such scope, and its Home-family Actions stay unsupported rather than
+    // being redirected to whichever Home the Account happens to be on.
+    const homeFamilyScope = accountLifetime
+        && (!input.facts.serverId || input.facts.serverId === accountLifetime.scope.serverId)
+        ? accountLifetime.scope
+        : null;
     // One controller-owned lifetime fences target selection and all
     // daemon-backed Resource work. Replacements abort obsolete work rather than
     // merely withholding its eventual delivery.
@@ -928,7 +931,6 @@ export function createBoundPluginSurfaceController(input: Readonly<{
                 machineId: daemon.machineId,
                 machineDisplayName: input.facts.machineDisplayName ?? null,
                 serverId: daemon.serverId ?? null,
-                expectedGeneration: daemon.expectedGeneration,
                 targetPluginId: input.facts.pluginId,
                 ...(surfaceContext.sessionId ? { sessionId: surfaceContext.sessionId } : {}),
                 accountLifetime,
@@ -960,13 +962,28 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     const hostApi = createPluginSurfaceActionHostApi({
         pluginUiProjection: input.facts.pluginUiProjection,
         surfaceContext,
+        ...(targetedContributions
+            ? { callerSourceCustody: targetedContributions.target.sourceCustody }
+            : {}),
         ...(interactionRequester ? { interactionRequester } : {}),
         isMethodAvailable,
         isContributedActionAvailable: isDaemonInteractionEnabled,
         isCurrent,
         resourceLifetimeSignal: mountLifetime.signal,
         hostAction: {
-            execute: binding?.executeHostAction ?? createFrontDoorActionExecute(),
+            // The mount's own Home and Account are the exact scope this surface
+            // was admitted under, so its host Actions travel the same scoped
+            // front door every Home and Team administration surface already
+            // uses. Without it the whole Home family — `teams.*`,
+            // `home.governance.*`, managed identity and shared Saved Secrets —
+            // is advertised to a plugin and then answered `unsupported_action`,
+            // because the default executor carries no Home port at all. The
+            // scope must be the mount's own Home: a surface bound to one Home
+            // never reaches another one through an ambient Account scope.
+            execute: binding?.executeHostAction
+                ?? (homeFamilyScope
+                    ? scopedHomeActionExecutor(homeFamilyScope)
+                    : createFrontDoorActionExecute()),
             ...(hostActionContext ? { context: hostActionContext } : {}),
         },
         ...(callerBinding ? { callerBinding } : {}),
@@ -977,7 +994,8 @@ export function createBoundPluginSurfaceController(input: Readonly<{
         ...(daemon
             ? {
                 contributedAction: {
-                    ...daemon,
+                    machineId: daemon.machineId,
+                    serverId: daemon.serverId,
                     ...(surfaceContext.sessionId
                         ? { sessionId: surfaceContext.sessionId }
                         : {}),
@@ -988,7 +1006,9 @@ export function createBoundPluginSurfaceController(input: Readonly<{
                 ...(canReadResource
                     ? {
                         resource: {
-                            ...daemon,
+                            machineId: daemon.machineId,
+                            serverId: daemon.serverId,
+                            expectedCallerOccurrenceId: daemon.expectedOccurrenceId,
                             ...(input.facts.resourceContext === undefined
                                 ? {}
                                 : { context: input.facts.resourceContext }),
@@ -1122,7 +1142,7 @@ export function useBoundPluginSurfaceController(input: Readonly<{
             facts.serverId,
             facts.sessionId,
             facts.targetAuthorityKey,
-            facts.projectionGeneration,
+            facts.occurrenceId,
             facts.readCurrentUiContext,
             facts.executionOrigin?.serverIdentityId,
             facts.executionOrigin?.materializationRef.pluginId,

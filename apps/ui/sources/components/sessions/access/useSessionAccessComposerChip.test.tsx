@@ -131,8 +131,10 @@ describe('useSessionAccessComposerChip', () => {
         editor.props.onRequestClose?.();
         expect(requestClose).toHaveBeenCalledTimes(1);
 
-        editor.props.onOpenFullSurface?.();
+        editor.props.onOpenFullSurface?.({ query: 'ada' });
         expect(onOpenFullSurface).toHaveBeenCalledTimes(1);
+        // Closing the popover must not swallow what the person already typed.
+        expect(onOpenFullSurface).toHaveBeenLastCalledWith({ query: 'ada' });
         // The anchored popover must not stay open behind the Collaboration surface.
         expect(requestClose).toHaveBeenCalledTimes(2);
 

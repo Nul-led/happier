@@ -4,12 +4,14 @@ import {
   createMarketplaceNpmDiscoveryProjectionV1,
   decideMarketplaceListingInstallV1,
   deriveMarketplaceNpmCompatibilityPlatformsV1,
+  draftMarketplaceRegistryProfileV1,
   MarketplaceIndexQueryResultV1Schema,
   MarketplaceIndexQueryV1Schema,
   MarketplaceNpmDiscoveryProjectionV1Schema,
   MarketplaceIndexSourceSnapshotV1Schema,
   marketplaceNpmDiscoveryProjectionEqualV1,
   parseMarketplaceIndexSourceSnapshotV1,
+  readMarketplaceListingRegistryProfileRequirementV1,
   readMarketplaceNpmDiscoveryProjectionV1,
   type MarketplaceIndexItemV1,
   type MarketplaceListingInstallDecisionV1,
@@ -40,7 +42,7 @@ describe('MarketplaceIndexV1', () => {
         },
         contributes: {},
       },
-      uiArtifacts: { version: 1, entries: [] },
+      uiArtifacts: { version: 2, entries: [] },
     });
 
     const projection = createMarketplaceNpmDiscoveryProjectionV1({
@@ -135,10 +137,10 @@ describe('MarketplaceIndexV1', () => {
       distribution: { kind: 'npm', registryOrigin: 'https://registry.example', packageName: '@acme/plugin', version: '1.0.0', integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}` },
       manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] }, review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'reviewEveryUpdate', links: {},
+      categories: [], media: [], updatePolicy: 'allowed', links: {},
     };
     const source = { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' };
-    for (const updatePolicy of ['pinned', 'reviewEveryUpdate', 'reviewSensitiveChanges'] as const) {
+    for (const updatePolicy of ['pinned', 'allowed'] as const) {
       expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse({
         source, freshness: { state: 'fresh', fetchedAtMs: 1 },
         entries: [{ ...entryBase, updatePolicy }], diagnostics: [],
@@ -159,7 +161,7 @@ describe('MarketplaceIndexV1', () => {
       distribution: { kind: 'npm', registryOrigin: 'https://registry.example', packageName: '@acme/plugin', version: '1.0.0', integrity },
       manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] }, review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
+      categories: [], media: [], updatePolicy: 'allowed', links: {},
     };
     const result = MarketplaceIndexQueryResultV1Schema.parse({
       revision: 1,
@@ -189,7 +191,7 @@ describe('MarketplaceIndexV1', () => {
       distribution: { kind: 'npm', registryOrigin: 'https://registry.example/path?token=x', packageName: '@acme/plugin', version: '1.0.0', integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}` },
       manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] }, review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
+      categories: [], media: [], updatePolicy: 'allowed', links: {},
     };
     expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse({ source: { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' }, freshness: { state: 'fresh', fetchedAtMs: 1 }, entries: [base], diagnostics: [] }).success).toBe(false);
   });
@@ -204,7 +206,7 @@ describe('MarketplaceIndexV1', () => {
       distribution: { kind: 'npm', registryOrigin: 'https://registry.example', packageName: '@acme/plugin', ...distribution },
       manifestDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] }, review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
+      categories: [], media: [], updatePolicy: 'allowed', links: {},
     };
     expect(MarketplaceIndexSourceSnapshotV1Schema.safeParse({ source: { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' }, freshness: { state: 'fresh', fetchedAtMs: 1 }, entries: [entry], diagnostics: [] }).success).toBe(false);
   });
@@ -223,7 +225,7 @@ describe('parseMarketplaceIndexSourceSnapshotV1', () => {
     compatibility: { platforms: ['linux'] },
     summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
     review: { status: 'unreviewed', reviewedAt: null },
-    categories: [], media: [], updatePolicy: 'reviewEveryUpdate', links: {},
+    categories: [], media: [], updatePolicy: 'allowed', links: {},
   };
   const snapshot = {
     source: { id: 'user', title: 'User', kind: 'user', sourceUrl: 'https://catalog.example/index.json' },
@@ -364,7 +366,7 @@ describe('decideMarketplaceListingInstallV1', () => {
       review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
       categories: [],
       media: [],
-      updatePolicy: 'reviewSensitiveChanges',
+      updatePolicy: 'allowed',
       links: {},
       source: { id: 'curated', title: 'Curated', kind: 'curated', sourceUrl: 'https://catalog.example/index.json' },
       freshness: { state: 'fresh', fetchedAtMs: 1 },
@@ -383,9 +385,9 @@ describe('decideMarketplaceListingInstallV1', () => {
     ['curated approved listing reachable through its private registry profile',
       { artifactAccess: { state: 'available', registryProfileId: 'registry_one' } }, { installable: true }],
     ['user catalog listing left unreviewed for the full-review flow',
-      { source: USER_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'reviewEveryUpdate' }, { installable: true }],
+      { source: USER_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'allowed' }, { installable: true }],
     ['community npm listing left unreviewed for the full-review flow',
-      { source: COMMUNITY_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'reviewEveryUpdate' }, { installable: true }],
+      { source: COMMUNITY_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'allowed' }, { installable: true }],
     ['curated listing withdrawn by curation', { review: { status: 'withdrawn', reviewedAt: null } },
       { installable: false, block: 'curated-review-withdrawn' }],
     ['curated listing blocked by curation', { review: { status: 'blocked', reviewedAt: null } },
@@ -426,7 +428,7 @@ describe('decideMarketplaceListingInstallV1', () => {
   });
 
   it('refuses a listing whose admission left the constant full-review path', () => {
-    const user = createListingItem({ source: USER_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'reviewEveryUpdate' });
+    const user = createListingItem({ source: USER_ITEM_SOURCE, review: UNREVIEWED, updatePolicy: 'allowed' });
     // Admission is a schema constant; force a drifted value through the
     // fixture boundary to pin the defensive decision for producers that
     // bypass the schema.
@@ -457,5 +459,42 @@ describe('decideMarketplaceListingInstallV1', () => {
       freshness: { state: 'stale', fetchedAtMs: 1, staleSinceMs: 1 },
       artifactAccess: { state: 'auth-unavailable', registryProfileId: 'registry_one' },
     }))).toEqual({ installable: false, block: 'source-not-fresh' });
+  });
+
+  it('drafts the profile a Home adds for a required registry from the package scope', () => {
+    expect(draftMarketplaceRegistryProfileV1({ registryOrigin: 'https://npm.acme.example', packageName: '@acme/plugin' }))
+      .toEqual({ displayName: 'npm.acme.example', origin: 'https://npm.acme.example', scopes: ['@acme'], useAsDefault: false, allowPrivateNetwork: false });
+    expect(draftMarketplaceRegistryProfileV1({ registryOrigin: 'https://npm.acme.example', packageName: 'acme-plugin' }))
+      .toEqual({ displayName: 'npm.acme.example', origin: 'https://npm.acme.example', scopes: [], useAsDefault: true, allowPrivateNetwork: false });
+  });
+
+  it('names the registry selection only when artifact access is the one remaining block', () => {
+    const profiles = [{ profileId: 'registry_team', origin: 'https://registry.example' }];
+    const requirement = (overrides: Partial<MarketplaceIndexItemV1>) => (
+      readMarketplaceListingRegistryProfileRequirementV1(createListingItem(overrides), profiles)
+    );
+    // A profile that must sign in again is named as it is bound.
+    expect(requirement({ artifactAccess: { state: 'auth-unavailable', registryProfileId: 'registry_bound' } }))
+      .toEqual({ registryOrigin: 'https://registry.example', packageName: '@acme/plugin', registryProfileId: 'registry_bound' });
+    // No usable binding: this Home's profile for the origin is the candidate.
+    for (const state of ['unverified-profile', 'source-removed'] as const) {
+      expect(requirement({ artifactAccess: { state, registryProfileId: 'registry_gone' } }))
+        .toEqual({ registryOrigin: 'https://registry.example', packageName: '@acme/plugin', registryProfileId: 'registry_team' });
+    }
+    expect(readMarketplaceListingRegistryProfileRequirementV1(
+      createListingItem({ artifactAccess: { state: 'unverified-profile', registryProfileId: null } }),
+      [],
+    )).toEqual({ registryOrigin: 'https://registry.example', packageName: '@acme/plugin', registryProfileId: null });
+    // Reachability and durable refusals are not registry selections.
+    expect(requirement({ artifactAccess: { state: 'offline', registryProfileId: 'registry_team' } })).toBeNull();
+    expect(requirement({ artifactAccess: { state: 'public', registryProfileId: null } })).toBeNull();
+    expect(requirement({
+      freshness: { state: 'stale', fetchedAtMs: 1, staleSinceMs: 1 },
+      artifactAccess: { state: 'auth-unavailable', registryProfileId: 'registry_bound' },
+    })).toBeNull();
+    expect(requirement({
+      review: { status: 'withdrawn', reviewedAt: null },
+      artifactAccess: { state: 'unverified-profile', registryProfileId: null },
+    })).toBeNull();
   });
 });

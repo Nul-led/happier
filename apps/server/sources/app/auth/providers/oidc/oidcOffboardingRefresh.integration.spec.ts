@@ -10,6 +10,7 @@ import { db } from "@/storage/db";
 import { connectRoutes } from "@/app/api/routes/connect/connectRoutes";
 import { auth } from "@/app/auth/auth";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
+import { decryptString } from "@/modules/encrypt";
 import { createAppCloseTracker } from "@/app/api/testkit/appLifecycle";
 import { applyEnvValues } from "@/testkit/env";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -79,6 +80,12 @@ describe("OIDC offboarding refresh (integration)", () => {
     let refreshServerError = false;
     let refreshSubjectOverride: string | null = null;
     let omitRefreshIdToken = false;
+    // Rotation mode: the issuer revokes the presented refresh token and only honours the one it last issued.
+    let enforceRefreshTokenRotation = false;
+    let currentRefreshToken = "rt_1";
+    let rotationCounter = 1;
+    // Transient UserInfo outage after an otherwise successful (possibly rotating) grant.
+    let userInfoServerError = false;
 
     beforeAll(async () => {
         const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -149,6 +156,16 @@ describe("OIDC offboarding refresh (integration)", () => {
                     res.end(JSON.stringify({ error: "server_error" }));
                     return;
                 }
+                if (grantType === "refresh_token" && enforceRefreshTokenRotation) {
+                    if ((params.get("refresh_token") ?? "") !== currentRefreshToken) {
+                        res.statusCode = 400;
+                        res.setHeader("content-type", "application/json");
+                        res.end(JSON.stringify({ error: "invalid_grant" }));
+                        return;
+                    }
+                    rotationCounter += 1;
+                    currentRefreshToken = `rt_${rotationCounter}`;
+                }
 
                 let nonce = "";
                 if (grantType === "authorization_code") {
@@ -189,13 +206,20 @@ describe("OIDC offboarding refresh (integration)", () => {
                     access_token: grantType === "refresh_token" ? "at_2" : "at_1",
                     token_type: "Bearer",
                     expires_in: 600,
-                    refresh_token: grantType === "refresh_token" ? "rt_2" : "rt_1",
+                    refresh_token: grantType === "refresh_token"
+                        ? (enforceRefreshTokenRotation ? currentRefreshToken : "rt_2")
+                        : "rt_1",
                     ...(grantType === "refresh_token" && omitRefreshIdToken ? {} : { id_token: idToken }),
                 }));
                 return;
             }
 
             if (req.method === "GET" && url.pathname === "/userinfo") {
+                if (userInfoServerError) {
+                    res.statusCode = 503;
+                    res.end("unavailable");
+                    return;
+                }
                 res.setHeader("content-type", "application/json");
                 res.end(JSON.stringify({
                     sub: refreshSubjectOverride ?? "user_1",
@@ -234,6 +258,10 @@ describe("OIDC offboarding refresh (integration)", () => {
         refreshServerError = false;
         refreshSubjectOverride = null;
         omitRefreshIdToken = false;
+        enforceRefreshTokenRotation = false;
+        currentRefreshToken = "rt_1";
+        rotationCounter = 1;
+        userInfoServerError = false;
         await db.repeatKey.deleteMany();
         await db.accountIdentity.deleteMany();
         await db.account.deleteMany();
@@ -498,6 +526,102 @@ describe("OIDC offboarding refresh (integration)", () => {
 
         await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
             .resolves.toEqual({ ok: true });
+        await expect(db.accountIdentity.findFirst({
+            where: { accountId, provider: "okta" },
+            select: { eligibilityStatus: true, eligibilityReason: true },
+        })).resolves.toEqual({ eligibilityStatus: "eligible", eligibilityReason: null });
+        await app.close();
+    });
+
+    it("persists a rotated refresh token when the grant carries no current claims", async () => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }]);
+        // The issuer revokes the presented refresh token on every successful grant, as RFC 6749 §6 permits.
+        enforceRefreshTokenRotation = true;
+        const { app, accountId } = await authenticateAccount(11);
+
+        // This refresh carries no ID token, so the claims-bearing write never runs — but the
+        // issuer has still rotated, and the stored token must follow it.
+        omitRefreshIdToken = true;
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: true });
+
+        const rotated = await db.accountIdentity.findFirst({
+            where: { accountId, provider: "okta" },
+            select: { token: true },
+        });
+        expect(decryptString(["user", accountId, "okta", "refresh_token"], new Uint8Array(rotated!.token!)))
+            .toBe("rt_3");
+
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: true });
+        await expect(db.accountIdentity.findFirst({
+            where: { accountId, provider: "okta" },
+            select: { eligibilityStatus: true, eligibilityReason: true },
+        })).resolves.toEqual({ eligibilityStatus: "eligible", eligibilityReason: null });
+        await app.close();
+    });
+
+    it.each([
+        { mode: "best-effort", strict: undefined, transientResult: { ok: true } },
+        { mode: "strict", strict: "true", transientResult: { ok: false, statusCode: 403, error: "not-eligible" } },
+    ] as const)("keeps a rotated refresh token when UserInfo fails after the grant ($mode)", async ({ strict, transientResult }) => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            fetchUserInfo: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }], strict);
+        enforceRefreshTokenRotation = true;
+        const { app, accountId } = await authenticateAccount(strict ? 13 : 12);
+        const storedToken = async () => {
+            const row = await db.accountIdentity.findFirst({ where: { accountId, provider: "okta" }, select: { token: true } });
+            return decryptString(["user", accountId, "okta", "refresh_token"], new Uint8Array(row!.token!));
+        };
+        const expireCheck = () => db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+
+        // The grant succeeds and rotates (revoking the presented token); only the later UserInfo call fails.
+        userInfoServerError = true;
+        await expireCheck();
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual(transientResult);
+        expect(await storedToken()).toBe(currentRefreshToken);
+
+        // Recovery: the retained replacement is still honoured by the issuer.
+        userInfoServerError = false;
+        await expireCheck();
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: true });
+        expect(await storedToken()).toBe(currentRefreshToken);
         await expect(db.accountIdentity.findFirst({
             where: { accountId, provider: "okta" },
             select: { eligibilityStatus: true, eligibilityReason: true },

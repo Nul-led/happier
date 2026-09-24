@@ -144,7 +144,7 @@ describe('SavedSecretCreateEditor', () => {
         expect(screen.findByTestId('saved-secret-create-approval')).toBeTruthy();
     });
 
-    it('preserves the draft across a Home switch and ignores the old Home result', async () => {
+    it('clears the draft across a Home switch and ignores the old Home result', async () => {
         const deferred = createDeferred<{
             ok: true; resourceRef: string; revision: number;
         }>();
@@ -160,19 +160,66 @@ describe('SavedSecretCreateEditor', () => {
         const screen = await renderScreen(
             <SavedSecretCreateEditor scope={{ serverId: 'home-a', accountId: 'owner-a' }} {...common} />,
         );
-        screen.changeTextByTestId('saved-secret-create-name', 'Keep across Homes');
-        screen.changeTextByTestId('saved-secret-create-value', 'kept-value');
+        screen.changeTextByTestId('saved-secret-create-name', 'Home A secret');
+        screen.changeTextByTestId('saved-secret-create-value', 'home-a-value');
+        // Commit the typed draft before pressing, so the press reads it.
+        await flushHookEffects();
         screen.pressByTestId('saved-secret-create-submit');
 
         await screen.update(
             <SavedSecretCreateEditor scope={{ serverId: 'home-b', accountId: 'owner-b' }} {...common} />,
         );
-        expect(screen.findByTestId('saved-secret-create-name')?.props.value).toBe('Keep across Homes');
-        expect(screen.findByTestId('saved-secret-create-submit')?.props.disabled).toBe(false);
+        // A different Home is a different draft: the value typed for Home A is
+        // gone, so nothing typed there can be submitted here.
+        expect(screen.findByTestId('saved-secret-create-name')?.props.value).toBe('');
+        expect(screen.findByTestId('saved-secret-create-value')?.props.value).toBe('');
+        await screen.pressByTestIdAsync('saved-secret-create-submit');
+        expect(createResource).toHaveBeenCalledTimes(1);
 
         deferred.resolve({ ok: true, resourceRef: 'happier:shared-secret:v1:old-home', revision: 1 });
         await flushHookEffects();
         expect(onCreated).not.toHaveBeenCalled();
+    });
+
+    it('does not carry one Home\u2019s recipients into a Create on another Home', async () => {
+        createResource.mockResolvedValueOnce({
+            ok: true, resourceRef: 'happier:shared-secret:v1:resource-b', revision: 1,
+        });
+        const { SavedSecretCreateEditor } = await import('./SavedSecretCreateEditor');
+        const common = {
+            approvalPending: false,
+            requestApproval: vi.fn(),
+            onCancel: vi.fn(),
+            onCreated: vi.fn(async () => {}),
+        };
+        const screen = await renderScreen(
+            <SavedSecretCreateEditor scope={{ serverId: 'home-a', accountId: 'owner-a' }} {...common} />,
+        );
+        screen.changeTextByTestId('saved-secret-create-name', 'Cross-Home secret');
+        screen.changeTextByTestId('saved-secret-create-value', 'cross-home-value');
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-b')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-account:account-b');
+        await screen.pressByTestIdAsync('saved-secret-access-team:team-a');
+
+        await screen.update(
+            <SavedSecretCreateEditor scope={{ serverId: 'home-b', accountId: 'owner-b' }} {...common} />,
+        );
+        screen.changeTextByTestId('saved-secret-create-name', 'Home B secret');
+        screen.changeTextByTestId('saved-secret-create-value', 'home-b-value');
+        await flushHookEffects();
+        await screen.pressByTestIdAsync('saved-secret-create-submit');
+
+        // `account-b`, `team-a` and `group-a` are Home A identities; submitting
+        // them to Home B would ask it to share with principals it never named.
+        expect(createResource).toHaveBeenCalledWith(expect.objectContaining({
+            scope: { serverId: 'home-b', accountId: 'owner-b' },
+            name: 'Home B secret',
+            value: 'home-b-value',
+            accountGrants: [], teamGrants: [], groupGrants: [],
+        }));
+        // An owner-only create needs no disclosure confirmation, which also
+        // proves the recipient sets really were empty at submit time.
+        expect(confirmDisclosure).not.toHaveBeenCalled();
     });
 
     it('keeps entered material available for retry after a typed failure', async () => {

@@ -33,9 +33,10 @@ import {
 } from './errors.js';
 import { bindHomeDomainHttpRequestV1 } from '../../actions/homeDomainHttpBinding.js';
 import {
-  SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1,
   SessionBoardItemPlacementV1Schema,
   SessionBoardLayoutOperationV1Schema,
+  sessionBoardItemPlacementOperandsRetainedV1,
+  sessionBoardPlacedWidthRetainsPlacementV1,
 } from './layoutOperations.js';
 
 /**
@@ -324,16 +325,15 @@ export const SessionBoardActionRecoveryEvidenceV1Schema = SessionBoardMutationAc
         return;
       }
       if (intendedPlacement !== undefined && mutation.placement?.layoutContent.t === 'plain') {
+        // The layout operation owns what a placement operand means; this only asks it whether the
+        // mutation it produced still carries the invocation, so the two can never disagree.
         const layout = SessionBoardLayoutV1Schema.safeParse(mutation.placement.layoutContent.v);
-        const intendedTab = layout.success
-          ? layout.data.tabs.find((tab) => intendedPlacement.tabId === undefined || tab.id === intendedPlacement.tabId)
-          : undefined;
-        const placedItem = intendedTab?.items.find((entry) => entry.itemId === evidence.intent.itemId);
         if (
-          intendedTab === undefined
-          || placedItem === undefined
-          || (intendedPlacement.tabTitle !== undefined && intendedTab.title !== intendedPlacement.tabTitle)
-          || placedItem.width !== (intendedPlacement.width ?? SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1)
+          !layout.success
+          || !sessionBoardItemPlacementOperandsRetainedV1(layout.data, {
+            itemId: evidence.intent.itemId,
+            placement: intendedPlacement,
+          })
         ) {
           context.addIssue({
             code: 'custom', path: ['requestBody'],
@@ -493,6 +493,12 @@ const SESSION_BOARD_ADAPTER_ERROR_CODE_ALIASES = Object.freeze({
   plugin_session_record_invalid_response: 'invalid_response',
   plugin_session_record_encryption_mismatch: 'mode_mismatch',
   plugin_session_record_encryption_unavailable: 'corrupt_or_unopenable',
+  // The connection-establishment codes the mutation path already treats as a proven
+  // non-dispatch. A read that never reached the Home is `offline`, not an invalid response.
+  ECONNREFUSED: 'offline',
+  ENOTFOUND: 'offline',
+  EAI_AGAIN: 'offline',
+  ERR_CANCELED: 'cancelled',
 } as const satisfies Readonly<Record<string, SessionBoardDefiniteFailureCodeV1>>);
 
 function readSessionBoardAdapterErrorCode(error: unknown, depth = 0): string | null {
@@ -513,8 +519,14 @@ function readSessionBoardAdapterErrorCode(error: unknown, depth = 0): string | n
 export function projectSessionBoardAdapterFailureV1(
   error: unknown,
   fallback: SessionBoardDefiniteFailureCodeV1 = 'invalid_response',
+  actionId?: SessionBoardActionIdV1,
 ): SessionBoardActionFailureV1 {
   const rawCode = readSessionBoardAdapterErrorCode(error);
+  // The feature refusal is the one producer code whose strict envelope carries the
+  // operation, so it reuses the same gate projection the mutation settlement already uses.
+  if (rawCode === 'plugin_session_record_feature_disabled' && actionId !== undefined) {
+    return projectSessionBoardFeatureGateFailureV1(actionId);
+  }
   const direct = BoardDefiniteFailureCodeV1Schema.safeParse(rawCode);
   const errorCode = direct.success
     ? direct.data
@@ -795,7 +807,7 @@ export function parseSessionBoardActionPortResultV1(
       || (upsert.placement !== undefined && (
         mutationOutput.destination === null
         || (upsert.placement.tabId !== undefined && mutationOutput.destination.tabId !== upsert.placement.tabId)
-        || mutationOutput.destination.width !== (upsert.placement.width ?? SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1)
+        || !sessionBoardPlacedWidthRetainsPlacementV1(mutationOutput.destination.width, upsert.placement)
       ))
       || (upsert.placement === undefined && mutationOutput.destination !== null)
     ) return { success: false };

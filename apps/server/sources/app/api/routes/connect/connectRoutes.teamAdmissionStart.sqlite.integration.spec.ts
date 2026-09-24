@@ -7,6 +7,8 @@ import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { connectAuthExternalRoutes } from "./connectRoutes.authExternal";
+import { connectConnectExternalRoutes } from "./connectRoutes.connectExternal";
+import { auth } from "@/app/auth/auth";
 import { mintTeamInvitationToken, digestTeamInvitationToken } from "@/app/teams/invitations/token";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
@@ -145,6 +147,97 @@ describe("external OAuth Team-admission start (sqlite integration)", () => {
             headers: { "x-happier-team-invitation": input.token },
         });
     }
+
+    /** The authenticated Team entry: the member already holds this Account. */
+    async function startConnect(input: Readonly<{
+        providerId: string;
+        teamId: string;
+        accountId: string;
+        origin: "home" | "team";
+        token?: string;
+        connectionId?: string;
+    }>) {
+        const app = createTestApp();
+        app.decorate("authenticate", async (request: { userId: string }) => {
+            request.userId = input.accountId;
+        });
+        connectConnectExternalRoutes(app);
+        await app.ready();
+        const query = new URLSearchParams({
+            purpose: "team_admission",
+            origin: input.origin,
+            teamId: input.teamId,
+            ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+        });
+        return await app.inject({
+            method: "GET",
+            url: `/v1/connect/external/${input.providerId}/params?${query.toString()}`,
+            ...(input.token ? { headers: { "x-happier-team-invitation": input.token } } : {}),
+        });
+    }
+
+    it("binds the signed-in Account to a Team-owned connection in the authenticated connect attempt", async () => {
+        const team = await db.team.create({
+            data: { name: `Connect member ${crypto.randomUUID()}`, admissionMode: "invite_only" },
+        });
+        const { provider, connection } = await createTeamProvider(team.id);
+        const account = await db.account.create({
+            data: { publicKey: `member-${crypto.randomUUID()}`, username: `member-${crypto.randomUUID()}`, encryptionMode: "e2ee" },
+        });
+
+        const response = await startConnect({
+            providerId: provider.id,
+            teamId: team.id,
+            accountId: account.id,
+            origin: "team",
+            connectionId: connection.id,
+        });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const body = response.json();
+        expect(body).toMatchObject({ purpose: "team_admission", teamId: team.id });
+        const attempt = await db.repeatKey.findUniqueOrThrow({
+            where: { key: `oauth_state_${body.admissionReference}` },
+        });
+        const stored = JSON.parse(attempt.value);
+        // Existing-member re-qualification carries the exact connection and no
+        // admission source; the finalizer decides structural admission.
+        expect(stored.securityBinding).toMatchObject({
+            purpose: "team_admission",
+            connection: { id: connection.id, revision: connection.revision },
+            admission: null,
+        });
+        // The callback must hand this journey to the authenticated finalizer.
+        expect(stored.connectFinalization).toBe("credential_adoption_v1");
+        const state = new URL(body.url).searchParams.get("state");
+        expect(state).toBeTruthy();
+        const verified = await auth.verifyOauthStateToken(state!);
+        expect(verified).toMatchObject({
+            flow: "connect",
+            userId: account.id,
+            sid: body.admissionReference,
+        });
+    });
+
+    it("rejects a revoked invitation before an authenticated Team connect attempt is created", async () => {
+        const fixture = await createInvitationFixture("revoked");
+        const account = await db.account.create({
+            data: { publicKey: `member-${crypto.randomUUID()}`, username: `member-${crypto.randomUUID()}`, encryptionMode: "e2ee" },
+        });
+        const before = await db.repeatKey.count();
+
+        const response = await startConnect({
+            providerId: "github",
+            teamId: fixture.team.id,
+            accountId: account.id,
+            origin: "home",
+            token: fixture.token,
+        });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toEqual({ error: "invalid-team-admission" });
+        expect(await db.repeatKey.count()).toBe(before);
+    });
 
     it.each(["accepted", "revoked", "expired", "archived"] as const)(
         "rejects a %s invitation before a Home-provider OAuth attempt is created",

@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import {
     collectRenderedTestIds,
     createHomeGovernanceHarness,
+    decideApprovalAsInbox,
     homeAccountPickerRowFixture,
     installHomeGovernanceBoundaries,
     renderScreen,
@@ -29,13 +30,13 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
  * or Group it created, the membership whose history was to be prepared, the
  * bearer that was minted — instead of degrading into "something changed".
  *
- * The approval binding itself is owned and proven elsewhere: the shared
- * continuation owner's suites already pin exact Artifact/Action/Home/Account/
- * input fencing, once-only delivery, scope-change custody release and typed
- * failure codes. So the operation clients are replaced here with exactly what
- * the real front door throws, and the Artifact — a stored-content boundary — is
- * replaced the way every other approval suite replaces it. Everything between,
- * including the real `useActionApprovalContinuation`, stays live.
+ * Every deferred case runs the real approval lifecycle: the Team operation
+ * reaches the shared Action front door, which persists an open approval in the
+ * Home's stateful Artifact store; the Inbox then decides it through the generic
+ * executor, whose replay is the one Home mutation; and the mounted surface
+ * learns the outcome only through the real `useApprovalArtifact` and
+ * `useActionApprovalContinuation`. Only the network, the credential store and
+ * genuine platform boundaries are replaced.
  *
  * Invitation creation and reissue are the deliberate exception. They mint a raw
  * bearer, so they are declared live-only custody: the invocation waits, the
@@ -50,88 +51,14 @@ const routerReplace = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
 const routerBack = vi.hoisted(() => vi.fn());
 
-const approvalArtifactState = vi.hoisted(() => ({
-    value: {
-        artifact: null as null | Readonly<Record<string, unknown> & { id: string }>,
-        isLoading: false,
-        error: null as boolean | null,
-        invalidArtifact: false,
-    },
-    /**
-     * Every artifact id the binding actually asked for.
-     *
-     * The settled decision only reaches a surface if the binding is reading the
-     * exact Artifact the deferral registered; without this, a registration that
-     * bound the wrong id is indistinguishable from an approval that never
-     * settled, and both read as a surface that waits forever.
-     */
-    requested: [] as (string | null)[],
-    listeners: new Set<() => void>(),
-}));
-
-/** Armed per case; unarmed operations keep their real implementation. */
+/**
+ * Invitation creation is live-only custody: its invocation, not an Artifact,
+ * owns the wait. Armed per case; unarmed it keeps its real implementation.
+ */
 const deferrals = vi.hoisted(() => ({
-    createTeam: null as null | ((params: never) => Promise<never>),
-    createTeamGroup: null as null | ((params: never) => Promise<never>),
-    addTeamMember: null as null | ((params: never) => Promise<never>),
     createTeamInvitation: null as null | ((params: never) => Promise<never>),
-    calls: { createTeam: 0, createTeamGroup: 0, addTeamMember: 0, createTeamInvitation: 0 },
+    calls: { createTeamInvitation: 0 },
 }));
-
-vi.mock('@/components/approvals/useApprovalArtifact', () => ({
-    useApprovalArtifact: (input: Readonly<{ artifactId: string | null }>) => {
-        const held = React.useSyncExternalStore(
-            (listener) => {
-                approvalArtifactState.listeners.add(listener);
-                return () => approvalArtifactState.listeners.delete(listener);
-            },
-            () => approvalArtifactState.value,
-            () => approvalArtifactState.value,
-        );
-        approvalArtifactState.requested.push(input.artifactId);
-        return {
-            ...held,
-            artifact: held.artifact?.id === input.artifactId ? held.artifact : null,
-            homeUnavailable: false,
-            refresh: async () => {},
-        };
-    },
-}));
-
-vi.mock('@/sync/ops/teams/teamOperations', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/ops/teams/teamOperations')>();
-    return {
-        ...original,
-        createTeam: (params: never) => {
-            deferrals.calls.createTeam += 1;
-            return deferrals.createTeam ? deferrals.createTeam(params) : original.createTeam(params);
-        },
-    };
-});
-
-vi.mock('@/sync/ops/teams/teamGroupOperations', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/ops/teams/teamGroupOperations')>();
-    return {
-        ...original,
-        createTeamGroup: (params: never) => {
-            deferrals.calls.createTeamGroup += 1;
-            return deferrals.createTeamGroup
-                ? deferrals.createTeamGroup(params)
-                : original.createTeamGroup(params);
-        },
-    };
-});
-
-vi.mock('@/sync/ops/teams/teamMemberOperations', async (importOriginal) => {
-    const original = await importOriginal<typeof import('@/sync/ops/teams/teamMemberOperations')>();
-    return {
-        ...original,
-        addTeamMember: (params: never) => {
-            deferrals.calls.addTeamMember += 1;
-            return deferrals.addTeamMember ? deferrals.addTeamMember(params) : original.addTeamMember(params);
-        },
-    };
-});
 
 vi.mock('@/sync/ops/teams/teamInvitationOperations', async (importOriginal) => {
     const original = await importOriginal<typeof import('@/sync/ops/teams/teamInvitationOperations')>();
@@ -152,6 +79,13 @@ installSettingsViewCommonModuleMocks({
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
     }),
+    // The real client store: the approval writer publishes the settled
+    // Artifact into it and the mounted continuation reads it back, so a stub
+    // here would sever exactly the path these journeys prove.
+    storage: async (importOriginal) => {
+        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleMock({ importOriginal, overrides: {} });
+    },
 });
 
 // The clipboard and share sheet are genuine platform boundaries reached by the
@@ -163,7 +97,8 @@ vi.mock('@/utils/ui/shareText', () => ({
     shareTextSafe: vi.fn(async () => 'shared' as const),
 }));
 
-vi.mock('@/utils/files/nativePickImages', () => ({ nativePickImages: vi.fn() }));
+const pickImages = vi.hoisted(() => vi.fn());
+vi.mock('@/utils/files/nativePickImages', () => ({ nativePickImages: pickImages }));
 vi.mock('expo-file-system', () => ({
     File: class {
         async bytes(): Promise<Uint8Array> { return new Uint8Array(); }
@@ -177,11 +112,11 @@ vi.mock('expo-file-system', () => ({
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -203,66 +138,26 @@ const ELIGIBILITY_PATH = '/v1/home/governance/eligibility/get';
 const ACCOUNT_SEARCH_PATH = '/v1/home/accounts/search';
 const INVITATIONS_LIST_PATH = '/v1/teams/invitations/list';
 
-const ARTIFACT_ID = 'approval-team-journey';
+const GROUP_CREATE_PATH = '/v1/teams/groups/create';
+const MEMBER_ADD_PATH = '/v1/teams/members/add';
+const TEAM_CREATE_PATH = '/v1/teams/create';
+const TEAM_LOGO_SET_PATH = '/v1/teams/logo/set';
 
-/**
- * Exactly what the shared front door throws once it has deferred this intent:
- * the real pending error, carrying a continuation built from the caller's own
- * handlers. The Artifact/Action/Home/Account/input fencing inside a real
- * continuation is owned by `teamActionClient` and proven by its own suite, so
- * only the delivery is reproduced here.
- */
-function pendingApproval<TAnswer>(answer: TAnswer) {
-    return async (params: Readonly<{
-        onApprovalSucceeded?: (value: TAnswer) => void | Promise<void>;
-        onApprovalFailed?: (code: string) => void;
-    }>): Promise<never> => {
-        const { TeamActionApprovalPendingError } = await import('@/sync/ops/teams/teamActionClient');
-        throw new TeamActionApprovalPendingError(ARTIFACT_ID, {
-            artifactId: ARTIFACT_ID,
-            onExecuted: async () => {
-                await params.onApprovalSucceeded?.(answer);
-                return 'consumed' as const;
-            },
-            onTerminal: (status) => params.onApprovalFailed?.(`approval_${status}`),
-        });
-    };
+/** The one approval the Home persisted for this journey, decoded as stored. */
+function storedApproval(serverId: string): Readonly<{ id: string; request: Record<string, unknown> }> {
+    const rows = harness.artifacts(serverId).list();
+    if (rows.length !== 1) throw new Error(`expected_one_approval_artifact:${rows.length}`);
+    const body = harness.artifacts(serverId).readPlainBody(rows[0]!.id);
+    if (body === null) throw new Error('approval_artifact_not_plain');
+    return { id: rows[0]!.id, request: JSON.parse(body) as Record<string, unknown> };
 }
 
-/**
- * The decision the approval host would have committed, in the artifact shape the
- * binding actually reads.
- *
- * It is the whole `DecryptedArtifact` rather than the three fields the hook
- * happens to dereference: a partial stand-in would let a reader that checks
- * decryption or versioning silently treat the settled approval as unreadable,
- * which reads as "still waiting" instead of as a broken fixture.
- */
-async function settleArtifact(status: 'executed' | 'rejected'): Promise<void> {
-    await act(async () => {
-        approvalArtifactState.value = {
-            artifact: {
-                id: ARTIFACT_ID,
-                title: null,
-                header: { title: null, approvalStatus: status },
-                body: '{}',
-                headerVersion: 1,
-                bodyVersion: 1,
-                seq: 1,
-                createdAt: 1,
-                updatedAt: 2,
-                isDecrypted: true,
-            },
-            isLoading: false,
-            error: null,
-            invalidArtifact: false,
-        };
-        for (const listener of approvalArtifactState.listeners) listener();
-        // The shared hook releases custody first, then invokes the result
-        // continuation from the following effect. Keep that microtask inside
-        // this act boundary so its navigation/error state is fully observed.
-        await Promise.resolve();
-    });
+/** Waits for the deferral to persist its open approval, and returns its id. */
+async function waitForOpenApproval(serverId: string, actionId: string): Promise<string> {
+    await vi.waitFor(() => expect(harness.artifacts(serverId).list()).toHaveLength(1));
+    const pending = storedApproval(serverId);
+    expect(pending.request).toMatchObject({ status: 'open', actionId });
+    return pending.id;
 }
 
 type Screen = Awaited<ReturnType<typeof renderScreen>>;
@@ -271,20 +166,6 @@ async function waitForTestId(screen: Screen, testID: string): Promise<void> {
     await vi.waitFor(() => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(testID);
     });
-}
-
-/**
- * Re-renders the surface after the Artifact settled outside React.
- *
- * The decision lands in durable approval state, not in this tree, so something
- * has to bring the surface back to read it. Re-passing the *same* element does
- * not: React compares the child element by identity and bails out of an
- * unchanged subtree, so the screen would never re-run the binding and the
- * journey would look stuck when it is only unrendered. Each call therefore
- * builds the element again.
- */
-async function rerender(screen: Screen, build: () => React.ReactElement): Promise<void> {
-    await screen.update(build());
 }
 
 async function addTeamHome(
@@ -363,14 +244,10 @@ beforeEach(async () => {
     routerReplace.mockReset();
     routerPush.mockReset();
     routerBack.mockReset();
-    approvalArtifactState.value = { artifact: null, isLoading: false, error: null, invalidArtifact: false };
-    approvalArtifactState.requested = [];
     setClipboardStringSafeMock.mockClear();
-    deferrals.createTeam = null;
-    deferrals.createTeamGroup = null;
-    deferrals.addTeamMember = null;
     deferrals.createTeamInvitation = null;
-    deferrals.calls = { createTeam: 0, createTeamGroup: 0, addTeamMember: 0, createTeamInvitation: 0 };
+    deferrals.calls = { createTeamInvitation: 0 };
+    pickImages.mockReset();
 });
 
 afterEach(() => {
@@ -379,73 +256,83 @@ afterEach(() => {
 
 describe('deferred Group creation', () => {
     it('shows the wait, withholds the control, then opens the Group the approval produced', async () => {
-        deferrals.createTeamGroup = pendingApproval(
-            teamGroupFixture({ id: 'group-new', name: 'Design', memberCount: 0 }),
-        ) as never;
         const serverId = await addTeamHome({ manageGroups: true });
+        await harness.requireUiApproval(serverId, 'teams.groups.create');
+        harness.answer(serverId, GROUP_CREATE_PATH, {
+            body: teamGroupFixture({ id: 'group-new', name: 'Design', memberCount: 0 }),
+        });
         const { TeamGroupCreateScreen } = await import('./groups/TeamGroupCreateScreen');
-        const build = () => <TeamGroupCreateScreen serverId={serverId} teamId="team-1" />;
-        const screen = await renderScreen(build());
+        const screen = await renderScreen(<TeamGroupCreateScreen serverId={serverId} teamId="team-1" />);
         await waitForTestId(screen, 'team-group-create-name');
         act(() => screen.changeTextByTestId('team-group-create-name', 'Design'));
         await screen.pressByTestIdAsync('team-group-create-submit');
 
         // The deferral is visible and the control is withheld, so the same
         // creation cannot be asked for a second time while it is undecided.
+        const artifactId = await waitForOpenApproval(serverId, 'teams.groups.create');
         await waitForTestId(screen, 'team-approval');
         expect(screen.findByTestId('team-group-create-submit')?.props.disabled).toBe(true);
         expect(routerReplace).not.toHaveBeenCalled();
+        expect(harness.requestsFor(GROUP_CREATE_PATH)).toHaveLength(0);
 
-        await settleArtifact('executed');
-        await rerender(screen, build);
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
 
         await vi.waitFor(() => {
             expect(routerReplace).toHaveBeenCalledWith(
                 `/settings/teams/${serverId}/team-1/groups/group-new`,
             );
         });
-        // The Home created the Group when the approval was granted.
-        expect(deferrals.calls.createTeamGroup).toBe(1);
+        // The Home created the Group once, through the Inbox's replay.
+        expect(harness.requestsFor(GROUP_CREATE_PATH)).toHaveLength(1);
     });
 });
 
 describe('deferred Team admission', () => {
     async function renderMemberAdd(serverId: string) {
         const { TeamMemberAddScreen } = await import('./members/TeamMemberAddScreen');
-        const build = () => <TeamMemberAddScreen serverId={serverId} teamId="team-1" />;
-        const screen = await renderScreen(build());
+        const screen = await renderScreen(<TeamMemberAddScreen serverId={serverId} teamId="team-1" />);
         await waitForTestId(screen, 'team-member-add-search');
         act(() => screen.changeTextByTestId('team-member-add-search', 'Grace'));
         await waitForTestId(screen, 'team-member-add-candidate:account-grace');
         act(() => screen.pressByTestId('team-member-add-candidate:account-grace'));
-        return { screen, build };
+        return screen;
     }
 
-    it('continues the history journey at the membership an approved admission answered with', async () => {
-        deferrals.addTeamMember = pendingApproval(teamMembershipFixture({
-            id: 'membership-grace',
-            accountId: 'account-grace',
-            historyAccess: 'all_existing',
-        })) as never;
+    async function addAdmissionHome(): Promise<string> {
         const serverId = await addTeamHome({ manageMembers: true });
+        await harness.requireUiApproval(serverId, 'teams.members.add');
         harness.answer(serverId, ACCOUNT_SEARCH_PATH, {
             body: { accounts: [homeAccountPickerRowFixture('account-grace', 'Grace')] },
         });
-        const { screen, build } = await renderMemberAdd(serverId);
+        return serverId;
+    }
+
+    it('continues the history journey at the membership an approved admission answered with', async () => {
+        const serverId = await addAdmissionHome();
+        harness.answer(serverId, MEMBER_ADD_PATH, {
+            body: teamMembershipFixture({
+                id: 'membership-grace',
+                accountId: 'account-grace',
+                historyAccess: 'all_existing',
+            }),
+        });
+        const screen = await renderMemberAdd(serverId);
 
         await waitForTestId(screen, 'team-member-add-history:all_existing');
         act(() => screen.pressByTestId('team-member-add-history:all_existing'));
         await screen.pressByTestIdAsync('team-member-add-submit');
 
+        const artifactId = await waitForOpenApproval(serverId, 'teams.members.add');
         await waitForTestId(screen, 'team-approval');
         expect(routerReplace).not.toHaveBeenCalled();
         expect(routerBack).not.toHaveBeenCalled();
-        // The deferral bound this exact Artifact, so the decision below is the
-        // one this surface is waiting on rather than an unrelated request.
-        expect(approvalArtifactState.requested).toContain(ARTIFACT_ID);
+        expect(harness.requestsFor(MEMBER_ADD_PATH)).toHaveLength(0);
 
-        await settleArtifact('executed');
-        await rerender(screen, build);
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
 
         // Including existing history is an instruction, and the membership it
         // is prepared at exists only in the Home's answer.
@@ -454,31 +341,30 @@ describe('deferred Team admission', () => {
                 `/settings/teams/${serverId}/team-1/members/membership-grace?prepareHistory=1`,
             );
         });
-        expect(deferrals.calls.addTeamMember).toBe(1);
+        expect(harness.requestsFor(MEMBER_ADD_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(MEMBER_ADD_PATH)[0]?.input).toMatchObject({
+            accountId: 'account-grace',
+            historyAccess: 'all_existing',
+        });
     });
 
     it('reports a refused admission instead of navigating as though it happened', async () => {
-        deferrals.addTeamMember = pendingApproval(teamMembershipFixture({
-            id: 'membership-grace',
-            accountId: 'account-grace',
-        })) as never;
-        const serverId = await addTeamHome({ manageMembers: true });
-        harness.answer(serverId, ACCOUNT_SEARCH_PATH, {
-            body: { accounts: [homeAccountPickerRowFixture('account-grace', 'Grace')] },
-        });
-        const { screen, build } = await renderMemberAdd(serverId);
+        const serverId = await addAdmissionHome();
+        const screen = await renderMemberAdd(serverId);
         await screen.pressByTestIdAsync('team-member-add-submit');
+        const artifactId = await waitForOpenApproval(serverId, 'teams.members.add');
         await waitForTestId(screen, 'team-approval');
 
-        await settleArtifact('rejected');
-        await rerender(screen, build);
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'reject')).resolves.toMatchObject({ ok: true });
 
         await vi.waitFor(() => {
             expect(screen.getTextContent()).toContain('teams.errors.forbidden');
         });
         expect(routerReplace).not.toHaveBeenCalled();
         expect(routerBack).not.toHaveBeenCalled();
-        expect(deferrals.calls.addTeamMember).toBe(1);
+        // A refused admission never reaches the Home.
+        expect(harness.requestsFor(MEMBER_ADD_PATH)).toHaveLength(0);
+        expect(storedApproval(serverId).request).toMatchObject({ status: 'rejected' });
     });
 });
 
@@ -589,10 +475,7 @@ describe('live-only invitation custody', () => {
 });
 
 describe('deferred Team creation', () => {
-    it('opens the Team the approval produced rather than re-asking for one', async () => {
-        deferrals.createTeam = pendingApproval(
-            teamSummaryFixture({ id: 'team-new', name: 'Design' }),
-        ) as never;
+    async function addCreationHome(): Promise<string> {
         const serverId = await harness.addHome({
             name: 'Home A',
             serverUrl: 'https://home-a.example',
@@ -601,10 +484,18 @@ describe('deferred Team creation', () => {
         });
         await harness.selectHomes([serverId]);
         harness.answer(serverId, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        return serverId;
+    }
+
+    it('opens the Team the approval produced rather than re-asking for one', async () => {
+        const serverId = await addCreationHome();
+        await harness.requireUiApproval(serverId, 'teams.create');
+        harness.answer(serverId, TEAM_CREATE_PATH, {
+            body: teamSummaryFixture({ id: 'team-new', name: 'Design' }),
+        });
 
         const { TeamCreateScreen } = await import('./TeamCreateScreen');
-        const build = () => <TeamCreateScreen />;
-        const screen = await renderScreen(build());
+        const screen = await renderScreen(<TeamCreateScreen />);
         await waitForTestId(screen, 'teams-create-name');
         act(() => screen.changeTextByTestId('teams-create-name', 'Design'));
         await screen.pressByTestIdAsync('teams-create-submit');
@@ -612,18 +503,65 @@ describe('deferred Team creation', () => {
         // A Team being created has no Team shell to host its approval, so this
         // screen owns one: the wait is visible and the form is withheld rather
         // than silently creating a second Team.
+        const artifactId = await waitForOpenApproval(serverId, 'teams.create');
         await waitForTestId(screen, 'teams-create-approval');
         expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
         expect(routerReplace).not.toHaveBeenCalled();
+        expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(0);
 
-        await settleArtifact('executed');
-        await rerender(screen, build);
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
 
         await vi.waitFor(() => {
             expect(routerReplace).toHaveBeenCalledWith(
                 `/settings/teams/${serverId}/team-new`,
             );
         });
-        expect(deferrals.calls.createTeam).toBe(1);
+        expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(1);
+    });
+
+    it('waits for an approved logo publication instead of reporting an upload failure', async () => {
+        // The Team is already created. A logo publication that requires explicit
+        // approval is a wait on a person, and reporting `teams.logo.failed` here
+        // both lies about the Team and offers a Retry that mints a second
+        // approval for the same upload.
+        const created = teamSummaryFixture({ id: 'team-new', name: 'Design' });
+        const serverId = await addCreationHome();
+        await harness.requireUiApproval(serverId, 'teams.logo.set');
+        harness.answer(serverId, TEAM_CREATE_PATH, { body: created });
+        harness.answer(serverId, TEAM_LOGO_SET_PATH, { body: created });
+        const bytes = new Uint8Array([137, 80, 78, 71]);
+        pickImages.mockResolvedValue([{
+            kind: 'web',
+            file: { type: 'image/png', arrayBuffer: async () => bytes.buffer },
+        }]);
+
+        const { TeamCreateScreen } = await import('./TeamCreateScreen');
+        const screen = await renderScreen(<TeamCreateScreen />);
+        await waitForTestId(screen, 'teams-create-name');
+        act(() => screen.changeTextByTestId('teams-create-name', 'Design'));
+        await screen.pressByTestIdAsync('teams-create-logo-set');
+        await screen.pressByTestIdAsync('teams-create-logo-use');
+        await screen.pressByTestIdAsync('teams-create-submit');
+
+        const artifactId = await waitForOpenApproval(serverId, 'teams.logo.set');
+        await waitForTestId(screen, 'teams-create-approval');
+        const { t } = await import('@/text');
+        expect(screen.getTextContent()).not.toContain(t('teams.logo.failed'));
+        expect(routerReplace).not.toHaveBeenCalled();
+        expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(0);
+
+        await expect(decideApprovalAsInbox(serverId, artifactId, 'approve')).resolves.toMatchObject({
+            ok: true, result: { status: 'executed' },
+        });
+
+        await vi.waitFor(() => {
+            expect(routerReplace).toHaveBeenCalledWith(`/settings/teams/${serverId}/team-new`);
+        });
+        // One Team, one upload intent: the approval finishes the publication
+        // that was deferred rather than starting another one.
+        expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(1);
     });
 });

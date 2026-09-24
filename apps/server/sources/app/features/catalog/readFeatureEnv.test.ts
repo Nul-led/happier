@@ -10,7 +10,6 @@ import {
   readPluginsFeatureEnv,
   readSessionAgentSwitchingFeatureEnv,
   readSessionBoardFeatureEnv,
-  readSessionCollaborationFeatureEnv,
   readSessionConversationsFeatureEnv,
   readSessionEphemeralRunnerFeatureEnv,
   readSessionFilteredListingFeatureEnv,
@@ -108,13 +107,6 @@ describe('shipped Session program feature env readers', () => {
     expect(readSessionFollowingFeatureEnv({
       HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'false',
     }).followingEnabled).toBe(false);
-  });
-
-  it('defaults Session collaboration on and honors the operator opt-out', () => {
-    expect(readSessionCollaborationFeatureEnv({}).enabled).toBe(true);
-    expect(readSessionCollaborationFeatureEnv({
-      HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
-    }).enabled).toBe(false);
   });
 
   it('defaults the Session Board on and honors the operator opt-out', () => {

@@ -80,6 +80,7 @@ import {
   type SessionMessageModelSelectionInput,
 } from './resolveSessionMessageModel';
 import { requestInactiveSessionResume } from './requestInactiveSessionResume';
+import { resolveSessionUserMessageRequestedAction } from './resolveSessionUserMessageRequestedAction';
 import { buildImmutableSessionInputEqualityEnvelopeV1 } from './sessionInputEqualityEnvelope';
 import { decodeTranscriptBody } from './transcript/transcriptBodyDecoder';
 
@@ -209,7 +210,7 @@ type SendSessionMessageParams = Readonly<{
    * human input. Admission metadata is stripped and recreated below.
    */
   messageMeta?: Record<string, unknown>;
-  /** Preserves the existing queue-vs-send semantic at each real entry point. */
+  /** Ordinary custody preserves this action; runtime bootstrap resolves to send-now. */
   requestedAction?: PendingRequestedActionV1;
   /** Host-built protected facts. Never populated from caller-controlled message metadata. */
   inputAdmission?: Readonly<{
@@ -1273,8 +1274,13 @@ export async function sendSessionMessage(
       : baseMeta, recipient),
   } as const;
 
-  const requestedAction: PendingRequestedActionV1 = params.requestedAction
-    ?? { v: 1, kind: 'steer_if_active' };
+  const shouldResumeInactiveSession = executionRunRecipient === undefined
+    && sessionTarget.rawSession.active !== true
+    && params.resumeInactiveSession !== false;
+  const requestedAction: PendingRequestedActionV1 = resolveSessionUserMessageRequestedAction({
+    deliveryIntent: shouldResumeInactiveSession ? 'runtime_bootstrap' : 'ordinary',
+    ...(params.requestedAction ? { requestedAction: params.requestedAction } : {}),
+  });
   // An E2EE protected request must carry host-derived terminal equality. The
   // Account route cannot safely carry that assertion, including for ordinary
   // host/UI provenance, so every protected E2EE request uses the authenticated
@@ -1513,10 +1519,18 @@ export async function sendSessionMessage(
   }
 
   const terminalAdmissionReplay = enqueueResult?.terminal === true;
+  // A terminal replay proves the exact input is already committed; it does not
+  // report the outcome of the turn that carries it. When the caller asked to
+  // wait and the input names an exact Execution Run target, the exact-turn
+  // observer below rejoins by the committed local-id anchor and settles it, so
+  // only a caller that did not ask to wait takes the shortcut.
+  const observesTerminalTargetTurn = params.wait === true && executionRunRecipient !== undefined;
   // A replay whose exact Pending row is already gone has reached a terminal
   // owner state. Resuming an inactive parent Session cannot redeliver that
-  // exact input and would create an unrelated lifecycle effect on retry.
-  if (terminalAdmissionReplay) {
+  // exact input and would create an unrelated lifecycle effect on retry — and
+  // the exact-turn observer is never reached for an untargeted send, so that
+  // shortcut stays unconditional there.
+  if (terminalAdmissionReplay && !observesTerminalTargetTurn) {
     return {
       ok: true,
       sessionId,
@@ -1527,7 +1541,7 @@ export async function sendSessionMessage(
     };
   }
 
-  if (!executionRunRecipient && sessionTarget.rawSession.active !== true && params.resumeInactiveSession !== false) {
+  if (shouldResumeInactiveSession) {
     const resumeResult = await requestInactiveSessionResume({
       credentials: params.credentials,
       sessionId,

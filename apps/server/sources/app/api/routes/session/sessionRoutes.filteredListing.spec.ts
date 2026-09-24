@@ -76,7 +76,7 @@ describe('POST /v2/sessions/query activation', () => {
         },
         {
             name: 'audience',
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0' },
+            env: { HAPPIER_BUILD_FEATURES_DENY: 'sharing.session' },
             body: {
                 v: 1,
                 storage: 'active',

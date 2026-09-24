@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
     TeamCredentialUsageLimitMetricV1Schema,
     TeamCredentialUsageLimitPeriodV1Schema,
@@ -18,15 +19,20 @@ import { resolveTeamActorContextInTx, type TeamOperationAuthenticationContext } 
 import { resolveTeamCredentialCapabilities } from '../capabilities';
 import { qualifyTeamCredentialOperationInTx } from './resourceRead';
 import { resolveTeamCredentialEntitlementInTx } from './resourceAccess';
+import {
+    hasTeamCredentialDirectDeliveryActivityInTx,
+    hasTeamCredentialResourceDirectDeliveryActivityInTx,
+} from './resourceActivity';
 import { resolveScopedUsageContributions, type ScopedUsageContribution, type ScopedUsageEventRow } from '@/app/usage/query/resolveScopedUsageContributions';
 import { toScopedUsageEventRow } from '@/app/usage/query/scopedUsageEventRow';
-import { resolveEffectiveUsageCostUsd, type UsageCostMode } from '@/app/usage/query/resolveUsageCostMode';
-import { addUsageTokens, createEmptyUsageCost, createEmptyUsageTokens, addUsageCost } from '@/app/usage/usageMetrics';
+import { addUsageCostForMode, withEffectiveUsageCost, type UsageCostMode } from '@/app/usage/query/resolveUsageCostMode';
+import { addUsageTokens, createEmptyUsageCost, createEmptyUsageTokens } from '@/app/usage/usageMetrics';
 import { resolveBucketBounds } from '@/app/usage/query/bucketBounds';
 import { projectTeamCredentialUsageLimitsInTx, type TeamCredentialUsageLimitRow } from './teamCredentialUsageLimits';
 import { resolveEffectiveSessionAccess } from '@/app/session/access/sessionAccess';
 import { resolveEffectiveTeamGroupIdsForAccountInTx } from '../groups/effectiveGroupMembership';
 import { classifyTeamCredentialUsageObservationSource } from '@/app/usage/usageSourceClassifier';
+import { readsWholeTeamCredentialUsage } from '@/app/usage/teamCredentialUsageInvalidation';
 
 const UNAVAILABLE_SESSION_KEY = 'unavailable_session';
 const UNAVAILABLE_WORKER_MACHINE_KEY = 'unavailable_worker_machine';
@@ -63,14 +69,19 @@ function aggregate(rows: readonly ScopedUsageContribution[], costMode: UsageCost
     for (const row of rows) {
         for (const id of row.contributingEventIds) ids.add(id);
         tokens = addUsageTokens(tokens, row.tokens);
-        cost = addUsageCost(cost, row.cost);
+        // Cost-mode precedence resolves the several price representations of
+        // one contribution; it is not an operation on a merged column set.
+        // Resolving it per contribution is the canonical usage accumulator
+        // personal analytics already consumes, so a reported contribution plus
+        // an estimated one is their sum rather than only the reported one.
+        cost = addUsageCostForMode(cost, row.cost, costMode);
         requestCount += row.requestCount ?? 0;
     }
     return {
         eventCount: ids.size,
         requestCount,
         tokens,
-        cost: { ...cost, effectiveUsd: resolveEffectiveUsageCostUsd(cost, costMode) },
+        cost: withEffectiveUsageCost(cost, costMode),
     };
 }
 
@@ -101,8 +112,16 @@ function externalTerminalMeasurement(row: ScopedUsageEventRow): 'reported' | 'un
     return Reflect.get(metadata, 'measurement') === 'reported' ? 'reported' : 'unavailable';
 }
 
+/**
+ * `directUsePossible` is the reader-scoped delivery fact: the resource (or, for
+ * a member reading their own use, that member) currently may receive direct
+ * material or has already received it. Usage rows cannot answer that — an
+ * empty or brokered-only period says nothing about use outside Happier — so the
+ * caller derives it from the resource audience and retained delivery history.
+ */
 export function projectTeamCredentialUsageCoverage(
     rows: readonly ScopedUsageEventRow[],
+    input: Readonly<{ directUsePossible: boolean }>,
 ) {
     const classified = rows.map((row) => ({
         row,
@@ -121,7 +140,8 @@ export function projectTeamCredentialUsageCoverage(
     const unobservedExternalRequestCount = externalAdmissions
         .filter((admission) => !hasExternalTerminalObservationForAdmission(admission, rows))
         .reduce((sum, admission) => sum + (admission.requestCount ?? 0), 0);
-    const directRecordedUseOnly = rows.some((row) => row.credentialDeliveryMode === 'direct');
+    const directRecordedUseOnly = input.directUsePossible
+        || rows.some((row) => row.credentialDeliveryMode === 'direct');
     const measuredExternalTerminalObservations = externalTerminalObservations.filter(
         (row) => externalTerminalMeasurement(row) === 'reported',
     );
@@ -203,11 +223,21 @@ function buildSeries(
     });
 }
 
+/**
+ * The query a breakdown cursor is bound to, at a fixed width.
+ *
+ * The codec only ever compares this value for equality, so a digest binds the
+ * cursor to exactly the same query the literal identity did. Width matters:
+ * the identity carries a caller-chosen resource id and the cursor carries a
+ * caller-shaped breakdown key, so spelling both out let ordinary data — a
+ * vendor-prefixed model id, an Account id — mint a cursor past the codec's own
+ * bound, and page one of a wide breakdown could not be delivered at all.
+ */
 function usageBreakdownCursorQueryKey(input: TeamCredentialUsageQueryInputV1): string {
-    return JSON.stringify([
+    return createHash('sha256').update(JSON.stringify([
         'team-credential-usage-breakdown:v1', input.resourceId, input.startMs, input.endMs,
         input.granularity, input.costMode, input.breakdown ?? null,
-    ]);
+    ]), 'utf8').digest('base64url');
 }
 
 /**
@@ -259,28 +289,41 @@ async function authorizeResourceUsageInTx(
     authentication: TeamOperationAuthenticationContext,
 ) {
     const resource = await tx.teamCredentialResource.findUnique({ where: { id: resourceId }, select: {
-        id: true, teamId: true, custodianAccountId: true,
+        id: true, teamId: true, custodianAccountId: true, allMembersDeliveryMode: true,
+        groupGrants: { select: { deliveryMode: true } },
+        memberGrants: { select: { deliveryMode: true } },
     } });
     if (!resource) return { ok: false as const, error: 'not_found_or_not_visible' as const };
     const actor = await resolveTeamActorContextInTx(tx, { teamId: resource.teamId, actorAccountId: accountId });
     if (!actor) return { ok: false as const, error: 'not_found_or_not_visible' as const };
     if (actor.accountStatus !== AccountStatus.active) return { ok: false as const, error: 'not_found_or_not_visible' as const };
     const caps = resolveTeamCredentialCapabilities({ ...actor, teamArchivedAt: actor.team.archivedAt });
-    if (resource.custodianAccountId === accountId) {
+    // Resource-wide readers answer for every recipient: any current direct arm
+    // or any past delivery makes off-platform use possible.
+    const resourceDirectUsePossible = async () => [
+        resource.allMembersDeliveryMode,
+        ...resource.groupGrants.map((grant) => grant.deliveryMode),
+        ...resource.memberGrants.map((grant) => grant.deliveryMode),
+    ].some((mode) => mode === 'direct' || mode === 'both')
+        || await hasTeamCredentialResourceDirectDeliveryActivityInTx(tx, { resourceId });
+    if (readsWholeTeamCredentialUsage({
+        viewerAccountId: accountId,
+        custodianAccountId: resource.custodianAccountId,
+        manageCredentials: caps.manageCredentials,
+    })) {
         const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, authentication);
         if (!qualification.ok) return qualification;
-        return { ok: true as const, resource, manager: true as const };
-    }
-    if (caps.manageCredentials) {
-        const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, authentication);
-        if (!qualification.ok) return qualification;
-        return { ok: true as const, resource, manager: true as const };
+        return { ok: true as const, resource, manager: true as const, directUsePossible: await resourceDirectUsePossible() };
     }
     const entitlement = await resolveTeamCredentialEntitlementInTx(tx, { resourceId, accountId });
     if (!entitlement.ok) return { ok: false as const, error: 'not_found_or_not_visible' as const };
     const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, authentication);
     if (!qualification.ok) return qualification;
-    return { ok: true as const, resource, manager: false as const };
+    // A member reads only their own use, so only their own direct access or
+    // delivery history can make it incomplete.
+    const directUsePossible = entitlement.mayReceiveDirect
+        || await hasTeamCredentialDirectDeliveryActivityInTx(tx, { resourceId, recipientAccountId: accountId });
+    return { ok: true as const, resource, manager: false as const, directUsePossible };
 }
 
 export async function queryTeamCredentialUsage(
@@ -382,7 +425,9 @@ export async function queryTeamCredentialUsage(
                 resourceId: input.resourceId,
             })
             : null;
-        const coverage = projectTeamCredentialUsageCoverage(rows.map(toScopedUsageEventRow));
+        const coverage = projectTeamCredentialUsageCoverage(rows.map(toScopedUsageEventRow), {
+            directUsePossible: auth.directUsePossible,
+        });
         const limits = await tx.teamCredentialUsageLimit.findMany({ where: { resourceId: input.resourceId, ...(auth.manager ? {} : { enabled: true }) }, orderBy: { createdAt: 'asc' } });
         const visibleLimits = auth.manager ? limits : await (async () => {
             const groupIds = new Set(await resolveEffectiveTeamGroupIdsForAccountInTx(tx, {

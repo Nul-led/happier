@@ -3,7 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import { admitTeamMemberInTx } from "./membershipService";
+import { readTeamSummaryForActorInTx } from "../lifecycle";
 import {
     addTeamMemberForActorInTx,
     getTeamMemberForActorInTx,
@@ -676,6 +678,185 @@ describe("Team member administration (SQLite integration)", () => {
             membershipId: survivorMembership.teamMembershipId,
         }));
         expect(afterwards).toEqual({ ok: false, error: "team_forbidden" });
+    });
+
+    it("keeps Home owner recovery for an actor who also administers the Team", async () => {
+        const homeOwner = await account({ homeRole: "owner" });
+        const retiredOwner = await account();
+        const survivor = await account();
+        const guest = await account();
+        const suspendedMember = await account();
+        const acme = await team("Owner recovery for a Team admin");
+        await member(acme.id, retiredOwner.id, "owner");
+        const survivorMembership = await member(acme.id, survivor.id, "member");
+        const guestMembership = await member(acme.id, guest.id, "guest");
+        const suspendedMembership = await member(acme.id, suspendedMember.id, "member");
+        const spare = await account();
+        const spareMembership = await member(acme.id, spare.id, "member");
+        // Team admin confers `manageMembers` but never `manageOwners`, so the
+        // ordinary arm alone refuses every owner-touching change.
+        const adminMembership = await member(acme.id, homeOwner.id, "admin");
+        await setStatus(retiredOwner.id, "suspended");
+        await setStatus(suspendedMember.id, "suspended");
+
+        const recovered = await inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeOwner.id,
+            membershipId: survivorMembership.teamMembershipId,
+            role: "owner",
+        }));
+        expect(recovered.ok).toBe(true);
+        if (!recovered.ok) return;
+        expect(recovered.value.role).toBe("owner");
+
+        // Every recovery constraint still holds for the same composed actor.
+        // The recovered owner leaves through the Home lifecycle, which makes the
+        // Team ownerless again exactly as production can.
+        await setStatus(survivor.id, "suspended");
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeOwner.id,
+            membershipId: adminMembership.teamMembershipId,
+            role: "owner",
+        }))).resolves.toEqual({ ok: false, error: "team_forbidden" });
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeOwner.id,
+            membershipId: guestMembership.teamMembershipId,
+            role: "owner",
+        }))).resolves.toEqual({ ok: false, error: "team_forbidden" });
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeOwner.id,
+            membershipId: suspendedMembership.teamMembershipId,
+            role: "owner",
+        }))).resolves.toEqual({ ok: false, error: "team_forbidden" });
+
+        // With an active owner restored, the composed actor is an ordinary Team
+        // admin again and may not touch owners at all.
+        await setStatus(retiredOwner.id, "active");
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeOwner.id,
+            membershipId: spareMembership.teamMembershipId,
+            role: "owner",
+        }))).resolves.toEqual({ ok: false, error: "team_forbidden" });
+    });
+
+    /** Changes an Account's status through the one Home lifecycle owner, never by writing the column. */
+    async function setStatus(accountId: string, status: "active" | "suspended") {
+        const lifecycleActor = await account({ homeRole: "owner" });
+        const result = await inTx((tx) => setAccountStatusInTx(tx, {
+            actorAccountId: lifecycleActor.id,
+            targetAccountId: accountId,
+            status,
+            authority: "home_administration",
+        }));
+        if (result.status !== "applied") throw new Error(`status change failed: ${JSON.stringify(result)}`);
+    }
+
+    async function suspendAccount(accountId: string) {
+        await setStatus(accountId, "suspended");
+    }
+
+    it("refuses ordinary Team owner promotion of an inactive Account and leaves the role unchanged", async () => {
+        const owner = await account();
+        const target = await account();
+        const acme = await team("Inactive owner promotion");
+        await member(acme.id, owner.id, "owner");
+        const targetMembership = await member(acme.id, target.id, "member");
+        await suspendAccount(target.id);
+
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: owner.id,
+            membershipId: targetMembership.teamMembershipId,
+            role: "owner",
+        }))).resolves.toEqual({ ok: false, error: "account_ineligible" });
+        await expect(db.teamMembership.findUniqueOrThrow({
+            where: { id: targetMembership.teamMembershipId },
+        })).resolves.toMatchObject({ role: "member" });
+
+        // Cleanup of the retained inactive lifetime stays possible: a non-owner
+        // role change is not an ownership promotion.
+        await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: owner.id,
+            membershipId: targetMembership.teamMembershipId,
+            role: "guest",
+        }))).resolves.toMatchObject({ ok: true, value: { role: "guest" } });
+    });
+
+    it("keeps Home owner recovery readable for a Home administrator who is also an unqualified Team member", async () => {
+        const homeAdmin = await account({ homeRole: "admin" });
+        const retiredOwner = await account();
+        const candidate = await account();
+        const acme = await db.team.create({
+            data: {
+                name: "Restricted ownerless recovery",
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            },
+        });
+        await member(acme.id, retiredOwner.id, "owner");
+        const candidateMembership = await member(acme.id, candidate.id, "member");
+        const adminMembership = await member(acme.id, homeAdmin.id, "admin");
+        await suspendAccount(retiredOwner.id);
+
+        // The Team summary that mounts the recovery notice withholds the
+        // unqualified membership's capabilities, as the directory row does, so
+        // the member screens offer only the recovery the Home will accept.
+        const summary = await inTx((tx) => readTeamSummaryForActorInTx(tx, { teamId: acme.id, actorAccountId: homeAdmin.id }));
+        expect(summary.ok, JSON.stringify(summary)).toBe(true);
+        if (!summary.ok) return;
+        expect(summary.team.recovery).toEqual({ kind: "owner_required", canAppointOwner: true });
+        expect(summary.team.capabilities).toMatchObject({ viewTeam: true, manageMembers: false, manageOwners: false });
+
+        // No Team credential evidence: the Home authority, not the Team
+        // membership, admits the recovery reads.
+        const roster = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: homeAdmin.id, filter: "all",
+        }));
+        expect(roster.ok, JSON.stringify(roster)).toBe(true);
+        if (!roster.ok) return;
+        const byId = new Map(roster.value.items.map((row) => [row.id, row.capabilities]));
+        // Only the recovery projection: the eligible candidate may be promoted,
+        // nothing else is offered, and never over the caller itself.
+        expect(byId.get(candidateMembership.teamMembershipId)).toEqual({
+            setRole: true, suspend: false, reactivate: false, remove: false, setManagement: false,
+        });
+        expect(byId.get(adminMembership.teamMembershipId)).toEqual({
+            setRole: false, suspend: false, reactivate: false, remove: false, setManagement: false,
+        });
+
+        const detail = await inTx((tx) => getTeamMemberForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeAdmin.id,
+            membershipId: candidateMembership.teamMembershipId,
+        }));
+        expect(detail.ok, JSON.stringify(detail)).toBe(true);
+
+        const recovered = await inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeAdmin.id,
+            membershipId: candidateMembership.teamMembershipId,
+            role: "owner",
+        }));
+        expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
+
+        // Once an owner exists the independent exception is gone, and the
+        // actor's ordinary Team membership again needs the Team credential.
+        await expect(inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: homeAdmin.id, filter: "all",
+        }))).resolves.toEqual({ ok: false, error: "team_authentication_required" });
+        await expect(inTx((tx) => getTeamMemberForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: homeAdmin.id,
+            membershipId: candidateMembership.teamMembershipId,
+        }))).resolves.toEqual({ ok: false, error: "team_authentication_required" });
     });
 
     it("projects self-demotion from the authority committed by the mutation", async () => {

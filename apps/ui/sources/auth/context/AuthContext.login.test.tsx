@@ -79,7 +79,8 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     }: Readonly<{ url: string; init: RequestInit }>) => await fetch(url, init),
 }));
 
-vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>(),
     switchConnectionToActiveServer: switchConnectionToActiveServerSpy,
     getAppliedActiveServerId: () => activeServerSnapshotState.serverId,
     subscribeAppliedActiveServer: () => () => {},
@@ -540,6 +541,13 @@ describe('AuthContext.login', () => {
     it('blocks logout before any auth mutation while marked first-key custody is active', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        // An active Home is always a saved Home: the real upsert saves it, so the
+        // focused logout's exact-Home custody read and the active-Home custody
+        // writer resolve one storage scope. The runtime stub only moves focus.
+        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+        const savedHome = await upsertServerProfile({ serverUrl: 'http://localhost:53288', name: 'Home' });
+        serverProfilesState.profiles = [{ id: savedHome.id, serverUrl: savedHome.serverUrl, name: savedHome.name }];
+        activeServerSnapshotState.serverId = savedHome.id;
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         const token = buildTokenWithSub('server-test');
         await TokenStorage.setCredentials({ token });
@@ -753,6 +761,65 @@ describe('AuthContext.login', () => {
             await expect(accountDirectoryCredentialStorage.get(
                 { endpoint: 'https://accounts.example.test', serverIdentityId: 'account-service-a' },
             )).resolves.toMatchObject({ token: 'account-service-token' });
+        } finally {
+            await screen.unmount();
+        }
+    });
+
+    it('guards focused logout by the active Home only, while an all-credentials logout honors any Home\'s custody', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true })));
+        const homeA = { id: 'srv_custody_home_a', serverUrl: 'https://home-a.example.test', name: 'Home A', serverIdentityId: 'srv_custody_home_a' };
+        const homeB = { id: 'srv_custody_home_b', serverUrl: 'https://home-b.example.test', name: 'Home B', serverIdentityId: 'srv_custody_home_b' };
+        serverProfilesState.profiles = [homeA, homeB];
+        activeServerSnapshotState.serverId = homeB.id;
+        activeServerSnapshotState.serverUrl = homeB.serverUrl;
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const homeACredentials = { token: buildTokenWithSub('home-a') };
+        const homeBCredentials = { token: buildTokenWithSub('home-b') };
+        await TokenStorage.setCredentialsForServerUrl(homeA.serverUrl, { serverId: homeA.id }, homeACredentials);
+        await TokenStorage.setCredentialsForServerUrl(homeB.serverUrl, { serverId: homeB.id }, homeBCredentials);
+        // Home A holds retained first-key custody; Home B is the focused Home.
+        await expect(TokenStorage.setPendingExternalAuth({
+            provider: 'github',
+            proof: 'proof',
+            secret: 'secret',
+            serverId: homeA.id,
+            serverUrl: homeA.serverUrl,
+            accountEncryptionFirstKey: {
+                accountId: 'account-home-a',
+                requestDigest: `aemrb1_${'A'.repeat(43)}`,
+                requestJson: '{}',
+                pending: 'pending',
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 60_000,
+                migrationSubmissionAttempted: true,
+            },
+        }, { serverUrl: homeA.serverUrl, serverId: homeA.id })).resolves.toBe(true);
+
+        const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
+        const screen = await renderScreen(React.createElement(AuthProvider, {
+            initialCredentials: homeBCredentials,
+            children: React.createElement(React.Fragment, null),
+        }));
+        try {
+            // Signing out of every Home would destroy Home A's credential too.
+            const allResult = await getCurrentAuth()?.logout({ scope: 'all-credentials' });
+            expect(allResult).toMatchObject({ kind: 'finish_encryption_setup' });
+            await expect(TokenStorage.getCredentialsForServerUrl(homeB.serverUrl, { serverId: homeB.id }))
+                .resolves.toMatchObject(homeBCredentials);
+
+            // Signing out of Home B alone is not a credential mutation of Home A.
+            let focusedResult: unknown;
+            await act(async () => {
+                focusedResult = await getCurrentAuth()?.logout();
+            });
+            expect(focusedResult).toEqual({ kind: 'completed' });
+            await expect(TokenStorage.getCredentialsForServerUrl(homeB.serverUrl, { serverId: homeB.id }))
+                .resolves.toBeNull();
+            await expect(TokenStorage.getCredentialsForServerUrl(homeA.serverUrl, { serverId: homeA.id }))
+                .resolves.toMatchObject(homeACredentials);
+            await expect(TokenStorage.readPendingExternalAuthStateForServerUrl(homeA.serverUrl, { serverId: homeA.id }))
+                .resolves.toMatchObject({ value: { accountEncryptionFirstKey: { migrationSubmissionAttempted: true } } });
         } finally {
             await screen.unmount();
         }
@@ -1144,6 +1211,66 @@ describe('AuthContext.login', () => {
             await expect(auth.loginWithCredentials({ token, secret: 'recovered-secret' }))
                 .resolves.toMatchObject({ kind: 'finish_encryption_setup' });
             expect(await TokenStorage.getCredentials()).toEqual({ token });
+        } finally {
+            await screen.unmount();
+        }
+    });
+
+    it('scopes the first-key custody guard to the Homes a logout actually mutates', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true })));
+        const profiles = [
+            { id: 'home-a', serverUrl: 'https://home-a.example.test', name: 'Home A', serverIdentityId: 'srv_custody_home_a' },
+            { id: 'home-b', serverUrl: 'https://home-b.example.test', name: 'Home B', serverIdentityId: 'srv_custody_home_b' },
+        ];
+        serverProfilesState.profiles = profiles;
+        activeServerSnapshotState.serverId = profiles[1]!.serverIdentityId;
+        activeServerSnapshotState.serverUrl = profiles[1]!.serverUrl;
+        const homeACredentials = { token: buildTokenWithSub('home-a') };
+        const homeBCredentials = { token: buildTokenWithSub('home-b') };
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        await TokenStorage.setCredentialsForServerUrl(profiles[0]!.serverUrl, { serverId: profiles[0]!.serverIdentityId }, homeACredentials);
+        await TokenStorage.setCredentialsForServerUrl(profiles[1]!.serverUrl, { serverId: profiles[1]!.serverIdentityId }, homeBCredentials);
+        // First-key setup was attempted, and is retained, on Home A only.
+        await expect(TokenStorage.setPendingExternalAuth({
+            provider: 'github',
+            proof: 'proof',
+            secret: 'secret',
+            serverId: profiles[0]!.serverIdentityId,
+            serverUrl: profiles[0]!.serverUrl,
+            accountEncryptionFirstKey: {
+                accountId: 'account-home-a',
+                requestDigest: `aemrb1_${'A'.repeat(43)}`,
+                requestJson: '{}',
+                pending: 'pending',
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 60_000,
+                migrationSubmissionAttempted: true,
+            },
+        }, { serverUrl: profiles[0]!.serverUrl, serverId: profiles[0]!.serverIdentityId })).resolves.toBe(true);
+
+        const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
+        const screen = await renderScreen(React.createElement(AuthProvider, {
+            initialCredentials: homeBCredentials,
+            children: React.createElement(React.Fragment, null),
+        }));
+        try {
+            const auth = getCurrentAuth();
+            if (!auth) throw new Error('Expected current auth to be set');
+
+            // Logging out of focused Home B deletes nothing on Home A.
+            await expect(auth.logout()).resolves.toMatchObject({ kind: 'completed' });
+            await expect(TokenStorage.getCredentialsForServerUrl(profiles[1]!.serverUrl, { serverId: profiles[1]!.serverIdentityId }))
+                .resolves.toBeNull();
+            await expect(TokenStorage.getCredentialsForServerUrl(profiles[0]!.serverUrl, { serverId: profiles[0]!.serverIdentityId }))
+                .resolves.toEqual(homeACredentials);
+            await expect(TokenStorage.readPendingExternalAuthStateForServerUrl(profiles[0]!.serverUrl, { serverId: profiles[0]!.serverIdentityId }))
+                .resolves.toMatchObject({ value: { accountEncryptionFirstKey: { migrationSubmissionAttempted: true } } });
+
+            // Forgetting every credential would delete Home A's: it stays guarded.
+            await expect(getCurrentAuth()!.logout({ scope: 'all-credentials' }))
+                .resolves.toMatchObject({ kind: 'finish_encryption_setup' });
+            await expect(TokenStorage.getCredentialsForServerUrl(profiles[0]!.serverUrl, { serverId: profiles[0]!.serverIdentityId }))
+                .resolves.toEqual(homeACredentials);
         } finally {
             await screen.unmount();
         }

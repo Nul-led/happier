@@ -99,6 +99,7 @@ async function createHarness() {
     configuration: {
       read: vi.fn(async () => null),
       secrets: {
+        admit: vi.fn(async () => undefined),
         has: vi.fn(async () => false),
         read: vi.fn(async () => null),
       },

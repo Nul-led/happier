@@ -13,6 +13,10 @@ import {
   createSavedSecretMaterializerFromSnapshotV1,
   type SavedSecretResolutionV1,
 } from '@/settings/secrets/savedSecretCatalog';
+import {
+  SavedSecretOperationAdmissionError,
+  refreshSavedSecretCatalogForOperation,
+} from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 export type VoiceCredentialResolutionSource = 'account' | 'machine_override';
 
@@ -147,14 +151,59 @@ function readSelectedSource(params: Readonly<{
   }
 }
 
+/**
+ * The Voice vocabulary for a refused operation admission.
+ *
+ * The admission owner speaks in reference reasons and this resolver speaks in
+ * material statuses; only the translation lives here, never a second decision
+ * about whether the reference is current.
+ */
+function voiceStatusForAdmissionRefusal(
+  reason: SavedSecretOperationAdmissionError['reason'],
+): Exclude<VoiceCredentialMaterialStatus, 'ready'> {
+  if (reason === 'reference_missing') return 'missing';
+  if (reason === 'reference_unavailable') return 'temporarily_unavailable';
+  return 'repair_required';
+}
+
 export function createVoiceCredentialResolver(params: Readonly<{
   /** Null selects the account-only client realm and deliberately ignores machine overrides. */
   machineId: string | null;
   getSnapshot?: () => ActiveAccountSettingsSnapshot | null;
   getLifetimeToken?: () => number;
+  /** The canonical operation-admission refresh; injectable for tests only. */
+  refreshForOperation?: typeof refreshSavedSecretCatalogForOperation;
 }>): VoiceCredentialResolver {
   const getSnapshot = params.getSnapshot ?? getActiveAccountSettingsSnapshot;
   const getLifetimeToken = params.getLifetimeToken ?? getActiveAccountSettingsSnapshotLifetimeToken;
+  const refreshForOperation = params.refreshForOperation ?? refreshSavedSecretCatalogForOperation;
+
+  /**
+   * Admit this Voice operation against Home-current shared material.
+   *
+   * A hydrated catalog row is not authorization for a *new* operation:
+   * `AccountChange` is only a wake-up hint, so a revocation whose hint was
+   * never delivered would otherwise let this operation use the old plaintext.
+   * The batch refresh in `hydrateSavedSecretCatalog` is the single owner of
+   * that decision, and it returns the cached snapshot untouched when the
+   * operation's references are personal-only, so a personal-secret Voice
+   * session still never touches the network.
+   */
+  async function admitOperation(
+    snapshot: ActiveAccountSettingsSnapshot,
+    ref: string,
+  ): Promise<ActiveAccountSettingsSnapshot> {
+    const expectedScopeKey = snapshot.scopeKey;
+    if (expectedScopeKey === undefined) return snapshot;
+    try {
+      return await refreshForOperation({ expectedScopeKey, references: [{ ref }] });
+    } catch (error) {
+      throw unavailable(error instanceof SavedSecretOperationAdmissionError
+        ? voiceStatusForAdmissionRefusal(error.reason)
+        : 'temporarily_unavailable');
+    }
+  }
+
   return Object.freeze({
     resolveSelectedSource(identity) {
       return identity
@@ -191,10 +240,22 @@ export function createVoiceCredentialResolver(params: Readonly<{
       });
       if (!snapshot) throw unavailable();
       if (inspected.status !== 'ready') throw unavailable(inspected.status);
-      const resolved = inspected.reference;
+      const admittedSnapshot = await admitOperation(snapshot, inspected.reference.secretId);
+      const admittedInspection = admittedSnapshot === snapshot
+        ? inspected
+        : inspectReference({
+            snapshot: admittedSnapshot,
+            machineId: params.machineId,
+            identity: input.identity,
+            ...(input.recipientContractDigest
+              ? { recipientContractDigest: input.recipientContractDigest }
+              : {}),
+          });
+      if (admittedInspection.status !== 'ready') throw unavailable(admittedInspection.status);
+      const resolved = admittedInspection.reference;
       // The SavedSecret catalog is the only owner of "the material behind this
       // fingerprint moved"; ask it rather than re-deciding drift locally.
-      const material = createSavedSecretMaterializerFromSnapshotV1(snapshot)
+      const material = createSavedSecretMaterializerFromSnapshotV1(admittedSnapshot)
         .recheck(resolved.secretId, resolved.materialFingerprint);
       if (material.status !== 'ready') throw unavailable(material.status);
       const result = await input.use(material.value);

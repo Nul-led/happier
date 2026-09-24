@@ -16,6 +16,7 @@ import {
     qualifyTeamProjectionReadAuthenticationsInTx,
     type TeamOperationAuthenticationContext,
 } from "./actorContext";
+import { resolveTeamCapabilitiesV1 } from "./capabilities";
 import { isEffectiveTeamMembership } from "./memberships/effectiveMembership";
 import { TEAM_PROJECTION_SELECT, projectTeamSummaryV1 } from "./projections";
 
@@ -28,11 +29,15 @@ import { TEAM_PROJECTION_SELECT, projectTeamSummaryV1 } from "./projections";
  * result set the viewer was already entitled to.
  */
 
+/**
+ * The directory refuses the whole read only for facts about the reader: a
+ * forged cursor, an inactive Account, or an administrative scope they do not
+ * hold. A Team's own authentication policy is a per-row fact and is projected
+ * on the row instead, so it can no longer fail the page.
+ */
 export type TeamDirectoryError =
     | "invalid_team_cursor"
-    | "team_forbidden"
-    | "team_authentication_required"
-    | "team_authentication_unavailable";
+    | "team_forbidden";
 
 export type TeamDirectoryResult =
     | Readonly<{ ok: true; page: TeamsPageV1 }>
@@ -160,23 +165,35 @@ export async function listTeamsForActorInTx(
         });
     });
     // One qualification for the whole page. The member scope is the only one
-    // that carries Team-derived authority, and the first failing row in page
-    // order still refuses the whole read exactly as before.
+    // that carries Team-derived authority.
     const qualifications = input.scope === "member"
         ? await qualifyTeamProjectionReadAuthenticationsInTx(tx, { contexts, ...input.authentication })
         : null;
 
     const items: TeamsPageV1["items"] = [];
     for (const context of contexts) {
-        if (qualifications) {
-            const qualification = qualifications.get(context.team.id)
-                ?? { ok: false as const, error: "team_authentication_unavailable" as const };
-            if (!qualification.ok) return { ok: false, error: qualification.error };
-        }
+        // Qualification is per Team because the authentication policy is per
+        // Team. A Team whose accepted method this credential does not satisfy
+        // keeps its row and loses its Team-derived capabilities; it must not
+        // take down the Teams the viewer does satisfy, nor the keyset position
+        // of the page they share. A row missing from the batch answer is
+        // unqualified for the same reason it always was.
+        //
+        // Home authority is not Team-derived and is therefore not qualified,
+        // so the withheld row is recomposed by the same capability owner with
+        // the membership removed rather than re-decided here.
+        const qualified = qualifications === null || (qualifications.get(context.team.id)?.ok ?? false);
         items.push(projectTeamSummaryV1({
             team: context.team,
             viewerRole: context.membership?.role ?? null,
-            capabilities: context.capabilities,
+            capabilities: qualified
+                ? context.capabilities
+                : resolveTeamCapabilitiesV1({
+                    accountStatus: context.accountStatus,
+                    homeAuthority: context.homeAuthority,
+                    membership: null,
+                    teamArchivedAt: context.team.archivedAt,
+                }),
             ownerRequired: context.ownerRequired,
             homeAuthority: context.homeAuthority,
         }));

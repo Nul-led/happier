@@ -659,6 +659,118 @@ describe("Saved Secret resource service (SQLite integration)", () => {
         });
     });
 
+    it("stops authorizing a shared secret and its material through an archived Group or archived Team", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const member = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const restricted = await db.team.create({
+            data: {
+                name: "Restricted arm",
+                authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] },
+            },
+            select: { id: true },
+        });
+        const inherited = await db.team.create({ data: { name: "Inherited arm" }, select: { id: true } });
+        await db.teamMembership.createMany({
+            data: [
+                { teamId: restricted.id, accountId: custodian.id, role: "owner" },
+                { teamId: restricted.id, accountId: member.id, role: "member" },
+            ],
+        });
+        const custodianInherited = await db.teamMembership.create({
+            data: { teamId: inherited.id, accountId: custodian.id, role: "owner" },
+            select: { id: true },
+        });
+        const memberInherited = await db.teamMembership.create({
+            data: { teamId: inherited.id, accountId: member.id, role: "member" },
+            select: { id: true },
+        });
+        const group = await db.teamGroup.create({
+            data: { teamId: inherited.id, name: "Inherited group", nameKey: "inherited-group" },
+            select: { id: true },
+        });
+        await db.teamGroupMembership.createMany({
+            data: [
+                { teamId: inherited.id, teamGroupId: group.id, teamMembershipId: custodianInherited.id },
+                { teamId: inherited.id, teamGroupId: group.id, teamMembershipId: memberInherited.id },
+            ],
+        });
+        for (const [accountId, address, factor] of [
+            [custodian.id, "archived-owner@example.test", "owner password factor"],
+            [member.id, "archived-member@example.test", "member password factor"],
+        ] as const) {
+            await db.accountIdentity.create({
+                data: { accountId, provider: "email", providerUserId: address, profile: {} },
+            });
+            await db.accountPasswordCredential.create({
+                data: {
+                    accountId,
+                    credential: {
+                        v: 1,
+                        kind: "plain_password_hash",
+                        hash: await hashPasswordMaterial(new TextEncoder().encode(factor)),
+                    },
+                },
+            });
+        }
+
+        const qualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authenticationAuthority: "present_user" as const,
+            authenticationEvidence: EMAIL_PASSWORD_EVIDENCE,
+        };
+        const unqualified = { ...qualified, authenticationEvidence: undefined };
+
+        expect(await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: custodian.id,
+            authentication: qualified,
+            resourceId: "resource_archived_arm",
+            displayName: "Archived arm token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Archived arm token", kind: "token", value: "archived-value" } },
+            teamGrants: [restricted.id],
+            groupGrants: [group.id],
+        }))).toMatchObject({ ok: true });
+
+        const listedRefs = async (authentication: typeof qualified | typeof unqualified) => {
+            const [entries, materials] = await Promise.all([
+                inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, authentication)),
+                inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, member.id, authentication)),
+            ]);
+            return {
+                catalog: entries.map((entry) => (entry.materialStatus === "resource_corrupt" ? null : entry.ref)),
+                materials: materials.map((row) => (row.entry.materialStatus === "resource_corrupt" ? null : row.entry.ref)),
+            };
+        };
+
+        // The unqualified member reaches the row only through the inherited-policy
+        // Group; the restricted Team arm never qualifies.
+        expect(await listedRefs(unqualified)).toEqual({
+            catalog: [formatSharedSavedSecretRefV1("resource_archived_arm")],
+            materials: [formatSharedSavedSecretRefV1("resource_archived_arm")],
+        });
+
+        await db.teamGroup.update({ where: { id: group.id }, data: { archivedAt: new Date() } });
+        expect(await listedRefs(unqualified)).toEqual({ catalog: [], materials: [] });
+
+        await db.teamGroup.update({ where: { id: group.id }, data: { archivedAt: null } });
+        await db.team.update({ where: { id: inherited.id }, data: { archivedAt: new Date() } });
+        expect(await listedRefs(unqualified)).toEqual({ catalog: [], materials: [] });
+
+        // A direct grant still authorizes the row while the Group arm is archived,
+        // and provenance never names the archived Group.
+        await db.savedSecretAccountGrant.create({
+            data: {
+                resourceId: "resource_archived_arm",
+                accountId: member.id,
+                createdByAccountId: custodian.id,
+            },
+        });
+        const [directOnly] = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, unqualified));
+        if (!directOnly || directOnly.materialStatus === "resource_corrupt") throw new Error("expected the directly granted row");
+        expect(directOnly.accessSources).toEqual([{ kind: "account" }]);
+    });
+
     it("replaces explicit grants under one owner-only resource revision CAS", async () => {
         const [owner, firstRecipient, secondRecipient] = await Promise.all([
             db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } }),
@@ -1010,5 +1122,342 @@ describe("Saved Secret resource service (SQLite integration)", () => {
         expect(JSON.stringify(corruptRecipientRow)).not.toContain(malformedResourceId);
         expect(JSON.stringify(corruptRecipientRow)).not.toContain("Must not leak to recipient");
         expect(recipientRows.some((row) => "resourceId" in row && row.resourceId === "resource_healthy_next_to_corrupt")).toBe(true);
+    });
+
+    it("converts an owned E2EE resource to Plain in place, keeping its identity, audience and revision line", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const ownerMaterial = createE2eeAccountMaterial();
+        const recipientMaterial = createE2eeAccountMaterial();
+        const owner = await db.account.create({ data: ownerMaterial.account, select: { id: true } });
+        const recipient = await db.account.create({ data: recipientMaterial.account, select: { id: true } });
+        await db.userRelationship.create({
+            data: { fromUserId: owner.id, toUserId: recipient.id, status: "friend" },
+        });
+        await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_plain",
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "e2ee",
+            storedContent: sealTestResource("resource_mode_to_plain"),
+            accountGrants: [recipient.id],
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+            }, {
+                recipientAccountId: recipient.id,
+                encryptedDataKey: sealTestDataKey(recipientMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: recipientMaterial.fingerprint,
+            }],
+        }));
+
+        const stale = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_plain",
+            expectedRevision: 0,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        }));
+        expect(stale).toEqual({ ok: false, error: "resource_changed" });
+
+        const mismatched = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_plain",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "plain",
+            storedContent: sealTestResource("resource_mode_to_plain"),
+        }));
+        expect(mismatched).toEqual({ ok: false, error: "invalid_resource" });
+
+        const converted = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_plain",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        }));
+        expect(converted).toEqual({ ok: true, value: { resourceId: "resource_mode_to_plain", revision: 2 } });
+
+        const row = await db.savedSecretResource.findUniqueOrThrow({
+            where: { id: "resource_mode_to_plain" },
+            select: {
+                encryptionMode: true,
+                revision: true,
+                accountGrants: { select: { accountId: true } },
+                keyEnvelopes: { select: { recipientAccountId: true } },
+            },
+        });
+        expect(row.encryptionMode).toBe("plain");
+        expect(row.revision).toBe(2);
+        expect(row.accountGrants.map((grant) => grant.accountId)).toEqual([recipient.id]);
+        expect(row.keyEnvelopes).toEqual([]);
+
+        const material = await inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, recipient.id));
+        expect(material[0]).toMatchObject({
+            resourceId: "resource_mode_to_plain",
+            entry: { materialStatus: "ready", revision: 2, encryptionMode: "plain" },
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        });
+    });
+
+    // Plan 10.08 §10.5: a conversion is "subject to Home policy". A Home whose
+    // storage policy admits only one mode refuses a conversion into the other,
+    // with the same mode decision Session storage already applies.
+    it("refuses a conversion into a mode the Home storage policy does not allow", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "required_e2ee" });
+        const ownerMaterial = createE2eeAccountMaterial();
+        const owner = await db.account.create({ data: ownerMaterial.account, select: { id: true } });
+        await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_policy_keeps_e2ee",
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "e2ee",
+            storedContent: sealTestResource("resource_policy_keeps_e2ee"),
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+            }],
+        }));
+
+        const refused = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_policy_keeps_e2ee",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        }));
+        expect(refused).toEqual({ ok: false, error: "forbidden" });
+
+        const row = await db.savedSecretResource.findUniqueOrThrow({
+            where: { id: "resource_policy_keeps_e2ee" },
+            select: { encryptionMode: true, revision: true, keyEnvelopes: { select: { recipientAccountId: true } } },
+        });
+        expect(row).toEqual({
+            encryptionMode: "e2ee",
+            revision: 1,
+            keyEnvelopes: [{ recipientAccountId: owner.id }],
+        });
+
+        // Rename and rotation in the resource's existing mode are not a
+        // conversion and stay untouched by the policy.
+        expect(await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_policy_keeps_e2ee",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            storedContent: sealTestResource("resource_policy_keeps_e2ee"),
+        }))).toEqual({ ok: true, value: { resourceId: "resource_policy_keeps_e2ee", revision: 2 } });
+    });
+
+    it("converts an owned Plain resource to E2EE with the owner envelope, and refuses one without it", async () => {
+        const ownerMaterial = createE2eeAccountMaterial();
+        const recipientMaterial = createE2eeAccountMaterial();
+        const owner = await db.account.create({ data: ownerMaterial.account, select: { id: true } });
+        const recipient = await db.account.create({ data: recipientMaterial.account, select: { id: true } });
+        const plainRecipient = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        await db.userRelationship.createMany({
+            data: [
+                { fromUserId: owner.id, toUserId: recipient.id, status: "friend" },
+                { fromUserId: owner.id, toUserId: plainRecipient.id, status: "friend" },
+            ],
+        });
+        await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_e2ee",
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+            accountGrants: [recipient.id, plainRecipient.id],
+        }));
+
+        // A Plain recipient can hold no envelope, so naming one is refused
+        // rather than silently dropped.
+        expect(await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_e2ee",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "e2ee",
+            storedContent: sealTestResource("resource_mode_to_e2ee"),
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+            }, {
+                recipientAccountId: plainRecipient.id,
+                encryptedDataKey: sealTestDataKey(recipientMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: recipientMaterial.fingerprint,
+            }],
+        }))).toEqual({ ok: false, error: "invalid_resource" });
+
+        const withoutOwnerEnvelope = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_e2ee",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "e2ee",
+            storedContent: sealTestResource("resource_mode_to_e2ee"),
+        }));
+        expect(withoutOwnerEnvelope).toEqual({ ok: false, error: "invalid_resource" });
+
+        const converted = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_to_e2ee",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "e2ee",
+            storedContent: sealTestResource("resource_mode_to_e2ee"),
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(ownerMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: ownerMaterial.fingerprint,
+            }, {
+                recipientAccountId: recipient.id,
+                encryptedDataKey: sealTestDataKey(recipientMaterial.contentPublicKey),
+                recipientContentPublicKeyFingerprint: recipientMaterial.fingerprint,
+            }],
+        }));
+        expect(converted).toEqual({ ok: true, value: { resourceId: "resource_mode_to_e2ee", revision: 2 } });
+
+        const row = await db.savedSecretResource.findUniqueOrThrow({
+            where: { id: "resource_mode_to_e2ee" },
+            select: {
+                encryptionMode: true,
+                revision: true,
+                accountGrants: { select: { accountId: true } },
+                keyEnvelopes: { select: { recipientAccountId: true } },
+            },
+        });
+        expect(row.encryptionMode).toBe("e2ee");
+        expect(row.revision).toBe(2);
+        expect(row.accountGrants.map((grant) => grant.accountId).sort())
+            .toEqual([recipient.id, plainRecipient.id].sort());
+        expect(row.keyEnvelopes.map((envelope) => envelope.recipientAccountId).sort())
+            .toEqual([owner.id, recipient.id].sort());
+
+        const material = await inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, recipient.id));
+        expect(material[0]).toMatchObject({
+            resourceId: "resource_mode_to_e2ee",
+            entry: { materialStatus: "ready", revision: 2, encryptionMode: "e2ee" },
+        });
+        // The Plain recipient keeps its grant and its own Account mode, and
+        // now sees the typed mode-incompatible state instead of a value.
+        const plainMaterial = await inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, plainRecipient.id));
+        expect(plainMaterial[0]).toMatchObject({
+            resourceId: "resource_mode_to_e2ee",
+            entry: { materialStatus: "recipient_mode_unsupported", revision: 2, encryptionMode: "e2ee" },
+        });
+        expect(JSON.stringify(plainMaterial)).not.toContain("secret-value");
+        expect(await db.account.findUniqueOrThrow({ where: { id: plainRecipient.id }, select: { encryptionMode: true } }))
+            .toEqual({ encryptionMode: "plain" });
+    });
+
+    it("refuses a conversion into E2EE for an owner whose Account holds no content key", async () => {
+        const owner = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_plain_owner",
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        }));
+        expect(await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_plain_owner",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            toMode: "e2ee",
+            storedContent: sealTestResource("resource_plain_owner"),
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(createE2eeAccountMaterial().contentPublicKey),
+                recipientContentPublicKeyFingerprint: "fingerprint",
+            }],
+        }))).toEqual({ ok: false, error: "recipient_mode_unsupported" });
+    });
+
+    it("keeps refusing a mode/content mismatch and stray envelopes on an ordinary update", async () => {
+        const owner = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_unchanged",
+            displayName: "Shared token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Shared token", kind: "token", value: "secret-value" },
+            },
+        }));
+
+        expect(await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_unchanged",
+            expectedRevision: 1,
+            displayName: "Shared token",
+            kind: "token",
+            storedContent: sealTestResource("resource_mode_unchanged"),
+        }))).toEqual({ ok: false, error: "invalid_resource" });
+
+        // Envelope material only ever travels with an explicit conversion; the
+        // repair owner keeps every other envelope write.
+        expect(await inTx((tx) => updateSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_mode_unchanged",
+            expectedRevision: 1,
+            displayName: "Renamed token",
+            kind: "token",
+            storedContent: {
+                t: "plain",
+                v: { v: 1, name: "Renamed token", kind: "token", value: "secret-value" },
+            },
+            keyEnvelopes: [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: sealTestDataKey(createE2eeAccountMaterial().contentPublicKey),
+                recipientContentPublicKeyFingerprint: "fingerprint",
+            }],
+        }))).toEqual({ ok: false, error: "invalid_resource" });
+
+        const unchanged = await db.savedSecretResource.findUniqueOrThrow({
+            where: { id: "resource_mode_unchanged" },
+            select: { encryptionMode: true, revision: true },
+        });
+        expect(unchanged).toEqual({ encryptionMode: "plain", revision: 1 });
     });
 });

@@ -30,7 +30,10 @@ private func serializedBody(_ payload: [AnyHashable: Any]) -> String {
     // the canonical grouping identity.
     var delivered: UNNotificationContent?
     let service = HappierActivityNotificationService()
-    let request = makeRequest(userInfo: ["body": serializedBody(readyAlert), "aps": ["mutable-content": 1]])
+    // `expo-notifications` delivers the Expo `body` envelope to iOS as a JSON
+    // object, not a string; a fixture that serializes it here would prove the
+    // parser against a shape this platform never produces.
+    let request = makeRequest(userInfo: ["body": readyAlert, "aps": ["mutable-content": 1]])
     service.didReceive(request) { delivered = $0 }
     precondition(delivered != nil, "the permitted alert was never delivered")
     precondition(delivered?.title == "Happier" && delivered?.body == "A session you follow is ready.",
@@ -38,7 +41,26 @@ private func serializedBody(_ payload: [AnyHashable: Any]) -> String {
     precondition(delivered?.threadIdentifier == "activity_alert:home-1:session-1:ready",
                  "missing canonical replacement identity")
 
-    // The remote service extension accepts only the serialized Expo `body`
+    // The same envelope carried as the serialized JSON string Expo uses for
+    // Android alignment resolves through the one parser.
+    var serializedDelivered: UNNotificationContent?
+    HappierActivityNotificationService().didReceive(
+      makeRequest(userInfo: ["body": serializedBody(readyAlert), "aps": ["mutable-content": 1]])
+    ) { serializedDelivered = $0 }
+    precondition(serializedDelivered?.threadIdentifier == "activity_alert:home-1:session-1:ready",
+                 "the serialized Expo envelope lost alert grouping")
+
+    // Malformed nested data is not an alert: the Home-approved generic copy is
+    // delivered unchanged rather than enriched or dropped.
+    var malformedDelivered: UNNotificationContent?
+    let malformedRequest = makeRequest(userInfo: ["body": ["type": "activity_alert", "v": 2], "aps": ["mutable-content": 1]])
+    HappierActivityNotificationService().didReceive(malformedRequest) { malformedDelivered = $0 }
+    precondition(malformedDelivered === malformedRequest.content,
+                 "a malformed nested envelope was admitted")
+    precondition(malformedDelivered?.threadIdentifier.isEmpty == true,
+                 "a malformed nested envelope gained alert grouping")
+
+    // The remote service extension accepts only the nested Expo `body`
     // envelope. Locally scheduled alerts have their own top-level parser and
     // must never broaden remote admission.
     var topLevelRemoteDelivered: UNNotificationContent?

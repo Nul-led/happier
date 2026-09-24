@@ -5,6 +5,7 @@ import type { V2SessionRecord, SessionListQueryV1 } from '@happier-dev/protocol'
 import { encodeBase64 } from '@/encryption/base64';
 import { Encryption } from '@/sync/encryption/encryption';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
+import { buildSessionListQueryKey } from '@/sync/domains/session/listing/sessionListQueryKey';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 
 import { fetchAndApplySessions } from './sessionSnapshot';
@@ -113,10 +114,15 @@ it('measures real encrypted hydration and rapid query replacement across three f
     }
     await Promise.all(pending);
     const rapidQueryMs = performance.now() - rapidStarted;
-    for (const controller of controllers) {
-        expect(controller.getSnapshot().appliedQueryKey).toBe('query-4');
-        expect(controller.getSnapshot().addresses).toHaveLength(50);
-        controller.dispose();
+    // The controller derives corpus identity itself and refuses a caller's, so the
+    // settled key is the canonical one for the last requested query — asserted
+    // through its owner rather than a literal the controller can never produce.
+    const lastQuery: SessionListQueryV1 = { ...QUERY, tagIds: ['tag-4'] };
+    for (const home of homes.map((home, index) => ({ home, controller: controllers[index]! }))) {
+        expect(home.controller.getSnapshot().appliedQueryKey)
+            .toBe(buildSessionListQueryKey(home.home.serverId, lastQuery));
+        expect(home.controller.getSnapshot().addresses).toHaveLength(50);
+        home.controller.dispose();
     }
     console.info('SESSION_HYDRATION_MEASUREMENT', JSON.stringify({
         platform: platform(), arch: arch(), cpu: cpus()[0]?.model, logicalCpus: cpus().length,

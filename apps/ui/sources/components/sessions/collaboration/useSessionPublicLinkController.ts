@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SharingAuthoritySession } from '@/sync/domains/social/sessionSharingMutationAuthority';
 import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { SessionAccessApiError, createSessionAccessClient } from '@/sync/api/session/sessionAccessApi';
+import { SessionAccessApiError, SessionAccessApprovalPendingError, createSessionAccessClient } from '@/sync/api/session/sessionAccessApi';
+import { migrateSessionForSharing } from '@/components/sessions/access/migrateSessionForSharing';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import {
     mergeSessionPublicLinkWithCachedBearer,
     type SessionPublicLinkPublication,
@@ -15,6 +17,7 @@ import { Modal, type CustomModalInjectedProps } from '@/modal';
 import { HappyError } from '@/utils/errors/errors';
 import { t } from '@/text';
 import { presentSessionAccessFailure } from '@/components/sessions/access/presentSessionAccessFailure';
+import { useSessionAccessApprovalHold } from '@/components/sessions/access/useSessionAccessApprovalHold';
 import { subscribeSessionPublicLinkInvalidation } from '@/sync/domains/social/sessionPublicLinkInvalidation';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import {
@@ -147,6 +150,34 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         });
     }, []);
 
+    // The one publication change the canonical Action policy routed to an
+    // approval Artifact, settled once through the shared continuation owner; the
+    // section renders it until then instead of an unknown outcome.
+    const approval = useSessionAccessApprovalHold({
+        scopeKey, scope: { serverId: scope.serverId, accountId: scope.accountId },
+    });
+    const holdApproval = approval.hold;
+    const holdForApproval = useCallback((
+        pending: SessionAccessApprovalPendingError,
+        actionId: 'session.public_link.create' | 'session.public_link.remove',
+        expectedInput: unknown,
+        onSucceeded: () => Promise<void>,
+    ) => {
+        // The dialog cannot show a publication that does not exist yet; the
+        // section's approval row is where this change is followed now.
+        closeDialogs();
+        holdApproval(pending, actionId, expectedInput, {
+            isCurrent,
+            onSucceeded,
+            onFailed: (issue) => {
+                if (!issue) return;
+                // Only the authoritative reader can say what exists now.
+                void reload();
+                Modal.alert(t('common.error'), issue.message);
+            },
+        });
+    }, [closeDialogs, holdApproval, isCurrent, reload]);
+
     const create = useCallback(async (options: { expiresInDays?: number; maxUses?: number; isConsentRequired: boolean }) => {
         assertCurrent();
         const desired = {
@@ -154,19 +185,39 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
             maxUses: options.maxUses ?? null,
             isConsentRequired: options.isConsentRequired,
         };
+        // A historical (layout-0) Session is migrated by its owner before any
+        // public projection exists, or the link would open to nothing (PA-L2/L4).
+        if (readSessionMetadataLayoutVersion(currentSession.current?.metadataLayoutVersion) === 0) {
+            try {
+                await migrateSessionForSharing({
+                    scope: { serverId: scope.serverId, accountId: scope.accountId }, sessionId, isCurrent,
+                });
+            } catch {
+                throw new HappyError(t('errors.operationFailed'), true);
+            }
+            assertCurrent();
+        }
+        const input = {
+            ...(desired.expiresAt === null ? {} : { expiresAt: desired.expiresAt }),
+            ...(desired.maxUses === null ? {} : { maxUses: desired.maxUses }),
+            isConsentRequired: desired.isConsentRequired,
+        };
         const issued: { token: string | null } = { token: null };
         let created: SessionPublicLinkPublication | null = null;
         try {
-            const settings = await client({ onBearerIssued: (token) => { issued.token = token; } }).createPublicLink({
-                ...(desired.expiresAt === null ? {} : { expiresAt: desired.expiresAt }),
-                ...(desired.maxUses === null ? {} : { maxUses: desired.maxUses }),
-                isConsentRequired: desired.isConsentRequired,
-            });
+            const settings = await client({ onBearerIssued: (token) => { issued.token = token; } }).createPublicLink(input);
             assertCurrent();
             if (!issued.token) throw new SessionAccessApiError('outcome_unknown');
             created = { ...settings, token: issued.token };
         } catch (error) {
             if (!created) {
+                if (error instanceof SessionAccessApprovalPendingError && isCurrent()) {
+                    // The approving host receives the one-time bearer, never this
+                    // origin: an executed approval settles to the authoritative
+                    // publication, whose link can be copied by creating it again.
+                    holdForApproval(error, 'session.public_link.create', { sessionId, ...input }, reload);
+                    return null;
+                }
                 if (!(error instanceof SessionAccessApiError) && !(error instanceof HappyError)) throw error;
                 return presentFailure(error);
             }
@@ -174,13 +225,20 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         assertCurrent();
         applyAuthoritativePublication(created);
         return created;
-    }, [applyAuthoritativePublication, assertCurrent, client, presentFailure]);
+    }, [applyAuthoritativePublication, assertCurrent, client, holdForApproval, isCurrent, presentFailure, reload, scope.accountId, scope.serverId, sessionId]);
 
     const remove = useCallback(async () => {
         assertCurrent();
         try {
             await client().removePublicLink();
         } catch (error) {
+            if (error instanceof SessionAccessApprovalPendingError && isCurrent()) {
+                holdForApproval(error, 'session.public_link.remove', { sessionId }, async () => {
+                    applyAuthoritativePublication(null);
+                    await reload();
+                });
+                return;
+            }
             if (error instanceof SessionAccessApiError && error.code === 'outcome_unknown') {
                 // The DELETE may already have committed. Only the authoritative
                 // reader can settle that; a failed read proves nothing.
@@ -206,7 +264,7 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
         assertCurrent();
         applyAuthoritativePublication(null);
         await reload();
-    }, [applyAuthoritativePublication, assertCurrent, client, presentFailure, reload]);
+    }, [applyAuthoritativePublication, assertCurrent, client, holdForApproval, isCurrent, presentFailure, reload, sessionId]);
 
     const publication = state.epoch === epoch && allowed ? state.publication : null;
     const openEditor = useCallback(async (focusReturnRef?: FocusReturnRef) => {
@@ -241,12 +299,16 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
             });
         }
     }, [assertCurrent, create, isCurrent, publication, remove, scope.serverId]);
+    const currentPendingApproval = allowed ? approval.pendingApproval : null;
     return {
         publicShare: publication, canManage,
         hasLoaded: allowed && state.epoch === epoch && state.loaded,
         loading: allowed && (state.epoch !== epoch || !state.loaded || state.loading) && !state.error,
         error: allowed && state.epoch === epoch && state.error,
-        canOpen: allowed && state.epoch === epoch && state.loaded && !state.error,
+        // One publication change at a time: an open approval holds the editor.
+        canOpen: allowed && state.epoch === epoch && state.loaded && !state.error && !currentPendingApproval,
+        pendingApproval: currentPendingApproval,
+        openPendingApproval: approval.openPendingApproval,
         reload, openEditor,
     };
 }

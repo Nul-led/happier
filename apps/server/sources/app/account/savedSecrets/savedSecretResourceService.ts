@@ -1,5 +1,6 @@
 import {
     formatSharedSavedSecretRefV1,
+    isSessionEncryptionModeAllowedByStoragePolicy,
     TeamRoleV1Schema,
     parseEncryptedDataKeyEnvelopeV1,
     SavedSecretCatalogEntryV1Schema,
@@ -12,9 +13,11 @@ import {
     type AccountSettingsStoredContentEnvelope,
 } from "@happier-dev/protocol";
 import { isTeamPrincipalRoleV1 } from "@happier-dev/protocol/teams";
+import type { Prisma } from "@prisma/client";
 import { isDeepStrictEqual } from "node:util";
 import * as privacyKit from "privacy-kit";
 import { writeAccountSettingsInTx } from "@/app/accountSettings/writeAccountSettingsInTx";
+import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { markAccountsChanged } from "@/app/changes/markAccountChanged";
 import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
 import {
@@ -68,6 +71,105 @@ type StoredResourceRow = Readonly<{
         recipientContentPublicKeyFingerprint: string;
     }>[];
 }>;
+
+/**
+ * The archive state of a Saved Secret's Team-derived grant arms, as one filter
+ * every reader applies.
+ *
+ * An archived Team or Group no longer authorizes anything, so its grant arm is
+ * not an effective arm — for the outer row predicate, for the nested arms a
+ * retained row is projected from, and for the recipient roster alike. These
+ * lived as three byte-divergent expressions and only the roster reader carried
+ * them on the nested relations, which is how an archived Group kept both
+ * retaining and naming a row whose only other arm the caller failed.
+ */
+const ACTIVE_SAVED_SECRET_TEAM_GRANT_WHERE = { team: { archivedAt: null } } as const;
+const ACTIVE_SAVED_SECRET_GROUP_GRANT_WHERE = {
+    teamGroup: { archivedAt: null, team: { archivedAt: null } },
+} as const;
+
+/** Rows this Account can currently reach through any one of its four grant arms. */
+function authorizedSavedSecretRowWhere(accountId: string): Prisma.SavedSecretResourceWhereInput {
+    return {
+        OR: [
+            { ownerAccountId: accountId },
+            { accountGrants: { some: { accountId } } },
+            {
+                teamGrants: {
+                    some: {
+                        team: {
+                            archivedAt: null,
+                            memberships: { some: { accountId, status: "active", role: { not: "guest" }, account: { status: "active" } } },
+                        },
+                    },
+                },
+            },
+            {
+                groupGrants: {
+                    some: {
+                        teamGroup: {
+                            archivedAt: null,
+                            team: { archivedAt: null },
+                            memberships: { some: { teamMembership: { accountId, status: "active" } } },
+                        },
+                    },
+                },
+            },
+        ],
+    };
+}
+
+/**
+ * The one row shape both catalog and material reads project, with the caller's
+ * own membership rows on each effective arm. Retention, provenance and material
+ * disclosure therefore always read the same arms.
+ */
+function authorizedSavedSecretRowSelect(accountId: string) {
+    return {
+        id: true, ownerAccountId: true, displayName: true, kind: true,
+        encryptionMode: true, revision: true, storedContent: true,
+        owner: { select: ACCOUNT_DISPLAY_PROFILE_SELECT },
+        accountGrants: { select: { accountId: true, account: { select: ACCOUNT_DISPLAY_PROFILE_SELECT } } },
+        teamGrants: {
+            where: ACTIVE_SAVED_SECRET_TEAM_GRANT_WHERE,
+            select: {
+                teamId: true,
+                team: {
+                    select: {
+                        id: true,
+                        name: true,
+                        memberships: {
+                            where: { accountId, status: "active", account: { status: "active" } },
+                            select: { accountId: true, role: true },
+                        },
+                    },
+                },
+            },
+        },
+        groupGrants: {
+            where: ACTIVE_SAVED_SECRET_GROUP_GRANT_WHERE,
+            select: {
+                teamGroupId: true,
+                teamGroup: {
+                    select: {
+                        id: true,
+                        teamId: true,
+                        name: true,
+                        team: { select: { id: true, name: true } },
+                        memberships: {
+                            where: { teamMembership: { accountId, status: "active" } },
+                            select: { teamMembership: { select: { accountId: true } } },
+                        },
+                    },
+                },
+            },
+        },
+        keyEnvelopes: {
+            where: { recipientAccountId: accountId },
+            select: { encryptedDataKey: true, recipientContentPublicKeyFingerprint: true },
+        },
+    } as const;
+}
 
 type SavedSecretRecipientAccountRow = Readonly<{
     publicKey: string | null;
@@ -126,9 +228,32 @@ async function areSavedSecretTeamsQualifiedInTx(
 type SavedSecretTeamDerivedRow = Readonly<{
     ownerAccountId: string;
     accountGrants: readonly { accountId: string }[];
-    teamGrants: readonly { teamId: string }[];
-    groupGrants: readonly { teamGroup: { teamId: string } }[];
+    teamGrants: readonly { teamId: string; team: { memberships: readonly { role: string }[] } }[];
+    groupGrants: readonly { teamGroup: { teamId: string; memberships: readonly unknown[] } }[];
 }>;
+
+/**
+ * The Team-derived arms of one row that structurally authorize this Account,
+ * before Team qualification: a Team arm needs a current principal membership,
+ * a Group arm needs a current Group membership, and an archived Team or Group
+ * carries no arm at all because the read never selected it.
+ *
+ * Retention and provenance both consume this one answer, so a row can never be
+ * kept by an arm the projection would then refuse to name — or, worse, named by
+ * an arm retention never proved.
+ */
+function effectiveSavedSecretTeamArms<TRow extends SavedSecretTeamDerivedRow>(row: TRow): Readonly<{
+    teamGrants: readonly TRow["teamGrants"][number][];
+    groupGrants: readonly TRow["groupGrants"][number][];
+}> {
+    return {
+        teamGrants: row.teamGrants.filter((grant) => grant.team.memberships.some((membership) => {
+            const role = TeamRoleV1Schema.safeParse(membership.role);
+            return role.success && isTeamPrincipalRoleV1(role.data);
+        })),
+        groupGrants: row.groupGrants.filter((grant) => grant.teamGroup.memberships.length > 0),
+    };
+}
 
 /**
  * Drop the rows whose only authorization is a Team or Group arm the caller's
@@ -171,9 +296,10 @@ function isDirectlyAuthorizedSavedSecretRow(row: SavedSecretTeamDerivedRow, acco
 }
 
 function savedSecretRowTeamIds(row: SavedSecretTeamDerivedRow): readonly string[] {
+    const arms = effectiveSavedSecretTeamArms(row);
     return [
-        ...row.teamGrants.map((grant) => grant.teamId),
-        ...row.groupGrants.map((grant) => grant.teamGroup.teamId),
+        ...arms.teamGrants.map((grant) => grant.teamId),
+        ...arms.groupGrants.map((grant) => grant.teamGroup.teamId),
     ];
 }
 
@@ -251,7 +377,7 @@ async function listAuthorizedAccountIdsForResourceInTx(
             ownerAccountId: true,
             accountGrants: { select: { accountId: true } },
             teamGrants: {
-                where: { team: { archivedAt: null } },
+                where: ACTIVE_SAVED_SECRET_TEAM_GRANT_WHERE,
                 select: {
                     team: {
                         select: {
@@ -264,7 +390,7 @@ async function listAuthorizedAccountIdsForResourceInTx(
                 },
             },
             groupGrants: {
-                where: { teamGroup: { archivedAt: null, team: { archivedAt: null } } },
+                where: ACTIVE_SAVED_SECRET_GROUP_GRANT_WHERE,
                 select: {
                     teamGroup: {
                         select: {
@@ -354,6 +480,84 @@ function hasSameStringSet(left: readonly string[], right: readonly string[]): bo
     return rightSet.size === right.length && left.every((value) => rightSet.has(value));
 }
 
+type SavedSecretRecipientEnvelopeInput = Readonly<{
+    recipientAccountId: string;
+    encryptedDataKey: Uint8Array;
+    recipientContentPublicKeyFingerprint: string;
+}>;
+
+type SavedSecretRecipientEnvelopeRejection =
+    | "duplicate_recipient"
+    | "unknown_recipient"
+    | "key_unavailable"
+    | "fingerprint_mismatch"
+    | "malformed_envelope";
+
+/**
+ * One answer to "is this submitted envelope material current, verified and
+ * well-formed for its recipient".
+ *
+ * Creation, grant replacement, mode conversion and envelope repair all admit
+ * recipient material on exactly these terms; they used to write the same three
+ * checks separately, so a change to key readiness had to be made in every copy.
+ * Who may hold an envelope at all genuinely differs per operation and stays
+ * with the caller, as does the error vocabulary each one publishes.
+ */
+function readSavedSecretRecipientEnvelopeRejection(
+    envelopes: readonly SavedSecretRecipientEnvelopeInput[],
+    recipientsById: ReadonlyMap<string, SavedSecretRecipientAccountRow>,
+): SavedSecretRecipientEnvelopeRejection | null {
+    const recipientIds = envelopes.map((envelope) => envelope.recipientAccountId);
+    if (new Set(recipientIds).size !== recipientIds.length) return "duplicate_recipient";
+    for (const envelope of envelopes) {
+        const recipient = recipientsById.get(envelope.recipientAccountId);
+        if (!recipient) return "unknown_recipient";
+        const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(recipient);
+        if (readiness.status !== "available") return "key_unavailable";
+        if (readiness.binding.contentPublicKeyFingerprint !== envelope.recipientContentPublicKeyFingerprint) {
+            return "fingerprint_mismatch";
+        }
+        if (parseEncryptedDataKeyEnvelopeV1(envelope.encryptedDataKey) === null) return "malformed_envelope";
+    }
+    return null;
+}
+
+/** The one idempotent recipient-envelope write, shared by every admitting owner. */
+async function upsertSavedSecretResourceKeyEnvelopesInTx(
+    tx: Tx,
+    resourceId: string,
+    envelopes: readonly SavedSecretRecipientEnvelopeInput[],
+): Promise<void> {
+    for (const envelope of envelopes) {
+        await tx.savedSecretResourceKeyEnvelope.upsert({
+            where: {
+                resourceId_recipientAccountId: {
+                    resourceId,
+                    recipientAccountId: envelope.recipientAccountId,
+                },
+            },
+            create: {
+                resourceId,
+                recipientAccountId: envelope.recipientAccountId,
+                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
+                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
+            },
+            update: {
+                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
+                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
+            },
+        });
+    }
+}
+
+const SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT = {
+    id: true,
+    publicKey: true,
+    encryptionMode: true,
+    contentPublicKey: true,
+    contentPublicKeySig: true,
+} as const;
+
 export type SavedSecretResourceServiceError =
     | "invalid_resource"
     | "resource_not_found"
@@ -412,6 +616,26 @@ type EncryptedMaterialStatus =
     | "recipient_mode_unsupported"
     | "update_required";
 
+/**
+ * The stored recipient envelope, but only when its bytes still parse as a V1
+ * envelope.
+ *
+ * One answer to "is this persisted envelope usable", shared by the material
+ * status, the owner census and the material projection. They used to decide it
+ * separately, so the projection kept emitting the very bytes the status had
+ * already classified `update_required` — and because the wire schema refines
+ * those bytes to an exact canonical length, one damaged row failed the whole
+ * materials response instead of only itself.
+ */
+function readUsableRecipientEnvelope<TEnvelope extends Readonly<{ encryptedDataKey: Uint8Array }>>(
+    envelope: TEnvelope | null,
+): TEnvelope | null {
+    if (!envelope) return null;
+    return parseEncryptedDataKeyEnvelopeV1(new Uint8Array(envelope.encryptedDataKey)) === null
+        ? null
+        : envelope;
+}
+
 function resolveEncryptedMaterialStatus(
     account: SavedSecretRecipientAccountRow | null,
     envelope: StoredResourceRow["keyEnvelopes"] extends readonly (infer T)[] | undefined ? T | null : never,
@@ -424,10 +648,9 @@ function resolveEncryptedMaterialStatus(
         return "update_required";
     }
     if (!envelope) return "preparing_encrypted_access";
-    if (parseEncryptedDataKeyEnvelopeV1(new Uint8Array(envelope.encryptedDataKey)) === null) {
-        return "update_required";
-    }
-    return envelope.recipientContentPublicKeyFingerprint
+    const usable = readUsableRecipientEnvelope(envelope);
+    if (!usable) return "update_required";
+    return usable.recipientContentPublicKeyFingerprint
         === readiness.binding.contentPublicKeyFingerprint
         ? "ready"
         : "preparing_encrypted_access";
@@ -469,14 +692,9 @@ function projectRow(
 ): SavedSecretCatalogResultV1 | null {
     const isOwner = row.ownerAccountId === accountId;
     const hasDirect = row.accountGrants.some((grant) => grant.accountId === accountId);
-    const matchingTeams = row.teamGrants.filter((grant) => qualifiedTeamIds.has(grant.teamId)
-        && grant.team.memberships
-            .some((membership) => {
-                const role = TeamRoleV1Schema.safeParse(membership.role);
-                return role.success && isTeamPrincipalRoleV1(role.data);
-            }));
-    const matchingGroups = row.groupGrants.filter((grant) => qualifiedTeamIds.has(grant.teamGroup.teamId)
-        && grant.teamGroup.memberships.length > 0);
+    const effective = effectiveSavedSecretTeamArms(row);
+    const matchingTeams = effective.teamGrants.filter((grant) => qualifiedTeamIds.has(grant.teamId));
+    const matchingGroups = effective.groupGrants.filter((grant) => qualifiedTeamIds.has(grant.teamGroup.teamId));
     const hasGrant = isOwner || hasDirect || matchingTeams.length > 0 || matchingGroups.length > 0;
     if (!hasGrant) return null;
     let ref: string;
@@ -561,31 +779,9 @@ export async function listSavedSecretResourcesForAccountInTx(
     authentication?: TeamOperationAuthenticationContext,
 ): Promise<readonly SavedSecretCatalogResultV1[]> {
     const [rows, account] = await Promise.all([tx.savedSecretResource.findMany({
-        where: {
-            OR: [
-                { ownerAccountId: accountId },
-                { accountGrants: { some: { accountId } } },
-                { teamGrants: { some: { team: { archivedAt: null, memberships: { some: { accountId, status: "active", role: { not: "guest" }, account: { status: "active" } } } } } } },
-                { groupGrants: { some: { teamGroup: { archivedAt: null, team: { archivedAt: null }, memberships: { some: { teamMembership: { accountId, status: "active" } } } } } } },
-            ],
-        },
+        where: authorizedSavedSecretRowWhere(accountId),
         orderBy: { updatedAt: "desc" },
-        select: {
-            id: true, ownerAccountId: true, displayName: true, kind: true,
-            encryptionMode: true, revision: true, storedContent: true,
-            owner: { select: ACCOUNT_DISPLAY_PROFILE_SELECT },
-            accountGrants: { select: { accountId: true, account: { select: ACCOUNT_DISPLAY_PROFILE_SELECT } } },
-            teamGrants: {
-                select: { teamId: true, team: { select: { id: true, name: true, memberships: { where: { accountId, status: "active", account: { status: "active" } }, select: { accountId: true, role: true } } } } },
-            },
-            groupGrants: {
-                select: { teamGroupId: true, teamGroup: { select: { id: true, teamId: true, name: true, team: { select: { id: true, name: true } }, memberships: { where: { teamMembership: { accountId, status: "active" } }, select: { teamMembership: { select: { accountId: true } } } } } } },
-            },
-            keyEnvelopes: {
-                where: { recipientAccountId: accountId },
-                select: { encryptedDataKey: true, recipientContentPublicKeyFingerprint: true },
-            },
-        },
+        select: authorizedSavedSecretRowSelect(accountId),
     }), tx.account.findUnique({
         where: { id: accountId },
         select: {
@@ -660,12 +856,13 @@ export async function listSavedSecretResourceEnvelopeCensusInTx(
     const recipients = accounts.map((account): SavedSecretResourceEnvelopeCensusRecipientV1 => {
         const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(account);
         const envelope = account.savedSecretResourceKeyEnvelopes[0] ?? null;
+        const usableEnvelope = readUsableRecipientEnvelope(envelope);
         const envelopeStatus = !envelope
             ? "missing" as const
-            : parseEncryptedDataKeyEnvelopeV1(new Uint8Array(envelope.encryptedDataKey)) === null
+            : !usableEnvelope
                 ? "invalid" as const
                 : readiness.status === "available"
-                    && readiness.binding.contentPublicKeyFingerprint === envelope.recipientContentPublicKeyFingerprint
+                    && readiness.binding.contentPublicKeyFingerprint === usableEnvelope.recipientContentPublicKeyFingerprint
                     ? "prepared" as const
                     : "stale" as const;
         return {
@@ -702,40 +899,9 @@ export async function listSavedSecretResourceMaterialsForAccountInTx(
     authentication?: TeamOperationAuthenticationContext,
 ): Promise<readonly SavedSecretResourceMaterialProjection[]> {
     const [rows, account] = await Promise.all([tx.savedSecretResource.findMany({
-        where: {
-            OR: [
-                { ownerAccountId: accountId },
-                { accountGrants: { some: { accountId } } },
-                { teamGrants: { some: { team: { archivedAt: null, memberships: { some: { accountId, status: "active", role: { not: "guest" }, account: { status: "active" } } } } } } },
-                { groupGrants: { some: { teamGroup: { archivedAt: null, team: { archivedAt: null }, memberships: { some: { teamMembership: { accountId, status: "active" } } } } } } },
-            ],
-        },
+        where: authorizedSavedSecretRowWhere(accountId),
         orderBy: { updatedAt: "desc" },
-        select: {
-            id: true, ownerAccountId: true, displayName: true, kind: true,
-            encryptionMode: true, revision: true, storedContent: true,
-            owner: { select: ACCOUNT_DISPLAY_PROFILE_SELECT },
-            accountGrants: { select: { accountId: true, account: { select: ACCOUNT_DISPLAY_PROFILE_SELECT } } },
-            teamGrants: { select: { teamId: true, team: { select: { id: true, name: true, memberships: { where: { accountId, status: "active", account: { status: "active" } }, select: { accountId: true, role: true } } } } } },
-            groupGrants: {
-                select: {
-                    teamGroupId: true,
-                    teamGroup: {
-                        select: {
-                            id: true,
-                            teamId: true,
-                            name: true,
-                            team: { select: { id: true, name: true } },
-                            memberships: {
-                                where: { teamMembership: { accountId, status: "active" } },
-                                select: { teamMembership: { select: { accountId: true } } },
-                            },
-                        },
-                    },
-                },
-            },
-            keyEnvelopes: { where: { recipientAccountId: accountId }, select: { encryptedDataKey: true, recipientContentPublicKeyFingerprint: true } },
-        },
+        select: authorizedSavedSecretRowSelect(accountId),
     }), tx.account.findUnique({
         where: { id: accountId },
         select: {
@@ -760,14 +926,14 @@ export async function listSavedSecretResourceMaterialsForAccountInTx(
             projectedRows.push({ entry });
             continue;
         }
-        const firstEnvelope = envelope;
+        const usableEnvelope = readUsableRecipientEnvelope(envelope);
         projectedRows.push({
             resourceId: row.id,
             entry,
             encryptionMode: row.encryptionMode === "plain" ? "plain" : "e2ee",
             storedContent: readStoredContent(row.id, row.storedContent),
-            encryptedDataKey: firstEnvelope?.encryptedDataKey ?? null,
-            recipientContentPublicKeyFingerprint: firstEnvelope?.recipientContentPublicKeyFingerprint ?? null,
+            encryptedDataKey: usableEnvelope?.encryptedDataKey ?? null,
+            recipientContentPublicKeyFingerprint: usableEnvelope?.recipientContentPublicKeyFingerprint ?? null,
         });
     }
     return projectedRows;
@@ -784,11 +950,7 @@ export type CreateSavedSecretResourceInput = Readonly<{
     accountGrants?: readonly string[];
     teamGrants?: readonly string[];
     groupGrants?: readonly string[];
-    keyEnvelopes?: readonly Readonly<{
-        recipientAccountId: string;
-        encryptedDataKey: Uint8Array;
-        recipientContentPublicKeyFingerprint: string;
-    }>[];
+    keyEnvelopes?: readonly SavedSecretRecipientEnvelopeInput[];
 }>;
 
 /** Creates one owner-controlled resource and its explicit grant tuples. */
@@ -916,32 +1078,15 @@ export async function createSavedSecretResourceInTx(
             ? []
             : await tx.account.findMany({
                 where: { id: { in: recipientIds } },
-                select: {
-                    id: true,
-                    publicKey: true,
-                    encryptionMode: true,
-                    contentPublicKey: true,
-                    contentPublicKeySig: true,
-                },
+                select: SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT,
             });
         const authorizedRecipientIds = new Set([input.accountId, ...recipients, ...teamRecipientIds, ...groupMembers.map((member) => member.teamMembership.accountId)]);
         if (envelopeRecipients.some((accountId) => !authorizedRecipientIds.has(accountId))) {
             return { ok: false, error: "invalid_resource" };
         }
         const recipientRowsById = new Map(recipientRows.map((account) => [account.id, account]));
-        const envelopes = requestedEnvelopes;
-        if (new Set(envelopes.map((envelope) => envelope.recipientAccountId)).size !== envelopes.length) {
+        if (readSavedSecretRecipientEnvelopeRejection(requestedEnvelopes, recipientRowsById) !== null) {
             return { ok: false, error: "invalid_resource" };
-        }
-        for (const envelope of envelopes) {
-            const recipient = recipientRowsById.get(envelope.recipientAccountId);
-            if (!recipient) return { ok: false, error: "invalid_resource" };
-            const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(recipient);
-            if (readiness.status !== "available"
-                || readiness.binding.contentPublicKeyFingerprint !== envelope.recipientContentPublicKeyFingerprint
-                || parseEncryptedDataKeyEnvelopeV1(envelope.encryptedDataKey) === null) {
-                return { ok: false, error: "invalid_resource" };
-            }
         }
     }
     const resource = await tx.savedSecretResource.create({
@@ -984,11 +1129,7 @@ export type SetSavedSecretResourceGrantsInput = Readonly<{
     accountGrants: readonly string[];
     teamGrants: readonly string[];
     groupGrants: readonly string[];
-    keyEnvelopes?: readonly Readonly<{
-        recipientAccountId: string;
-        encryptedDataKey: Uint8Array;
-        recipientContentPublicKeyFingerprint: string;
-    }>[];
+    keyEnvelopes?: readonly SavedSecretRecipientEnvelopeInput[];
 }>;
 
 export async function setSavedSecretResourceGrantsInTx(
@@ -1028,33 +1169,17 @@ export async function setSavedSecretResourceGrantsInTx(
         return { ok: false, error: "invalid_resource" };
     }
     if (existing.encryptionMode === "e2ee") {
-        if (new Set(envelopes.map((envelope) => envelope.recipientAccountId)).size !== envelopes.length) {
-            return { ok: false, error: "invalid_resource" };
-        }
         const afterSet = new Set(after);
         if (envelopes.some((envelope) => !afterSet.has(envelope.recipientAccountId))) {
             return { ok: false, error: "invalid_resource" };
         }
         const recipientRows = envelopes.length === 0 ? [] : await tx.account.findMany({
             where: { id: { in: envelopes.map((envelope) => envelope.recipientAccountId) } },
-            select: {
-                id: true,
-                publicKey: true,
-                encryptionMode: true,
-                contentPublicKey: true,
-                contentPublicKeySig: true,
-            },
+            select: SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT,
         });
         const recipientRowsById = new Map(recipientRows.map((account) => [account.id, account]));
-        for (const envelope of envelopes) {
-            const recipient = recipientRowsById.get(envelope.recipientAccountId);
-            if (!recipient) return { ok: false, error: "invalid_resource" };
-            const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(recipient);
-            if (readiness.status !== "available"
-                || readiness.binding.contentPublicKeyFingerprint !== envelope.recipientContentPublicKeyFingerprint
-                || parseEncryptedDataKeyEnvelopeV1(envelope.encryptedDataKey) === null) {
-                return { ok: false, error: "invalid_resource" };
-            }
+        if (readSavedSecretRecipientEnvelopeRejection(envelopes, recipientRowsById) !== null) {
+            return { ok: false, error: "invalid_resource" };
         }
     }
     const updated = await tx.savedSecretResource.updateMany({
@@ -1096,26 +1221,7 @@ export async function setSavedSecretResourceGrantsInTx(
             createdByAccountId: input.accountId,
         })),
     });
-    for (const envelope of envelopes) {
-        await tx.savedSecretResourceKeyEnvelope.upsert({
-            where: {
-                resourceId_recipientAccountId: {
-                    resourceId: input.resourceId,
-                    recipientAccountId: envelope.recipientAccountId,
-                },
-            },
-            create: {
-                resourceId: input.resourceId,
-                recipientAccountId: envelope.recipientAccountId,
-                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
-                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
-            },
-            update: {
-                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
-                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
-            },
-        });
-    }
+    await upsertSavedSecretResourceKeyEnvelopesInTx(tx, input.resourceId, envelopes);
     await markResourceChangedForAccounts(
         tx,
         input.resourceId,
@@ -1131,11 +1237,7 @@ export async function repairSavedSecretResourceKeyEnvelopesInTx(
         accountId: string;
         resourceId: string;
         expectedRevision: number;
-        keyEnvelopes: readonly Readonly<{
-            recipientAccountId: string;
-            encryptedDataKey: Uint8Array;
-            recipientContentPublicKeyFingerprint: string;
-        }>[];
+        keyEnvelopes: readonly SavedSecretRecipientEnvelopeInput[];
     }>,
 ): Promise<SavedSecretResourceServiceResult<{ resourceId: string; revision: number }>> {
     const resource = await tx.savedSecretResource.findUnique({
@@ -1162,54 +1264,29 @@ export async function repairSavedSecretResourceKeyEnvelopesInTx(
     });
     if (current.count !== 1) return { ok: false, error: "resource_changed" };
     const recipientIds = input.keyEnvelopes.map((envelope) => envelope.recipientAccountId);
-    if (new Set(recipientIds).size !== recipientIds.length) return { ok: false, error: "invalid_resource" };
     const authorizedIds = new Set(await listAuthorizedAccountIdsForResourceInTx(tx, input.resourceId));
     if (recipientIds.some((accountId) => !authorizedIds.has(accountId))) {
         return { ok: false, error: "recipient_changed" };
     }
     const recipients = await tx.account.findMany({
         where: { id: { in: recipientIds }, status: "active" },
-        select: {
-            id: true,
-            publicKey: true,
-            encryptionMode: true,
-            contentPublicKey: true,
-            contentPublicKeySig: true,
-        },
+        select: SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT,
     });
-    const recipientsById = new Map(recipients.map((recipient) => [recipient.id, recipient]));
-    for (const envelope of input.keyEnvelopes) {
-        const recipient = recipientsById.get(envelope.recipientAccountId);
-        if (!recipient) return { ok: false, error: "recipient_changed" };
-        const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(recipient);
-        if (readiness.status !== "available") return { ok: false, error: "recipient_key_unavailable" };
-        if (readiness.binding.contentPublicKeyFingerprint !== envelope.recipientContentPublicKeyFingerprint) {
-            return { ok: false, error: "recipient_changed" };
-        }
-        if (parseEncryptedDataKeyEnvelopeV1(envelope.encryptedDataKey) === null) {
-            return { ok: false, error: "invalid_resource" };
-        }
+    const rejection = readSavedSecretRecipientEnvelopeRejection(
+        input.keyEnvelopes,
+        new Map(recipients.map((recipient) => [recipient.id, recipient])),
+    );
+    // Repair publishes a recoverable answer where creation only says "invalid":
+    // the owner device is expected to re-read the census and reseal.
+    if (rejection !== null) {
+        return {
+            ok: false,
+            error: rejection === "key_unavailable" ? "recipient_key_unavailable"
+                : rejection === "unknown_recipient" || rejection === "fingerprint_mismatch" ? "recipient_changed"
+                    : "invalid_resource",
+        };
     }
-    for (const envelope of input.keyEnvelopes) {
-        await tx.savedSecretResourceKeyEnvelope.upsert({
-            where: {
-                resourceId_recipientAccountId: {
-                    resourceId: input.resourceId,
-                    recipientAccountId: envelope.recipientAccountId,
-                },
-            },
-            create: {
-                resourceId: input.resourceId,
-                recipientAccountId: envelope.recipientAccountId,
-                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
-                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
-            },
-            update: {
-                encryptedDataKey: copyBytes(envelope.encryptedDataKey),
-                recipientContentPublicKeyFingerprint: envelope.recipientContentPublicKeyFingerprint,
-            },
-        });
-    }
+    await upsertSavedSecretResourceKeyEnvelopesInTx(tx, input.resourceId, input.keyEnvelopes);
     await markResourceChangedForAccounts(tx, input.resourceId, resource.revision, [input.accountId, ...recipientIds]);
     return { ok: true, value: { resourceId: input.resourceId, revision: resource.revision } };
 }
@@ -1221,8 +1298,25 @@ export type UpdateSavedSecretResourceInput = Readonly<{
     displayName: string;
     kind: "apiKey" | "token" | "password" | "other";
     storedContent: SavedSecretResourceStoredContentV1;
+    /**
+     * Explicit owner mode conversion (plan 10.08 §10.5/§11.0). Absent keeps the
+     * current mode, so rename and value rotation are unchanged.
+     */
+    toMode?: "plain" | "e2ee";
+    /** Owner and current-recipient envelopes, only for a Plain to E2EE conversion. */
+    keyEnvelopes?: readonly SavedSecretRecipientEnvelopeInput[];
 }>;
 
+/**
+ * Rewrites the owner's resource content, and — when the owner asks for it —
+ * the mode that content is stored in.
+ *
+ * Rename, value rotation and mode conversion are the same content write under
+ * the same revision CAS, so the resource keeps its id, references, grants and
+ * audience across a conversion and advances exactly one revision. The mode the
+ * write lands in decides which stored container is correct, so a mode/content
+ * mismatch stays rejected in every arm.
+ */
 export async function updateSavedSecretResourceInTx(
     tx: Tx,
     input: UpdateSavedSecretResourceInput,
@@ -1234,25 +1328,84 @@ export async function updateSavedSecretResourceInTx(
     if (!resource) return { ok: false, error: "resource_not_found" };
     if (resource.ownerAccountId !== input.accountId) return { ok: false, error: "forbidden" };
     if (resource.revision !== input.expectedRevision) return { ok: false, error: "resource_changed" };
-    if ((resource.encryptionMode === "plain" && input.storedContent.t !== "plain")
-        || (resource.encryptionMode === "e2ee" && input.storedContent.t !== "encrypted")) {
+    const nextMode = input.toMode ?? resource.encryptionMode;
+    if ((nextMode === "plain" && input.storedContent.t !== "plain")
+        || (nextMode === "e2ee" && input.storedContent.t !== "encrypted")) {
         return { ok: false, error: "invalid_resource" };
     }
     if (input.storedContent.t === "plain"
         && (input.storedContent.v.name !== input.displayName.trim() || input.storedContent.v.kind !== input.kind)) {
         return { ok: false, error: "invalid_resource" };
     }
+    const converting = input.toMode !== undefined && input.toMode !== resource.encryptionMode;
+    // A conversion is "subject to Home policy" (plan 10.08 §10.5): the Home's
+    // storage policy decides which content mode it admits, with the same
+    // decision Session storage applies. Rename and rotation in the existing
+    // mode are not a conversion and stay outside it.
+    if (converting && input.toMode !== undefined && !isSessionEncryptionModeAllowedByStoragePolicy(
+        readEncryptionFeatureEnv(process.env).storagePolicy,
+        input.toMode,
+    )) {
+        return { ok: false, error: "forbidden" };
+    }
+    const envelopes = input.keyEnvelopes ?? [];
+    // Recipient material travels only with a conversion into E2EE. Every other
+    // envelope write stays with the census/repair owner, so this write never
+    // becomes a second way to reseal a resource.
+    if (envelopes.length > 0 && !(converting && nextMode === "e2ee")) {
+        return { ok: false, error: "invalid_resource" };
+    }
     const authorizedAccountIds = await listAuthorizedAccountIdsForResourceInTx(tx, input.resourceId);
+    if (converting && nextMode === "e2ee") {
+        const owner = await tx.account.findUnique({
+            where: { id: input.accountId },
+            select: SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT,
+        });
+        if (!owner) return { ok: false, error: "resource_not_found" };
+        if (owner.encryptionMode !== "e2ee") return { ok: false, error: "recipient_mode_unsupported" };
+        // The owner must keep its own access, exactly as at creation; the
+        // remaining recipients are prepared by the existing census/repair pass.
+        if (!envelopes.some((envelope) => envelope.recipientAccountId === input.accountId)) {
+            return { ok: false, error: "invalid_resource" };
+        }
+        const authorized = new Set(authorizedAccountIds);
+        if (envelopes.some((envelope) => !authorized.has(envelope.recipientAccountId))) {
+            return { ok: false, error: "invalid_resource" };
+        }
+        const recipientRows = await tx.account.findMany({
+            where: { id: { in: envelopes.map((envelope) => envelope.recipientAccountId) } },
+            select: SAVED_SECRET_RECIPIENT_ACCOUNT_SELECT,
+        });
+        const recipientRowsById = new Map(recipientRows.map((account) => [account.id, account]));
+        if (readSavedSecretRecipientEnvelopeRejection(envelopes, recipientRowsById) !== null) {
+            return { ok: false, error: "invalid_resource" };
+        }
+    }
     const updated = await tx.savedSecretResource.updateMany({
         where: { id: input.resourceId, ownerAccountId: input.accountId, revision: input.expectedRevision },
         data: {
             displayName: input.displayName.trim(),
             kind: input.kind,
             storedContent: storeContent(input.resourceId, input.storedContent),
+            ...(converting ? { encryptionMode: nextMode } : {}),
             revision: { increment: 1 },
         },
     });
     if (updated.count !== 1) return { ok: false, error: "resource_changed" };
+    if (converting) {
+        // Envelopes belong to the mode the resource is now in: a Plain resource
+        // keeps none, and a converted E2EE one keeps exactly what this write
+        // sealed. Grants, audience and the resource id are untouched.
+        await tx.savedSecretResourceKeyEnvelope.deleteMany({
+            where: {
+                resourceId: input.resourceId,
+                ...(envelopes.length > 0
+                    ? { recipientAccountId: { notIn: envelopes.map((envelope) => envelope.recipientAccountId) } }
+                    : {}),
+            },
+        });
+        await upsertSavedSecretResourceKeyEnvelopesInTx(tx, input.resourceId, envelopes);
+    }
     await markResourceChangedForAccounts(tx, input.resourceId, input.expectedRevision + 1, authorizedAccountIds);
     return { ok: true, value: { resourceId: input.resourceId, revision: input.expectedRevision + 1 } };
 }

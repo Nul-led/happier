@@ -60,3 +60,43 @@ export function bindHomeDomainHttpRequestV1(params: Readonly<{
 
   return { method: params.transport.method, path, body: remaining };
 }
+
+/**
+ * Connection-establishment failures are the only transport codes that prove the Home never
+ * received the bytes. Everything else that fails after the request was handed to the transport
+ * stays ambiguous and must be reported with its frozen request rather than silently retried.
+ */
+const PROVEN_NO_HOME_DISPATCH_ERROR_CODES_V1 = Object.freeze(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+
+function readHomeDomainTransportErrorCode(error: unknown, depth = 0): string | null {
+  if (!error || typeof error !== 'object' || depth > 3) return null;
+  const record = error as Readonly<{ code?: unknown; cause?: unknown }>;
+  if (typeof record.code === 'string' && record.code.trim().length > 0) {
+    return record.code.trim().toUpperCase();
+  }
+  return readHomeDomainTransportErrorCode(record.cause, depth + 1);
+}
+
+export type HomeDomainHttpMutationFailureV1 = 'cancelled' | 'not_dispatched' | 'outcome_unknown';
+
+/**
+ * Decide whether a failed Home-domain HTTP mutation may have committed.
+ *
+ * `issued` means every local authority/setup guard passed and the request reached the transport.
+ * It deliberately does not claim the Home received bytes. Both the browser and the CLI/daemon
+ * carriers own their own transport witness (fetch vs axios) and consume this one decision, so a
+ * single sealed mutation cannot mean "offline" on one host and "outcome unknown" on the other.
+ */
+export function classifyHomeDomainHttpMutationFailureV1(input: Readonly<{
+  error: unknown;
+  issued: boolean;
+  aborted: boolean;
+}>): HomeDomainHttpMutationFailureV1 {
+  const aborted = input.aborted
+    || (input.error instanceof Error && input.error.name === 'AbortError')
+    || readHomeDomainTransportErrorCode(input.error) === 'ERR_CANCELED';
+  if (!input.issued) return aborted ? 'cancelled' : 'not_dispatched';
+  return PROVEN_NO_HOME_DISPATCH_ERROR_CODES_V1.includes(readHomeDomainTransportErrorCode(input.error) ?? '')
+    ? 'not_dispatched'
+    : 'outcome_unknown';
+}

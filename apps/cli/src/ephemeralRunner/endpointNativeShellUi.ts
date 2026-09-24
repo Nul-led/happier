@@ -12,12 +12,14 @@ import {
   resolveEphemeralRunnerEndpointPresentation,
   resolveEphemeralRunnerFailureRecoveryPresentation,
   resolveEphemeralRunnerEndpointLocale,
+  resolveEphemeralRunnerRegistryProfilePresentation,
   resolveEphemeralRunnerReviewedRuntimeFacts,
   type EphemeralRunnerActiveClosePresentation,
   type EphemeralRunnerConsentReviewFact,
   type EphemeralRunnerConsentReviewPresentation,
   type EphemeralRunnerDirectoryChoicePresentation,
   type EphemeralRunnerFailureRecoveryPresentation,
+  type EphemeralRunnerRegistryProfilePresentation,
 } from './endpointTerminalUi';
 
 /**
@@ -29,6 +31,7 @@ import {
  */
 export type EphemeralRunnerNativeShellRequest =
   | Readonly<{ v: 1; type: 'choose_directory'; chooser: EphemeralRunnerDirectoryChoicePresentation }>
+  | Readonly<{ v: 1; type: 'registry_profile'; registry: EphemeralRunnerRegistryProfilePresentation }>
   | Readonly<{ v: 1; type: 'review'; review: EphemeralRunnerConsentReviewPresentation }>
   | Readonly<{
       v: 1;
@@ -46,7 +49,19 @@ export type EphemeralRunnerNativeShellRequest =
 
 export type EphemeralRunnerNativeShellResponse =
   | Readonly<{ v: 1; type: 'directory_selected'; directory: string | null }>
-  | Readonly<{ v: 1; type: 'consent_decision'; decision: 'allow' | 'decline' }>
+  /**
+   * The endpoint's registry answer. `sign_in` carries the token it typed; it
+   * crosses only this process-local pipe into the canonical profile service.
+   */
+  | Readonly<{ v: 1; type: 'registry_profile_decision'; decision: 'sign_in'; token: string }>
+  | Readonly<{ v: 1; type: 'registry_profile_decision'; decision: 'without_token' | 'decline' }>
+  | Readonly<{
+      v: 1;
+      type: 'consent_decision';
+      decision: 'allow' | 'decline';
+      /** The endpoint's answer for each offered optional access choice; off unless turned on. */
+      optionalSelections?: readonly Readonly<{ accessId: string; selected: boolean }>[];
+    }>
   | Readonly<{ v: 1; type: 'active_close_decision'; decision: 'stop' | 'keep_open' }>
   | Readonly<{ v: 1; type: 'failure_recovery_decision'; decision: 'retry' | 'exit' }>;
 
@@ -121,9 +136,21 @@ export function createEphemeralRunnerNativeShellUi(
       if (response.type !== 'directory_selected') return unexpectedResponse(response);
       return response.directory;
     },
+    async requestRegistryProfile({ requirement, signal }) {
+      // Registry sign-in is opt-in: an absent endpoint never answers it.
+      if (disconnected) return null;
+      const response = await transport.request({
+        v: 1,
+        type: 'registry_profile',
+        registry: resolveEphemeralRunnerRegistryProfilePresentation({ requirement, locale }),
+      }, signal);
+      if (response.type !== 'registry_profile_decision') return unexpectedResponse(response);
+      if (response.decision === 'decline') return null;
+      return { credential: response.decision === 'sign_in' ? response.token : null };
+    },
     async reviewAndRequestConsent({ review, pluginInstallation, signal }) {
       // Consent is opt-in: an absent endpoint never grants it.
-      if (disconnected) return false;
+      if (disconnected) return { allow: false };
       reviewedRuntimeSummary = resolveEphemeralRunnerReviewedRuntimeFacts({
         manifest: review.manifest,
         directory: review.directory,
@@ -143,7 +170,21 @@ export function createEphemeralRunnerNativeShellUi(
         }),
       }, signal);
       if (response.type !== 'consent_decision') return unexpectedResponse(response);
-      return response.decision === 'allow';
+      if (response.decision !== 'allow') return { allow: false };
+      // The shell answers only the choices it was offered; a missing answer
+      // is an optional access left off. Unknown ids reach the canonical change
+      // owner unchanged and are refused there.
+      const answered = new Map((response.optionalSelections ?? []).map((entry) => [entry.accessId, entry.selected === true]));
+      const offered = pluginInstallation?.optionalHostAccess ?? [];
+      const offeredIds = new Set(offered.map((request) => request.id));
+      return {
+        allow: true,
+        optionalSelections: [
+          ...offered.map((request) => ({ accessId: request.id, selected: answered.get(request.id) === true })),
+          ...[...answered].filter(([accessId]) => !offeredIds.has(accessId))
+            .map(([accessId, selected]) => ({ accessId, selected })),
+        ],
+      };
     },
     async confirmActiveClose({ phase, signal }) {
       if (disconnected) return 'stop';

@@ -182,6 +182,10 @@ export function createApiTokenSettingsController(
     let state = INITIAL_STATE;
     let retired = false;
     let activeRequest: AbortController | null = null;
+    // The optional encryption-availability read is not a mutation and must not
+    // occupy the mutation slot: holding `activeRequest` made ordinary token
+    // creation return silently while it was in flight.
+    let availabilityRequest: AbortController | null = null;
     let activeLifetime: ActiveServerAccountScopeLifetime | null = null;
     let retirement: Readonly<{ dispose(): void }> | null = null;
     const listeners = new Set<() => void>();
@@ -198,6 +202,8 @@ export function createApiTokenSettingsController(
         creation = null;
         activeRequest?.abort();
         activeRequest = null;
+        availabilityRequest?.abort();
+        availabilityRequest = null;
         retirement?.dispose();
         retirement = null;
         activeLifetime = null;
@@ -347,14 +353,15 @@ export function createApiTokenSettingsController(
             });
         },
         async refreshEncryptionAvailability() {
-            if (retired || activeRequest || creation) return;
+            if (retired || creation) return;
             const lifetime = captureLifetime();
             if (!lifetime) return;
             // Availability is a live Home/Account/content-key fact. Do not keep
             // offering a previously verified capability while it is rechecked.
             if (state.canCreateEncrypted) publish({ ...state, canCreateEncrypted: false });
             const pending = new AbortController();
-            activeRequest = pending;
+            availabilityRequest?.abort();
+            availabilityRequest = pending;
             try {
                 const context = await readEncryptionContext(lifetime, pending.signal);
                 if (lifetime.isCurrent() && !pending.signal.aborted) {
@@ -366,7 +373,7 @@ export function createApiTokenSettingsController(
                 // Optional encrypted creation stays hidden; ordinary creation remains usable.
                 if (lifetime.isCurrent() && !pending.signal.aborted) publishEncryptionAvailability(false);
             } finally {
-                if (activeRequest === pending) activeRequest = null;
+                if (availabilityRequest === pending) availabilityRequest = null;
             }
         },
         setCreateDraft(draft) {
@@ -392,6 +399,10 @@ export function createApiTokenSettingsController(
                 encrypted: draft.encryptionAccess === true,
             };
             creation = attempt;
+            // A mutation is admitted: the optional availability read no longer
+            // has a consumer and must not publish over the attempt.
+            availabilityRequest?.abort();
+            availabilityRequest = null;
             publish({ ...state, createPending: true, createError: null });
             let prepared: Awaited<ReturnType<typeof prepareApiTokenEncryptionAccess>> | null = null;
             let binding: { serverIdentityId: string; accountId: string } | null = null;
@@ -556,6 +567,8 @@ export function createApiTokenSettingsController(
             creation = null;
             activeRequest?.abort();
             activeRequest = null;
+            availabilityRequest?.abort();
+            availabilityRequest = null;
             retirement?.dispose();
             retirement = null;
             activeLifetime = null;

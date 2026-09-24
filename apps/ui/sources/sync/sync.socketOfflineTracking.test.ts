@@ -19,6 +19,9 @@ vi.mock('react-native-mmkv', () => {
     delete(key: string) {
       kvStore.delete(key);
     }
+    getAllKeys() {
+      return [...kvStore.keys()];
+    }
     clearAll() {
       kvStore.clear();
     }
@@ -181,6 +184,9 @@ import { WEB_SYNC_INSTANCE_ID_SESSION_KEY } from '@/sync/runtime/webSyncClientId
 import { syncReliabilityTelemetry } from '@/sync/runtime/syncReliabilityTelemetry';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
+import { resolveSessionLiveConsumption } from '@/sync/runtime/sessionLiveConsumption';
+import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
+import { normalizeRawMessages } from '@/sync/typesRaw';
 
 class MemoryWebStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
   readonly values = new Map<string, string>();
@@ -280,6 +286,16 @@ function expectApiSocketOlderMessageRequest(params: {
   expect(searchParams.get('limit')).toBe(params.limit);
   expect(searchParams.has('afterSeq')).toBe(false);
   expect(searchParams.has('sidechainId')).toBe(false);
+}
+
+function materializeLoadedTranscript(sessionId: string, seq: number): void {
+  // Loaded flags alone describe a blank cache, whose real owner must snapshot.
+  // These catch-up cases require an accepted row, not just a sequence hint.
+  storage.getState().applyMessages(sessionId, normalizeRawMessages([{
+    id: `${sessionId}-accepted`, localId: null, seq, createdAt: seq,
+    raw: { role: 'user', content: { type: 'text', text: 'accepted before reconnect' } },
+  }]));
+  storage.getState().applyMessagesLoaded(sessionId);
 }
 
 function expectApiSocketMessageRequest(params: {
@@ -467,7 +483,7 @@ describe('sync socket offline tracking', () => {
         } as any,
       },
     }), true);
-    storage.getState().applyMessagesLoaded('s_reconnect_gap');
+    materializeLoadedTranscript('s_reconnect_gap', 20);
     markSessionSurfaceVisible('s_reconnect_gap');
     (sync as any).sessionMaterializedMaxSeqById = { s_reconnect_gap: 20 };
     (sync as any).isForeground = true;
@@ -562,7 +578,7 @@ describe('sync socket offline tracking', () => {
         } as any,
       },
     }), true);
-    storage.getState().applyMessagesLoaded('s_deferred_durable_gap');
+    materializeLoadedTranscript('s_deferred_durable_gap', 7);
     markSessionSurfaceVisible('s_deferred_durable_gap');
     (sync as any).sessionMaterializedMaxSeqById = { s_deferred_durable_gap: 7 };
     (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
@@ -600,7 +616,7 @@ describe('sync socket offline tracking', () => {
         } as any,
       },
     }), true);
-    storage.getState().applyMessagesLoaded('s_reconnect_consumed');
+    materializeLoadedTranscript('s_reconnect_consumed', 20);
     markSessionSurfaceVisible('s_reconnect_consumed');
     (sync as any).sessionMaterializedMaxSeqById = { s_reconnect_consumed: 20 };
     (sync as any).isForeground = true;
@@ -633,7 +649,7 @@ describe('sync socket offline tracking', () => {
         } as any,
       },
     }), true);
-    storage.getState().applyMessagesLoaded('s_reconnect_duplicate_connected');
+    materializeLoadedTranscript('s_reconnect_duplicate_connected', 20);
     markSessionSurfaceVisible('s_reconnect_duplicate_connected');
     (sync as any).sessionMaterializedMaxSeqById = { s_reconnect_duplicate_connected: 20 };
     (sync as any).isForeground = true;
@@ -839,6 +855,71 @@ describe('sync socket offline tracking', () => {
 
     resolveSessions();
     await Promise.all([firstFetch, secondFetch]);
+  });
+
+  it('does not advance the ordinary Session-list frontier when the in-flight snapshot was superseded', async () => {
+    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+
+    let resolveSessions!: () => void;
+    const sessionResponseReady = new Promise<void>((resolve) => {
+      resolveSessions = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : 'url' in input
+            ? String(input.url)
+            : input.toString();
+      if (url.includes('/v2/sessions')) {
+        await sessionResponseReady;
+        return new Response(
+          JSON.stringify({ sessions: [], nextCursor: 'superseded-page-2', hasNext: true }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    routeApiSocketRequestsThroughFetch(fetchMock);
+
+    (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+    (sync as any).encryption = {
+      decryptEncryptionKey: async () => null,
+      initializeSessions: async () => {},
+      removeSessionEncryption: () => {},
+      getSessionEncryption: () => null,
+    };
+
+    const sessionFetchCalls = () => fetchMock.mock.calls.filter((call) => {
+      const input = call[0];
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : 'url' in input
+            ? String(input.url)
+            : input.toString();
+      return url.includes('/v2/sessions');
+    });
+
+    const supersededFetch = (sync as any).fetchSessions();
+    await expect.poll(() => sessionFetchCalls().length).toBe(1);
+
+    // The snapshot this read belongs to is retired while its page is in flight.
+    (sync as any).invalidateSessionListSnapshot();
+    resolveSessions();
+    await supersededFetch;
+
+    // No row of that page was applied, so its cursor must not be adopted:
+    // adopting it would skip the page for every later continuation.
+    expect((sync as any).readOrdinarySessionListFrontier()).toEqual({
+      nextCursor: null,
+      hasNext: false,
+      attentionNextCursor: null,
+      attentionHasNext: false,
+    });
   });
 
   it.each([
@@ -2359,6 +2440,10 @@ describe('sync socket offline tracking', () => {
     });
     await (sync as any).fetchMessages('s1');
     expect(storage.getState().sessionMessages.s1?.isLoaded).toBe(true);
+    expect(Object.values(storage.getState().sessionMessages.s1?.messagesById ?? {})
+      .filter((message) => message.kind === 'user-text').map((message) => message.text))
+      .toEqual(['accepted before resume']);
+    expect(sync.getAcceptedExternalSessionTailCursor('s1')).toBe('happier_external_cursor_v1:YzE');
     machineExternalSessionTranscriptReadAfterMock.mockReset();
     machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
       ok: true,
@@ -2374,7 +2459,12 @@ describe('sync socket offline tracking', () => {
     });
 
     markSessionSurfaceVisible('s1');
+    expect(resolveSessionLiveConsumption('s1', resolvePreferredServerIdForSessionId('s1')).isFullContentConsumer).toBe(true);
     await (sync as any).resumeSync('socket-reconnect');
+    expect(fetchChangesMock).toHaveBeenCalled();
+    expect(syncReliabilityTelemetry.snapshot().persistedEvents
+      .filter((event) => event.name === 'sync.externalSession.resumeCatchUpFailed')).toEqual([]);
+    expect(storage.getState().getSessionTranscriptLoadIssue('s1')).toBeNull();
 
     expect(machineExternalSessionTranscriptReadAfterMock).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'm1',

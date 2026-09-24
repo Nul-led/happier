@@ -1371,8 +1371,12 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           credentialRevision: profile.credentialRevision,
           credentialConfigurationRevision: null,
           runtimeConfigurationRevision: 'configuration-1',
-          generation: 'generation-1',
-          immutableGenerationId: 'immutable-generation-1',
+          occurrenceId: 'generation-1',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-1',
+            installSource: 'npm',
+          },
           isCurrent: () => true,
           prepareCredentialReplacement: () => {
             throw new Error('quota probe must not prepare a credential replacement');
@@ -2170,6 +2174,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         configuration: {
           read: vi.fn(async () => null),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -2421,8 +2426,12 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           credentialRevision,
           credentialConfigurationRevision: null,
           runtimeConfigurationRevision: 'configuration-1',
-          generation: 'generation-1',
-          immutableGenerationId: 'immutable-generation-1',
+          occurrenceId: 'generation-1',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'immutable-generation-1',
+            installSource: 'npm',
+          },
           isCurrent: () => true,
           prepareCredentialReplacement: () => {
             throw new Error('quota poll must not prepare a credential replacement');
@@ -4569,7 +4578,6 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         meters: [],
       },
     });
-
     expect(legacyV4.writeProviderAccountUsage).toHaveBeenCalledTimes(0);
     await (coordinator as any).flushInBandQuotaPersistence(100);
     expect(legacyV4.writeProviderAccountUsage).toHaveBeenCalledTimes(1);
@@ -8871,7 +8879,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
   });
 
   it('emits quota lifecycle transitions from canonical account-usage changes', async () => {
-    const now = Date.parse('2026-06-11T10:00:00.000Z');
+    let now = Date.parse('2026-06-11T10:00:00.000Z');
     const resetAtMs = now + 600_000;
     const credentials: Credentials = {
       token: 'happy-token',
@@ -9009,10 +9017,11 @@ describe('ConnectedServiceQuotasCoordinator', () => {
       groupId: 'team',
     });
 
+    now += 1_000;
     accountUsageStore.recordSnapshot(
       buildConnectedGroupProviderAccountUsageSnapshot({
         profileId: 'backup',
-        now: now + 1_000,
+        now,
         remainingPct: 80,
         groupGeneration: 4,
       }),

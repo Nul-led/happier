@@ -39,7 +39,8 @@ import {
     SESSION_ATTENTION_REMINDER_MENU_ID,
 } from './sessionAttentionReminderAction';
 import { useSettingMutable } from '@/sync/domains/state/storage';
-import { resolveSessionReminderPresetRule, sessionReminderPresetRuleKey, upsertSessionReminderPreset, type SessionReminderPresetV1 } from '@/sync/domains/session/organization/sessionReminderPreset';
+import { resolveSessionReminderPresetRule, sessionReminderPresetRuleKey } from '@/sync/domains/session/organization/sessionReminderPreset';
+import { useApplySessionReminderPresetIntent } from '@/sync/store/settingsWriters';
 import { showSessionReminderDateTimeModal, showSessionReminderPresetManagerModal } from './sessionReminderModals';
 
 function showActionError(error: unknown): void {
@@ -122,7 +123,8 @@ export function useSessionRowActionMenu(params: Readonly<{
     reminder?: SessionReminderPresentation | null;
 }>): SessionRowActionMenuState {
     const target = params.target;
-    const [reminderPresets, setReminderPresets] = useSettingMutable('sessionReminderPresetsV1');
+    const [reminderPresets] = useSettingMutable('sessionReminderPresetsV1');
+    const applyReminderPresetIntent = useApplySessionReminderPresetIntent();
     const applyTagToggle = React.useCallback((tagId: string) => {
         if (!params.onSetTags) return;
         const next = params.activeTags.includes(tagId)
@@ -312,26 +314,31 @@ export function useSessionRowActionMenu(params: Readonly<{
                 return;
             }
             if (!target.reminderAction.canSchedule) return;
-            let remindAt = selection?.kind === 'timestamp' ? selection.remindAt : null;
-            let pendingPreset: SessionReminderPresetV1 | null = null;
+            const schedule = async (remindAt: number) => await sessionSetAttentionReminderWithServerScope(
+                target.sessionId,
+                remindAt,
+                { serverId: target.serverId },
+            );
             if (selection?.kind === 'custom') {
-                const result = await showSessionReminderDateTimeModal(nowMs);
-                remindAt = result?.remindAt ?? null;
-                pendingPreset = result?.preset ?? null;
-            } else if (selection?.kind === 'preset') {
+                // The modal owns the draft until the one canonical save succeeds, so a failed save
+                // keeps the chosen instant and the Add-to-presets switch for a retry.
+                const saved = await showSessionReminderDateTimeModal(nowMs, async (value) => await schedule(value.remindAt));
+                if (saved?.preset) await applyReminderPresetIntent({ kind: 'upsert', preset: saved.preset });
+                return;
+            }
+            if (selection?.kind === 'manage_presets') {
+                const managed = await showSessionReminderPresetManagerModal(reminderPresets);
+                if (managed) await applyReminderPresetIntent({ kind: 'replace', presets: managed });
+                return;
+            }
+            let remindAt = selection?.kind === 'timestamp' ? selection.remindAt : null;
+            if (selection?.kind === 'preset') {
                 const preset = reminderPresets.find((candidate) => sessionReminderPresetRuleKey(candidate.rule) === selection.ruleKey);
                 remindAt = preset ? resolveSessionReminderPresetRule(preset.rule, nowMs) : null;
-            } else if (selection?.kind === 'manage_presets') {
-                const managed = await showSessionReminderPresetManagerModal(reminderPresets);
-                if (managed) setReminderPresets(managed);
             }
             if (remindAt !== null) {
-                const result = await sessionSetAttentionReminderWithServerScope(target.sessionId, remindAt, { serverId: target.serverId });
-                if (!result.success) {
-                    Modal.alert(t('common.error'), result.message ?? t('errors.unknownError'));
-                } else if (pendingPreset) {
-                    setReminderPresets(upsertSessionReminderPreset(reminderPresets, pendingPreset));
-                }
+                const result = await schedule(remindAt);
+                if (!result.success) Modal.alert(t('common.error'), result.message ?? t('errors.unknownError'));
             }
             return;
         }
@@ -406,7 +413,7 @@ export function useSessionRowActionMenu(params: Readonly<{
         params.onSelectLeadingMenuItem,
         params.onSelectFolderMoveMenuItem,
         reminderPresets,
-        setReminderPresets,
+        applyReminderPresetIntent,
     ]);
 
     const contextMenuItems = React.useMemo((): DropdownMenuItem[] => {

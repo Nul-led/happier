@@ -20,6 +20,9 @@ import {
 import type {
     SessionMetadataOwnerAccountMode,
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
+import {
+    isSessionMetadataPrivacyUpgradeRequiredError,
+} from "@/app/session/metadata/sessionMetadataRecipientProjection";
 import { iterateBoundedSessionPersonalAttentionRows } from "@/app/session/personal/attentionQuery";
 import {
     loadSessionPersonalDiscussionFactsInTx,
@@ -180,17 +183,35 @@ export function mapV2SessionListRows(params: Readonly<{
     accessMode?: "effective_access_v1" | "legacy_owner_or_direct";
     now?: number;
 }>) {
-    return params.rows.map((row) => mapV2SessionListRow({
-        row,
-        userId: params.userId,
-        ownerAccountMode: params.ownerAccountMode,
-        ownerAccountModes: params.ownerAccountModes,
-        discussionFacts: params.discussionFacts,
-        hasOtherNamedCollaborator: params.otherNamedCollaboratorFacts?.get(row.id),
-        qualifiedTeamIds: params.qualifiedTeamIds,
-        accessMode: params.accessMode,
-        now: params.now,
-    }));
+    const sessions: ReturnType<typeof mapV2SessionListRow>[] = [];
+    let metadataUpgradeRequiredCount = 0;
+    for (const row of params.rows) {
+        try {
+            sessions.push(mapV2SessionListRow({
+                row,
+                userId: params.userId,
+                ownerAccountMode: params.ownerAccountMode,
+                ownerAccountModes: params.ownerAccountModes,
+                discussionFacts: params.discussionFacts,
+                hasOtherNamedCollaborator: params.otherNamedCollaboratorFacts?.get(row.id),
+                qualifiedTeamIds: params.qualifiedTeamIds,
+                accessMode: params.accessMode,
+                now: params.now,
+            }));
+        } catch (error) {
+            // A row whose owner has not migrated their metadata layout is a
+            // per-row refusal, not a page-wide one: the reader's remaining rows
+            // and both continuations stay usable while the count below keeps
+            // the omission visible. Account-wide currentness failures are raised
+            // before mapping and still refuse the request.
+            if (!isSessionMetadataPrivacyUpgradeRequiredError(error)) throw error;
+            metadataUpgradeRequiredCount += 1;
+        }
+    }
+    return {
+        sessions,
+        ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
+    };
 }
 
 /** Projects one safe audience-existence bit; recipient identities stay server-internal. */
@@ -273,7 +294,7 @@ export function createV2SessionListPage(params: Readonly<{
     const page = createV2SessionListRowPage(params);
 
     return {
-        sessions: mapV2SessionListRows({
+        ...mapV2SessionListRows({
             rows: page.rows,
             userId,
             ownerAccountMode: params.ownerAccountMode,

@@ -197,6 +197,51 @@ describe('SavedSecretAccessEditor', () => {
         expect(screen.findByTestId('saved-secret-access-save')).toBeTruthy();
     });
 
+    it('keeps an unsaved recipient choice when the catalog revision moves underneath', async () => {
+        const { SavedSecretAccessEditor } = await import('./SavedSecretAccessEditor');
+        const onClose = vi.fn();
+        const onSaved = vi.fn(async () => {});
+        const scope = { serverId: 'home-a', accountId: 'account-owner' } as const;
+        const screen = await renderScreen(
+            <SavedSecretAccessEditor target={{ kind: 'shared', entry }} scope={scope} onClose={onClose} onSaved={onSaved} />,
+        );
+
+        await vi.waitFor(() => expect(screen.findByTestId('saved-secret-access-account:account-new')).toBeTruthy());
+        await screen.pressByTestIdAsync('saved-secret-access-account:account-new');
+
+        // An ordinary background catalog refresh, not a different secret.
+        await screen.update(
+            <SavedSecretAccessEditor
+                target={{ kind: 'shared', entry: { ...entry, revision: 4 } }}
+                scope={scope}
+                onClose={onClose}
+                onSaved={onSaved}
+            />,
+        );
+
+        // The choice survives, the stale save is fenced, and adopting the
+        // Home's current recipients is offered as an explicit action.
+        // The selection the picker publishes to the canonical list, which is
+        // what the person actually sees checked.
+        const selectedIds = screen.findAllByTestId('saved-secret-access-directory')
+            .map((node) => node.props?.selection?.selectedIds)
+            .find((ids): ids is ReadonlySet<string> => ids instanceof Set);
+        expect([...(selectedIds ?? [])]).toContain('account:account-new');
+        expect(screen.findByTestId('saved-secret-access-save')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('saved-secret-access-reload')).toBeTruthy();
+
+        await screen.pressByTestIdAsync('saved-secret-access-save');
+        expect(setGrants).not.toHaveBeenCalled();
+
+        await screen.pressByTestIdAsync('saved-secret-access-reload');
+        expect(screen.findByTestId('saved-secret-access-save')?.props.disabled).not.toBe(true);
+        await screen.pressByTestIdAsync('saved-secret-access-save');
+        expect(setGrants).toHaveBeenCalledWith(expect.objectContaining({
+            expectedRevision: 4,
+            accountGrants: [],
+        }));
+    });
+
     it('does not create the first external grant when direct-disclosure confirmation is cancelled', async () => {
         confirmDisclosure.mockResolvedValueOnce(false);
         const { SavedSecretAccessEditor } = await import('./SavedSecretAccessEditor');

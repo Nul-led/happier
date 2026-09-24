@@ -73,7 +73,7 @@ describe('CLI Board Action family', () => {
     restore = installAxiosFastifyAdapter({ app, origin: 'http://board.test' });
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
       features: {
-        sessions: { enabled: true, collaboration: { enabled: true }, board: { enabled: true } },
+        sessions: { enabled: true, board: { enabled: true } },
         sharing: { session: { enabled: true } },
       },
       capabilities: {},
@@ -144,7 +144,7 @@ describe('CLI Board Action family', () => {
       status: 'ready' as const,
       features: {
         features: {
-          sessions: { enabled: true, collaboration: { enabled: true }, board: { enabled: true } },
+          sessions: { enabled: true, board: { enabled: true } },
           sharing: { session: { enabled: true } },
         },
         capabilities: {},
@@ -171,6 +171,42 @@ describe('CLI Board Action family', () => {
     // Exact-Home resolver owns the decision; no ambient feature probe may widen detail.
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+  it('keeps record-read failure categories the producer already answered', async () => {
+    let recordReply: Readonly<{ status: number; body: unknown }> = { status: 200, body: { record: null } };
+    let puts = 0;
+    app.get('/v2/sessions/session-one/system-records/record', async (_request, reply) =>
+      reply.status(recordReply.status).send(recordReply.body));
+    app.put('/v2/sessions/session-one/board', async () => { puts += 1; return { ok: true }; });
+    const deps = createSessionBoardActionDeps({
+      credentials: { token: 'daemon-token', encryption: null },
+      serverId: 'home-a',
+      serverHttpBaseUrl: 'http://board.test',
+    });
+    const read = () => deps.sessionBoardAction!({
+      actionId: 'session.board.get',
+      input: { sessionId: 'session-one' },
+      context: { surface: 'cli', authority: 'present_user', serverId: 'home-a' },
+    });
+
+    // A definite authorization denial stays `forbidden`, not "you are not signed in".
+    recordReply = { status: 403, body: { error: 'Forbidden', code: 'plugin_session_record_forbidden' } };
+    await expect(read()).resolves.toMatchObject({ ok: false, errorCode: 'forbidden' });
+    // The typed feature refusal keeps its operation, exactly like the mutation settlement.
+    recordReply = { status: 404, body: { error: 'Not found', code: 'plugin_session_record_feature_disabled' } };
+    await expect(read()).resolves.toMatchObject({
+      ok: false, errorCode: 'feature_disabled', details: { operation: 'session.board.get' },
+    });
+    // A read that never reached the Home is `offline`, the same disposition the mutation path uses.
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const get = vi.spyOn(axios, 'get').mockRejectedValue(refused);
+    await expect(read()).resolves.toMatchObject({ ok: false, errorCode: 'offline' });
+    // Cancellation stays distinct from being offline.
+    get.mockRejectedValue(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }));
+    await expect(read()).resolves.toMatchObject({ ok: false, errorCode: 'cancelled' });
+    get.mockRestore();
+    expect(puts).toBe(0);
+  });
+
   it('fails a supported old Home closed without appending a qualifier', async () => {
     verifySessionRequest = (request) => {
       expect((request as { query?: unknown }).query).toEqual({});
@@ -231,7 +267,7 @@ describe('CLI Board Action family', () => {
       verify({ headers: init?.headers }, 'GET', '/v1/features');
       return new Response(JSON.stringify({
         features: {
-          sessions: { enabled: true, collaboration: { enabled: true }, board: { enabled: true } },
+          sessions: { enabled: true, board: { enabled: true } },
           sharing: { session: { enabled: true } },
         },
         capabilities: {},
@@ -343,7 +379,8 @@ describe('CLI Board Action family', () => {
       })).toBe(true);
       ack({ ok: true, result: { protocolVersion: 1, projection: { v: 2, generation: 1, familiesById: { pluginUi: {
         family: 'pluginUi', entriesById: { status: { id: 'status', pluginId: 'acme.widgets', contributionKind: 'surfacePlacement',
-          descriptorId: 'status', binding, availability: { state: available ? 'available' : 'disabled', reason: 'fixture', diagnostics: [] },
+          descriptorId: 'status', occurrenceId: 'acme.widgets#1', binding,
+        availability: { state: available ? 'available' : 'disabled', reason: 'fixture', diagnostics: [] },
         } },
       } } } } });
     });
@@ -478,6 +515,38 @@ describe('CLI Board Action family', () => {
       : [{ id: 'a', items: [{ itemId: 'note', width: 'wide' }] }, { id: 'b', items: [{ itemId: 'note', width: 'medium' }] }],
     } } });
   });
+  it('acknowledges the requested second view when an item already placed elsewhere gains another placement', async () => {
+    const layout = { v: 1, tabs: [
+      { id: 'overview', title: 'Overview', items: [{ itemId: 'note', width: 'medium' }] },
+      { id: 'second', title: 'Second', items: [] },
+    ] };
+    const writes: Array<{ placement?: { layoutContent: { v: unknown } } }> = [];
+    app.get('/v2/sessions/session-one/system-records/record', async (request) => {
+      const query = request.query as { kind?: string };
+      return { record: query.kind === 'item.v1'
+        ? { id: 'item-row', address: { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: 'note' },
+          revision, content: { t: 'plain', v: item }, createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' }
+        : { id: 'layout-row', address: { owner: 'host', namespace: 'surface', kind: 'layout.v1', localId: 'layout' },
+          revision, content: { t: 'plain', v: layout }, createdAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:00.000Z' } };
+    });
+    app.put('/v2/sessions/session-one/board', async (request) => {
+      writes.push(request.body as never);
+      return { operation: 'upsert_item', itemId: 'note', outcome: 'updated', itemRevision: revision, layoutRevision: revision };
+    });
+    const deps = createSessionBoardActionDeps({ credentials: { token: 'token', encryption: null }, serverId: 'home-a', serverHttpBaseUrl: 'http://board.test' });
+    // Through the real Action executor: its strict result correspondence is the deciding consumer.
+    const executor = createActionExecutor({ ...deps, isActionApprovalRequired: () => false } as unknown as ActionExecutorDeps);
+    const input = { sessionId: 'session-one', itemId: 'note', expectedItemRevision: revision, item,
+      placement: { tabId: 'second', width: 'wide' as const } };
+    const result = await executor.execute('session.board.item.upsert', input, {
+      surface: 'cli', authority: 'present_user', serverId: 'home-a', defaultSessionId: 'session-one',
+    });
+    expect(result).toMatchObject({ ok: true, result: { destination: { tabId: 'second', width: 'wide' } } });
+    expect(writes[0]?.placement?.layoutContent.v).toMatchObject({ tabs: [
+      { id: 'overview', items: [{ itemId: 'note', width: 'medium' }] },
+      { id: 'second', items: [{ itemId: 'note', width: 'wide' }] },
+    ] });
+  });
   it('carries the exact current item participant for item.place and refuses a missing item before dispatch', async () => {
     const layout = { v: 1, tabs: [{ id: 'overview', title: 'Overview', items: [] }] };
     const writes: unknown[] = [];
@@ -546,6 +615,26 @@ describe('CLI Board Action family', () => {
       if (config.method?.toUpperCase() === 'PUT') {
         writes += 1;
         throw new axios.AxiosError('DNS lookup failed', 'ENOTFOUND');
+      }
+      return request(config);
+    });
+    const deps = createSessionBoardActionDeps({ credentials: { token: 'token', encryption: null }, serverId: 'home-a', serverHttpBaseUrl: 'http://board.test' });
+    await expect(deps.sessionBoardAction!({ actionId: 'session.board.layout.update', context: {}, input: {
+      sessionId: 'session-one', expectedLayoutRevision: null, operation: { op: 'tab.create', tabId: 'overview', title: 'Overview' },
+    } })).resolves.toEqual({ ok: false, errorCode: 'offline', error: 'offline' });
+    expect(writes).toBe(1);
+  });
+  it('keeps a wrapped connection refusal definite on both carriers', async () => {
+    app.get('/v2/sessions/session-one/system-records/record', async () => ({ record: null }));
+    const request = axios.request.bind(axios);
+    let writes = 0;
+    vi.spyOn(axios, 'request').mockImplementation(async (config) => {
+      if (config.method?.toUpperCase() === 'PUT') {
+        writes += 1;
+        // An interceptor-wrapped refusal: the code the UI carrier already walks to through `cause`.
+        const wrapped = new axios.AxiosError('request failed', undefined, undefined, {});
+        wrapped.cause = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+        throw wrapped;
       }
       return request(config);
     });

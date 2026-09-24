@@ -47,8 +47,12 @@ vi.mock('@/daemon/spawn/prepareAgentRuntimeSessionBridge', () => ({
         pluginVersion: '1.0.0',
         agentId: boundaries.bridgeAgentId,
         backendId: boundaries.bridgeAgentId,
-        generation: 'generation-1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'occurrence:bridge-plugin:1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'generation-1',
+          installSource: 'localPath',
+        },
       },
     },
     childEnv: {},
@@ -177,6 +181,7 @@ import {
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 
 import { prepareForegroundAgentRuntimeAdmission } from './prepareForegroundAdmission';
+import { resolvePurposeTeamCredentialBindingIntentsFromHome } from '@/session/services/spawnConnectedServicesDefaults';
 import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import {
   ForegroundAgentRuntimeAdmissionRequestV1Schema,
@@ -470,7 +475,7 @@ beforeEach(() => {
   boundaries.reserveManagedDependencyRetention.mockResolvedValue({
     retention: {
       v: 1,
-      sourceGenerationIds: [],
+      sourceCustodies: [],
       qualifiedDependencyIds: [],
     },
     release: vi.fn(),
@@ -536,6 +541,12 @@ beforeEach(() => {
       pluginVersion: '1.0.0',
       agentId: 'codex',
       generation: 'generation-1',
+      occurrenceId: 'occurrence:bridge-plugin:1',
+      sourceCustody: {
+        kind: 'managed',
+        immutableGenerationId: 'generation-1',
+        installSource: 'localPath',
+      },
       hasPrimaryRuntime: true,
       retirementSignal: retirement.signal,
       providerBinding: {
@@ -583,7 +594,11 @@ beforeEach(() => {
           pluginVersion: '1.0.0',
           agentId: boundaries.bridgeAgentId,
           localAgentId: boundaries.bridgeAgentId,
-          immutableGenerationId: 'generation-1',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'generation-1',
+            installSource: 'localPath',
+          },
           locator: {
             module: './agent/runtime.mjs',
             export: 'createRuntime',
@@ -960,7 +975,11 @@ describe('foreground admission composed real Provider authorization seam', () =>
       expect.objectContaining({
         pluginId: 'happier.agent.codex',
         agentId: 'codex',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'generation-1',
+          installSource: 'localPath',
+        },
       }),
     );
     expect(boundaries.attachExactRunnerRetainedPluginGenerations)
@@ -1502,6 +1521,8 @@ describe('foreground admission composed real Provider authorization seam', () =>
     const resolveExternalAgentSessionPurposeBindingSnapshot = vi.fn(async () => ({
       purposes: [expectedExternalBinding.purpose],
       bindings: [expectedExternalBinding],
+      directMaterialOrigins: [],
+      teamResourceSelections: [],
     }));
     const resolveConnectedServiceAuthForSpawn = vi.fn(async () => null);
     const resolveDaemonSpawnHooks = vi.fn(async () => null);
@@ -1602,6 +1623,165 @@ describe('foreground admission composed real Provider authorization seam', () =>
       subject: requestAuthSubject,
       purpose: expectedExternalBinding.purpose,
     })).rejects.toMatchObject({ code: 'request_auth_not_active' });
+  });
+
+  it('admits a durable Team default and hands its Team slot binding to Session creation', async () => {
+    const externalAgentId = 'acme-team-agent';
+    const externalPluginId = 'acme.team-agent';
+    const externalService = { pluginId: 'acme.connected-account', localId: 'credential' } as const;
+    boundaries.bridgeAgentId = externalAgentId;
+    boundaries.bridgePluginId = externalPluginId;
+    const lease = boundaries.lease as PluginRuntimeRegistryLease;
+    const registry = lease.registry;
+    const codexContribution = registry.contributes.agentDefinitionsById.get('codex');
+    const codexRuntime = registry.agentRuntimesByAgentId.get('codex');
+    if (!codexContribution?.richDefinition || !codexRuntime) {
+      throw new Error('Expected canonical Agent fixtures');
+    }
+    const agentDefinitionsById = new Map<string, typeof codexContribution>(
+      registry.contributes.agentDefinitionsById.entries(),
+    );
+    agentDefinitionsById.set(externalAgentId, {
+      ...codexContribution,
+      id: externalAgentId,
+      pluginId: externalPluginId,
+      identity: { pluginId: externalPluginId, localId: externalAgentId },
+      richDefinition: {
+        ...codexContribution.richDefinition,
+        definition: {
+          ...codexContribution.richDefinition.definition,
+          connectedAccounts: [{
+            purpose: 'primary',
+            service: externalService,
+            required: false,
+            materializationKinds: ['environment'],
+          }],
+        },
+      },
+      catalogEntry: {
+        id: externalAgentId,
+        cliSubcommand: externalAgentId,
+        vendorResumeSupport: 'unsupported',
+      },
+    });
+    const agentRuntimesByAgentId = new Map<string, typeof codexRuntime>(
+      registry.agentRuntimesByAgentId.entries(),
+    );
+    agentRuntimesByAgentId.set(externalAgentId, {
+      ...codexRuntime,
+      pluginId: externalPluginId,
+      agentId: externalAgentId,
+    });
+    boundaries.lease = {
+      ...lease,
+      registry: {
+        ...registry,
+        contributes: { ...registry.contributes, agentDefinitionsById },
+        agentRuntimesByAgentId,
+      },
+    } satisfies PluginRuntimeRegistryLease;
+    const purpose = {
+      consumer: { pluginId: externalPluginId, localId: externalAgentId },
+      purpose: 'primary',
+    } as const;
+    const selection = {
+      source: 'team_resource' as const,
+      resourceId: 'resource-acme',
+      deliveryMode: 'direct' as const,
+      disclosedMember: { service: externalService, accountId: 'source-member' },
+    };
+    // The durable Agent default, exactly as the Agent page persists it: the
+    // canonical Team selection, never a Team purpose target (lane 10 child 02
+    // :271, child 06 :506). Only the Account Settings boundary is in memory;
+    // the real purpose-binding owner reads it.
+    const durableDefaults = {
+      v: 1 as const,
+      bindings: [],
+      teamResourceSelections: [{ purpose, teamId: 'team-acme', selection }],
+    };
+    const teamDefaultOwner = createConnectedAccountPurposeBindingOwner({
+      store: {
+        read: async () => durableDefaults,
+        update: async (mutate) => mutate(durableDefaults),
+        subscribe: () => ({ dispose() {} }),
+      },
+      selectTarget: async () => {
+        throw new Error('selection is not part of foreground admission');
+      },
+      resolveTarget: async () => {
+        throw new Error('a Team default is never resolved against the personal inventory');
+      },
+      materializeAccount: async () => {
+        throw new Error('admission does not materialize');
+      },
+      async projectTargetAccounts() {
+        throw new Error('listing is outside foreground admission');
+      },
+      async assertTargetAccountMaterializable() {
+        throw new Error('listed-account materialization is outside foreground admission');
+      },
+    });
+    const resource = {
+      id: 'resource-acme', teamId: 'team-acme', displayName: 'Acme credential',
+      resourceRevision: 4, readiness: { kind: 'available' as const }, recoveryAction: null,
+      mayBroker: false, mayReceiveDirect: true, directMaterialState: 'current' as const,
+      sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+      connectedServiceSelections: [selection],
+      sourcePresentation: { kind: 'connected_service' as const, service: externalService },
+    };
+    // The only fake is the Home catalog read (network boundary); the canonical
+    // defaults owner turns the durable target into the Session's slot binding.
+    const admit = async (
+      attemptId: string,
+      resources: readonly (typeof resource)[],
+      withResolver = true,
+    ) => await prepareForegroundAgentRuntimeAdmission(request({
+      attemptId,
+      agentId: externalAgentId,
+      backendTarget: { kind: 'backend', backendId: externalAgentId },
+      profileId: undefined,
+      accountSettingsScopeKey: undefined,
+      accountSettingsVersion: undefined,
+      selection: undefined,
+      connectedServices: undefined,
+    }), {
+      activateSessionPurposeBindings: vi.fn(),
+      resolveExternalAgentSessionPurposeBindingSnapshot: async ({ authorizedPurposes, signal }) =>
+        await teamDefaultOwner.resolveCurrentSessionPurposeBindingSnapshot({ authorizedPurposes, signal }),
+      ...(withResolver
+        ? {
+            resolveSessionTeamCredentialBindingIntents: async ({ teamResourceSelections }) =>
+              await resolvePurposeTeamCredentialBindingIntentsFromHome({
+                teamResourceSelections,
+                resolveTeamCredentialResourceCatalog: async () => ({
+                  serverId: 'home-a', accountId: 'recipient', resources,
+                }),
+              }),
+          }
+        : {}),
+    });
+
+    const admitted = await admit('attempt-team-slot', [resource]);
+    expect(admitted.ok).toBe(true);
+    if (!admitted.ok) throw new Error(admitted.error.code);
+    expect(admitted.prepared.teamCredentialBindings).toEqual([{
+      v: 1,
+      slot: { kind: 'connected_service_purpose', purpose },
+      resourceId: 'resource-acme',
+      expectedResourceRevision: 4,
+      deliveryMode: 'direct',
+      teamId: 'team-acme',
+    }]);
+    await admitted.prepared.cleanup();
+
+    await expect(admit('attempt-team-slot-withdrawn', [])).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'provider_binding_changed' },
+    });
+    await expect(admit('attempt-team-slot-no-home', [resource], false)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'provider_agent_runtime_unsupported' },
+    });
   });
 
   it('materializes exact-account opaque credentials into an isolated native home and removes it without touching the persistent home', async () => {
@@ -1776,6 +1956,8 @@ describe('foreground admission composed real Provider authorization seam', () =>
         resolveExternalAgentSessionPurposeBindingSnapshot: async () => ({
           purposes: [purpose],
           bindings: [binding],
+          directMaterialOrigins: [],
+          teamResourceSelections: [],
         }),
         connectedServicesMaterializationBaseDir: materializationRoot,
       });
@@ -1818,6 +2000,8 @@ describe('foreground admission composed real Provider authorization seam', () =>
         resolveExternalAgentSessionPurposeBindingSnapshot: async () => ({
           purposes: [purpose],
           bindings: [binding],
+          directMaterialOrigins: [],
+          teamResourceSelections: [],
         }),
         connectedServicesMaterializationBaseDir: materializationRoot,
       });
@@ -1855,6 +2039,8 @@ describe('foreground admission composed real Provider authorization seam', () =>
         resolveExternalAgentSessionPurposeBindingSnapshot: async () => ({
           purposes: [purpose],
           bindings: [],
+          directMaterialOrigins: [],
+          teamResourceSelections: [],
         }),
         connectedServicesMaterializationBaseDir: materializationRoot,
       });

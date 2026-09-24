@@ -12,8 +12,7 @@ import {
     type TeamCredentialExternalProviderApplicationRequestV1,
     type TeamCredentialExternalProviderErrorCodeV1,
 } from "@happier-dev/protocol/teams";
-import { resolveTeamCredentialExternalApiAvailability, RPC_METHODS } from "@happier-dev/protocol";
-import { DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema } from "@happier-dev/protocol/rpc";
+import { resolveTeamCredentialExternalApiAvailability } from "@happier-dev/protocol";
 import type { Fastify } from "@/app/api/types";
 import { resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
@@ -23,7 +22,11 @@ import {
     type VerifyTeamCredentialExternalApiKeyResult,
 } from "@/app/teams/credentials/externalApiKey";
 import { getMachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
-import { resolveTeamCredentialExternalBrokerPlacement } from "@/app/teams/credentials/externalBrokerPlacement";
+import {
+    resolveTeamCredentialExternalBrokerPlacement,
+    type ExternalBrokerPoolSourceEligibilityReader,
+} from "@/app/teams/credentials/externalBrokerPlacement";
+import { createTeamCredentialPoolSourceEligibilityReader } from "@/app/teams/credentials/poolSourceEligibility";
 
 type HeaderValue = string | readonly string[] | undefined;
 
@@ -170,7 +173,7 @@ export function registerExternalProviderApiRoutes(
         dispatch?: ExternalProviderBrokerDispatch;
         env?: NodeJS.ProcessEnv;
         readCurrentBrokerPresence?: Parameters<typeof resolveTeamCredentialExternalBrokerPlacement>[0]["readCurrentPresence"];
-        readPoolSourceEligibility?: Parameters<typeof resolveTeamCredentialExternalBrokerPlacement>[0]["readPoolSourceEligibility"];
+        readPoolSourceEligibility?: ExternalBrokerPoolSourceEligibilityReader;
         nowMs?: () => number;
     }> = {},
 ): void {
@@ -185,29 +188,13 @@ export function registerExternalProviderApiRoutes(
     const readCurrentBrokerPresence = dependencies.readCurrentBrokerPresence ?? ((custodianAccountId) => (
         getMachineDaemonPresenceInventory({ accountId: custodianAccountId, io: app.machineDaemonPresence })
     ));
-    const readPoolSourceEligibility = dependencies.readPoolSourceEligibility ?? (async (input) => {
-        const entries = await Promise.all(input.machineIds.map(async (machineId) => {
-            if (input.signal.aborted) return [machineId, false] as const;
-            const rpc = await app.forwardRpcForUser({
-                userId: input.custodianAccountId,
-                method: `${machineId}:${RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY}`,
-                params: {
-                    machineId,
-                    teamId: input.teamId,
-                    resourceId: input.resourceId,
-                    expectedResourceRevision: input.resourceRevision,
-                    source: input.source,
-                    scope: "source_any" as const,
-                },
-            });
-            if (!rpc.ok) return [machineId, false] as const;
-            const parsed = DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.safeParse(rpc.result);
-            return [machineId, parsed.success && parsed.data.status === "eligible"] as const;
-        }));
-        return {
-            eligibleMachineIds: new Set(entries.flatMap(([machineId, eligible]) => eligible ? [machineId] : [])),
-        };
-    });
+    const canonicalPoolSourceEligibility = createTeamCredentialPoolSourceEligibilityReader(
+        (params) => app.forwardRpcForUser(params),
+    );
+    // An external key's protocol and model are known only per request, so its
+    // Pool members are asked for any application of the source.
+    const readPoolSourceEligibility: ExternalBrokerPoolSourceEligibilityReader = dependencies.readPoolSourceEligibility
+        ?? ((input) => canonicalPoolSourceEligibility({ ...input, scope: "source_any" }));
 
     for (const [route, descriptor] of Object.entries(TEAM_CREDENTIAL_EXTERNAL_PROVIDER_HTTP_ROUTES_V1)) {
         app.route({

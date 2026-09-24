@@ -1,4 +1,5 @@
 import { isSessionFollowActionIdV1 } from '../sessions/follow/actions.js';
+import { SESSION_TOOL_ANSWER_DELIVERY_KIND } from '../sessions/messages/sessionMessageMeta.js';
 import { isSessionReadStateActionIdV1, SESSION_READ_STATE_ACTION_INPUT_SCHEMAS_V1 } from '../sessions/readState/actions.js';
 import {
   resolveActionCurrentSessionScopeFailure,
@@ -39,7 +40,7 @@ import {
   isActionEnabledByActionsSettings,
   type ActionsSettingsV1,
 } from './actionSettings.js';
-import type { ActionDefinitionV1 } from './actionDefinitionV1.js';
+import type { ActionDefinitionSummaryV1 } from './actionDefinitionV1.js';
 import {
   ActionSurfaceSchema,
   DetachedExecutionRunSendInputSchema,
@@ -97,6 +98,7 @@ import {
   projectApprovalExecutionFailureV2,
   readApprovalExecutionFailure,
 } from '../approvals/approvalExecutionFailure.js';
+import { settleApprovalRequestActionArgs } from '../approvals/approvalRequestTransition.js';
 import type { PromptRegistryConfiguredSourceV1 } from '../prompts/library/promptRegistriesV1.js';
 import { ProviderConnectionIdSchema } from '../providers/ids.js';
 import {
@@ -187,6 +189,7 @@ import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js
 import {
   PluginSessionInputAttachmentsV1Schema,
   PluginSessionInputSourceV1Schema,
+  PluginSessionUserTextAuthoredFieldSchemasV1,
   SessionInputCausalPermissionAuthorityV1Schema,
   SessionInputSourceSessionV1Schema,
   derivePluginSessionInputLocalIdV1,
@@ -2318,7 +2321,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
   const isActionEnabledByPolicy = (spec: ActionSpec, ctx: ActionExecutorContext) => policyAllowsAction(spec.id, ctx);
   const isActionEnabledBySurface = (spec: ActionSpec, ctx: ActionExecutorContext) => isActionSpecSurfacedOn(spec, ctx.surface);
   const isActionEnabled = (spec: ActionSpec, ctx: ActionExecutorContext) => isActionEnabledBySurface(spec, ctx) && isActionEnabledByPolicy(spec, ctx);
-  const listContributedActionDefinitions = (): readonly ActionDefinitionV1[] => {
+  const listContributedActionDefinitions = (): readonly ActionDefinitionSummaryV1[] => {
     try {
       return deps.listContributedActionDefinitions?.() ?? [];
     } catch {
@@ -2326,20 +2329,20 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
     }
   };
   const getContributedActionSettingsId = (
-    definition: ActionDefinitionV1,
+    definition: ActionDefinitionSummaryV1,
   ): QualifiedPluginActionId | null => {
     const identity = parseQualifiedPluginActionId(definition.id);
     return identity ? formatQualifiedPluginActionId(identity) : null;
   };
   const isContributedActionDefinitionSurfacedOn = (
-    definition: ActionDefinitionV1,
+    definition: ActionDefinitionSummaryV1,
     ctx: ActionExecutorContext,
   ): boolean => {
     const surface = parseActionSurfaceKey(ctx.surface);
     return !surface || definition.surfaces[surface] === true;
   };
   const isContributedActionDefinitionEnabled = (
-    definition: ActionDefinitionV1,
+    definition: ActionDefinitionSummaryV1,
     ctx: ActionExecutorContext,
   ): boolean => {
     const actionId = getContributedActionSettingsId(definition);
@@ -2353,7 +2356,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
   const getContributedActionDefinition = (
     id: string,
     ctx: ActionExecutorContext,
-  ): ActionDefinitionV1 | null => {
+  ): ActionDefinitionSummaryV1 | null => {
     const definition = listContributedActionDefinitions().find((candidate) => candidate.id === id) ?? null;
     return definition && isContributedActionDefinitionSurfacedOn(definition, ctx)
       ? definition
@@ -2568,10 +2571,14 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       | Readonly<{ ok: false; errorCode: string; error: string }>
     > => {
       const executedAtMs = Date.now();
+      // A definitive pre-execution failure is a settlement too: no replay is
+      // left, so it keeps the same declared input projection as every other
+      // terminal transition.
       const nextFailed: ApprovalRequest = {
         ...request,
         status: 'failed',
         updatedAtMs: Math.max(executedAtMs, request.updatedAtMs),
+        actionArgs: settleApprovalRequestActionArgs(request),
         execution: request.v === 2
           ? projectApprovalExecutionFailureV2({ request, failure, executedAtMs })
           : {
@@ -2799,9 +2806,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       ...request,
       status: exec.ok ? 'executed' : 'failed',
       updatedAtMs: executedAtMs,
-      ...(actionId !== null
-        ? { actionArgs: projectActionObservationInput(actionId, request.actionArgs) }
-        : {}),
+      actionArgs: settleApprovalRequestActionArgs(request),
       execution: persistedExec.ok
         ? { executedAtMs, ok: true, result: persistedExec.result }
         : request.v === 2
@@ -3415,7 +3420,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
               ...decision.request,
               status: decision.decision === 'reject' ? 'rejected' : 'canceled',
               updatedAtMs: nowRejected,
-              actionArgs: projectActionObservationInput(actionId, decision.request.actionArgs),
+              actionArgs: settleApprovalRequestActionArgs(decision.request),
               ...(decision.decision === 'reject'
                 ? { decision: { kind: 'reject' as const, decidedAtMs: nowRejected } }
                 : {}),
@@ -4579,12 +4584,25 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             if (!contributedDefinition) {
               return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
             }
-            return isContributedActionDefinitionEnabled(contributedDefinition, ctx)
-              ? {
-                  ok: true,
-                  result: { actionSpec: projectActionDefinitionForExternalDiscovery(contributedDefinition) },
-                }
-              : actionDisabled(null);
+            if (!isContributedActionDefinitionEnabled(contributedDefinition, ctx)) {
+              return actionDisabled(null);
+            }
+            // Contributed listings carry no schemas; read this one on demand.
+            const schemas = await deps.readContributedActionSchemas?.(requestedId, ctx.signal) ?? null;
+            if (!schemas) {
+              return { ok: false, errorCode: 'unavailable', error: 'unavailable' };
+            }
+            return {
+              ok: true,
+              result: {
+                actionSpec: projectActionDefinitionForExternalDiscovery({
+                  ...contributedDefinition,
+                  kindVersion: 1,
+                  inputSchema: { ...schemas.inputSchema },
+                  ...(schemas.outputSchema === undefined ? {} : { outputSchema: { ...schemas.outputSchema } }),
+                }),
+              },
+            };
           }
         }
 
@@ -4595,7 +4613,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           let optionsSourceId = directOptionsSourceId;
 
           if (actionIdRaw && fieldPath) {
-            let contributedDefinition: ActionDefinitionV1 | null = null;
+            let contributedDefinition: ActionDefinitionSummaryV1 | null = null;
             try {
               getActionSpec(actionIdRaw as ActionId);
             } catch {
@@ -5891,6 +5909,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           if (parsedAttachments && (actionCaller.kind !== 'plugin' || !parsedAttachments.success)) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
+          const parsedToolAnswerDelivery = data.toolAnswerDelivery === undefined
+            ? null
+            : PluginSessionUserTextAuthoredFieldSchemasV1.toolAnswerDelivery.safeParse(data.toolAnswerDelivery);
+          if (parsedToolAnswerDelivery && (actionCaller.kind !== 'plugin' || !parsedToolAnswerDelivery.success)) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
           if (
             actionCaller.kind === 'plugin'
             && (
@@ -5933,6 +5957,14 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                   displayText: structuredSubagentLaunch.displayText,
                   messageMeta: structuredSubagentLaunch.messageMeta,
                 }
+              : {}),
+            ...(actionCaller.kind === 'plugin' && parsedToolAnswerDelivery?.success && parsedToolAnswerDelivery.data
+              ? { messageMeta: {
+                  happier: {
+                    kind: SESSION_TOOL_ANSWER_DELIVERY_KIND,
+                    payload: { toolCallId: parsedToolAnswerDelivery.data.toolCallId },
+                  },
+                } }
               : {}),
             requestedAction,
             actionCaller,
@@ -7105,7 +7137,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...existing,
             status: 'rejected',
             updatedAtMs: now,
-            actionArgs: projectActionObservationInput(existing.actionId, existing.actionArgs),
+            actionArgs: settleApprovalRequestActionArgs(existing),
             decision: { kind: 'reject', decidedAtMs: now },
           };
           const updated = await deps.approvalsUpdate({ artifactId, request: nextRejected, serverId: effectiveServerId });

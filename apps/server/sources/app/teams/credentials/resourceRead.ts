@@ -509,6 +509,7 @@ async function projectSummary(
             allMembersDeliveryMode: row.allMembersDeliveryMode,
             groupGrants,
             memberGrants,
+            sessionUsePolicy: row.sessionUsePolicy,
         }),
         activeUsageLimitCount: listFacts.activeUsageLimitCount ?? 0,
         readiness: status.readiness,
@@ -699,6 +700,7 @@ async function projectCatalogEntryInTx(
         allMembersDeliveryMode: row.allMembersDeliveryMode,
         groupGrants: audience.groupGrants,
         memberGrants: audience.memberGrants,
+        sessionUsePolicy: row.sessionUsePolicy,
     });
     const entitlement = prefetchedEntitlement ?? await resolveTeamCredentialEntitlementInTx(tx, { resourceId: row.id, accountId: actorAccountId });
     if (!entitlement.ok) {
@@ -781,6 +783,10 @@ async function projectCatalogEntryInTx(
                 : readiness.kind === "limit_reached" ? "retry" as const
                     : "choose_another_resource" as const;
     let directMaterialState: "revoked" | "never_delivered" | "preparing" | "current" | "stale" = "revoked";
+    // Retained first-disclosure history, kept apart from readiness: a
+    // custodian prepares a tuple before the recipient ever opens it, so
+    // `current` alone says nothing about what was already disclosed.
+    let directDeliveryRecorded = false;
     let currentDirectReferences: readonly Readonly<{
         sourceMemberKey: string;
         sourceVersion: string;
@@ -800,6 +806,7 @@ async function projectCatalogEntryInTx(
             }),
         ]);
         currentDirectReferences = material.current;
+        directDeliveryRecorded = wasDirectlyDelivered;
         directMaterialState = material.current.length > 0
             ? "current"
             : material.materialCount > 0 || wasDirectlyDelivered
@@ -828,6 +835,7 @@ async function projectCatalogEntryInTx(
         mayBroker: entitlement.mayBroker,
         mayReceiveDirect: entitlement.mayReceiveDirect,
         directMaterialState,
+        ...(directDeliveryRecorded ? { directDeliveryRecorded: true } : {}),
         sessionUsePolicy: policy.success ? policy.data : null,
         providerModels: [],
         // A reached allowance does not unselect the route: the recipient keeps the

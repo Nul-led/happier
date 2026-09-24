@@ -54,12 +54,15 @@ export function resolveActionSettingsEntryStatusSummary(params: Readonly<{
         });
 
         if (controlState.kind === 'approval') {
-            if (controlState.value === 'ask_first') {
-                summary.askFirstCount += 1;
-            } else if (controlState.value === 'allowed' || controlState.value === 'default') {
-                summary.allowedCount += 1;
-            } else {
+            // The policy's own answer, not a status-local reading of `default`:
+            // an inherited default confirms on Agent, MCP and CLI and does not on
+            // the in-app surface, and this row is where a person reads that.
+            if (controlState.value === 'off') {
                 summary.offCount += 1;
+            } else if (controlState.approvalRequiredByPolicy) {
+                summary.askFirstCount += 1;
+            } else {
+                summary.allowedCount += 1;
             }
             continue;
         }

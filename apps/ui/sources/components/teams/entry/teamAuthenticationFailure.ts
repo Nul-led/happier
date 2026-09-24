@@ -57,6 +57,23 @@ export function presentTeamAuthenticationFailure(
 }
 
 /**
+ * The presentation for a reachable, current Home that has Teams turned off.
+ *
+ * The Home's entry projection deliberately does not enumerate this (its
+ * `entry_not_available` reveals nothing), while its own invitation preview
+ * declares `feature_unavailable` outright. One owner states that fact so the
+ * join surface and the preview details cannot describe it differently, and so
+ * an operator-disabled Home never reads as "this Team does not exist".
+ */
+export function presentTeamsDisabledOnHome(): TeamAuthenticationFailurePresentation {
+    return {
+        kind: 'unavailable',
+        title: t('teams.unavailable.title'),
+        body: t('teams.unavailable.disabled'),
+    };
+}
+
+/**
  * The §10 presentation for a Team or invitation destination the Home answered
  * `unavailable`. `entry_not_available` is the Home's deliberate non-enumerating
  * answer and returns `null` so the destination keeps its opaque "not found"

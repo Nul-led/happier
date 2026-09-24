@@ -59,8 +59,12 @@ function readPublicSignupProvisioningDenyConfigFromEnv(env: NodeJS.ProcessEnv): 
     };
 }
 
-function isDeniedActionModeAllowed(modes: ReadonlySet<PublicProvisioningActionMode>, mode: string): mode is PublicProvisioningActionMode {
-    const normalized = normalizeMode(mode);
+function isDeniedActionMode(modes: ReadonlySet<PublicProvisioningActionMode>, mode: string): boolean {
+    const value = mode.trim().toLowerCase();
+    // A combined action offers both branches, so a denied branch denies the
+    // whole action: it cannot be partly refused by omission.
+    if (value === "either") return modes.size > 0;
+    const normalized = normalizeMode(value);
     return Boolean(normalized && modes.has(normalized));
 }
 
@@ -80,7 +84,7 @@ export function shouldDenyPublicSignupProvisioningAction(params: Readonly<{
 
     const normalizedMethodId = normalizeMethodId(params.methodId);
     if (!config.methodIds.has("*") && !config.methodIds.has(normalizedMethodId)) return false;
-    if (!isDeniedActionModeAllowed(config.modes, params.mode)) return false;
+    if (!isDeniedActionMode(config.modes, params.mode)) return false;
     if (!isDeniedRequestIpClassAllowed(config.ipClasses, params.requestIp)) return false;
 
     return true;
@@ -102,14 +106,16 @@ export function applyPublicSignupProvisioningRestrictionsToFeaturesPayload(param
         ...method,
         actions: Array.isArray(method.actions)
             ? method.actions.map((action) => {
-                  const actionId = String(action?.id ?? "").trim().toLowerCase();
-                  const actionMode = String(action?.mode ?? "").trim().toLowerCase();
-                  if (
-                      actionId !== "provision" ||
-                      (!config.methodIds.has("*") && !config.methodIds.has(normalizeMethodId(String(method?.id ?? "")))) ||
-                      !isDeniedActionModeAllowed(config.modes, actionMode) ||
-                      !isDeniedRequestIpClassAllowed(config.ipClasses, params.requestIp)
-                  ) {
+                  // The published catalog answers with the same predicate the
+                  // finalizers admit on; a second copy here would offer actions
+                  // every finalizer then rejects.
+                  if (String(action?.id ?? "").trim().toLowerCase() !== "provision") return action;
+                  if (!shouldDenyPublicSignupProvisioningAction({
+                      env: params.env,
+                      requestIp: params.requestIp,
+                      methodId: String(method?.id ?? ""),
+                      mode: String(action?.mode ?? ""),
+                  })) {
                       return action;
                   }
                   return { ...action, enabled: false };

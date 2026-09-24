@@ -87,6 +87,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSes
 import {
     registerComposerPresentationTarget,
     registerSessionComposerPresentationTarget,
+    registerSessionPresentationOnlyTarget,
 } from './sessionComposerPresentationTargets';
 import { publishPresentationNotice, readPresentationNotice, retirePresentationNotice } from './presentationNotices';
 import { CurrentSessionPresentationRuntime } from './CurrentSessionPresentationRuntime';
@@ -790,6 +791,83 @@ describe('CurrentSessionPresentationRuntime', () => {
             expect(sessionRpc).not.toHaveBeenCalled();
             expect(loadSessionDrafts(persistentSessionScope)[sessionId]).toBe('persistent before');
             expect(pendingReplace).not.toHaveBeenCalled();
+        } finally {
+            unregister();
+        }
+    });
+
+    it('binds a presented composer-less surface and applies its presentation command without a mounted Chat', async () => {
+        // Cold direct entry to the full-screen Board or Companion: no Chat composer
+        // was ever mounted for this Session, only the presented surface's adapter.
+        const sessionId = 'session-runtime-cold-surface';
+        const address = { serverId: persistentSessionScope.serverId, sessionId } as const;
+        activeScopeState.value = persistentSessionScope;
+        const applyIntent = vi.fn(() => ({ status: 'applied' as const }));
+        let presented = true;
+        const unregister = registerSessionPresentationOnlyTarget(address, {
+            applySessionPresentationIntent: applyIntent,
+            isCurrent: () => presented,
+        });
+        const withCommand = (command: Record<string, unknown>) => storage.setState((state) => ({
+            ...state,
+            deletedSessionIds: {},
+            sessions: {
+                [sessionId]: createSessionFixture({
+                    id: sessionId,
+                    serverId: address.serverId,
+                    active: true,
+                    agentState: {
+                        [CURRENT_SESSION_PRESENTATION_AGENT_STATE_KEY]: {
+                            v: 1, hostNonce: 'host-1', revision: 1, statuses: [], widgets: [], command,
+                        },
+                    },
+                }),
+            },
+        }));
+        withCommand({ id: 'return-1', clientId: 'client-1', kind: 'presentation.apply', intent: { kind: 'chat.return' } });
+        sessionRpc.mockImplementation(async (input: Readonly<{ sessionId: string; method: string }>) => {
+            if (input.method === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD) {
+                return { status: 'bound', sessionId: input.sessionId, hostNonce: 'host-1', revision: 1 };
+            }
+            if (input.method === CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD) return undefined;
+            if (input.method === CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD) return undefined;
+            throw new Error(`Unexpected session presentation RPC: ${input.method}`);
+        });
+        setFocusedSessionId(sessionId, address.serverId);
+
+        try {
+            await renderScreen(React.createElement(CurrentSessionPresentationRuntime));
+            await flushHookEffects({ cycles: 8, turns: 3 });
+
+            expect(sessionRpc).toHaveBeenCalledWith(expect.objectContaining({
+                method: CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+                payload: expect.objectContaining({ draftRevision: 0 }),
+            }));
+            expect(applyIntent).toHaveBeenCalledTimes(1);
+            expect(applyIntent).toHaveBeenCalledWith({ kind: 'chat.return' });
+            expect(sessionRpc).toHaveBeenCalledWith(expect.objectContaining({
+                method: CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
+                payload: expect.objectContaining({ commandId: 'return-1', result: { status: 'applied' } }),
+            }));
+
+            // A composer command has no composer to act on here: one truthful refusal.
+            withCommand({
+                id: 'replace-1', clientId: 'client-1', kind: 'composer.replace',
+                transaction: { expectedRevision: 0, operations: [{ kind: 'text.set', text: 'nope' }] },
+            });
+            await flushHookEffects({ cycles: 8, turns: 3 });
+            expect(sessionRpc).toHaveBeenCalledWith(expect.objectContaining({
+                method: CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
+                payload: expect.objectContaining({ commandId: 'replace-1', result: { status: 'composerUnavailable' } }),
+            }));
+
+            // Leaving the surface retires the binding.
+            presented = false;
+            storage.setState((state) => ({ ...state }));
+            await flushHookEffects({ cycles: 8, turns: 3 });
+            expect(sessionRpc).toHaveBeenCalledWith(expect.objectContaining({
+                method: CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD,
+            }));
         } finally {
             unregister();
         }

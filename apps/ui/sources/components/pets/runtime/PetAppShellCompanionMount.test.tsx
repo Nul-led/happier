@@ -174,6 +174,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         ...settingsState.local,
     });
     const createStorageSnapshot = (): StorageState => ({
+        ...actual.storage.getInitialState(),
         sessionMessages: {},
         sessionPending: {},
         sessionListRowsByServerId: {
@@ -187,7 +188,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         ordinarySessionListMembershipByServerId: {
             'server-a': activityState.sessions.map((session) => session.id),
         },
-    }) as StorageState;
+    });
     const storage = Object.assign(
         (selector?: (state: StorageState) => unknown) => {
             const snapshot = createStorageSnapshot();

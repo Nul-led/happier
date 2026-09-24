@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { AppState } from 'react-native';
 import type { IdentityConnectionTestDiagnosticsV1 } from '@happier-dev/protocol';
+import type { TeamIdentityConnectionV1 } from '@happier-dev/protocol/teams';
 
 import { runTeamIdentityProviderTestReturn } from '@/components/settings/home/identity/identityProviderTestReturn';
 import { useManagedIdentityProviders } from '@/components/settings/home/identity/useManagedIdentityProviders';
@@ -65,6 +67,18 @@ const TeamManagedProviderEditItem = React.memo(function TeamManagedProviderEditI
     />;
 });
 
+/**
+ * A WorkOS connection whose organization exists but whose SSO setup has not been
+ * confirmed yet: the Admin Portal may have just finished it, so arriving on the
+ * route is the moment to check. A connected row has nothing to check.
+ */
+function isWorkosSetupAwaitingCheck(connection: TeamIdentityConnectionV1): boolean {
+    return connection.provider.kind === 'workos_sso'
+        && connection.externalReference.kind === 'workos_sso'
+        && connection.externalReference.organizationId !== null
+        && (connection.state === 'setting_up' || connection.state === 'needs_attention');
+}
+
 const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetail(props: Readonly<{
     scope: Parameters<typeof useIdentityAdministration>[0];
     teamId: string;
@@ -93,7 +107,12 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     }, []);
     const [testDiagnostics, setTestDiagnostics] = React.useState<IdentityConnectionTestDiagnosticsV1 | null>(null);
     const [workosCandidates, setWorkosCandidates] = React.useState<readonly Readonly<{ connectionId: string; displayName: string; strategy: string; status: string }>[]>([]);
-    const [workosReturnRefreshing, setWorkosReturnRefreshing] = React.useState(false);
+    // The WorkOS Admin Portal returns either to the original screen (foreground)
+    // or as a fresh document on this exact route (teams-lane-03/06 §7.4(5)-(6)).
+    // Both refresh the authoritative projection first and then check setup; only
+    // the portal intent reports a refusal, because an ordinary route focus of a
+    // connection that has nothing to check must stay silent.
+    const [workosReturn, setWorkosReturn] = React.useState<'portal' | 'route' | null>(null);
     const portalReturnController = React.useRef(createWorkosPortalReturnController()).current;
     const handledTestReturnRef = React.useRef<string | null>(null);
     const connection = state.kind === 'ready'
@@ -171,10 +190,20 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
         } finally { setPending(null); }
     }, [client, connection, props.teamId, refresh, reportActionFailure]);
 
+    const routeFocusedRef = React.useRef(false);
+    useFocusEffect(React.useCallback(() => {
+        const firstFocus = !routeFocusedRef.current;
+        routeFocusedRef.current = true;
+        setWorkosReturn((current) => current ?? 'route');
+        // The first focus is the mount, whose projection request is already in
+        // flight; every later focus asks for a fresh exact-Team projection.
+        if (!firstFocus) refresh();
+    }, [refresh]));
+
     React.useEffect(() => {
         const reconcileOnReturn = () => {
             if (!portalReturnController.consumeReturn()) return;
-            setWorkosReturnRefreshing(true);
+            setWorkosReturn('portal');
             refresh();
         };
         const appStateSubscription = AppState.addEventListener('change', (nextState) => {
@@ -189,15 +218,19 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     }, [portalReturnController, refresh]);
 
     React.useEffect(() => {
-        if (!workosReturnRefreshing) return;
+        if (!workosReturn) return;
         if (state.kind === 'loading' || (state.kind === 'ready' && state.refreshing)) return;
-        setWorkosReturnRefreshing(false);
-        if (state.kind === 'ready' && !state.stale && connection?.allowedActions.includes('teams.identity.workos.reconcile')) {
-            void reconcileWorkos();
-        } else {
-            reportActionFailure('workos_reconcile_unavailable');
+        setWorkosReturn(null);
+        const canReconcile = state.kind === 'ready'
+            && !state.stale
+            && connection?.allowedActions.includes('teams.identity.workos.reconcile') === true;
+        if (workosReturn === 'portal') {
+            if (canReconcile) void reconcileWorkos();
+            else reportActionFailure('workos_reconcile_unavailable');
+            return;
         }
-    }, [connection, reconcileWorkos, state, workosReturnRefreshing]);
+        if (canReconcile && connection && isWorkosSetupAwaitingCheck(connection)) void reconcileWorkos();
+    }, [connection, reconcileWorkos, state, workosReturn]);
 
     React.useEffect(() => {
         const testReturn = props.testReturn;
@@ -248,6 +281,8 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     const testStatus = identityConnectionTestStatus(connection);
     const can = (actionId: (typeof connection.allowedActions)[number]) => connection.allowedActions.includes(actionId);
     const projectionCurrent = !state.refreshing && !state.stale;
+    const workosReturnRefreshing = workosReturn === 'portal'
+        || (workosReturn === 'route' && connection !== null && isWorkosSetupAwaitingCheck(connection));
     const mutationBusy = pending !== null || workosReturnRefreshing || !projectionCurrent;
     const settle = (result: IdentityAdministrationActionResult<unknown>) => {
         if (result.ok) {

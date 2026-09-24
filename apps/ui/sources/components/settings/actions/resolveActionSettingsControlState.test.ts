@@ -8,7 +8,12 @@ type ActionSettingsApprovalControlValue = 'off' | 'default' | 'ask_first' | 'all
 type ActionSettingsBooleanControlValue = 'off' | 'on';
 type ActionSettingsTargetControlKind = 'approval' | 'switch' | 'unavailable';
 type ActionSettingsTargetControlState =
-    | Readonly<{ kind: 'approval'; value: ActionSettingsApprovalControlValue; approvalSurface: keyof ActionSurfaces }>
+    | Readonly<{
+        kind: 'approval';
+        value: ActionSettingsApprovalControlValue;
+        approvalSurface: keyof ActionSurfaces;
+        approvalRequiredByPolicy: boolean;
+    }>
     | Readonly<{ kind: 'switch'; value: ActionSettingsBooleanControlValue }>
     | Readonly<{ kind: 'unavailable'; value: 'off' }>;
 
@@ -58,6 +63,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             kind: 'approval',
             value: 'default',
             approvalSurface: 'mcp',
+            approvalRequiredByPolicy: false,
         });
     });
 
@@ -117,10 +123,49 @@ describe('resolveActionSettingsTargetControlState', () => {
             targetId: 'agent',
         });
 
+        // The tab stays on the inherited `default`; what the row must not do is
+        // leave that default unstated, because on `agent` it really does confirm.
         expect(state).toEqual({
             kind: 'approval',
-            value: 'ask_first',
+            value: 'default',
             approvalSurface: 'agent',
+            approvalRequiredByPolicy: true,
+        });
+    });
+
+    it('reports assignment confirmation on the app as required by default, and a waiver as allowed', () => {
+        const resolveControlState = expectResolveControlStateExport();
+
+        // The picker has no confirmation host of its own, so the canonical policy
+        // requires confirmation by default and routes it to an approval
+        // (teams-lane-04/11-responsible-assignment.md §7.1). A person may waive it.
+        expect(resolveControlState({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+        })).toEqual({
+            kind: 'approval',
+            value: 'default',
+            approvalSurface: 'ui',
+            approvalRequiredByPolicy: true,
+        });
+
+        const waived = expectApplyControlStateExport()({
+            settings: DEFAULT_ACTIONS_SETTINGS_V1,
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+            value: 'allowed',
+        });
+
+        expect(resolveControlState({
+            settings: waived,
+            actionId: 'session.responsibility.set',
+            targetId: 'contextual_ui',
+        })).toEqual({
+            kind: 'approval',
+            value: 'allowed',
+            approvalSurface: 'ui',
+            approvalRequiredByPolicy: false,
         });
     });
 
@@ -153,6 +198,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             kind: 'approval',
             value: 'off',
             approvalSurface: 'agent',
+            approvalRequiredByPolicy: true,
         });
     });
 

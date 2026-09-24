@@ -1,32 +1,39 @@
 import type { IdentityConnectionTestDiagnosticsV1 } from '@happier-dev/protocol';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import {
+    clearPendingAdministrationOAuth,
+    consumePendingAdministrationOAuth,
+    setPendingAdministrationOAuth,
+    type PendingIdentityProviderTestRecord,
+} from '@/sync/domains/pending/pendingAdministrationOAuth';
 
-export type PendingIdentityProviderTest = Readonly<{
-    kind: 'home';
-    serverId: string;
-    accountId: string;
-    providerId: string;
-    attemptId: string;
-    returnTo: string;
-}>;
+export type PendingIdentityProviderTest = PendingIdentityProviderTestRecord;
 
-const pendingByProviderId = new Map<string, PendingIdentityProviderTest>();
-
-/** Route-local, non-secret custody for an immediate OAuth test return. */
+/**
+ * Non-secret custody for an OAuth test return, held by the shared administration handoff owner.
+ *
+ * The authorize URL opens a new document on web (`openExternalUrl` → `window.open(…, 'noopener')`),
+ * so this cannot live in module state: the return route runs with its own module registry and would
+ * find nothing. The owner is the same durable pending-intent custody the rest of the app uses.
+ */
 export function recordPendingIdentityProviderTest(pending: PendingIdentityProviderTest): void {
     returnByProviderId.delete(pending.providerId);
-    pendingByProviderId.set(pending.providerId, Object.freeze({ ...pending }));
+    setPendingAdministrationOAuth({ kind: 'identity_provider_test', test: { ...pending } });
 }
 
 export function consumePendingIdentityProviderTest(providerId: string): PendingIdentityProviderTest | null {
-    const pending = pendingByProviderId.get(providerId) ?? null;
-    if (pending) pendingByProviderId.delete(providerId);
-    return pending;
+    return consumePendingAdministrationOAuth(
+        'identity_provider_test',
+        (pending) => pending.test.providerId === providerId,
+    )?.test ?? null;
 }
 
 export function discardPendingIdentityProviderTest(providerId: string): void {
-    pendingByProviderId.delete(providerId);
+    consumePendingAdministrationOAuth(
+        'identity_provider_test',
+        (pending) => pending.test.providerId === providerId,
+    );
 }
 
 export type IdentityProviderTestReturnPayload =
@@ -104,7 +111,7 @@ export function consumeIdentityProviderTestReturn(input: Readonly<{
 }
 
 export function resetPendingIdentityProviderTestsForTests(): void {
-    pendingByProviderId.clear();
+    clearPendingAdministrationOAuth();
     returnByProviderId.clear();
 }
 

@@ -20,8 +20,6 @@ import {
 const payload = {
   v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
   teamId: 'team', resourceId: 'resource',
-  expectedResourceRevision: 3,
-  modelId: 'gpt-5',
   sourceRevision: 'source-revision-3',
   initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
   target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
@@ -55,6 +53,11 @@ describe('Provider broker authority V1', () => {
       expect(decodeProviderBrokerAuthorityV1(encodeProviderBrokerAuthorityV1(grant))).toEqual(grant);
       expect(IrohProviderBrokerHandshakeV1Schema.parse({ v: 1, kind: 'provider_broker', authority: grant }).authority).toEqual(grant);
     }
+  });
+
+  it('signs no model id: the model is a current request fact (L10/04:270)', () => {
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse(payload).success).toBe(true);
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse({ ...payload, modelId: 'gpt-5' }).success).toBe(false);
   });
 
   it('requires an exact occurrence on signed Run authority while open resolves it daemon-side', () => {
@@ -158,7 +161,10 @@ describe('Provider broker authority V1', () => {
 
   it('rejects unknown policy, plumbing and ambiguous identity at every boundary', () => {
     const invalidPayloads = [
-      ...['resourceRevision', 'port', 'secret'].map((key) => ({ ...payload, [key]: 1 })),
+      // The resource revision is a mutable policy fact rechecked online on
+      // every request; the signed operation authority never carries it
+      // (`04-private-iroh-broker-transport.md:272`).
+      ...['resourceRevision', 'expectedResourceRevision', 'port', 'secret'].map((key) => ({ ...payload, [key]: 1 })),
       { ...payload, aud: 'happier-daemon-route-grant' },
       { ...payload, expiresAt: payload.issuedAt },
       { ...payload, initiator: { ...payload.initiator, accountId: '' } },

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { OperationUpdateRequiredV1Schema } from '../compat/operationUpdateRequiredV1.js';
+import { SessionAccessErrorCodeV1Schema } from './access/sessionAccessOperationsV1.js';
 
 import {
   CONNECTED_SERVICE_UX_DIAGNOSTIC_ACTIONS,
@@ -106,6 +107,11 @@ export const SPAWN_SESSION_ERROR_DETAIL_KINDS = {
    * placement and must terminate the losing creation attempt.
    */
   SESSION_CREATION_CORRESPONDENCE_CONFLICT: 'session_creation_correspondence_conflict',
+  /**
+   * The Home's typed no-effect refusal of access-bearing creation (for example
+   * Session sharing off). It carries the protocol-owned Session-access code only.
+   */
+  SESSION_CREATION_ACCESS_REFUSED: 'session_creation_access_refused',
   /** A strict no-effect initial-access refusal requiring a newer server or daemon. */
   SESSION_INITIAL_ACCESS_UPDATE_REQUIRED: 'update_required',
 } as const;
@@ -168,10 +174,23 @@ export type SessionCreationCorrespondenceConflictSpawnErrorDetail = z.infer<
   typeof SessionCreationCorrespondenceConflictSpawnErrorDetailSchema
 >;
 
+/**
+ * Safe terminal result emitted when the Home's atomic create refused the
+ * requested initial access with a protocol-owned Session-access code.
+ */
+export const SessionCreationAccessRefusedSpawnErrorDetailSchema = z.object({
+  kind: z.literal(SPAWN_SESSION_ERROR_DETAIL_KINDS.SESSION_CREATION_ACCESS_REFUSED),
+  code: SessionAccessErrorCodeV1Schema,
+}).strict();
+export type SessionCreationAccessRefusedSpawnErrorDetail = z.infer<
+  typeof SessionCreationAccessRefusedSpawnErrorDetailSchema
+>;
+
 /** Exact no-effect creation refusals carried to a daemon spawn waiter. */
 export const SessionCreationTerminalSpawnErrorDetailSchema = z.union([
   SessionCreationOrganizationInvalidSpawnErrorDetailSchema,
   SessionCreationCorrespondenceConflictSpawnErrorDetailSchema,
+  SessionCreationAccessRefusedSpawnErrorDetailSchema,
   OperationUpdateRequiredV1Schema.extend({
     operation: z.literal('session.spawn_new'),
     component: z.enum(['server', 'daemon']),

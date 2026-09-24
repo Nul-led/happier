@@ -54,6 +54,7 @@ import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDeliv
 import { isPrismaUniqueConstraintError } from "@/storage/db";
 import type { ResolveAuthEmailApplicationLinkTarget } from "@/app/auth/email/nativeAuthEmailOperations";
 import { isE2eePasswordEnvelopeBoundToAccount } from "@/app/auth/password/e2eePasswordCredentialAccountBinding";
+import { shouldDenyPublicSignupProvisioningAction } from "@/app/integrations/publicUrl/publicSignupProvisioningPolicy";
 
 export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly<{
     isEmailDeliveryReady?: () => boolean;
@@ -98,6 +99,7 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
         },
     }, async (request, reply) => {
         const body = request.body;
+        const requestIp = request.ip;
         const normalized = normalizeVerifiedEmail(body.email);
         if (!normalized || !body.account || !["plain", "e2ee"].includes(body.account.mode)) return reply.code(401).send({ error: "authentication_failed" });
         const admissionTargetsTeam = body.admission.kind === "team_invitation"
@@ -214,6 +216,17 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
                 }
                 if (nativeProofOperation.consumer.kind === "team_invitation") {
                     teamId = nativeProofOperation.consumer.teamId;
+                } else if (shouldDenyPublicSignupProvisioningAction({
+                    // Invitation admission is exempt from the public-signup
+                    // restriction in every finalizer; ordinary self-service
+                    // creation answers to it here exactly as the Key Challenge
+                    // finalizer does.
+                    env: process.env,
+                    requestIp,
+                    methodId: "email_password",
+                    mode: body.account.mode === "plain" ? "keyless" : "keyed",
+                })) {
+                    return { error: "method_not_available" as const };
                 }
             } else return null;
             const operation = nativeProofOperation ?? (nativeProofToken

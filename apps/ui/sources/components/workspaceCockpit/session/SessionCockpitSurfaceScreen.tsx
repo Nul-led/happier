@@ -51,6 +51,7 @@ import { SessionBoardPane } from '@/components/sessions/board/SessionBoardPane';
 import { useSessionPluginRuntime } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { useSessionBoardPrimaryMountResolver } from '@/components/sessions/board/useSessionBoardPrimaryMountHost';
 import { SessionCompanionScreen } from '@/components/sessions/companion/SessionCompanionScreen';
+import { SessionPresentedSurfacePresentationTarget } from '@/components/sessions/companion/presentation/SessionPresentedSurfacePresentationTarget';
 import { SessionCompanionRevealPortProvider } from '@/components/sessions/companion/presentation/SessionCompanionRevealPort';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
@@ -237,12 +238,10 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     const scopedLaunchFacts = React.useMemo<PluginSurfaceScopedLaunchFacts>(() => Object.freeze({
         serverId: pluginProjection.serverId ?? null,
         machineId: pluginProjection.machineId ?? null,
-        generation: pluginProjection.pluginUiProjection?.generation ?? null,
         interactionEnabled: pluginProjection.interactionEnabled === true,
     }), [
         pluginProjection.interactionEnabled,
         pluginProjection.machineId,
-        pluginProjection.pluginUiProjection?.generation,
         pluginProjection.serverId,
     ]);
     const selectedRightPluginDestination = pane.scopeState?.right.selectedDestination?.kind === 'plugin'
@@ -328,6 +327,39 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     }, [setFocusedBoardItemId, switchSurface]);
 
     const [openWorkStateRequestKey, setOpenWorkStateRequestKey] = React.useState<number | null>(null);
+
+    // A full-screen Board or Companion is presented without Chat's composer, so it
+    // publishes its own current-UI presentation target. Its ports are this Cockpit's
+    // own surface navigation: an Agent's `chat.return` really returns to Chat here.
+    const presentBoardSurface = React.useCallback(() => {
+        if (props.surface === 'board') return { status: 'unchanged' as const };
+        switchSurface('board');
+        return { status: 'applied' as const };
+    }, [props.surface, switchSurface]);
+    const presentBoardItemSurface = React.useCallback((itemId: string) => {
+        revealMobileBoardItem(itemId);
+        return { status: 'applied' as const };
+    }, [revealMobileBoardItem]);
+    const presentChatSurface = React.useCallback(() => {
+        switchSurface('chat');
+        return { status: 'applied' as const };
+    }, [switchSurface]);
+    const presentCompanionSurface = React.useCallback(() => {
+        if (props.surface === 'companion') return { status: 'unchanged' as const };
+        openMobileCompanion();
+        return { status: 'applied' as const };
+    }, [openMobileCompanion, props.surface]);
+    const presentedSurfaceTarget = sessionAddress ? (
+        <SessionPresentedSurfacePresentationTarget
+            sessionId={props.sessionId}
+            serverId={sessionAddress.serverId}
+            presented={isFocused}
+            openBoard={presentBoardSurface}
+            revealBoardItem={presentBoardItemSurface}
+            returnToChat={presentChatSurface}
+            openFullSurface={presentCompanionSurface}
+        />
+    ) : null;
 
     // The cockpit's only exit from a fullscreen surface back to the transcript. The
     // navigation surface uses it both as its close affordance (button / Escape) and as the
@@ -624,6 +656,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                         revealAfterMutation={openMobileCompanion}
                         revealBoardItem={revealMobileBoardItem}
                     >
+                        {presentedSurfaceTarget}
                         <SessionBoardPane
                             sessionId={props.sessionId}
                             {...(session ? { session } : {})}
@@ -649,7 +682,8 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
     if (props.surface === 'companion') {
         return renderSessionChrome(
             <SessionCockpitFullscreenSurface screenTestID="session-companion-screen" safeAreaPadding={false}>
-                {sessionAddress ? (
+                {sessionAddress ? (<>
+                    {presentedSurfaceTarget}
                     <SessionCompanionScreen
                         sessionId={props.sessionId}
                         address={sessionAddress}
@@ -658,7 +692,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                         summaryDestinations={companionSummaryDestinations}
                         resolvePrimaryHost={resolveBoardPrimaryHost}
                     />
-                ) : <SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}
+                </>) : <SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}
             </SessionCockpitFullscreenSurface>,
         );
     }

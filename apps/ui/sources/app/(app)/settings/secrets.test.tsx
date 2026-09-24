@@ -20,6 +20,8 @@ const testState = vi.hoisted(() => ({
         decryptDataKeyEnvelope: (envelope: string) => Promise<Uint8Array | null>;
     }>) => undefined),
     encryption: null as null | Readonly<{ decryptEncryptionKey: (value: string, scope: unknown) => Promise<Uint8Array | null> }>,
+    plaintextStorageEnabled: true,
+    featureRequests: [] as unknown[][],
 }));
 
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -68,6 +70,12 @@ vi.mock('@/sync/store/settingsWriters', () => ({
 }));
 vi.mock('@/sync/store/hooks', () => ({ useSettingsVersion: () => 1 }));
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({ getSyncSingleton: () => ({ encryption: testState.encryption }) }));
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: (...args: unknown[]) => {
+        testState.featureRequests.push(args);
+        return args[0] === 'encryption.plaintextStorage' ? testState.plaintextStorageEnabled : false;
+    },
+}));
 vi.mock('@react-navigation/native', async () => {
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
     return createReactNavigationNativeMock();
@@ -85,6 +93,21 @@ vi.mock('@/modal', () => ({
     Modal: { alert: testState.modalAlert, confirm: testState.modalConfirm, prompt: testState.modalPrompt },
 }));
 
+function sharedOwnerEntry(encryptionMode: 'plain' | 'e2ee') {
+    return {
+        ref: 'happier:shared-secret:v1:resource-a',
+        source: 'shared_resource',
+        relationship: 'owner',
+        name: 'Shared token',
+        kind: 'token',
+        encryptionMode,
+        ownerAccountId: 'account-a',
+        revision: 3,
+        materialStatus: 'ready',
+        capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+    };
+}
+
 describe('SecretsSettingsScreen shared feature decision', () => {
     beforeEach(() => {
         testState.sharedEnabled = false;
@@ -100,6 +123,8 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort.mockReset();
         testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort.mockResolvedValue(undefined);
         testState.encryption = null;
+        testState.plaintextStorageEnabled = true;
+        testState.featureRequests = [];
     });
 
     it('opens the grant picker for a still-personal secret and converts nothing until it is saved', async () => {
@@ -203,31 +228,20 @@ describe('SecretsSettingsScreen shared feature decision', () => {
     // protection needs no such disclosure.
     it('confirms the trust change before an end-to-end encrypted secret becomes Home-managed', async () => {
         testState.sharedEnabled = true;
-        const sharedEntry = (encryptionMode: 'plain' | 'e2ee') => ({
-            ref: 'happier:shared-secret:v1:resource-a',
-            source: 'shared_resource',
-            relationship: 'owner',
-            name: 'Shared token',
-            kind: 'token',
-            encryptionMode,
-            ownerAccountId: 'account-a',
-            revision: 3,
-            materialStatus: 'ready',
-            capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
-        });
-        testState.sharedEntries = [sharedEntry('e2ee')];
+        testState.encryption = { decryptEncryptionKey: vi.fn(async () => new Uint8Array(32)) };
+        testState.sharedEntries = [sharedOwnerEntry('e2ee')];
         testState.updateSavedSecretResource.mockResolvedValue({ ok: true });
         testState.modalConfirm.mockResolvedValue(false);
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
         const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
 
-        await props.onConvertShared(testState.sharedEntries[0]);
+        await props.onMakeSharedHomeManaged(testState.sharedEntries[0]);
         expect(testState.modalConfirm).toHaveBeenCalledTimes(1);
         expect(testState.updateSavedSecretResource).not.toHaveBeenCalled();
 
         testState.modalConfirm.mockResolvedValue(true);
-        await props.onConvertShared(testState.sharedEntries[0]);
+        await props.onMakeSharedHomeManaged(testState.sharedEntries[0]);
         await vi.waitFor(() => expect(testState.updateSavedSecretResource).toHaveBeenCalledTimes(1));
         expect(testState.updateSavedSecretResource).toHaveBeenLastCalledWith(expect.objectContaining({
             resourceId: 'resource-a',
@@ -235,10 +249,10 @@ describe('SecretsSettingsScreen shared feature decision', () => {
             toMode: 'plain',
         }));
 
-        testState.sharedEntries = [sharedEntry('plain')];
+        testState.sharedEntries = [sharedOwnerEntry('plain')];
         const plainScreen = await renderScreen(<Screen />);
         const plainProps = plainScreen.tree.root.findByProps({ testID: 'secrets-list' }).props;
-        await plainProps.onConvertShared(testState.sharedEntries[0]);
+        await plainProps.onEncryptShared(testState.sharedEntries[0]);
         await vi.waitFor(() => expect(testState.updateSavedSecretResource).toHaveBeenCalledTimes(2));
         expect(testState.updateSavedSecretResource).toHaveBeenLastCalledWith(expect.objectContaining({
             resourceId: 'resource-a',
@@ -246,6 +260,35 @@ describe('SecretsSettingsScreen shared feature decision', () => {
             toMode: 'e2ee',
         }));
         expect(testState.modalConfirm).toHaveBeenCalledTimes(2);
+    });
+
+    // A conversion is offered only in a direction that can succeed: Plain to
+    // E2EE needs this Account's content key, and E2EE to Plain needs a Home
+    // whose storage policy admits Plain content (plan 10.08 §10.5 "subject to
+    // Home policy").
+    it('offers each conversion direction only where the Account and the Home policy allow it', async () => {
+        testState.sharedEnabled = true;
+        const Screen = (await import('./secrets')).default;
+
+        testState.encryption = null;
+        testState.plaintextStorageEnabled = true;
+        const plainAccount = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        expect(plainAccount.onEncryptShared).toBeUndefined();
+        expect(testState.featureRequests).toContainEqual([
+            'encryption.plaintextStorage',
+            { scopeKind: 'spawn', serverId: 'home-a' },
+        ]);
+
+        testState.encryption = { decryptEncryptionKey: vi.fn(async () => new Uint8Array(32)) };
+        testState.plaintextStorageEnabled = false;
+        const requiredE2ee = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        expect(requiredE2ee.onMakeSharedHomeManaged).toBeUndefined();
+        expect(requiredE2ee.onEncryptShared).toEqual(expect.any(Function));
+
+        testState.plaintextStorageEnabled = true;
+        const both = (await renderScreen(<Screen />)).tree.root.findByProps({ testID: 'secrets-list' }).props;
+        expect(both.onMakeSharedHomeManaged).toEqual(expect.any(Function));
+        expect(both.onEncryptShared).toEqual(expect.any(Function));
     });
 
     it('confirms owner corrupt-row deletion and forwards its exact opaque identity and revision through the catalog callback', async () => {

@@ -272,6 +272,27 @@ describe('TeamCredentialCreateScreen', () => {
         expect(declared('team-credential-create-review-broker')?.props.detail).toBe('teams.credentials.detail.brokerNone');
     });
 
+    it('settles a failed first credential read instead of spinning forever', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, LIST_PATH, { status: 503, body: { error: 'unavailable' } });
+        harness.answer(serverId, SOURCES_PATH, {
+            body: { candidates: [], supportedKinds: ['connected_account'], brokerPresentation: emptyBrokerPresentation() },
+        });
+
+        const screen = await renderCreate(serverId);
+
+        // The viewer projection is null for both "loading" and "failed", and the
+        // source/provider retries live behind the loading return, so a first
+        // failure used to render as permanent loading with no way out.
+        await waitForTestId(screen, 'team-credential-create-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-credential-create-loading');
+
+        answerViewer(serverId, true);
+        await screen.pressByTestIdAsync('team-credential-create-retry');
+
+        await waitForTestId(screen, 'team-credential-create-source');
+    });
+
     it('lets a source-only member offer a bare resource without manager controls', async () => {
         const serverId = await addHome();
         answerSourceOnlyViewer(serverId);
@@ -505,6 +526,44 @@ describe('TeamCredentialCreateScreen', () => {
             'teams.credentials.audience.directBody',
             expect.objectContaining({ destructive: true }),
         );
+    });
+
+    // Child 01 §7.1 rule 5: narrowing withdraws only direct disclosure. The
+    // create draft and the edit draft share that one rule with the Home PATCH.
+    it('narrows a drafted direct-only grant to no access and a both grant to its broker half', async () => {
+        const serverId = await addHome();
+        answerViewer(serverId, true);
+        harness.answer(serverId, SOURCES_PATH, {
+            body: {
+                candidates: [teamCredentialSourceCandidateFixture({ directExportSupport: 'supported' })],
+                supportedKinds: ['connected_pool'],
+                brokerPresentation: emptyBrokerPresentation(),
+            },
+        });
+
+        const screen = await renderCreate(serverId);
+        await waitForTestId(screen, 'team-credential-create-source');
+        await screen.pressByTestIdAsync('team-credential-create-source');
+        const picker = shownModals.at(-1);
+        const step = picker?.props?.rootStep as { sections: { options: { id: string }[] }[] };
+        await act(async () => {
+            await (picker?.props?.onSelect as (id: string) => Promise<void>)(step.sections[0]!.options[0]!.id);
+        });
+        const everyoneDetail = () => screen.findAllByTestId('team-credential-create-audience-everyone')[0]?.props.detail;
+
+        await screen.pressByTestIdAsync('team-credential-create-ceiling:direct_allowed');
+        await screen.pressByTestIdAsync('team-credential-create-audience-everyone');
+        await screen.pressByTestIdAsync('team-credential-audience-mode:everyone:direct');
+        expect(everyoneDetail()).toBe('teams.credentials.delivery.direct');
+        await screen.pressByTestIdAsync('team-credential-create-ceiling:brokered_only');
+        expect(everyoneDetail()).toBe('teams.credentials.audience.everyoneOff');
+
+        await screen.pressByTestIdAsync('team-credential-create-ceiling:direct_allowed');
+        await screen.pressByTestIdAsync('team-credential-create-audience-everyone');
+        await screen.pressByTestIdAsync('team-credential-audience-mode:everyone:both');
+        expect(everyoneDetail()).toBe('teams.credentials.delivery.both');
+        await screen.pressByTestIdAsync('team-credential-create-ceiling:brokered_only');
+        expect(everyoneDetail()).toBe('teams.credentials.delivery.brokered');
     });
 
     it('keeps the connected-account source selected when entered from its Settings detail', async () => {

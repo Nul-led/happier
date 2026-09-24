@@ -3,7 +3,6 @@ import type { SyncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTel
 import {
     recordNativeCryptoWorkerAppStateActive,
     recordNativeCryptoWorkerAppStateQuiescent,
-    recordNativeCryptoWorkerQueueBackpressure,
     recordNativeCryptoWorkerQueueDepth,
     recordNativeCryptoWorkerQueueWait,
 } from './nativeCryptoWorkerTelemetry';
@@ -29,7 +28,6 @@ export type NativeCryptoWorkerBatchQueueEnqueueOptions = Readonly<{
 
 export type NativeCryptoWorkerBatchQueueOptions<T, R> = Readonly<{
     maxBatchSize: number;
-    maxPendingItems?: number;
     operation?: NativeCryptoWorkerOperation;
     dispatchKind?: NativeCryptoWorkerBatchDispatchKind;
     telemetry?: SyncPerformanceTelemetry;
@@ -96,25 +94,6 @@ const lifecycleState: NativeCryptoWorkerQueueLifecycleState = {
 let nextQueueId = 1;
 const queueWakeups = new Set<() => void>();
 const queueStats = new Map<number, NativeCryptoWorkerQueueStats>();
-
-export class NativeCryptoWorkerQueueBackpressureError extends Error {
-    readonly code = 'native_crypto_worker_queue_backpressure';
-    readonly operation: NativeCryptoWorkerOperation | undefined;
-    readonly queueDepth: number;
-    readonly capacity: number;
-
-    constructor(params: Readonly<{
-        operation?: NativeCryptoWorkerOperation;
-        queueDepth: number;
-        capacity: number;
-    }>) {
-        super('Native crypto worker queue is full');
-        this.name = 'NativeCryptoWorkerQueueBackpressureError';
-        this.operation = params.operation;
-        this.queueDepth = params.queueDepth;
-        this.capacity = params.capacity;
-    }
-}
 
 export class NativeCryptoWorkerQueueCancelledError extends Error {
     readonly code = 'native_crypto_worker_queue_cancelled';
@@ -290,6 +269,19 @@ export async function markNativeCryptoWorkerQueueActive(
     await lifecycleState.resumePromise;
 }
 
+/**
+ * Resolves when regular native dispatch is running again, or immediately when it
+ * already is.
+ *
+ * The queue is the single owner of the suspension fact, and it already wakes
+ * queued work through `queueWakeups`; this exposes the same wake to the router so
+ * a dispatch budget is never spent on a quiesce the app asked for.
+ */
+export function whenNativeCryptoWorkerRegularDispatchResumed(): Promise<void> | null {
+    if (!isRegularDispatchBlocked('regular')) return null;
+    return new Promise<void>((resolve) => { queueWakeups.add(resolve); });
+}
+
 export function recordNativeCryptoWorkerStaleScopeDropForResume(): void {
     if (lifecycleState.quiescent || lifecycleState.resumeBlocked) {
         lifecycleState.staleScopeDropsOnResume += 1;
@@ -326,7 +318,6 @@ export function createNativeCryptoWorkerBatchQueue<T, R>(
     options: NativeCryptoWorkerBatchQueueOptions<T, R>,
 ): NativeCryptoWorkerBatchQueue<T, R> {
     const maxBatchSize = Math.max(1, Math.trunc(options.maxBatchSize));
-    const maxPendingItems = Math.max(1, Math.trunc(options.maxPendingItems ?? maxBatchSize));
     const dispatchKind = options.dispatchKind ?? 'regular';
     const pending: Array<QueueEntry<T, R>> = [];
     let draining = false;
@@ -345,29 +336,6 @@ export function createNativeCryptoWorkerBatchQueue<T, R>(
         return options.telemetryEnabled === true
             && options.operation !== undefined
             && options.telemetry?.isEnabled() === true;
-    }
-
-    function pendingCapacity(): number {
-        return draining || inFlightCount > 0
-            ? maxPendingItems
-            : maxBatchSize + maxPendingItems;
-    }
-
-    function rejectForBackpressure(reject: (reason: unknown) => void): void {
-        const capacity = pendingCapacity();
-        if (shouldRecordTelemetry()) {
-            recordNativeCryptoWorkerQueueBackpressure(options.telemetry!, {
-                operation: options.operation!,
-                queueDepth: pending.length,
-                inFlightCount,
-                capacity,
-            });
-        }
-        reject(new NativeCryptoWorkerQueueBackpressureError({
-            operation: options.operation,
-            queueDepth: pending.length,
-            capacity,
-        }));
     }
 
     function rejectForCancellation(entry: QueueEntry<T, R>): void {
@@ -478,11 +446,32 @@ export function createNativeCryptoWorkerBatchQueue<T, R>(
                     }));
                     return;
                 }
-                if (pending.length >= pendingCapacity()) {
-                    rejectForBackpressure(reject);
-                    return;
-                }
-                pending.push({ item, signal: enqueueOptions.signal, enqueuedAtMs: now(), resolve, reject });
+                const signal = enqueueOptions.signal;
+                // Cancellation is honoured where it is observable. `drain` also drops
+                // aborted entries, but it is unreachable while dispatch is suspended,
+                // so a caller that aborts during a quiesce would otherwise wait for a
+                // resume that may never come.
+                const detachAbort = signal
+                    ? (() => {
+                        const onAbort = (): void => {
+                            const index = pending.findIndex((candidate) => candidate === entry);
+                            if (index < 0) return;
+                            pending.splice(index, 1);
+                            updateLifecycleStats();
+                            rejectForCancellation(entry);
+                        };
+                        signal.addEventListener('abort', onAbort, { once: true });
+                        return () => signal.removeEventListener('abort', onAbort);
+                    })()
+                    : undefined;
+                const entry: QueueEntry<T, R> = {
+                    item,
+                    signal,
+                    enqueuedAtMs: now(),
+                    resolve: (value) => { detachAbort?.(); resolve(value); },
+                    reject: (reason) => { detachAbort?.(); reject(reason); },
+                };
+                pending.push(entry);
                 if (dispatchKind === 'regular' && lifecycleState.quiescent) {
                     lifecycleState.queuedDuringQuiesceCount += 1;
                 }

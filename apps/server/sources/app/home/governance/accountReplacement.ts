@@ -1,3 +1,5 @@
+import { isActiveHomeAccountStatus } from "@happier-dev/protocol";
+
 import type { Tx } from "@/storage/inTx";
 import { captureSessionAccessMembershipImpactsInTx, applySessionAccessMembershipImpactsInTx } from "@/app/session/access/sessionAccessMembershipImpact";
 import {
@@ -59,7 +61,7 @@ export type ProviderResetAccountReplacementResult =
     | Readonly<{ status: "replaced"; replacementAccountId: string; transferredTeamMembershipCount: number }>
     | Readonly<{
         status: "rejected";
-        code: "home_account_not_found" | "team_membership_transfer_conflict";
+        code: "home_account_not_found" | "home_account_inactive" | "team_membership_transfer_conflict";
         details?: Readonly<{ teamIds: readonly string[] }>;
     }>;
 
@@ -111,9 +113,18 @@ export async function replaceAccountForProviderResetInTx(
 ): Promise<ProviderResetAccountReplacementResult> {
     const replaced = await tx.account.findUnique({
         where: { id: input.oldAccountId },
-        select: { id: true, homeRole: true, feedSeq: true },
+        select: { id: true, homeRole: true, feedSeq: true, status: true },
     });
     if (!replaced) return { status: "rejected", code: "home_account_not_found" };
+    // A provider reset recovers a credential, never a lifecycle. The replacement
+    // inherits this Account's Home role and every Team membership lifetime into
+    // a fresh active Account, so running it for a suspended or retired source
+    // would undo the Home's own hold — the lifecycle owner's rule that a
+    // disabled Account is never reactivated, decided here before any mutation
+    // because the retirement callback runs last and cannot refuse the transfer.
+    if (!isActiveHomeAccountStatus(replaced.status)) {
+        return { status: "rejected", code: "home_account_inactive" };
+    }
 
     // A replacement Account that already carries a membership in an affected
     // Team is an ambiguous merge, not a transfer. Refuse before any mutation.

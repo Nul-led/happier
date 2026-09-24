@@ -8,6 +8,7 @@ import {
     resetPendingIdentityProviderTestsForTests,
     runTeamIdentityProviderTestReturn,
 } from './identityProviderTestReturn';
+import { peekPendingAdministrationOAuth } from '@/sync/domains/pending/pendingAdministrationOAuth';
 
 const diagnostics = {
     subjectPresent: true,
@@ -20,6 +21,34 @@ const diagnostics = {
 };
 
 describe('identityProviderTestReturn', () => {
+    it('hands the pending test to the durable administration custody the return document reads', () => {
+        resetPendingIdentityProviderTestsForTests();
+        recordPendingIdentityProviderTest({
+            kind: 'home',
+            serverId: 'home-a',
+            accountId: 'account-1',
+            providerId: 'provider-1',
+            attemptId: 'attempt-1',
+            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+        });
+
+        // On web the authorize URL opens a new `noopener` document, so module state is gone by
+        // the time `/oauth/<provider>` consumes this. It has to reach the durable owner.
+        expect(peekPendingAdministrationOAuth()).toEqual({
+            kind: 'identity_provider_test',
+            test: {
+                kind: 'home',
+                serverId: 'home-a',
+                accountId: 'account-1',
+                providerId: 'provider-1',
+                attemptId: 'attempt-1',
+                returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            },
+        });
+        expect(consumePendingIdentityProviderTest('provider-1')).not.toBeNull();
+        expect(peekPendingAdministrationOAuth()).toBeNull();
+    });
+
     it('keeps exact Home and provider custody and consumes it once', () => {
         resetPendingIdentityProviderTestsForTests();
         recordPendingIdentityProviderTest({

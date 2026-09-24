@@ -10,11 +10,12 @@ import { getActionSettingsTargetDefinition } from './actionSettingsTargets';
 function target(
     id: ActionSettingsEntryStatusTarget['id'],
     state: ActionSettingsEntryStatusTarget['state'] = 'on',
+    actionId: Parameters<typeof getActionSettingsTargetDefinition>[0] = 'review.start',
 ): ActionSettingsEntryStatusTarget {
     return {
         id,
         state,
-        definition: getActionSettingsTargetDefinition('review.start', id),
+        definition: getActionSettingsTargetDefinition(actionId, id),
     };
 }
 
@@ -58,6 +59,33 @@ describe('resolveActionSettingsEntryStatusSummary', () => {
         })).toEqual({
             allowedCount: 1,
             askFirstCount: 0,
+            offCount: 0,
+            unavailableCount: 0,
+        });
+    });
+
+    /**
+     * `session.responsibility.set` is a dangerous Action exposed on the in-app,
+     * Agent, MCP and CLI surfaces. Its in-app picker has no confirmation host of
+     * its own, so the policy's default confirmation applies there too
+     * (teams-lane-04/11-responsible-assignment.md §7.1); the summary reads that
+     * answer rather than assuming "default" means allowed.
+     */
+    it('reports every exposed surface of assignment as ask-first by default', () => {
+        const settings = normalizeActionsSettings({ v: 1, actions: {} });
+
+        expect(resolveActionSettingsEntryStatusSummary({
+            settings,
+            actionId: 'session.responsibility.set',
+            targets: [
+                target('contextual_ui', 'on', 'session.responsibility.set'),
+                target('agent', 'on', 'session.responsibility.set'),
+                target('mcp', 'on', 'session.responsibility.set'),
+                target('cli', 'on', 'session.responsibility.set'),
+            ],
+        })).toEqual({
+            allowedCount: 0,
+            askFirstCount: 4,
             offCount: 0,
             unavailableCount: 0,
         });

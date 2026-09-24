@@ -15,11 +15,14 @@ import type { AgentCore } from '@happier-dev/agents';
 import {
   buildQualifiedPluginContributionKey,
   parseQualifiedPluginContributionKey,
-  ConnectedServicesDefaultAuthByAgentIdV1Schema,
+  projectAgentConnectedAccountPurposeDefaultsToSessionBindings,
+  resolveAgentConnectedAccountPurposeDefaults,
   type ConnectedAccountServiceKey,
   type ConnectedServiceBindingsV2,
   type ConnectedServicesDefaultAuthByAgentIdV1,
+  type PluginContributionIdentityV1,
   type PluginProjectedAgentConnectedAccountPurposeV2,
+  type QualifiedConnectedAccountPurposeBindingsV1,
 } from '@happier-dev/protocol';
 import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 
@@ -56,11 +59,6 @@ export type NewSessionConnectedServicesResult = Readonly<{
   connectedServicesModelProbeCacheIdentity: string | null;
   connectedServicesAuthChip: AgentInputExtraActionChip | null;
 }>;
-
-const EMPTY_DEFAULT_AUTH_SETTINGS: ConnectedServicesDefaultAuthByAgentIdV1 = {
-  v: 1,
-  bindingsByAgentId: {},
-};
 
 function resolveDefaultAuthWarningLabel(warningCode: ConnectedServicesAuthWarningCode | undefined): string | undefined {
   const key = resolveConnectedServicesAuthWarningTranslationKey(warningCode);
@@ -126,6 +124,12 @@ export function useNewSessionConnectedServices(params: Readonly<{
    */
   defaultAuthAgentId?: string | null;
   /**
+   * The Agent's contribution identity: the consumer of its declared purposes,
+   * which keys its Agent default authentication (the purpose-binding store the
+   * Agent page writes). Without it the Agent has no readable default.
+   */
+  defaultAuthConsumer?: PluginContributionIdentityV1 | null;
+  /**
    * Exact Connected Account declarations from the authoritative machine Agent
    * catalog projection. Supported services are the canonical qualified keys of
    * these declarations — never a bundled scalar enum.
@@ -135,6 +139,9 @@ export function useNewSessionConnectedServices(params: Readonly<{
   settings: {
     connectedServicesProfileLabelByKey: Record<string, string | undefined>;
     connectedServicesDefaultProfileByServiceId: Record<string, string | undefined>;
+    /** The one Agent default-authentication store. */
+    connectedAccountPurposeBindingsV1?: QualifiedConnectedAccountPurposeBindingsV1;
+    /** Released service-keyed defaults, read only until their Agent is rewritten. */
     connectedServicesDefaultAuthByAgentIdV1?: ConnectedServicesDefaultAuthByAgentIdV1;
   };
   targetServerId: string | null;
@@ -205,18 +212,34 @@ export function useNewSessionConnectedServices(params: Readonly<{
     );
     if (hasExplicitBindings) return explicitBindings;
 
-    const defaultAuthSettings = ConnectedServicesDefaultAuthByAgentIdV1Schema.parse(
-      settings.connectedServicesDefaultAuthByAgentIdV1 ?? EMPTY_DEFAULT_AUTH_SETTINGS,
-    );
     const agentId = typeof params.defaultAuthAgentId === 'string'
       ? params.defaultAuthAgentId.trim()
       : typeof agentCore?.id === 'string'
         ? agentCore.id.trim()
         : '';
-    if (!agentId) return explicitBindings;
+    const consumer = params.defaultAuthConsumer ?? null;
+    if (!agentId || !consumer) return explicitBindings;
 
-    return defaultAuthSettings.bindingsByAgentId[agentId]?.bindingsByServiceId ?? explicitBindings;
-  }, [agentCore, agentOptionState, params.defaultAuthAgentId, settings.connectedServicesDefaultAuthByAgentIdV1]);
+    return projectAgentConnectedAccountPurposeDefaultsToSessionBindings(
+      resolveAgentConnectedAccountPurposeDefaults({
+        settings: {
+          connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
+          connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1,
+        },
+        agentId,
+        consumer,
+        declarations: connectedAccounts,
+      }),
+    )?.bindingsByServiceId ?? explicitBindings;
+  }, [
+    agentCore,
+    agentOptionState,
+    connectedAccounts,
+    params.defaultAuthAgentId,
+    params.defaultAuthConsumer,
+    settings.connectedAccountPurposeBindingsV1,
+    settings.connectedServicesDefaultAuthByAgentIdV1,
+  ]);
 
   const [optimisticBindingsByServiceId, setOptimisticBindingsByServiceId] = React.useState(connectedServicesBindingsByServiceId);
   const connectedServicesBindingsSignature = React.useMemo(

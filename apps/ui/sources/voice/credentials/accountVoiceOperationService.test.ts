@@ -32,6 +32,7 @@ const contribution = Object.freeze({
 const rawCredentialIdentity = Object.freeze({
   pluginId: contribution.pluginId,
   contributionId: contribution.localId,
+  artifactId: 'voice-runtime-web',
   artifactDigest: `sha256:${'a'.repeat(64)}`,
   hostAppVersion: '2.0.0',
   hostUiApiVersion: '1.0.0',
@@ -142,6 +143,16 @@ vi.mock('@/sync/domains/state/storageStateReaderBridge', () => ({
 
 vi.mock('@/sync/sync', () => ({
   sync: { decryptSecretValue: () => 'account-secret' },
+}));
+
+// The Home's authorized Saved Secret catalog read is the network boundary; the
+// catalog engine, snapshot store and resolver below it stay real.
+const catalogBoundary = vi.hoisted(() => ({ readSavedSecretCatalog: vi.fn() }));
+vi.mock('@/sync/api/account/apiSavedSecretCatalog', () => ({
+  readSavedSecretCatalog: catalogBoundary.readSavedSecretCatalog,
+}));
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({
+  getSyncSingleton: () => ({ encryption: null }),
 }));
 
 function createSettings(
@@ -307,7 +318,6 @@ const phaseSeparatedCredentialDeclaration = VoiceProviderContributionSchema.pars
   },
   client: {
     artifactId: 'voice-runtime-web',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
   },
 });
@@ -402,7 +412,6 @@ const defaultCredentialDeclaration = (() => {
   },
   client: {
     artifactId: 'voice-runtime-web',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
   },
   });
@@ -530,6 +539,69 @@ describe('account Voice operation service', () => {
 
     invalidateSavedSecretCatalog(scope);
     await expect(service.inspectAvailability()).rejects.toMatchObject({ code: 'voice_account_operation_cancelled' });
+  });
+
+  it('re-reads the Home before a new request spends a shared secret whose revocation hint was missed', async () => {
+    const ref = 'happier:shared-secret:v1:resource-voice-revoked';
+    const scope = { serverId: 'server-1', accountId: 'account-1' } as const;
+    applySavedSecretCatalogPage({
+      scope,
+      entries: [{
+        ref,
+        source: 'shared_resource',
+        relationship: 'recipient',
+        name: 'Shared voice key',
+        kind: 'apiKey',
+        encryptionMode: 'plain',
+        owner: null,
+        accessSources: [{ kind: 'account' }],
+        audience: null,
+        ownerAccountId: null,
+        revision: 3,
+        materialStatus: 'ready',
+        capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+      }],
+      materializedSecrets: [{
+        id: ref,
+        name: 'Shared voice key',
+        kind: 'apiKey',
+        encryptedValue: { _isSecretValue: true, value: 'revoked-shared-value' },
+        createdAt: 1,
+        updatedAt: 3,
+      }],
+      observedAt: 1,
+    });
+    const approval = resolveAccountVoiceCredentialApprovalDigest({
+      requiredRecipientContractDigest: resolveRequiredRecipientContractApprovalDigestV1(externalRecipientContract),
+      savedSecret: resolveSavedSecretReference(scope, [], ref),
+    });
+    if (!approval) throw new Error('expected shared approval');
+    mocks.state = {
+      ...mocks.state,
+      settings: { ...createSettings(ref, 3, approval), secrets: [] },
+    };
+    // The owner removed the grant; the AccountChange that would have said so
+    // never arrived, so the local catalog still holds a ready row.
+    catalogBoundary.readSavedSecretCatalog.mockResolvedValueOnce({ ok: true, resources: [] });
+    const fetch = vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const service = createAccountVoiceOperationService({
+      providerId: 'happier.voice.openai/realtime-openai',
+      recipientContract: externalRecipientContract,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      fetch,
+    });
+
+    // The re-read withdrew the captured authority, which the service reports
+    // as a cancelled operation, exactly as for any authority change.
+    await expect(requestClientAuth(service)).rejects.toMatchObject({ code: 'voice_account_operation_cancelled' });
+    expect(catalogBoundary.readSavedSecretCatalog).toHaveBeenCalledWith(scope);
+    expect(resolveSavedSecretReference(scope, [], ref).status).toBe('access_removed');
+    // The revoked value never reached the Provider.
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('does not re-materialize a changed machine-scoped secret during one live raw invocation', async () => {

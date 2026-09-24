@@ -14,7 +14,10 @@ import {
     type NativeCryptoWorkerOperation,
     type NativeCryptoWorkerRoutingDeclineReason,
 } from './types';
-import { recordNativeCryptoWorkerStaleScopeDropForResume } from './nativeCryptoWorkerQueue';
+import {
+    recordNativeCryptoWorkerStaleScopeDropForResume,
+    whenNativeCryptoWorkerRegularDispatchResumed,
+} from './nativeCryptoWorkerQueue';
 import { recordNativeCryptoWorkerProbe } from './nativeCryptoWorkerTelemetry';
 import {
     reportNativeCryptoWorkerFallback,
@@ -136,6 +139,15 @@ async function runReference<T>(referenceRun: () => Promise<readonly T[]>): Promi
         source: 'reference',
         items: await referenceRun(),
     };
+}
+
+/** Settles when this caller's own signal aborts; never when there is no signal. */
+function whenAborted(signal: AbortSignal | undefined): Promise<void> {
+    if (!signal) return new Promise<void>(() => {});
+    if (signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+    });
 }
 
 async function runWithTimeout<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
@@ -303,6 +315,18 @@ export async function runNativeCryptoWorkerBatch<T>(
     }
     if (isAbortSignalAborted(options.signal)) {
         return { status: 'cancelled', source: 'cancelled', items: [] };
+    }
+
+    // `timeoutMs` bounds a dispatch, not the time the app spends backgrounded. The
+    // queue suspends regular dispatch deliberately, so arming the budget before it
+    // resumes would degrade a perfectly healthy native worker — and leave its work
+    // still queued behind the reference run that replaced it.
+    const resumed = whenNativeCryptoWorkerRegularDispatchResumed();
+    if (resumed) {
+        await Promise.race([resumed, whenAborted(options.signal)]);
+        if (isAbortSignalAborted(options.signal)) {
+            return { status: 'cancelled', source: 'cancelled', items: [] };
+        }
     }
 
     try {

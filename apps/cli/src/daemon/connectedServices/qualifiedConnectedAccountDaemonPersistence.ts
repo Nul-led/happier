@@ -18,6 +18,7 @@ import {
   parseBuiltInLegacyConnectedServiceCredentialRecordV1,
   parseConnectedAccountServiceConfigurationsV1,
   parseQualifiedConnectedAccountCredentialPlaintextV1,
+  pluginSourceCustodyV1Equal,
   openQualifiedConnectedAccountContentEnvelope,
   isStoredJsonContentEnvelopeModeCompatible,
   projectQualifiedConnectedAccountCredentialPlaintextV1,
@@ -60,6 +61,7 @@ import {
   getActiveAccountSettingsSnapshotLifetimeToken,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import {
   updateAccountSettingsV2OnceAgainstLatest,
   type AccountSettingsMutationResult,
@@ -500,9 +502,21 @@ function defaultRandomBytes(length: number): Uint8Array {
   return new Uint8Array(nodeRandomBytes(length));
 }
 
-export function createActiveAccountSettingsConnectedAccountSecrets():
-  ConnectedAccountDaemonPersistence['configuration']['secrets'] {
+export function createActiveAccountSettingsConnectedAccountSecrets(input: Readonly<{
+  /** The daemon's Account; admission never validates refs for another Account. */
+  expectedScopeKey: string;
+}>): ConnectedAccountDaemonPersistence['configuration']['secrets'] {
   return Object.freeze({
+    async admit(secretIds, options) {
+      // A record without references has nothing to admit; the admission owner
+      // itself resolves personal-only batches without a Home request.
+      if (secretIds.length === 0) return;
+      await refreshSavedSecretCatalogForOperation({
+        expectedScopeKey: input.expectedScopeKey,
+        references: secretIds.map((ref) => ({ ref })),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+    },
     async has(secretId) {
       const snapshot = getActiveAccountSettingsSnapshot();
       return Boolean(
@@ -643,7 +657,7 @@ export function createQualifiedConnectedAccountDaemonPersistence(
           : right.account !== undefined && sameQualifiedConnectedAccountRef(left.account, right.account)
       )
       && left.modeId === right.modeId
-      && left.immutableGenerationId === right.immutableGenerationId
+      && pluginSourceCustodyV1Equal(left.sourceCustody, right.sourceCustody)
       && left.expectedCredentialRevision === right.expectedCredentialRevision
       && left.expectedCredentialConfigurationRevision
         === right.expectedCredentialConfigurationRevision

@@ -32,6 +32,7 @@ import {
 import { isSessionSharingSupported } from '@/sync/api/capabilities/sessionSharingSupport';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
+import { createHomeOAuthRequestContext } from '@/auth/providers/homeExternalAuthTarget';
 import { accountDirectoryAuthClient, acquireAccountServiceAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { buildContentKeyBinding } from '@/auth/oauth/contentKeyBinding';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -294,6 +295,8 @@ function OAuthProviderReturnBody() {
     const pendingAuthContextRef = React.useRef<null | Readonly<{
         providerId: string;
         providerName: string;
+        /** The start-time Home presentation, re-persisted if custody is rewritten here. */
+        presentation?: PendingExternalAuth['presentation'];
         pending: string;
         proof: string | null;
         secret: string | null;
@@ -405,6 +408,7 @@ function OAuthProviderReturnBody() {
                     const stored =
                         await TokenStorage.setPendingExternalAuth({
                             provider: ctx.providerId,
+                            ...(ctx.presentation ? { presentation: ctx.presentation } : {}),
                             ...(ctx.proof ? { proof: ctx.proof } : {}),
                             secret,
                             ...(ctx.intent ? { intent: ctx.intent } : {}),
@@ -1127,7 +1131,17 @@ function OAuthProviderReturnBody() {
                 return;
             }
 
-            const provider = getAuthProvider(providerId);
+            // A fresh load holds no Home projection. The start's own custody carries
+            // the Home-projected presentation, so a dynamic provider keeps its name
+            // (teams-lane-03/01 §10.2) instead of being re-derived from its id.
+            const pendingConnect = flow === 'auth'
+                ? null
+                : await TokenStorage.getPendingExternalConnect();
+            const startCustody = flow === 'auth' ? pendingAuthStateForFlow?.value ?? null : pendingConnect;
+            const provider = getAuthProvider(
+                providerId,
+                startCustody?.provider === providerId ? startCustody.presentation : undefined,
+            );
             if (!provider) {
                 if (isFirstKeyReturn || isPasswordEnrollmentReturn) {
                     if (isPasswordEnrollmentReturn) {
@@ -1361,6 +1375,7 @@ function OAuthProviderReturnBody() {
                     pendingAuthContextRef.current = {
                         providerId,
                         providerName: provider.displayName ?? providerId,
+                        ...(state.presentation ? { presentation: state.presentation } : {}),
                         pending,
                         proof,
                         secret,
@@ -1447,11 +1462,25 @@ function OAuthProviderReturnBody() {
             }
 
             // connect flow (default)
-            const credentials = credentialsFromAuth;
-            const pendingConnect = await TokenStorage.getPendingExternalConnect();
-            const connectReturnTo = pendingConnect && pendingConnect.provider === providerId
-                ? normalizeInternalReturnPath(pendingConnect.returnTo) ?? '/settings/account'
+            const boundConnect = pendingConnect && pendingConnect.provider === providerId ? pendingConnect : null;
+            const connectReturnTo = boundConnect
+                ? normalizeInternalReturnPath(boundConnect.returnTo) ?? '/settings/account'
                 : '/settings/account';
+            // The continuation names the exact Home whose credential started the
+            // connect. Finalize, cancel and the replacement credential all belong
+            // to that Home, whichever Home is focused now (TA-R14/TA-R16).
+            const connectTarget = boundConnect?.serverUrl && boundConnect.serverId
+                ? { serverUrl: boundConnect.serverUrl, serverId: boundConnect.serverId }
+                : null;
+            const credentials = connectTarget
+                ? await TokenStorage.getCredentialsForServerUrl(
+                    connectTarget.serverUrl,
+                    { serverId: connectTarget.serverId },
+                ).catch(() => null)
+                : credentialsFromAuth;
+            const connectRequestContext = connectTarget
+                ? createHomeOAuthRequestContext(connectTarget, undefined, controller.signal) ?? undefined
+                : undefined;
             const finalizeConnectNavigation = async () => {
                 await TokenStorage.clearPendingExternalConnect();
                 safeReplace(connectReturnTo);
@@ -1461,10 +1490,19 @@ function OAuthProviderReturnBody() {
                 username: string;
             }>): Promise<boolean> => {
                 if (!credentials) return false;
-                const replacement = await provider.finalizeConnect(credentials, input);
+                const replacement = await provider.finalizeConnect(credentials, input, connectRequestContext);
                 if (!replacement.token) return true;
-                const lifecycle = await auth.loginWithCredentials({ ...credentials, token: replacement.token });
+                const adopted = { ...credentials, token: replacement.token };
+                const lifecycle = connectTarget
+                    ? await auth.loginWithCredentials(adopted, { target: connectTarget })
+                    : await auth.loginWithCredentials(adopted);
                 return lifecycle.kind === 'completed';
+            };
+            const presentTeamConnectFailure = async (error: unknown): Promise<boolean> => {
+                if (!(error instanceof HappyError) || !isTeamAuthenticationFailureCode(error.message)) return false;
+                await TokenStorage.clearPendingExternalConnect();
+                setTeamFailure({ code: error.message, returnTo: connectReturnTo });
+                return true;
             };
             if (status === 'connected') {
                 const pending = paramString(params, 'pending');
@@ -1484,6 +1522,7 @@ function OAuthProviderReturnBody() {
                     safeSetBusy(true);
                     if (!await finalizeConnectAndAdoptCredential({ pending, username })) return;
                 } catch (e) {
+                    if (await presentTeamConnectFailure(e)) return;
                     await Modal.alert(
                         t('common.error'),
                         e instanceof HappyError
@@ -1528,7 +1567,7 @@ function OAuthProviderReturnBody() {
 
                 if (next == null) {
                     try {
-                        await provider.cancelConnectPending(credentials, pending);
+                        await provider.cancelConnectPending(credentials, pending, connectRequestContext);
                     } catch {
                         await Modal.alert(t('common.error'), t('errors.operationFailed'));
                     } finally {
@@ -1543,6 +1582,7 @@ function OAuthProviderReturnBody() {
                     await finalizeConnectNavigation();
                     return;
                 } catch (e) {
+                    if (await presentTeamConnectFailure(e)) return;
                     if (e instanceof HappyError) {
                         if (e.message === 'username-taken') {
                             hint = t('friends.username.taken');

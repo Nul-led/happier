@@ -94,6 +94,19 @@ export function createFilteredSessionListWhere(params: Readonly<{
         params.audienceWhere,
         createSessionViewerTagWhere({ accountId: params.accountId, tagIds: query.tagIds }),
         query.attention === "needs_my_attention" ? params.attentionWhere : undefined,
-        query.includeInactive ? undefined : { OR: [{ active: true }, params.attentionWhere] },
+        // "Hide inactive" must select the same liveness the row projection
+        // publishes: a Session whose transcript is not hosted publishes
+        // `active: false`, so it is only admitted through attention.
+        query.includeInactive
+            ? undefined
+            : {
+                OR: [
+                    conjoinSessionListWhereInputs(
+                        createSessionTranscriptPublicationLiveFactsWhere(),
+                        { active: true },
+                    ),
+                    params.attentionWhere,
+                ],
+            },
     );
 }

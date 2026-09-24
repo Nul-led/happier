@@ -219,7 +219,18 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
                 onPress: () => { if (committedRelation) void prepareCommittedRelation(committedRelation); },
             })}
         /> : null}
-        {pickerPresentation.statusKey ? <Text
+        {pickerPresentation.statusKey && pickerPresentation.canRetryQuery ? <Item
+            testID="session-follow-picker-currentness"
+            title={t(pickerPresentation.statusKey)}
+            titleLines={0}
+            // Discovery only advances itself while the query is ready, so a failed or partial
+            // corpus is retried through the shared query owner — the search input and any
+            // retained choice stay exactly as they are.
+            detail={t('common.retry')}
+            disabled={saving}
+            onPress={() => { void querySource.refresh(); }}
+            accessibilityLiveRegion="polite"
+        /> : pickerPresentation.statusKey ? <Text
             testID="session-follow-picker-currentness"
             accessibilityLiveRegion="polite"
         >{t(pickerPresentation.statusKey)}</Text> : null}

@@ -61,6 +61,7 @@ installMachineAdministrationTargetSelectionBoundary(administrationTarget);
 const TEAM_GET_PATH = '/v1/teams/get';
 const CREDENTIALS_LIST_PATH = '/v1/teams/credential-resources/list';
 const CREDENTIAL_GET_PATH = '/v1/teams/credential-resources/get';
+const CREDENTIAL_UPDATE_PATH = '/v1/teams/credential-resources/update';
 const ENTITLED_LIST_PATH = '/v1/teams/credential-resources/entitled/list';
 const LIMITS_LIST_PATH = '/v1/teams/credential-resources/limits/list';
 const ARTIFACT_CREATE_PATH = '/v1/artifacts';
@@ -178,6 +179,9 @@ async function renderEditor(params?: Readonly<{
     poolsEnabled?: boolean;
     sourceOwner?: boolean;
     placement?: 'machine' | 'pool' | 'none';
+    /** The focused administration routes render exactly one section. */
+    section?: 'access' | 'request_policy' | 'limits';
+    resourceOverrides?: Parameters<typeof teamCredentialResourceFixture>[0];
 }>) {
     const serverId = await harness.addHome({
         name: 'Home A',
@@ -237,6 +241,7 @@ async function renderEditor(params?: Readonly<{
                 availableMachineCount: null,
             }],
         },
+        ...params?.resourceOverrides,
     });
     harness.answer(serverId, CREDENTIALS_LIST_PATH, {
         body: {
@@ -278,7 +283,12 @@ async function renderEditor(params?: Readonly<{
     }
     const { TeamCredentialEditScreen } = await import('./TeamCredentialEditScreen');
     const screen = await renderScreen(
-        <TeamCredentialEditScreen serverId={serverId} teamId="team-1" resourceId="resource-1" />,
+        <TeamCredentialEditScreen
+            serverId={serverId}
+            teamId="team-1"
+            resourceId="resource-1"
+            {...(params?.section ? { section: params.section } : {})}
+        />,
     );
     await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON()))
         .toContain('team-credential-edit-save'));
@@ -589,5 +599,65 @@ describe('TeamCredentialEditScreen broker placement', () => {
 
         expect(screen.findByTestId('team-credential-edit-name')?.props.value).toBe('Draft name');
         await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-broker:machine_pool:loading')).not.toBeNull());
+    });
+
+    it('shows a focused Access save refusal, which the full editor’s name group could never render', async () => {
+        const { screen, serverId } = await renderEditor({ section: 'access' });
+        harness.answer(serverId, CREDENTIAL_UPDATE_PATH, {
+            status: 400,
+            body: { error: 'invalid_audience' },
+        });
+
+        await screen.pressByTestIdAsync('team-credential-audience-everyone');
+        await screen.pressByTestIdAsync('team-credential-audience-mode:everyone:brokered');
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-save')?.props.disabled).toBe(false));
+        await screen.pressByTestIdAsync('team-credential-edit-save');
+
+        const { t } = await import('@/text');
+        await vi.waitFor(() => {
+            expect(screen.getTextContent()).toContain(t('teams.credentials.errors.invalidAudience'));
+        });
+        // The refusal keeps the person where they are, with their draft.
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-credential-edit-save');
+        expect(routerBack).not.toHaveBeenCalled();
+    });
+});
+
+describe('TeamCredentialEditScreen disclosure narrowing', () => {
+    // Child 01 §7.1 rule 5 and the §7.2 "Narrow direct ceiling" row: broker and
+    // direct rights are independent, and narrowing withdraws only the direct
+    // half. A direct-only grant ends; it never becomes broker use nobody chose.
+    it('withdraws only direct delivery when the full editor narrows the ceiling', async () => {
+        const { screen } = await renderEditor({
+            approvalRequired: true,
+            resourceOverrides: {
+                disclosureCeiling: 'direct_allowed',
+                directExportSupport: 'supported',
+                allMembersDeliveryMode: 'direct',
+                groupGrants: [
+                    { teamGroupId: 'group-both', deliveryMode: 'both' },
+                    { teamGroupId: 'group-direct', deliveryMode: 'direct' },
+                ],
+                memberGrants: [
+                    { teamMembershipId: 'membership-direct', deliveryMode: 'direct' },
+                    { teamMembershipId: 'membership-brokered', deliveryMode: 'brokered' },
+                ],
+            },
+        });
+
+        await screen.pressByTestIdAsync('team-credential-edit-ceiling:brokered_only');
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-save')?.props.disabled).toBe(false));
+        await screen.pressByTestIdAsync('team-credential-edit-save');
+
+        await vi.waitFor(() => expect(harness.requestsFor(ARTIFACT_CREATE_PATH)).toHaveLength(1));
+        const actionArgs = approvalRequestFromLastArtifact().actionArgs as {
+            replacement: Readonly<Record<string, unknown>>;
+        };
+        expect(actionArgs.replacement).toMatchObject({
+            allMembersDeliveryMode: null,
+            groupGrants: [{ teamGroupId: 'group-both', deliveryMode: 'brokered' }],
+            memberGrants: [{ teamMembershipId: 'membership-brokered', deliveryMode: 'brokered' }],
+            custodian: { disclosureCeiling: 'brokered_only' },
+        });
     });
 });

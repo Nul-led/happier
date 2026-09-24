@@ -23,7 +23,10 @@ import {
 } from '@/session/actions/createDaemonPluginActionExecutor';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { executeContributedAction } from '@/plugins/runtime/invocation/actions/executeContributedAction';
-import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
+import {
+  resolveSessionEncryptionContextFromCredentials,
+  type SessionTransportEncryptionMaterial,
+} from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permissions/modeFromMetadata';
 import {
   PromptRegistryInstallRequestV1Schema,
@@ -49,6 +52,7 @@ import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsPr
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { isSessionBoundMemoryTarget } from '@/mcp/sessionBoundMemoryTarget';
 import { createSessionDiscussionActionDeps } from '@/session/discussions/sessionDiscussionActionDeps';
+import { createSessionBoardActionDeps } from '@/session/board/sessionBoardActionDeps';
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { createSessionFollowActionDeps } from '@/api/sessionFollowActionDeps';
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
@@ -190,6 +194,36 @@ export function createHappierMcpServer(
   const cryptoContext = ctx
     ? { mode: 'e2ee' as const, ctx }
     : { mode: 'plain' as const, ctx: null };
+  // Board and Discussions are Session-placed owners. They need this Session's
+  // transport credentials and its stored-content material, not Account
+  // authority: a Session-scoped runtime (a Runner) holds no Account
+  // credentials, and its live Session client is the only holder of the key.
+  // The material answers for the bound Session only, so another Session keeps
+  // the credential resolution, which fails closed without Account material.
+  const sessionContentCredentials = credentials ?? sessionCredentials;
+  const resolveExactSessionEncryptionMaterial = (
+    requestedSessionId: string,
+  ): SessionTransportEncryptionMaterial | null => {
+    if (requestedSessionId !== client.sessionId) return null;
+    const stored = client.getStoredContentEncryptionContext?.();
+    if (!stored) return null;
+    if (stored.mode === 'plain') return { mode: 'plain' };
+    return stored.ctx?.encryptionVariant === 'dataKey'
+      ? { mode: 'e2ee', dataEncryptionKey: stored.ctx.encryptionKey }
+      : null;
+  };
+  const sessionContentOwnerOptions = sessionContentCredentials
+    ? {
+        credentials: sessionContentCredentials,
+        resolveExactSessionEncryptionMaterial,
+        serverId,
+        ...(serverIdentityId ? { serverIdentityId } : {}),
+        serverHttpBaseUrl,
+        ...(client.getServerFeaturesSnapshot
+          ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
+          : {}),
+      }
+    : null;
 
   const mcp = new McpServer({
     name: 'Happier MCP',
@@ -355,15 +389,12 @@ export function createHappierMcpServer(
             && client.getActiveTurnPermissionWitness?.()?.turnId === witness.turnId,
         } : null);
       },
-      ...(credentials
+      ...(sessionContentOwnerOptions
+        ? createSessionBoardActionDeps(sessionContentOwnerOptions)
+        : {}),
+      ...(sessionContentOwnerOptions
         ? createSessionDiscussionActionDeps({
-            credentials,
-            serverId,
-            ...(serverIdentityId ? { serverIdentityId } : {}),
-            serverHttpBaseUrl,
-            ...(client.getServerFeaturesSnapshot
-              ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
-              : {}),
+            ...sessionContentOwnerOptions,
             ...(client.postAgentDiscussionMessage
               ? {
                   postAgentMessage: async (request, options) => await client.postAgentDiscussionMessage!(
@@ -492,8 +523,8 @@ export function createHappierMcpServer(
           actionId: request.actionId,
           input: request.input,
           actionsSettings: actionSettingsProvider.getActionsSettings(),
-          ...(request.expectedContributorImmutableGenerationId
-            ? { expectedContributorImmutableGenerationId: request.expectedContributorImmutableGenerationId }
+          ...(request.expectedContributorOccurrenceId
+            ? { expectedContributorOccurrenceId: request.expectedContributorOccurrenceId }
             : {}),
           context: {
             surface: request.surface,

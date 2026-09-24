@@ -150,6 +150,7 @@ export function createWorkosProviderModule(input: WorkosProviderModuleInput): Pr
         }, policy),
         requiresOAuth: true,
         isConfigured: () => status.configured,
+        providerKind: "workos_sso",
     });
 
     const oauth: OAuthFlowProvider = Object.freeze({

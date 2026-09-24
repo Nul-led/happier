@@ -21,12 +21,9 @@ import {
 import {
     applyRequestedSessionPlacementInTx,
     insertLayout1SessionRowInTx,
-    isSessionCreationPlacementError,
-    isSessionOwnerEnvelopeError,
-    SessionInitialAccessError,
-    isSessionTeamCredentialBindingError,
     type Layout1SessionCreateOutcome,
 } from "./layout1SessionRowWrite";
+import { classifyLayout1SessionCreateThrow } from "./createFreshBoundLayout1Session";
 import type { PreparedLayout1SessionCreate } from "./prepareLayout1SessionCreate";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { restoreSessionTagRejoinInTx } from "./restoreSessionTagRejoinInTx";
@@ -205,32 +202,10 @@ export async function createOrRejoinLayout1SessionByTag(
         }
         return outcome;
     } catch (error) {
-        if (isSessionCreationPlacementError(error)) {
-            return {
-                kind: "rejected",
-                rejection: { reason: "invalid-organization-placement" },
-            };
-        }
-        if (isSessionOwnerEnvelopeError(error)) {
-            return { kind: "rejected", rejection: { reason: "invalid-params" } };
-        }
-        if (error instanceof SessionInitialAccessError) {
-            return {
-                kind: "rejected",
-                rejection: {
-                    reason: "session-initial-access-invalid",
-                    code: error.code,
-                },
-            };
-        }
-        if (isSessionTeamCredentialBindingError(error)) {
-            return {
-                kind: "rejected",
-                rejection: {
-                    reason: "team-credential-binding-invalid",
-                    code: error.reason,
-                },
-            };
+        const rejection = classifyLayout1SessionCreateThrow(error);
+        // The reserved-identity refusals cannot reach a tag create.
+        if (rejection && rejection.reason !== "session-id-taken" && rejection.reason !== "session-tag-taken") {
+            return { kind: "rejected", rejection };
         }
         if (!isPrismaErrorCode(error, "P2002")) {
             throw error;

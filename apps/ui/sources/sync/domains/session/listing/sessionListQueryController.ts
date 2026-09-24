@@ -33,6 +33,12 @@ export type SessionListQueryHomeState = Readonly<{
      * owners must not read `ready` alone as authoritative for a filtered corpus.
      */
     appliedSourceKind: 'query' | 'ordinary' | null;
+    /**
+     * Historical rows the Home withheld from this applied membership pending their
+     * owner's metadata upgrade (released layout 0). Exhausted cursors with a
+     * non-zero count are a read-to-the-end corpus that is still not whole.
+     */
+    metadataUpgradeRequiredCount?: number;
 }>;
 
 /**
@@ -81,6 +87,12 @@ export type SessionListQueryHomeController = Readonly<{
     update(input: ControllerInput): Promise<void>;
     refresh(): Promise<void>;
     invalidate(): Promise<void>;
+    /**
+     * Removes one committed-retired (deleted/revoked) Session from this Home's
+     * applied membership. A response already in flight is fenced at the list reader,
+     * so the address cannot return until a later read admits it again.
+     */
+    retire(sessionId: string): void;
     loadNext(): Promise<void>;
     dispose(): void;
 }>;
@@ -88,7 +100,8 @@ export type SessionListQueryHomeController = Readonly<{
 type ControllerInput = Readonly<{
     query: SessionListQueryV1;
     selected: boolean;
-    online: boolean;
+    /** `null` means the selected Home's transport ownership is being transferred. */
+    online: boolean | null;
     supported?: boolean | null;
     /**
      * Secondary consumers may retain the strict query's exact membership in
@@ -336,6 +349,8 @@ export function createSessionListQueryHomeController(params: Readonly<{
                     appliedQueryKey: requestQueryKey,
                     appliedSourceKind: plan.source.kind,
                     addresses,
+                    metadataUpgradeRequiredCount: (family === 'replace' ? 0 : state.metadataUpgradeRequiredCount ?? 0)
+                        + (result.metadataUpgradeRequiredCount ?? 0),
                     ...(family !== 'attention' ? {
                         nextCursor: result.nextCursor,
                         hasNext: result.hasNext,
@@ -363,6 +378,7 @@ export function createSessionListQueryHomeController(params: Readonly<{
                         attentionNextCursor: null,
                         attentionHasNext: false,
                         freshnessAt: null,
+                        metadataUpgradeRequiredCount: 0,
                     } : {}),
                     phase: 'error',
                     failureReason: failure.reason,
@@ -451,6 +467,21 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 });
                 return;
             }
+            if (nextInput.online === null) {
+                revision += 1;
+                activeAbortController?.abort('session-list-query-home-transferring');
+                activeAbortController = null;
+                inFlight = null;
+                refreshQueued = false;
+                publish({
+                    ...state,
+                    requestedQueryKey: nextQueryKey,
+                    phase: state.appliedQueryKey === nextQueryKey ? 'refreshing' : 'loading',
+                    failureReason: null,
+                    failureCode: null,
+                });
+                return;
+            }
             if (!nextInput.online) {
                 revision += 1;
                 activeAbortController?.abort('session-list-query-home-offline');
@@ -506,6 +537,13 @@ export function createSessionListQueryHomeController(params: Readonly<{
                 return currentRequest.then(() => inFlight ?? Promise.resolve());
             }
             return startPage('replace');
+        },
+        retire: (sessionIdRaw) => {
+            const sessionId = String(sessionIdRaw ?? '').trim();
+            if (disposed || !sessionId) return;
+            const addresses = state.addresses.filter((address) => address.sessionId !== sessionId);
+            if (addresses.length === state.addresses.length) return;
+            publish({ ...state, addresses });
         },
         loadNext: () => {
             if (inFlight) return inFlight;

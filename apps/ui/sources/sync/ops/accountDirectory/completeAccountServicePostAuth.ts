@@ -39,17 +39,57 @@ export type AccountPostAuthResult =
     | { kind: 'choose_home'; homes: AccountDirectoryHomeEntryV1[] }
     | { kind: 'account_connected_no_homes' }
     | { kind: 'explicit_target_not_linked'; homeServerIdentityId: string }
-    | { kind: 'home_material_required'; homeServerIdentityId: string; intent: AccountContinuationIntent; reason: 'missing_material' | 'invalid_material' }
+    | {
+        kind: 'home_material_required';
+        homeServerIdentityId: string;
+        /**
+         * The Home Account whose committed credential produced this pause. The
+         * recovery completes only for that Account; another Account signed in
+         * to the same Home meanwhile supersedes it.
+         */
+        homeAccountId: string;
+        intent: AccountContinuationIntent;
+        reason: 'missing_material' | 'invalid_material';
+    }
     | { kind: 'stopped'; reason: 'cancelled' | 'superseded' }
     | {
         kind: 'failure';
         stage: 'link' | 'refresh' | 'enroll' | 'material' | 'enter';
         targetHomeServerIdentityId?: string;
+        /** The committed Home Account a material/entry retry stays bound to. */
+        targetHomeAccountId?: string;
         accountCredentialCommitted: true;
         homeCredentialCommitted: boolean;
         code: AccountPostAuthFailureCode;
         recovery: 'retry_stage' | 'reauthenticate_account' | 'use_home_auth' | 'relink_home' | 'stop';
     };
+
+export type CompletedAccountPostAuthResult = Extract<AccountPostAuthResult, {
+    kind: 'account_connected' | 'home_entered' | 'home_enrolled' | 'home_linked';
+}>;
+
+/** The settled outcomes: the Account sign-in and any requested Home step both succeeded. */
+export function isCompletedAccountPostAuthResult(
+    result: Readonly<{ kind: string }>,
+): result is CompletedAccountPostAuthResult {
+    return result.kind === 'account_connected'
+        || result.kind === 'home_entered'
+        || result.kind === 'home_enrolled'
+        || result.kind === 'home_linked';
+}
+
+/**
+ * Whether a host dismisses its continuation for this result. Entering or
+ * linking a Home needs no acknowledgement (the shell is the confirmation), but
+ * `account_connected` and `home_enrolled` keep their card: the user still
+ * chooses Done, or whether to open the newly enrolled Home. Every host shares
+ * this one rule so a completed card is never dismissed by one and kept by another.
+ */
+export function shouldDismissAccountPostAuthContinuation(result: Readonly<{ kind: string }>): boolean {
+    return isCompletedAccountPostAuthResult(result)
+        && result.kind !== 'account_connected'
+        && result.kind !== 'home_enrolled';
+}
 
 export type AccountPostAuthInput = Readonly<{
     service: VerifiedAccountServiceAuthority;
@@ -69,12 +109,14 @@ function failure(
     recovery: Failure['recovery'],
     homeCredentialCommitted = false,
     targetHomeServerIdentityId?: string,
+    targetHomeAccountId?: string,
 ): Failure {
     return { kind: 'failure', stage, code, recovery, accountCredentialCommitted: true, homeCredentialCommitted,
-        ...(targetHomeServerIdentityId ? { targetHomeServerIdentityId } : {}) };
+        ...(targetHomeServerIdentityId ? { targetHomeServerIdentityId } : {}),
+        ...(targetHomeAccountId ? { targetHomeAccountId } : {}) };
 }
 
-function projectFailure(stage: Failure['stage'], error: unknown, homeCommitted = false, target?: string): Failure {
+function projectFailure(stage: Failure['stage'], error: unknown, homeCommitted = false, target?: string, homeAccountId?: string): Failure {
     const fallback: AccountPostAuthFailureCode = { source: 'local', code:
         stage === 'link' ? 'link_failed' : stage === 'refresh' ? 'refresh_failed'
             : stage === 'material' ? 'account_mode_unavailable' : 'entry_failed' };
@@ -84,13 +126,13 @@ function projectFailure(stage: Failure['stage'], error: unknown, homeCommitted =
             : error.code === 'directory_link_not_found' || error.code === 'invalid_issuer' || error.code === 'invalid_subject'
                 ? 'use_home_auth'
                 : error.transient ? 'retry_stage' : 'stop';
-        return failure(stage, error.code ? { source: 'directory', code: error.code } : fallback, recovery, homeCommitted, target);
+        return failure(stage, error.code ? { source: 'directory', code: error.code } : fallback, recovery, homeCommitted, target, homeAccountId);
     }
     if (stage === 'enroll' && error instanceof HappyError && error.kind === 'auth') {
-        return failure(stage, { source: 'home', code: 'failed' }, 'use_home_auth', homeCommitted, target);
+        return failure(stage, { source: 'home', code: 'failed' }, 'use_home_auth', homeCommitted, target, homeAccountId);
     }
     const transient = error instanceof TypeError || (error instanceof HappyError && error.canTryAgain);
-    return failure(stage, fallback, transient ? 'retry_stage' : 'stop', homeCommitted, target);
+    return failure(stage, fallback, transient ? 'retry_stage' : 'stop', homeCommitted, target, homeAccountId);
 }
 
 function authorityMatches(input: AccountPostAuthInput): boolean {
@@ -103,36 +145,75 @@ function stopped(input: AccountPostAuthInput): AccountPostAuthResult {
     return { kind: 'stopped', reason: input.signal?.aborted ? 'cancelled' : 'superseded' };
 }
 
-async function finishEntry(input: AccountPostAuthInput, homeServerIdentityId: string, selection: Selection, shouldCancel: () => boolean): Promise<AccountPostAuthResult> {
+/**
+ * Whether the Home's committed credential still belongs to the Account a
+ * paused continuation was created for. A same-Account refresh keeps it; another
+ * Account, or no credential at all, supersedes it.
+ */
+async function isHomeAccountCurrent(homeServerIdentityId: string, homeAccountId: string | undefined): Promise<boolean> {
+    if (homeAccountId === undefined) return true;
+    const resolved = resolveServerProfileForPortableIdentity(homeServerIdentityId);
+    if (resolved.kind !== 'resolved') return false;
+    const credentials = await TokenStorage.getCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId });
+    if (!credentials) return false;
+    try {
+        return parseToken(credentials.token) === homeAccountId;
+    } catch {
+        return false;
+    }
+}
+
+async function finishEntry(input: AccountPostAuthInput, homeServerIdentityId: string, selection: Selection, shouldCancel: () => boolean, homeAccountId?: string): Promise<AccountPostAuthResult> {
     if (shouldCancel()) return stopped(input);
     const result = await finalizeDirectoryHomeEntryIntent(homeServerIdentityId, input.intent, shouldCancel);
     if (result === 'superseded') return stopped(input);
-    if (result === 'blocked') return failure('enter', { source: 'local', code: 'entry_failed' }, 'retry_stage', true, homeServerIdentityId);
+    if (result === 'blocked') return failure('enter', { source: 'local', code: 'entry_failed' }, 'retry_stage', true, homeServerIdentityId, homeAccountId);
     return input.intent.kind === 'enter'
         ? { kind: 'home_entered', homeServerIdentityId, selection }
         : { kind: 'home_enrolled', homeServerIdentityId };
 }
 
-async function completeMaterial(input: AccountPostAuthInput, homeServerIdentityId: string, selection: Selection, shouldCancel: () => boolean, suppliedSecret?: Uint8Array, pairedCredentials?: AuthCredentials): Promise<AccountPostAuthResult> {
+async function completeMaterial(input: AccountPostAuthInput, homeServerIdentityId: string, selection: Selection, shouldCancel: () => boolean, suppliedSecret?: Uint8Array, pairedCredentials?: AuthCredentials, expectedHomeAccountId?: string): Promise<AccountPostAuthResult> {
+    // Set once the committed Home credential is read; every later material or
+    // entry failure carries it so its retry stays bound to the same Account.
+    let homeAccountId: string | undefined;
     if (shouldCancel()) return stopped(input);
     const resolved = resolveServerProfileForPortableIdentity(homeServerIdentityId);
     const descriptor = resolved.kind === 'resolved' ? buildHomeConnectionDescriptorForProfile(resolved.profile) : null;
     if (!descriptor || descriptor.homeServerIdentityId !== homeServerIdentityId || resolved.kind !== 'resolved') {
-        return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId);
+        return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId, homeAccountId);
     }
     try {
         let credentials = await TokenStorage.getCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId });
-        if (!credentials) return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'use_home_auth', true, homeServerIdentityId);
+        if (!credentials) {
+            return expectedHomeAccountId === undefined
+                ? failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'use_home_auth', true, homeServerIdentityId, homeAccountId)
+                : { kind: 'stopped', reason: 'superseded' };
+        }
         const retainedToken = credentials.token;
+        try {
+            homeAccountId = parseToken(retainedToken);
+        } catch {
+            return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'use_home_auth', true, homeServerIdentityId, homeAccountId);
+        }
+        // A paused recovery belongs to the Account it was created for. A
+        // same-Account refresh continues it; another Account signed in to this
+        // Home in the meantime is a different outcome, never its completion.
+        if (expectedHomeAccountId !== undefined && homeAccountId !== expectedHomeAccountId) {
+            return { kind: 'stopped', reason: 'superseded' };
+        }
+        const materialRequired = (reason: 'missing_material' | 'invalid_material'): AccountPostAuthResult => ({
+            kind: 'home_material_required', homeServerIdentityId, homeAccountId: homeAccountId!, intent: input.intent, reason,
+        });
         if (pairedCredentials) {
             try {
-                if (parseToken(pairedCredentials.token) !== parseToken(retainedToken)) throw new Error('Account mismatch');
+                if (parseToken(pairedCredentials.token) !== homeAccountId) throw new Error('Account mismatch');
             } catch {
-                return { kind: 'home_material_required', homeServerIdentityId, intent: input.intent, reason: 'invalid_material' };
+                return materialRequired('invalid_material');
             }
         }
         const transportResult = await resolveHomeEnrollmentTransport(descriptor, { verification: { kind: 'authenticated', token: credentials.token } });
-        if (!transportResult.ok) return failure('material', { source: 'home', code: 'transport_unavailable' }, 'retry_stage', true, homeServerIdentityId);
+        if (!transportResult.ok) return failure('material', { source: 'home', code: 'transport_unavailable' }, 'retry_stage', true, homeServerIdentityId, homeAccountId);
         const transport = transportResult.transport;
         try {
             const request = transport.createRequest({ credentials });
@@ -154,7 +235,7 @@ async function completeMaterial(input: AccountPostAuthInput, homeServerIdentityI
                     { serverId: homeServerIdentityId },
                     tokenOnlyCredentials,
                 )) {
-                    return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId);
+                    return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId, homeAccountId);
                 }
                 credentials = tokenOnlyCredentials;
             }
@@ -174,39 +255,39 @@ async function completeMaterial(input: AccountPostAuthInput, homeServerIdentityI
                         });
                         if (shouldCancel()) return stopped(input);
                         if (parseToken(recovered.token) !== parseToken(credentials.token)) {
-                            return { kind: 'home_material_required', homeServerIdentityId, intent: input.intent, reason: 'invalid_material' };
+                            return materialRequired('invalid_material');
                         }
                         const recoveredCredentials = { token: recovered.token, secret: encodeBase64(secret, 'base64url') };
                         await createEncryptionFromAuthCredentials(recoveredCredentials);
                         const current = await TokenStorage.getCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId });
                         if (shouldCancel() || current?.token !== retainedToken) return stopped(input);
                         if (!await TokenStorage.setCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId }, recoveredCredentials)) {
-                            return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId);
+                            return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId, homeAccountId);
                         }
                         credentials = recoveredCredentials;
                     } catch (error) {
                         if (shouldCancel()) return stopped(input);
                         if (error instanceof HappyError && error.kind === 'auth') {
-                            return { kind: 'home_material_required', homeServerIdentityId, intent: input.intent, reason: 'invalid_material' };
+                            return materialRequired('invalid_material');
                         }
-                        return projectFailure('material', error, true, homeServerIdentityId);
+                        return projectFailure('material', error, true, homeServerIdentityId, homeAccountId);
                     } finally {
                         secret.fill(0);
                     }
                 }
                 if (isTokenOnlyAuthCredentials(credentials)) {
-                    return { kind: 'home_material_required', homeServerIdentityId, intent: input.intent, reason: 'missing_material' };
+                    return materialRequired('missing_material');
                 }
                 try {
                     await resolveProvisioningMaterial(credentials);
                 } catch {
-                    return { kind: 'home_material_required', homeServerIdentityId, intent: input.intent, reason: 'invalid_material' };
+                    return materialRequired('invalid_material');
                 }
                 if (pairedCredentials) {
                     const current = await TokenStorage.getCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId });
                     if (shouldCancel() || current?.token !== retainedToken) return stopped(input);
                     if (!await TokenStorage.setCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId }, pairedCredentials)) {
-                        return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId);
+                        return failure('material', { source: 'local', code: 'account_mode_unavailable' }, 'stop', true, homeServerIdentityId, homeAccountId);
                     }
                 }
             }
@@ -215,9 +296,9 @@ async function completeMaterial(input: AccountPostAuthInput, homeServerIdentityI
         }
         const currentBeforeEntry = await TokenStorage.getCredentialsForServerUrl(resolved.profile.serverUrl, { serverId: homeServerIdentityId });
         if (shouldCancel() || currentBeforeEntry?.token !== credentials.token) return stopped(input);
-        return await finishEntry(input, homeServerIdentityId, selection, shouldCancel);
+        return await finishEntry(input, homeServerIdentityId, selection, shouldCancel, homeAccountId);
     } catch (error) {
-        return shouldCancel() ? stopped(input) : projectFailure('material', error, true, homeServerIdentityId);
+        return shouldCancel() ? stopped(input) : projectFailure('material', error, true, homeServerIdentityId, homeAccountId);
     }
 }
 
@@ -332,7 +413,8 @@ export async function supplyAccountServiceHomeMaterial(
     const isCurrent = input.session.captureLifecycle();
     return await completeMaterial(input, previous.homeServerIdentityId, retainedSelection(input, previous.homeServerIdentityId),
         () => input.signal?.aborted === true || !isCurrent(),
-        secret instanceof Uint8Array ? secret : undefined, secret instanceof Uint8Array ? undefined : secret.credentials);
+        secret instanceof Uint8Array ? secret : undefined, secret instanceof Uint8Array ? undefined : secret.credentials,
+        previous.homeAccountId);
 }
 
 export async function resumeAccountServicePostAuth(
@@ -358,11 +440,21 @@ export async function resumeAccountServicePostAuth(
             && previous.kind !== 'home_material_required' && !(previous.kind === 'failure' && previous.recovery === 'use_home_auth')) return previous;
         return await completeAccountServiceHomeAuthentication(input, authenticatedHome);
     }
-    if (previous.kind === 'home_material_required') return await completeMaterial(input, previous.homeServerIdentityId, retainedSelection(input, previous.homeServerIdentityId), shouldCancel);
+    if (previous.kind === 'home_material_required') {
+        return await completeMaterial(input, previous.homeServerIdentityId, retainedSelection(input, previous.homeServerIdentityId), shouldCancel,
+            undefined, undefined, previous.homeAccountId);
+    }
     if (previous.kind !== 'failure' || previous.recovery !== 'retry_stage') return previous;
     const target = previous.targetHomeServerIdentityId;
-    if (previous.stage === 'enter' && target) return await finishEntry(input, target, retainedSelection(input, target), shouldCancel);
-    if (previous.stage === 'material' && target) return await completeMaterial(input, target, retainedSelection(input, target), shouldCancel);
+    if (previous.stage === 'enter' && target) {
+        if (!await isHomeAccountCurrent(target, previous.targetHomeAccountId)) return { kind: 'stopped', reason: 'superseded' };
+        if (shouldCancel()) return stopped(input);
+        return await finishEntry(input, target, retainedSelection(input, target), shouldCancel, previous.targetHomeAccountId);
+    }
+    if (previous.stage === 'material' && target) {
+        return await completeMaterial(input, target, retainedSelection(input, target), shouldCancel,
+            undefined, undefined, previous.targetHomeAccountId);
+    }
     return await runPostAuth(input, previous.stage === 'refresh' ? 'refresh' : previous.stage === 'enroll' ? 'enroll' : 'link', target);
 }
 

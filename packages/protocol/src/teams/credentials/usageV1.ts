@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { KEYSET_CURSOR_MAX_LENGTH_V1 } from '../../pagination/keysetCursorV1.js';
 import {
   UsageAnalyticsGranularitySchema,
   UsageObservationCostSchema,
@@ -137,7 +138,7 @@ export const TeamCredentialUsageQueryInputV1Schema = z.object({
   granularity: UsageAnalyticsGranularitySchema.default('day'),
   costMode: z.enum(['auto', 'reported', 'estimated']).default('auto'),
   breakdown: TeamCredentialUsageBreakdownDimensionV1Schema.optional(),
-  cursor: z.string().min(1).max(256).optional(),
+  cursor: z.string().min(1).max(KEYSET_CURSOR_MAX_LENGTH_V1).optional(),
 }).strict().refine((value) => value.endMs >= value.startMs, {
   path: ['endMs'], message: 'endMs must be greater than or equal to startMs',
 });
@@ -175,7 +176,7 @@ export const TeamCredentialUsageQueryResultV1Schema = z.object({
     label: z.string().min(1).optional(),
     totals: TeamCredentialUsageTotalsV1Schema,
   }).strict()).optional(),
-  nextCursor: z.string().min(1).max(256).nullable(),
+  nextCursor: z.string().min(1).max(KEYSET_CURSOR_MAX_LENGTH_V1).nullable(),
   limits: z.array(TeamCredentialUsageLimitV1Schema),
 }).strict();
 export type TeamCredentialUsageQueryResultV1 = z.infer<typeof TeamCredentialUsageQueryResultV1Schema>;

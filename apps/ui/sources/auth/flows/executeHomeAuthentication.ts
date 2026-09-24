@@ -25,7 +25,10 @@ import { HappyError } from '@/utils/errors/errors';
 import { resolveAppUrlScheme } from '@/utils/url/appScheme';
 import { t } from '@/text';
 
-import { resolveHomeAuthenticationTarget } from './resolveHomeAuthenticationTarget';
+import {
+    isPersonalHomeAuthenticationTarget,
+    resolveHomeAuthenticationTarget,
+} from './resolveHomeAuthenticationTarget';
 import { createAuthenticationFailure } from './authenticationFailure';
 import { authenticationErrorMessage } from './authenticationErrorMessage';
 
@@ -89,6 +92,70 @@ async function promptRetryGeneratedKeyModeResolution(signal?: AbortSignal): Prom
     await Promise.race([alert, aborted]);
     removeAbortListener();
     return retry && !signal.aborted;
+}
+
+/**
+ * The authenticated Team-admission start.
+ *
+ * The provisioning start below mints a fresh 32-byte seed whose public key
+ * BECOMES an Account (`Account.publicKey`), so a device that already holds this
+ * Home's credential would be handed a second Account or refused
+ * `provider-already-linked`. An Account that already exists proves itself with
+ * the one thing every credential shape carries — its bearer token — so the Team
+ * identity is linked to it through the authenticated connect finalizer, which
+ * runs the same Team admission the provisioning finalizer does.
+ */
+async function startTeamAdmissionConnect(input: Readonly<{
+    providerId: string;
+    /** The Home-projected presentation of this provider choice. */
+    presentation: WelcomeAuthenticationMethod['method']['presentation'];
+    credentials: AuthCredentials;
+    teamAdmission: NonNullable<ExecuteHomeAuthenticationOptions['teamAdmission']>;
+    callbackTarget: Readonly<{ serverId: string; serverUrl: string }>;
+    /** The exact Home whose saved credential starts this connect. */
+    credentialTarget: Readonly<{ serverId: string; serverUrl: string }>;
+    returnTo: string;
+    transport?: AccountDirectoryAuthTransport;
+    signal?: AbortSignal;
+    onExternalAuthStarted?: () => void | Promise<void>;
+}>): Promise<void> {
+    try {
+        const provider = getAuthProvider(input.providerId, input.presentation);
+        if (!provider) throw new Error('Home OAuth provider is unavailable');
+        const requestContext = createTeamOAuthRequestContext(
+            input.callbackTarget,
+            input.teamAdmission.teamId,
+            input.transport,
+            input.signal,
+            input.teamAdmission.invitationToken,
+            input.teamAdmission.origin,
+        );
+        if (!requestContext) throw new Error('Team OAuth target is unavailable');
+        // The connect continuation owns its own return custody, exactly as the
+        // Account Security link journey does; no keypair or proof is minted. It
+        // is bound to the exact Home whose credential starts it, so the browser
+        // return finalizes there even while another Home stays focused (TA-R14).
+        if (!await TokenStorage.setPendingExternalConnect({
+            provider: input.providerId,
+            ...(input.presentation ? { presentation: input.presentation } : {}),
+            returnTo: input.returnTo,
+            serverUrl: input.credentialTarget.serverUrl,
+            serverId: input.credentialTarget.serverId,
+        })) {
+            throw new Error('Failed to persist pending external connection');
+        }
+        const start = await provider.getConnectUrl(input.credentials, requestContext);
+        if (input.signal?.aborted) throw new Error('Home authentication cancelled');
+        if (!isSafeExternalAuthUrl(start.url)) throw new Error('Invalid Home OAuth URL');
+        await openExternalAuthUrl(start.url);
+        if (input.signal?.aborted) return;
+        await input.onExternalAuthStarted?.();
+    } catch {
+        await TokenStorage.clearPendingExternalConnect().catch(() => false);
+        if (!input.signal?.aborted) {
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
+        }
+    }
 }
 
 function transportFields(transport: AccountDirectoryAuthTransport | undefined) {
@@ -161,6 +228,7 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
     if (request.authority.purpose !== 'home') return;
     const resolvedTarget = resolveHomeAuthenticationTarget(request.authority.target);
     if (!resolvedTarget || options.signal?.aborted) return;
+    const isPersonalHome = isPersonalHomeAuthenticationTarget(request.authority.target);
     if (options.accountContinuation?.homeServerIdentityId !== undefined
         && options.accountContinuation.homeServerIdentityId !== resolvedTarget.serverIdentityId) return;
     const persistenceTarget = { serverUrl: resolvedTarget.canonicalServerUrl, serverId: resolvedTarget.serverId };
@@ -230,10 +298,14 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
             if (options.signal?.aborted) return;
             if (error instanceof HappyError && error.code === 'signup-disabled') {
                 options.retryServerCheck?.();
-                await Modal.alert(t('common.error'), t('errors.signupDisabled'));
+                await Modal.alert(
+                    t('common.error'),
+                    authenticationErrorMessage(error, resolvedTarget.canonicalServerUrl, { isPersonalHome })
+                        ?? t('errors.signupDisabled'),
+                );
                 return;
             }
-            const message = authenticationErrorMessage(error, resolvedTarget.canonicalServerUrl) ?? (process.env.EXPO_PUBLIC_DEBUG
+            const message = authenticationErrorMessage(error, resolvedTarget.canonicalServerUrl, { isPersonalHome }) ?? (process.env.EXPO_PUBLIC_DEBUG
                 ? formatOperationFailedDebugMessage(t('errors.operationFailed'), error)
                 : t('errors.operationFailed'));
             await Modal.alert(t('common.error'), message);
@@ -249,6 +321,30 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
     };
     if (request.execution.kind === 'oauth') {
         const providerId = request.execution.providerId;
+        if (options.teamAdmission) {
+            const existing = await TokenStorage.getCredentialsForServerUrl(
+                persistenceTarget.serverUrl,
+                { serverId: persistenceTarget.serverId },
+            ).catch(() => null);
+            if (options.signal?.aborted) return;
+            if (existing) {
+                await startTeamAdmissionConnect({
+                    providerId,
+                    presentation: request.method.presentation,
+                    credentials: existing,
+                    teamAdmission: options.teamAdmission,
+                    callbackTarget,
+                    credentialTarget: persistenceTarget,
+                    returnTo: options.returnTo,
+                    ...(options.transport ? { transport: options.transport } : {}),
+                    ...(options.signal ? { signal: options.signal } : {}),
+                    ...(options.onExternalAuthStarted
+                        ? { onExternalAuthStarted: options.onExternalAuthStarted }
+                        : {}),
+                });
+                return;
+            }
+        }
         try {
             let mayStart = false;
             await presentFirstKeyCredentialLifecycle({
@@ -269,7 +365,14 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
                 secret = encodeBase64(secretBytes, 'base64url');
                 publicKey = encodeBase64(sodium.crypto_sign_seed_keypair(secretBytes).publicKey);
             }
-            const provider = getAuthProvider(providerId);
+            // A dynamic provider is built from the Home's projected presentation
+            // (teams-lane-03/01 §10.2), never re-derived from its id.
+            const provider = getAuthProvider(providerId, request.method.presentation);
+            // The return route rebuilds the provider on a fresh load; custody carries
+            // the same projected presentation so it never re-derives one from the id.
+            const startPresentation = request.method.presentation
+                ? { presentation: request.method.presentation }
+                : {};
             if (options.signal?.aborted) return;
             if (!provider) throw new Error('Home OAuth provider is unavailable');
             const startInput = request.execution.mode === 'keyed'
@@ -295,6 +398,7 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
                 url = start.url;
                 pending = {
                     provider: providerId,
+                    ...startPresentation,
                     proof,
                     ...(secret ? { secret } : {}),
                     ...callbackTarget,
@@ -317,6 +421,7 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
                 url = await provider.getExternalAuthUrl(startInput, requestContext);
                 pending = {
                     provider: providerId,
+                    ...startPresentation,
                     proof,
                     ...(secret ? { secret } : {}),
                     returnTo: options.accountContinuation?.returnTo ?? options.returnTo,
@@ -445,7 +550,7 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
         }
     } catch (error) {
         if (options.signal?.aborted) return;
-        const message = authenticationErrorMessage(error, resolvedTarget.canonicalServerUrl) ?? (process.env.EXPO_PUBLIC_DEBUG
+        const message = authenticationErrorMessage(error, resolvedTarget.canonicalServerUrl, { isPersonalHome }) ?? (process.env.EXPO_PUBLIC_DEBUG
             ? formatOperationFailedDebugMessage(t('errors.operationFailed'), error)
             : t('errors.operationFailed'));
         await Modal.alert(t('common.error'), message);

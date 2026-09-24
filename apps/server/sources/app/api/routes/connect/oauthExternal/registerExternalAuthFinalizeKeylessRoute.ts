@@ -34,7 +34,11 @@ import {
     ExternalOAuthFinalizeAuthSuccessResponseSchema,
 } from "@happier-dev/protocol";
 import { oauthExternalFinalizeErrorHandler } from "./oauthExternalFinalizeErrorHandler";
-import { requireCurrentOAuthPendingRuntime, requireCurrentOAuthPendingRuntimeInTx } from "./oauthSecurityBinding";
+import {
+    isTeamOwnedConnectionAdmission,
+    requireCurrentOAuthPendingRuntime,
+    requireCurrentOAuthPendingRuntimeInTx,
+} from "./oauthSecurityBinding";
 import { requireTeamOAuthAdmissionInTx, TeamOAuthAdmissionAbort } from "@/app/teams/memberships/teamOAuthAdmission";
 import { readOAuthAuthenticationEvidenceInTx } from "@/app/auth/authenticationEvidence";
 import {
@@ -204,11 +208,17 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         let refreshToken: string | undefined;
         let pendingProfile: unknown;
         try {
-            const tokenBytes = privacyKit.decodeBase64((parsedValue as any).accessTokenEnc);
             const prefix = pendingFormat === "v2"
                 ? "pending_v2"
                 : "pending_keyless";
-            accessToken = decryptString(["auth", "external", providerId, prefix, pendingKey, "token"], tokenBytes);
+            // An identity-proof-only provider persists no token in the continuation.
+            const accessTokenEnc: unknown = (parsedValue as any).accessTokenEnc;
+            accessToken = typeof accessTokenEnc === "string" && accessTokenEnc
+                ? decryptString(
+                    ["auth", "external", providerId, prefix, pendingKey, "token"],
+                    privacyKit.decodeBase64(accessTokenEnc),
+                )
+                : "";
             if (typeof (parsedValue as any).refreshTokenEnc === "string" && (parsedValue as any).refreshTokenEnc.trim()) {
                 const refreshBytes = privacyKit.decodeBase64((parsedValue as any).refreshTokenEnc);
                 refreshToken = decryptString(["auth", "external", providerId, prefix, pendingKey, "refresh"], refreshBytes);
@@ -296,12 +306,14 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             }
             const finalized = await inTx(async (tx) => {
                 await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
-                if (!isAccountDirectory && !isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                    env: process.env,
-                    methodId: providerId,
-                    actionId: "login",
-                    mode: "keyless",
-                })) return null;
+                if (!isAccountDirectory
+                    && !isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
+                    && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: providerId,
+                        actionId: "login",
+                        mode: "keyless",
+                    })) return null;
                 const invitationSource = isTeamAdmission
                     && parsedValue.securityBinding?.admission?.kind === "team_invitation"
                     ? parsedValue.securityBinding.admission

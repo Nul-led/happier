@@ -122,8 +122,16 @@ export function createTemporaryComputerCreatorDependencies(facts: Readonly<{
         ))
     );
 
-    const exactSelectedProviderModel = (agentTargetKey: string) => {
-        const selected = facts.selectedTeamCredentialModel;
+    /**
+     * The exact current catalog model for one Team model choice. Launch
+     * readiness asks it about the composer's live choice; review asks it about
+     * the choice frozen into the submitted package, so a later composer change
+     * can never substitute another resource into an accepted launch.
+     */
+    const exactProviderModelFor = (
+        selected: TeamCredentialProviderModelSelectionV1 | null,
+        agentTargetKey: string,
+    ) => {
         if (!selected) {
             note('team_credential_model_unselected');
             return null;
@@ -246,16 +254,18 @@ export function createTemporaryComputerCreatorDependencies(facts: Readonly<{
 
         isLaunchReady: ({ backendTargetKey, agentTarget }) => (
             dependencies.isAuthoringCompatible({ backendTargetKey, agentTarget })
-            && exactSelectedProviderModel(backendTargetKey) !== null
+            && exactProviderModelFor(facts.selectedTeamCredentialModel, backendTargetKey) !== null
         ),
 
-        resolveCredentialSelectionBinding: async ({ projection, preparedAuthoring, client, signal }) => {
+        resolveCredentialSelectionBinding: async ({ projection, preparedAuthoring, submittedTeamCredentialModel, client, signal }) => {
             if (!qualifiedHomeServerId) {
                 note('broker_selection_unavailable');
                 return null;
             }
-            const providerModel = facts.selectedTeamCredentialModel
-                ? exactSelectedProviderModel(facts.selectedTeamCredentialModel.agentTargetKey)
+            // The frozen submission decides; it is revalidated against the
+            // current catalog, and an unavailable choice stays unavailable.
+            const providerModel = submittedTeamCredentialModel
+                ? exactProviderModelFor(submittedTeamCredentialModel, submittedTeamCredentialModel.agentTargetKey)
                 : (note('team_credential_model_unselected'), null);
             if (!providerModel) return null;
             const authoring = preparedAuthoring.authoring;

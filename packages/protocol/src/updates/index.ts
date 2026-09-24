@@ -451,6 +451,14 @@ export const EphemeralUpdateSchema = z.discriminatedUnion('type', [
     cost: z.record(z.string(), z.number()),
     timestamp: TimestampMsSchema,
   }).passthrough(),
+  /**
+   * Content-free invalidation to a Team credential resource's usage readers after a
+   * new immutable usage fact commits. Readers re-query the authorized usage projection.
+   */
+  z.object({
+    type: z.literal('team-credential-usage-changed'),
+    resourceId: z.string().min(1),
+  }).passthrough(),
   z.object({
     type: z.literal('machine-status'),
     machineId: z.string(),

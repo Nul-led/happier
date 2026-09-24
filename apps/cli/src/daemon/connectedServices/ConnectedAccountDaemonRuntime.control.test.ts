@@ -6,6 +6,7 @@ import {
 import type { PluginContributionRef } from '@happier-dev/plugin-sdk';
 
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
   createConnectedAccountContributionRegistry,
   type ConnectedAccountRuntimeRegistration,
@@ -32,6 +33,14 @@ type ConfigurationConsequenceApply = Parameters<
 
 const service = Object.freeze({ pluginId: 'acme.accounts', localId: 'work' });
 const account = Object.freeze({ service, accountId: 'account-1' });
+const runtimeIdentity = Object.freeze({
+  occurrenceId: createPluginRuntimeOccurrenceId(service.pluginId),
+  sourceCustody: Object.freeze({
+    kind: 'managed' as const,
+    immutableGenerationId: 'artifact-1',
+    installSource: 'archive' as const,
+  }),
+});
 const descriptor = PluginConnectedAccountDescriptorContributionV2Schema.parse({
   id: service.localId,
   title: 'Acme Work',
@@ -100,6 +109,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
             replace: vi.fn(),
             destroyAttempt: vi.fn(),
             secrets: {
+              admit: vi.fn(async () => undefined),
               has: vi.fn(async () => false),
               read: vi.fn(async () => null),
             },
@@ -168,8 +178,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
     const runtimeLease = Object.freeze({
       ref: service,
       descriptor: manualDescriptor,
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity,
       runtime: {},
       isCurrent: () => true,
     });
@@ -206,6 +215,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           replace: vi.fn(),
           destroyAttempt: vi.fn(),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -274,6 +284,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           replace: vi.fn(),
           destroyAttempt: vi.fn(),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -326,6 +337,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           replace: vi.fn(),
           destroyAttempt: vi.fn(),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -413,8 +425,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
     const runtimeLease = Object.freeze({
       ref: service,
       descriptor,
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity,
       runtime: {},
       isCurrent: () => true,
     });
@@ -446,7 +457,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           read: vi.fn(async () => null),
           replace: vi.fn(),
           destroyAttempt: vi.fn(),
-          secrets: { has: vi.fn(async () => false), read: vi.fn(async () => null) },
+          secrets: { admit: vi.fn(async () => undefined), has: vi.fn(async () => false), read: vi.fn(async () => null) },
         },
         attempts: {
           accounts: { readExact: vi.fn(async () => null) },
@@ -520,8 +531,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
     const runtimeLease = Object.freeze({
       ref: service,
       descriptor,
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity,
       runtime: {},
       isCurrent: () => true,
     });
@@ -566,6 +576,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           replace: vi.fn(),
           destroyAttempt: vi.fn(),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async (id: string) => id.startsWith('saved-secret-')),
             read: vi.fn(async () => 'secret'),
           },
@@ -721,6 +732,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
         }),
         destroyAttempt: vi.fn(),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async (id) => id.startsWith('saved-secret-')),
           read: vi.fn(async () => 'secret'),
         },
@@ -740,8 +752,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
     const runtimeLease = Object.freeze({
       ref: service,
       descriptor,
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      ...runtimeIdentity,
       runtime: {},
       isCurrent: () => true,
     });
@@ -840,8 +851,8 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
       status: 'described',
       service,
       descriptor: { id: 'work', title: 'Acme Work' },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      occurrenceId: runtimeIdentity.occurrenceId,
+      sourceCustody: runtimeIdentity.sourceCustody,
       operationTransport: {
         kind: 'legacy',
         peerClass: 'exact_v0_2_1',
@@ -1125,8 +1136,13 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
       const registrations: ConnectedAccountRuntimeRegistration[] = [];
       const activations: string[] = [];
       const contributions = createConnectedAccountContributionRegistry({
-        generation: 'generation-1',
-        immutableGenerationIdsByPluginId: new Map([[service.pluginId, 'artifact-1']]),
+                readPluginOccurrenceId: () => createPluginRuntimeOccurrenceId(service.pluginId),
+        readPluginSourceCustody: () => ({
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+          installSource: 'archive',
+        }),
+        isPluginOccurrenceCurrent: () => input.generationCurrent(),
         descriptors: [{
           provenance: 'first_party',
           source: { kind: 'bundled' },
@@ -1138,13 +1154,12 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
           if (!input.published) return;
           registrations.push({
             pluginId: ref.pluginId,
-            generation: 'generation-1',
+            occurrenceId: 'generation-1',
             localId: ref.localId,
             runtime: publishedRuntime,
           });
         },
         readRegistrations: () => registrations,
-        isGenerationCurrent: () => input.generationCurrent(),
       });
       const registry = {
         generation: 'generation-1',
@@ -1169,6 +1184,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
             replace: vi.fn(),
             destroyAttempt: vi.fn(),
             secrets: {
+              admit: vi.fn(async () => undefined),
               has: vi.fn(async () => false),
               read: vi.fn(async () => null),
             },
@@ -1190,7 +1206,7 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
 
     it('describes a declared service from the descriptor without activating its plugin', async () => {
       // `published: false` means activation would publish no runtime. Discovery must
-      // not depend on that: the descriptor, generation identity and currentness are
+      // not depend on that: the descriptor, occurrence identity and currentness are
       // host-side facts, so the answer is the same and the plugin is never entered.
       const { daemon, activations } = createDaemonOverRealRegistry({
         published: false,
@@ -1203,8 +1219,11 @@ describe('ConnectedAccountDaemonRuntime control facade', () => {
       })).resolves.toMatchObject({
         status: 'described',
         service,
-        generation: 'generation-1',
-        immutableGenerationId: 'artifact-1',
+        occurrenceId: expect.any(String),
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: 'artifact-1',
+        },
       });
       expect(activations).toEqual([]);
     });

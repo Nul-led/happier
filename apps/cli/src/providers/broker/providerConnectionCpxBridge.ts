@@ -8,6 +8,7 @@ import type {
   ProviderConnectionCpxBridge,
   ProviderConnectionCpxBridgeOpenInput,
 } from './providerConnectionSource';
+import { acquireBrokerSourceOperation } from './brokerSourceOperationAcquisition';
 
 const SOURCE_CREDENTIAL_HEADER = 'x-happier-provider-source-credential';
 const SOURCE_DESCRIPTOR_HEADER = 'x-happier-provider-source';
@@ -171,65 +172,21 @@ export function createProviderConnectionCpxBridge(input: Readonly<{
         || !safePublicHeaders(openInput.endpoint.publicHeaders)
         || !await openInput.isCurrent().catch(() => false)
       ) return null;
-      let current = true;
-      const isAuthorizationCurrent = (): boolean => current && !openInput.signal.aborted;
-      const revalidateAuthorization = async (): Promise<boolean> => {
-        current = isAuthorizationCurrent() && await openInput.isCurrent().catch(() => false);
-        return current;
-      };
-      const revalidateOperationAuthorization =
-        openInput.revalidateOperationAuthorization;
-      const operationClaim = Object.freeze({
-        kind: 'providerBroker' as const,
-        operation: openInput.operation,
-      });
-      let retired = false;
-      let retireInFlight: Promise<void> | null = null;
-      const retire = (): Promise<void> => {
-        if (retired) return Promise.resolve();
-        retireInFlight ??= input.custody.retire({
-          identity: openInput.application.implementationIdentity,
-          operationClaim,
-        }).then(
-          () => {
-            retired = true;
-            retireInFlight = null;
-          },
-          (error: unknown) => {
-            retireInFlight = null;
-            throw error;
-          },
-        );
-        return retireInFlight;
-      };
-      const projection = await input.custody.acquire({
-        contributionKey: `${openInput.application.implementationIdentity.pluginId}/${openInput.application.implementationIdentity.localId}`,
+      const acquired = await acquireBrokerSourceOperation({
+        custody: input.custody,
         identity: openInput.application.implementationIdentity,
-        request: {
-          reason: 'explicitStartLocal',
-          endpointTemplateIds: [openInput.application.endpointTemplateId],
-        },
+        contributionKey: `${openInput.application.implementationIdentity.pluginId}/${openInput.application.implementationIdentity.localId}`,
+        endpointTemplateId: openInput.application.endpointTemplateId,
+        operationClaim: { kind: 'providerBroker', operation: openInput.operation },
         purposeBindings: { v: 1, bindings: [] },
-        isAuthorizationCurrent,
-        revalidateAuthorization,
-        ...(revalidateOperationAuthorization
-          ? {
-              revalidateRetainedCurrentness: async (signal) => (
-                await openInput.isCurrent(signal).catch(() => false)
-                && await revalidateOperationAuthorization(signal)
-              ),
-          }
+        isSourceCurrent: async (signal) => await openInput.isCurrent(signal).catch(() => false),
+        ...(openInput.revalidateOperationAuthorization
+          ? { revalidateOperationAuthorization: openInput.revalidateOperationAuthorization }
           : {}),
-        operationClaim,
-        signal: openInput.signal,
+        callerSignal: openInput.signal,
       });
-      if (!projection || !await revalidateAuthorization()) {
-        if (projection) {
-          await retire().catch(() => undefined);
-          await Promise.resolve(projection.cleanup()).catch(() => undefined);
-        }
-        return null;
-      }
+      if (!acquired) return null;
+      const { projection, retire, isAuthorizationCurrent, revalidateAuthorization } = acquired;
       const send = async (
         requestInput: ManagedServiceRequest,
         lease: NonNullable<Awaited<ReturnType<typeof openInput.acquireRequestCredential>>>,
@@ -317,7 +274,9 @@ export function createProviderConnectionCpxBridge(input: Readonly<{
         isCurrent: () => isAuthorizationCurrent() && projection.isCurrent(),
         retire,
         async cleanup() {
-          current = false;
+          // Releases this caller's join only. The operation itself ends through
+          // `retire`, so a closing stream never makes a retained operation
+          // permanently non-current for the streams still using it.
           await projection.cleanup();
         },
       });

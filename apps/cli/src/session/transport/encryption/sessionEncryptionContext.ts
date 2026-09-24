@@ -74,6 +74,7 @@ export type ResolveSessionTransportContextFromMaterialResult =
   | Readonly<{ ok: false; code: 'encryption_material_unavailable' }>;
 
 type SessionEncryptionContextSource = Readonly<{
+  encryptionMode?: unknown;
   dataEncryptionKey?: unknown;
   effectiveAccess?: unknown;
   share?: unknown;
@@ -84,7 +85,6 @@ type SessionMetadataSource = SessionEncryptionContextSource & Readonly<{
   metadata?: unknown;
   metadataLayoutVersion?: unknown;
   ownerMetadata?: unknown;
-  encryptionMode?: unknown;
 }>;
 
 export type SessionPresentationContent = Readonly<{
@@ -142,6 +142,42 @@ export function resolveSessionTransportContextFromMaterial(params: Readonly<{
   }
   const ctx = createSessionDataKeyEncryptionContext(params.material.dataEncryptionKey);
   return ctx ? { ok: true, mode: 'e2ee', ctx } : failure;
+}
+
+/**
+ * The one stored-content decision for an Action serving an exact Session.
+ *
+ * Two routes reach the same answer and must not drift apart. A composition that
+ * already holds this exact Session's material — a Runner, whose Session-scoped
+ * runtime principal carries no Account encryption material at all — supplies it
+ * and that material decides. Every other caller keeps the released
+ * Account-credential resolution. `null` is the fail-closed answer for both; a
+ * missing or mode-mismatched key never degrades to plaintext.
+ */
+export function resolveExactSessionOrCredentialCryptoContext(
+  options: Readonly<{
+    credentials: StoredCredentials;
+    resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
+  }>,
+  sessionId: string,
+  rawSession: SessionEncryptionContextSource | undefined,
+): SessionStoredContentCryptoContext | null {
+  const material = options.resolveExactSessionEncryptionMaterial?.(sessionId) ?? null;
+  if (material) {
+    const resolved = resolveSessionTransportContextFromMaterial({ rawSession: rawSession ?? {}, material });
+    if (!resolved.ok) return null;
+    return resolved.mode === 'e2ee' ? { mode: 'e2ee', ctx: resolved.ctx } : { mode: 'plain', ctx: null };
+  }
+  let mode: SessionStoredContentEncryptionMode;
+  try {
+    mode = resolveSessionStoredContentEncryptionMode(rawSession ?? {});
+  } catch (error) {
+    if (error instanceof SessionStoredContentError) return null;
+    throw error;
+  }
+  const ctx = mode === 'e2ee' ? resolveSessionEncryptionContextFromCredentials(options.credentials, rawSession) : null;
+  if (mode === 'e2ee' && !ctx) return null;
+  return ctx ? { mode: 'e2ee', ctx } : { mode: 'plain', ctx: null };
 }
 
 export function resolveSessionEncryptionContextFromCredentials(

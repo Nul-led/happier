@@ -27,8 +27,16 @@ import type { HostedInlineDocumentFrameUnavailableCode } from '@/components/plug
 import { createHostedFrameIntrinsicHeightReporter } from '@/components/plugins/hostApi/hostedFrameIntrinsicHeight';
 import { createUiSurfaceMountIdentity } from '@/components/plugins/hostApi/createUiSurfaceMountIdentity';
 import { useHostedFrameLifecycle } from '@/components/ui/surfaces/framed/useHostedFrameLifecycle';
+import {
+    usePluginSurfaceEnvironment,
+    type PluginSurfaceEnvironment,
+} from '@/components/plugins/surfaces/pluginSurfaceContext';
+import { resolveLocalServicePreviewPlatform } from '@/sync/domains/local/services/preview/platform';
 
-import { prepareCallerHostedHtmlSurface } from './prepareCallerHostedHtmlSurface';
+import {
+    prepareCallerHostedHtmlSurface,
+    type PreparedCallerHostedHtmlSurface,
+} from './prepareCallerHostedHtmlSurface';
 
 const CALLER_FRAME_MESSAGES = new Set(['ready', 'error', 'heightChanged', 'hostApi']);
 /**
@@ -76,6 +84,39 @@ export type CallerHostedHtmlRuntime = Readonly<{
  * The outer Session record supplies revision/currentness and approval; the
  * shared bridge supplies transport, negotiation, subscriptions and teardown.
  */
+/**
+ * The mount's surface snapshot — one shape for the value the bridge is constructed with and the
+ * value its context producer republishes, so a later push can never narrow what `context`
+ * already answered.
+ */
+function buildCallerHostedHtmlSurfaceSnapshot(input: Readonly<{
+    context: PluginUiJsonValueV1;
+    recordRevision: string;
+    capabilityManifest: Extract<PreparedCallerHostedHtmlSurface, { kind: 'admitted' }>['capabilityManifest'];
+    environment: PluginSurfaceEnvironment;
+}>) {
+    // The same environment facts, under the same names, that every installed surface's
+    // `SurfaceContext` carries from the one shared producer. An opaque isolated document
+    // cannot read the host's theme, text scale, direction or safe area itself.
+    return {
+        platform: input.environment.platform,
+        locale: input.environment.locale,
+        direction: input.environment.direction,
+        colorScheme: input.environment.colorScheme,
+        contrast: input.environment.contrast,
+        textScale: input.environment.textScale,
+        reducedMotion: input.environment.reducedMotion,
+        screenReaderEnabled: input.environment.screenReaderEnabled,
+        safeAreaInsets: input.environment.safeAreaInsets,
+        theme: input.environment.theme,
+        context: input.context,
+        callerHostedHtml: {
+            recordRevision: input.recordRevision,
+            capabilityManifest: input.capabilityManifest,
+        },
+    };
+}
+
 export function HostedHtmlSurfaceAdapter(props: Readonly<{
     sessionId: string;
     title: string;
@@ -184,13 +225,16 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
         cancelFrame: (handle) => cancelAnimationFrame(handle),
     }), [mount.identity, props.onIntrinsicHeightChange]);
     React.useLayoutEffect(() => () => heightReporter.dispose(), [heightReporter]);
+    // Keyed on the request owner, not the runtime value: a runtime re-published
+    // only because some other item's approval changed keeps this mount's watches.
+    const createRequestController = props.runtime.createRequestController;
     const requestController = React.useMemo(
         () => frameIdentity === null
             ? null
-            : props.runtime.createRequestController(
+            : createRequestController(
                 (event) => { bridgeRef.current?.publishResourceSubscriptionEvent(event); },
             ),
-        [frameIdentity, props.runtime],
+        [createRequestController, frameIdentity],
     );
     const authorizeRequest = React.useCallback((request: CallerHostedHtmlHostApiRequest): boolean => {
         if (prepared?.kind !== 'admitted') return false;
@@ -208,6 +252,27 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
         const referenceKey = stableJsonStringify(reference);
         return admitted.some((candidate) => stableJsonStringify(candidate) === referenceKey);
     }, [prepared]);
+    // The bridge belongs to the physical mount and its authority, not to the identity of the
+    // context object. Context changes travel through the bridge's own `pushSurfaceContext`,
+    // which already suppresses semantically identical snapshots; rebuilding the bridge instead
+    // disposed it, and `dispose` tells a still-running frame it was `disconnected`.
+    const environment = usePluginSurfaceEnvironment(resolveLocalServicePreviewPlatform());
+    const surfaceSnapshot = React.useMemo(() => (
+        prepared?.kind === 'admitted'
+            ? buildCallerHostedHtmlSurfaceSnapshot({
+                context: props.surfaceContext,
+                recordRevision: props.recordRevision,
+                capabilityManifest: prepared.capabilityManifest,
+                environment,
+            })
+            : null
+    ), [environment, prepared, props.recordRevision, props.surfaceContext]);
+    const surfaceContextRef = React.useRef(props.surfaceContext);
+    surfaceContextRef.current = props.surfaceContext;
+    // Read at bridge construction so the first negotiation already carries the current
+    // environment (before reveal); later changes are pushed, never a new bridge.
+    const environmentRef = React.useRef(environment);
+    environmentRef.current = environment;
     const bridge = React.useMemo(() => {
         if (frameIdentity === null || requestController === null || prepared?.kind !== 'admitted' || !approved) return null;
         return createCallerHostedHtmlHostApiBridgeHandler({
@@ -222,13 +287,12 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
             authorizeRequest,
             canonicalHostApi: {
                 identity: frameIdentity,
-                surface: {
-                    context: props.surfaceContext,
-                    callerHostedHtml: {
-                        recordRevision: props.recordRevision,
-                        capabilityManifest: prepared.capabilityManifest,
-                    },
-                },
+                surface: buildCallerHostedHtmlSurfaceSnapshot({
+                    context: surfaceContextRef.current,
+                    recordRevision: props.recordRevision,
+                    capabilityManifest: prepared.capabilityManifest,
+                    environment: environmentRef.current,
+                }),
                 methods: prepared.advertisedHostMethods,
                 activity: { active: true },
             },
@@ -246,7 +310,7 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
             ...(props.onIntrinsicHeightChange ? { onHeightChanged: heightReporter.report } : {}),
         });
     }, [approved, authorizeRequest, frameIdentity, heightReporter, lifecycle.fail, lifecycle.markReady, mount.isCurrent, prepared, props.input, props.recordRevision,
-        props.sessionId, props.surfaceContext, requestController?.handleRequest]);
+        props.sessionId, requestController?.handleRequest]);
     React.useEffect(() => {
         bridgeRef.current = bridge;
         return () => {
@@ -254,6 +318,12 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
             bridge?.dispose();
         };
     }, [bridge]);
+    React.useEffect(() => {
+        // The whole surface snapshot, exactly as the bridge was constructed with it: this is the
+        // mount's context producer, and `pushSurfaceContext` republishes nothing when the
+        // snapshot is semantically identical.
+        if (surfaceSnapshot !== null) bridge?.pushSurfaceContext(surfaceSnapshot);
+    }, [bridge, surfaceSnapshot]);
     React.useEffect(() => () => requestController?.dispose(), [requestController]);
     if (frameIdentity === null) {
         return (

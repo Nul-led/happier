@@ -245,6 +245,16 @@ export function createSessionTranscriptPublicationLiveFactsWhere(): Prisma.Sessi
 }
 
 /**
+ * The row-level twin of `createSessionTranscriptPublicationLiveFactsWhere`:
+ * may this Session's live runtime facts (`active`, pending counts, latest turn)
+ * be published at all? Selection predicates and row projection must state one
+ * liveness, so neither reads the raw stored column on its own.
+ */
+export function hasSessionTranscriptPublicationLiveFacts(publication: object): boolean {
+    return resolveSessionTranscriptPublicationCeiling(publication) === null;
+}
+
+/**
  * Non-owner list queries have two disjoint recency authorities. Taking the
  * bounded top-k from each branch before merging is equivalent to taking the
  * top-k from their union and prevents private snapshot catch-up writes from
@@ -688,7 +698,7 @@ export function projectSessionTranscriptPublicationPreview(params: Readonly<{
         latestReadyEventSeq: params.latestReadyEventSeq,
         latestReadyEventAt: params.latestReadyEventAt,
     }, publication);
-    const hasLiveFacts = resolveSessionTranscriptPublicationCeiling(publication) === null;
+    const hasLiveFacts = hasSessionTranscriptPublicationLiveFacts(publication);
     const acceptedThroughServerSeq = readServerSequence(
         (publication as SessionTranscriptPublicationFields).acceptedThroughServerSeq,
     );

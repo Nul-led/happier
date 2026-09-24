@@ -48,6 +48,7 @@ function createOidcAuthProviderResolver(instance: OidcAuthProviderInstanceConfig
         resolveFeatures: ({ policy }) => resolveOidcAuthProviderFeatures(instance, policy),
         requiresOAuth: true,
         isConfigured: () => true,
+        providerKind: "oidc",
     });
 }
 
@@ -59,7 +60,7 @@ export function createOidcProviderModule(
 ): ProviderModule {
     return Object.freeze({
         id: instance.id,
-        oauth: createOidcOAuthProvider(instance, runtimeFingerprint, networkPolicy),
+        oauth: createOidcOAuthProvider(instance, runtimeFingerprint, networkPolicy, teamConnection),
         identity: createOidcIdentityProvider(instance, runtimeFingerprint, networkPolicy, teamConnection),
         auth: createOidcAuthProviderResolver(instance),
     }) satisfies ProviderModule;

@@ -215,6 +215,8 @@ export interface NewSessionWizardFooterProps {
     composerDocument?: NewSessionComposerDocument;
     setSessionPrompt: (v: string) => void;
     handleCreateSession: (opts?: HandleCreateSessionOptions) => void;
+    /** Registers this footer's Send as the Temporary-computer replacement owner. */
+    registerTemporaryComputerReplacementLaunch?: (send: () => void) => () => void;
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionLaunchAttempt | null;
@@ -362,6 +364,10 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         sourceContextPresentation: props.footer.sourceContextPresentation ?? null,
         composerDocument: props.footer.composerDocument,
     });
+    // A Temporary-computer replacement is a fresh submission, so it runs the
+    // same Send this footer already owns rather than restarting the controller.
+    const registerReplacementLaunch = props.footer.registerTemporaryComputerReplacementLaunch;
+    React.useEffect(() => registerReplacementLaunch?.(handleSend), [handleSend, registerReplacementLaunch]);
     const projectedAttachmentRowItems = React.useMemo(() => (
         projectAgentInputAttachmentRowItems({
             items: [
@@ -686,6 +692,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         onComposerFocusChange={props.footer.composerDocument?.onComposerFocusChange}
                                         onComposerFocusRequestChange={props.footer.composerDocument?.onComposerFocusRequestChange}
                                         onComposerActionBarLayoutChange={props.footer.composerDocument?.onComposerActionBarLayoutChange}
+                                        inputPersistence={props.footer.composerDocument?.inputPersistence}
                                         composerDecorations={props.footer.composerDocument?.composerDecorations ?? []}
                                         composerInputLock={props.footer.composerDocument?.composerInputLock ?? null}
                                         onSend={handleSend}

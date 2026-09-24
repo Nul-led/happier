@@ -140,6 +140,71 @@ describe('auth entry protocol v1', () => {
     }).success).toBe(false);
   });
 
+  it('carries the safe provider descriptor fields and a per-provider unavailable reason (L03/01 §10.2)', () => {
+    const base = {
+      v: 1,
+      state: 'admission_required',
+      scope: { kind: 'team' },
+      home: { serverId: 'home_1', displayName: 'Acme Home', storageMode: 'plain' },
+      team: { teamId: 'team_1', name: 'Acme', logo: null },
+      autoRedirect: null,
+    } as const;
+    const presentation = {
+      displayName: 'Acme SSO',
+      iconHint: 'oidc',
+      providerKind: 'workos_sso',
+      connectButtonColor: '#0f62fe',
+      supportsProfileBadge: true,
+    } as const;
+    const parsed = AuthEntryProjectionV1Schema.parse({
+      ...base,
+      actions: [
+        {
+          kind: 'authenticate',
+          methodId: 'provider_sso',
+          action: 'connect',
+          mode: 'either',
+          origin: 'team',
+          presentation,
+        },
+        {
+          kind: 'provider_unavailable',
+          methodId: 'provider_backup',
+          origin: 'team',
+          presentation: { displayName: 'Backup SSO', providerKind: 'oidc' },
+          reason: 'provider_setup_incomplete',
+        },
+      ],
+    });
+    expect(parsed).toMatchObject({
+      actions: [
+        { kind: 'authenticate', presentation },
+        { kind: 'provider_unavailable', methodId: 'provider_backup', reason: 'provider_setup_incomplete' },
+      ],
+    });
+    // Unsafe internal facts never ride the public descriptor.
+    expect(AuthEntryProjectionV1Schema.safeParse({
+      ...base,
+      actions: [{
+        kind: 'provider_unavailable',
+        methodId: 'provider_backup',
+        origin: 'team',
+        presentation: { displayName: 'Backup SSO', revision: 4 },
+        reason: 'provider_disabled',
+      }],
+    }).success).toBe(false);
+    expect(AuthEntryProjectionV1Schema.safeParse({
+      ...base,
+      actions: [{
+        kind: 'provider_unavailable',
+        methodId: 'provider_backup',
+        origin: 'team',
+        presentation: { displayName: 'Backup SSO' },
+        reason: 'client_secret_expired',
+      }],
+    }).success).toBe(false);
+  });
+
   it('accepts an opaque invitation scope only for Home purpose without echoing the bearer', () => {
     expect(AuthEntryRequestV1Schema.parse({
       v: 1,

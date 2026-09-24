@@ -333,6 +333,43 @@ describe('fetchAndApplySessionById locked continuity', () => {
         }));
     });
 
+    it('settles the first ready→locked refresh instead of rejecting its own clear', async () => {
+        // The real generation owner is the point of this case: clearing a key the
+        // request itself found unopenable advances the owning generation, and a
+        // by-ID request must adopt that advance rather than read it as an Account
+        // switch that invalidates its own truthful result.
+        const secret = new Uint8Array(32).fill(7);
+        const encryption = await Encryption.create(secret);
+        await encryption.initializeSessions(new Map([['s_locked', new Uint8Array(32).fill(8)]]));
+        expect(encryption.getSessionEncryption('s_locked')).not.toBeNull();
+
+        const applied: unknown[] = [];
+        const result = await fetchAndApplySessionById({
+            sessionId: 's_locked',
+            accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            credentials: { token: 't', secret: encodeBase64(secret, 'base64') },
+            encryption,
+            sessionDataKeys: new Map([['s_locked', new Uint8Array(32).fill(8)]]),
+            sessionDataKeyEnvelopes: new Map(),
+            request: async () => sessionResponse(buildRow({
+                dataEncryptionKey: 'unopenable-envelope',
+                share: { accessLevel: 'view', canApprovePermissions: false },
+            })),
+            applySessions: (sessions) => applied.push(...sessions),
+            log: { log: () => {} },
+            includeTurnsProjection: false,
+        });
+
+        expect(result.errorCode).not.toBe('stale_response');
+        expect(result.ok).toBe(true);
+        expect(encryption.getSessionEncryption('s_locked')).toBeNull();
+        expect(applied).toEqual([expect.objectContaining({
+            id: 's_locked',
+            metadata: null,
+            encryptedContentAvailability: 'encrypted_access_needs_repair',
+        })]);
+    });
+
     it('keeps the owner-only account reader for a legacy-credential Session with no envelope', async () => {
         const encryption = createEncryption();
         const { result, applied } = await hydrateRow({

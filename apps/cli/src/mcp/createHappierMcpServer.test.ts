@@ -154,13 +154,129 @@ describe('createHappierMcpServer', () => {
 
     expect(accountOwner).not.toHaveBeenCalled();
     expect(followOwner).not.toHaveBeenCalled();
-    expect(discussionOwner).not.toHaveBeenCalled();
+    // Discussions are Session-placed: the Session transport credentials reach
+    // them, never Account authority (the real read/post path is proven below).
+    expect(discussionOwner).toHaveBeenCalledWith(expect.objectContaining({ credentials: sessionCredentials }));
     expect(captured.params).toMatchObject({ token: sessionCredentials.token });
     expect(captured.params).not.toHaveProperty('credentials');
     expect(captured.overrides?.sessionList).toBe(sessionList);
     expect(captured.enabled?.('session.title.set')).toBe(true);
     expect(captured.enabled?.('account.apiTokens.list')).toBe(false);
     expect(captured.enabled?.('machines.list')).toBe(false);
+  });
+
+  it('opens a Session-scoped runtime\'s own E2EE Board and Discussions with its Session material and no Account credentials', async () => {
+    const { default: fastify } = await import('fastify');
+    const { installAxiosFastifyAdapter } = await import('@/testkit/http/axiosAdapter');
+    const { FeaturesResponseSchema, projectSessionAccessCapabilitiesV1 } = await import('@happier-dev/protocol');
+    const { sealSessionStoredContent } = await import('@/session/transport/encryption/sessionStoredContentCodec');
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+
+    // The only boundary replaced is the Home's HTTP transport.
+    const app = fastify();
+    const restore = installAxiosFastifyAdapter({ app, origin: 'http://runner-home.test' });
+    const sessionKey = new Uint8Array(32).fill(41);
+    const crypto = { mode: 'e2ee' as const, ctx: { encryptionKey: sessionKey, encryptionVariant: 'dataKey' as const } };
+    const rawSession = (id: string) => ({
+      id, seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+      encryptionMode: 'e2ee', metadata: 'opaque', metadataVersion: 1, dataEncryptionKey: null,
+      agentState: null, agentStateVersion: 0,
+      effectiveAccess: {
+        v: 1, level: 'owner', sources: [{ kind: 'owner' }],
+        capabilities: projectSessionAccessCapabilitiesV1({ owner: true, grants: [] }),
+      },
+      responsibleAccountId: null, responsibleAccount: null,
+    });
+    const layout = { v: 1, tabs: [{ id: 'overview', title: 'Overview', items: [] }] };
+    app.get('/v2/sessions/:sessionId', async (request) => ({
+      session: rawSession((request.params as { sessionId: string }).sessionId),
+    }));
+    app.get('/v2/sessions/:sessionId/system-records/record', async () => ({
+      record: {
+        id: 'layout.v1:layout',
+        address: { owner: 'host', namespace: 'surface', kind: 'layout.v1', localId: 'layout' },
+        content: sealSessionStoredContent({ ...crypto, payload: layout }),
+        revision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ',
+        createdAt: '2026-09-23T00:00:00.000Z',
+        updatedAt: '2026-09-23T00:00:00.000Z',
+      },
+    }));
+    app.get('/v2/sessions/:sessionId/system-records', async () => ({ records: [], nextCursor: null, hasNext: false }));
+    app.get('/v2/sessions/:sessionId/discussions', async (request) => ({
+      discussions: [{
+        id: 'discussion-1',
+        sessionId: (request.params as { sessionId: string }).sessionId,
+        creationLocalId: 'creation-1',
+        titleContent: sealSessionStoredContent({ ...crypto, payload: { v: 1, title: 'Runner notes' } }),
+        latestMessage: {
+          id: 'message-1',
+          localId: 'message-1',
+          seq: 1,
+          authorAccountId: 'account-1',
+          accountActor: { v: 1, accountId: 'account-1', profile: null },
+          producerV1: null,
+          createdAt: 1,
+        },
+        messageSeq: 1,
+        lastReadSeq: 1,
+        unreadCount: 0,
+        unreadMentionCount: 0,
+        recentAuthorAccountIds: ['account-1'],
+        archivedAt: null,
+        capabilities: { postMessages: true, rename: true, archive: true, restore: false, askAgent: true, sendToSession: true },
+      }],
+      nextCursor: null,
+    }));
+
+    const runtime = createHappierMcpServer({
+      sessionId: 'runner-session',
+      getServerBinding: () => ({ serverId: 'runner-home', serverUrl: 'http://runner-home.test' }),
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+      // The live Session client already holds this Session's key.
+      getStoredContentEncryptionContext: () => crypto,
+      getServerFeaturesSnapshot: () => ({
+        status: 'ready' as const,
+        provenance: 'authenticated' as const,
+        features: FeaturesResponseSchema.parse({
+          features: {
+            // Conversations depend on Session sharing.
+            sessions: { enabled: true, board: { enabled: true }, conversations: { enabled: true } },
+            sharing: { session: { enabled: true } },
+          },
+          capabilities: {},
+        }),
+      }),
+    } as any, {
+      sessionCredentials: { token: 'runner-session-token', encryption: null },
+      credentials: null,
+      authorityScope: 'session',
+    });
+
+    try {
+      const board = await runtime.executeTool({ toolName: 'session_board_get', args: {} });
+      expect(JSON.stringify(board)).toContain('"title":"Overview"');
+      expect(JSON.stringify(board)).not.toContain('not_authenticated');
+
+      // Discussions are discoverable-only for Agents, so they run through the
+      // canonical action_execute tool.
+      const discussions = await runtime.executeTool({
+        toolName: 'action_execute',
+        args: { actionId: 'session.discussion.list', input: {} },
+      });
+      expect(JSON.stringify(discussions)).toContain('Runner notes');
+
+      // The material answers only for the bound Session: another E2EE Session
+      // stays closed instead of borrowing it or degrading to Plain.
+      const foreign = await runtime.executeTool({
+        toolName: 'session_board_get',
+        args: { sessionId: 'other-session' },
+      });
+      expect(JSON.stringify(foreign)).not.toContain('"title":"Overview"');
+    } finally {
+      restore();
+      await app.close();
+    }
   });
 
   it('returns toolNames aligned with current MCP action settings', async () => {

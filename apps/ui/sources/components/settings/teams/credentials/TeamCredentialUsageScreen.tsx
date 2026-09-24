@@ -11,11 +11,15 @@ import type { UsageVolumeMetric } from '@/components/settings/usage/UsageVolumeB
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { useTeamCredentialUsage } from '@/hooks/teams/useTeamCredentialResources';
+import { useTeamCredentialUsage, useTeamCredentialUsageWriteRefresh } from '@/hooks/teams/useTeamCredentialResources';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
-import { resolveDisplayCost } from '@/sync/api/account/usageAnalytics';
+import {
+    resolveAvailableCostModes,
+    resolveDisplayCost,
+    type UsageCostMode,
+} from '@/sync/api/account/usageAnalytics';
 import {
     getUsagePeriodDefinition,
     resolveUsagePeriodStartTimeSeconds,
@@ -50,6 +54,31 @@ import { useTeamCredentialResourceView } from './useTeamCredentialResourceView';
 function metricLabel(metric: UsageVolumeMetric): string {
     if (metric === 'requests') return t('teams.credentials.limits.metric.requests');
     return metric === 'tokens' ? t('usage.tokens') : t('usage.cost');
+}
+
+const COST_MODE_LABEL_KEYS = {
+    auto: 'usage.auto',
+    reported: 'usage.reported',
+    estimated: 'usage.estimated',
+} as const satisfies Record<UsageCostMode, string>;
+
+/**
+ * Which kind of cost a total is. An estimate and a Provider-reported amount can
+ * be the same number, so the amount alone does not say which one a reader is
+ * looking at; the automatic mode sums each event's own best fact and may mix
+ * both.
+ */
+function costProvenanceLabel(
+    cost: Readonly<{ reportedUsd: number; estimatedUsd: number }>,
+    mode: UsageCostMode,
+): string | undefined {
+    if (mode !== 'auto') return t(COST_MODE_LABEL_KEYS[mode]);
+    if (cost.reportedUsd > 0 && cost.estimatedUsd > 0) {
+        return `${t('usage.reported')} + ${t('usage.estimated')}`;
+    }
+    if (cost.reportedUsd > 0) return t('usage.reported');
+    if (cost.estimatedUsd > 0) return t('usage.estimated');
+    return undefined;
 }
 
 function seriesBucketLabel(timestampSeconds: number, period: UsagePeriod): string {
@@ -94,11 +123,16 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
     const [period, setPeriod] = React.useState<UsagePeriod>('30days');
     const [metric, setMetric] = React.useState<UsageVolumeMetric>('tokens');
     const [breakdown, setBreakdown] = React.useState<TeamCredentialUsageBreakdownDimensionV1 | null>(null);
+    // The same cost modes the personal usage dashboard offers. The Home resolves
+    // the effective cost under the chosen mode, so the request, its cursor and
+    // any export all carry it.
+    const [costMode, setCostMode] = React.useState<UsageCostMode>('auto');
     const [showSeriesList, setShowSeriesList] = React.useState(false);
     const [exportBusy, setExportBusy] = React.useState(false);
     const [exportNotice, setExportNotice] = React.useState<string | null>(null);
-    // The end stays stable between explicit refreshes, but refresh always moves
-    // it to the current instant instead of pinning the route's mount time.
+    // The end stays stable between refreshes, but a refresh — explicit, or woken
+    // by the Home recording usage for this resource — always moves it to the
+    // current instant instead of pinning the route's mount time.
     const [nowMs, setNowMs] = React.useState(() => Date.now());
 
     const range = React.useMemo(() => Object.freeze({
@@ -112,9 +146,9 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
         startMs: range.startMs,
         endMs: range.endMs,
         granularity: range.granularity,
-        costMode: 'auto',
+        costMode,
         ...(breakdown === null ? {} : { breakdown }),
-    }), [breakdown, range, resourceId]);
+    }), [breakdown, costMode, range, resourceId]);
 
     // A Group or member allowance names who it governs. Both rosters belong to
     // the same authority that may read these rules at all, and neither is read
@@ -143,13 +177,31 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
         return null;
     }, [groupsRoster.rows, membersRoster.rows]);
 
+    // Usage is read only once this route is open and the resource exists;
+    // the list projection never opens it per row.
+    const usageEnabled = view.featureEnabled && (resource !== null || catalogResource !== null);
     const usage = useTeamCredentialUsage({
         scope: context.scope,
         input,
         resourceRevision: resource?.revision ?? catalogResource?.resourceRevision ?? null,
-        // Usage is read only once this route is open and the resource exists;
-        // the list projection never opens it per row.
-        enabled: view.featureEnabled && (resource !== null || catalogResource !== null),
+        enabled: usageEnabled,
+    });
+    // Refresh moves the end to the current instant; a reread on the same
+    // instant would otherwise leave the query identity unchanged.
+    const refreshToNow = React.useCallback(() => {
+        const current = Date.now();
+        if (current === nowMs) {
+            void usage.reload();
+        } else {
+            setNowMs(current);
+        }
+    }, [nowMs, usage.reload]);
+    useTeamCredentialUsageWriteRefresh({
+        scope: context.scope,
+        resourceId,
+        enabled: usageEnabled,
+        reading: usage.status === 'loading',
+        refresh: refreshToNow,
     });
 
     if (!view.featureEnabled || (view.resolved && resource === null && catalogResource === null)) {
@@ -256,11 +308,18 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             return result.coverage.costCoverage !== 'complete' && resolvedCost === 0 ? null : resolvedCost;
         })();
 
+    // Offered from the totals themselves, exactly as the personal dashboard
+    // does; a chosen mode stays offered so it can be switched back.
+    const costModes: readonly UsageCostMode[] = result === null || coverage?.costCoverage === 'unavailable'
+        ? []
+        : [...new Set([...resolveAvailableCostModes(result.totals.cost), costMode])];
     const limits = result ? orderTeamCredentialLimitsByRemaining(result.limits) : [];
     const recipientLimit = catalogResource?.usageLimit ?? null;
     // A retained result belongs to the previous query range while refresh is
-    // pending. Keep it visible, but do not export it under the new range.
-    const exportUnavailable = exportBusy || usage.status === 'loading';
+    // pending. Keep it visible, but do not export it under the new range —
+    // including when that refresh FAILED, which leaves the old numbers on
+    // screen under the new labels with `status === 'error'`.
+    const exportUnavailable = exportBusy || !usage.resultIsCurrentQuery;
     const series = result?.series.map((bucket) => ({
         timestamp: Math.floor(bucket.bucketStartMs / 1000),
         tokens: bucket.totals.tokens.total,
@@ -320,14 +379,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
                     icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                     loading={usage.status === 'loading' && result !== null}
                     accessibilityLiveRegion={usage.status === 'loading' ? 'polite' : undefined}
-                    onPress={() => {
-                        const current = Date.now();
-                        if (current === nowMs) {
-                            void usage.reload();
-                        } else {
-                            setNowMs(current);
-                        }
-                    }}
+                    onPress={refreshToNow}
                     showChevron={false}
                 />
             </ItemGroup>
@@ -375,8 +427,28 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
                         detail={costUsd === null
                             ? t('teams.credentials.usage.costUnknown')
                             : formatUsageCost(costUsd, result.totals.cost.currency)}
+                        subtitle={costUsd === null ? undefined : costProvenanceLabel(result.totals.cost, costMode)}
                         showChevron={false}
                     />
+                </ItemGroup>
+            ) : null}
+
+            {costModes.length > 1 ? (
+                <ItemGroup
+                    title={t('usage.costMode')}
+                    accessibilityRole="radiogroup"
+                    accessibilityLabel={t('usage.costMode')}
+                >
+                    {costModes.map((candidate) => (
+                        <Item
+                            key={candidate}
+                            testID={`team-credential-usage-cost-mode:${candidate}`}
+                            title={t(COST_MODE_LABEL_KEYS[candidate])}
+                            selected={costMode === candidate}
+                            onPress={() => setCostMode(candidate)}
+                            showChevron={false}
+                        />
+                    ))}
                 </ItemGroup>
             ) : null}
 
@@ -525,6 +597,11 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
                                     startMs: range.startMs,
                                     endMs: range.endMs,
                                     breakdown,
+                                    // 52 ranked slices must not leave as 50
+                                    // rows under a whole-query total with
+                                    // nothing in the file saying so.
+                                    breakdownComplete: !usage.hasMore && !usage.partial,
+                                    costMode,
                                 });
                                 if (!exported) setExportNotice(t('teams.credentials.usage.exportFailed'));
                             } catch {

@@ -24,7 +24,15 @@ export type VisibleSessionListSummary = Readonly<{
 
 export type SessionListQueryPresentation =
     | Readonly<{ kind: 'initial_loading' }>
-    | Readonly<{ kind: 'ready'; complete: boolean }>
+    | Readonly<{
+        kind: 'ready';
+        complete: boolean;
+        /**
+         * A selected Home read its corpus to the end but withheld historical shared
+         * Sessions pending their owner's metadata upgrade: the list is not whole.
+         */
+        historicalSharesWithheld?: boolean;
+    }>
     | Readonly<{ kind: 'refreshing'; retainedRows: true }>
     | Readonly<{
         kind: 'partial';
@@ -92,7 +100,12 @@ export function resolveSessionListQueryPresentation(input: Readonly<{
         }
         return { kind: 'partial', unavailableHomes };
     }
-    return { kind: 'ready', complete: input.coverageComplete };
+    const historicalSharesWithheld = selectedServerIds.some((serverId) => (
+        (input.statesByServerId[serverId]?.metadataUpgradeRequiredCount ?? 0) > 0
+    ));
+    return historicalSharesWithheld
+        ? { kind: 'ready', complete: input.coverageComplete, historicalSharesWithheld }
+        : { kind: 'ready', complete: input.coverageComplete };
 }
 
 type ResolveSessionListSourceIndexParams = Readonly<{

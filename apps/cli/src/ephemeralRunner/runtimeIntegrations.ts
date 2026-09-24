@@ -10,6 +10,7 @@ import { signRunnerActivationProgressUpdateV1 } from '@happier-dev/protocol/ephe
 import type { RunnerLaunchManifestV1 } from '@happier-dev/protocol/ephemeralRunner/launchManifest';
 import { filterRunnerReviewedEnvironmentVariablesV1 } from '@happier-dev/protocol/ephemeralRunner/runnerEnvironment';
 import { VerifiedEphemeralSessionRunnerPrincipalSchema } from '@happier-dev/protocol/ephemeralRunner/principal';
+import { ExpectedMarketplaceListingV1Schema } from '@happier-dev/protocol/marketplace/internal';
 
 import { openTeamCredentialProviderBroker } from '@/api/client/providerBrokerApi';
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
@@ -27,6 +28,7 @@ import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRunt
 import { createDaemonMachineIrohRuntime } from '@/daemon/peer/iroh/daemonMachineIrohRuntime';
 import { createDaemonPluginChangeService } from '@/plugins/daemon/changeService';
 import { createDaemonNpmPluginChangePreparer } from '@/plugins/daemon/npmChangePreparer';
+import { createMarketplaceSourceRegistryStore } from '@/plugins/store/marketplace/sources/store';
 import { createProviderBrokerMachineCarrierTunnelOpen } from '@/daemon/peer/iroh/providerBrokerMachineCarrierTunnelOpen';
 import { resolvePeerMediationTrustRoots } from '@/daemon/peer/mediation/resolvePeerMediationTrustRoots';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
@@ -42,7 +44,13 @@ import {
   createEphemeralRunnerHttpControlConnection,
   EphemeralRunnerControlHttpError,
 } from './controlClient';
-import type { EphemeralRunnerDependencies, ReviewedRunnerPluginAcquisition } from './controlPlane';
+import type {
+  EphemeralRunnerDependencies,
+  ReviewedRunnerPluginAcquisition,
+  ReviewedRunnerPluginPreparation,
+  ReviewedRunnerPluginRegistrySelection,
+} from './controlPlane';
+import { selectEndpointRegistryProfile } from './endpointRegistryProfileSelection';
 import { createEphemeralRunnerTerminalUi } from './endpointTerminalUi';
 import { createEphemeralRunnerNativeShellUi } from './endpointNativeShellUi';
 import { createEphemeralRunnerNativeShellStdioTransport } from './nativeShellStdioTransport';
@@ -146,6 +154,134 @@ const RUNNER_INERT_PLUGIN_RUNTIME_LIFECYCLE = Object.freeze({
   }),
 });
 
+/**
+ * Prepares the reviewed Agent plugin generation through the canonical plugin
+ * change owner in the activation-local Home. A private registry is answered by
+ * the endpoint's explicit selection: the change owner names the registry, the
+ * answer is applied through the canonical profile and source owners, and the
+ * same change is prepared again with that Home-owned binding.
+ */
+async function prepareReviewedRunnerPluginAcquisition(input: Readonly<{
+  manifest: RunnerLaunchManifestV1;
+  homeDirectory: string;
+  signal: AbortSignal;
+}>): Promise<ReviewedRunnerPluginPreparation> {
+  const { manifest, homeDirectory, signal } = input;
+  const distribution = manifest.preparedAuthoring.agentPluginDistribution;
+  if (distribution === null) return NO_RUNNER_PLUGIN_ACQUISITION;
+  signal.throwIfAborted();
+  const sourceStore = createMarketplaceSourceRegistryStore({ happyHomeDir: homeDirectory });
+  // A catalog the creator added is unknown to this fresh activation-local
+  // Home. The reviewed source travels with the sealed commitment, so it is
+  // seeded here through the canonical source registry — with no registry
+  // profile: creator profiles are machine-local and never carried.
+  // Curated and community-npm sources already exist in every Home.
+  if (distribution.source.kind === 'user') {
+    const seeded = await sourceStore.upsertSource({ sourceUrl: distribution.source.sourceUrl, enabled: true, origin: 'user' });
+    if (seeded.id !== distribution.source.id) {
+      throw new Error('runner_reviewed_plugin_source_unbound');
+    }
+  }
+  // The only registry binding is the one this endpoint selected for the
+  // source; the sealed commitment carries none, and the preparer revalidates
+  // it against the persisted source exactly as for any other listing.
+  const registryProfileId = distribution.source.kind === 'community-npm'
+    ? undefined
+    : (await sourceStore.read()).sources.find((source) => source.id === distribution.source.id)?.registryProfileId;
+  const expectedMarketplaceListing = ExpectedMarketplaceListingV1Schema.parse(
+    distribution.source.kind !== 'community-npm' && registryProfileId
+      ? { ...distribution, registryProfileId }
+      : distribution,
+  );
+  // The canonical plugin change owner performs the whole acquisition in the
+  // activation-local Home: it revalidates the committed listing against the
+  // freshly resolved one, stages the artifact, and produces the same
+  // installation review every other Happier surface decides on.
+  const changeService = createDaemonPluginChangeService({
+    prepare: createDaemonNpmPluginChangePreparer({
+      happyHomeDir: homeDirectory,
+      runtimeLifecycle: RUNNER_INERT_PLUGIN_RUNTIME_LIFECYCLE,
+    }),
+  });
+  let requested;
+  try {
+    requested = await changeService.requestPluginChange({
+      kind: 'installNpm',
+      packageName: distribution.packageName,
+      selector: distribution.version,
+      registryOrigin: distribution.registryOrigin,
+      ...(registryProfileId ? { registryProfileId } : {}),
+      expectedMarketplaceListing,
+    });
+  } catch (error) {
+    await changeService.shutdown().catch(() => undefined);
+    throw error;
+  }
+  if (requested.kind === 'registryProfileRequired') {
+    await changeService.shutdown().catch(() => undefined);
+    const requirement = {
+      registryOrigin: requested.registryOrigin,
+      packageName: requested.packageName,
+      registryProfileId: requested.registryProfileId,
+    };
+    const selection: ReviewedRunnerPluginRegistrySelection = {
+      kind: 'registryProfileRequired',
+      requirement,
+      selectRegistryProfile: async ({ credential, signal: selectionSignal }) => {
+        selectionSignal.throwIfAborted();
+        await selectEndpointRegistryProfile({
+          happyHomeDir: homeDirectory,
+          requirement,
+          credential,
+          marketplaceSourceId: distribution.source.kind === 'community-npm' ? null : distribution.source.id,
+        });
+        return await prepareReviewedRunnerPluginAcquisition({ manifest, homeDirectory, signal: selectionSignal });
+      },
+    };
+    return Object.freeze(selection);
+  }
+  if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'installation') {
+    // Every Runner acquisition is a first install into a fresh home and
+    // must reach Install and Trust. Anything else is refused rather than
+    // installed without the endpoint user deciding.
+    await changeService.shutdown().catch(() => undefined);
+    throw new Error(`runner_reviewed_plugin_acquisition_${requested.kind}`);
+  }
+  const pendingChangeId = requested.pendingChangeId;
+  let settled = false;
+  return Object.freeze({
+    review: requested.review,
+    apply: async ({ signal: applySignal, optionalSelections }) => {
+      applySignal.throwIfAborted();
+      settled = true;
+      let decided;
+      try {
+        // The endpoint's optional host-access choices go to the canonical
+        // change owner, which validates them against this exact review.
+        decided = await changeService.decidePluginChange({
+          pendingChangeId,
+          decision: 'installAndTrust',
+          optionalSelections,
+        });
+      } finally {
+        await changeService.shutdown().catch(() => undefined);
+      }
+      if (decided.kind !== 'committed') {
+        throw new Error(`runner_reviewed_plugin_acquisition_${decided.kind}`);
+      }
+    },
+    release: async () => {
+      if (settled) return;
+      settled = true;
+      try {
+        await changeService.decidePluginChange({ pendingChangeId, decision: 'cancel' }).catch(() => undefined);
+      } finally {
+        await changeService.shutdown().catch(() => undefined);
+      }
+    },
+  });
+}
+
 /** Real standalone composition over the reviewed activation, readiness, and ordinary Session owners. */
 export async function createProductionEphemeralRunnerApplication(input: Readonly<{
   activationFilePath: string;
@@ -213,68 +349,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
         }
       }
     },
-    prepareReviewedPluginAcquisition: async ({ manifest, homeDirectory, signal }) => {
-      const distribution = manifest.preparedAuthoring.agentPluginDistribution;
-      if (distribution === null) return NO_RUNNER_PLUGIN_ACQUISITION;
-      signal.throwIfAborted();
-      // The canonical plugin change owner performs the whole acquisition in the
-      // activation-local Home: it revalidates the committed listing against the
-      // freshly resolved one, stages the artifact, and produces the same
-      // installation review every other Happier surface decides on.
-      const changeService = createDaemonPluginChangeService({
-        prepare: createDaemonNpmPluginChangePreparer({
-          happyHomeDir: homeDirectory,
-          runtimeLifecycle: RUNNER_INERT_PLUGIN_RUNTIME_LIFECYCLE,
-        }),
-      });
-      let requested;
-      try {
-        requested = await changeService.requestPluginChange({
-          kind: 'installNpm',
-          packageName: distribution.packageName,
-          selector: distribution.version,
-          registryOrigin: distribution.registryOrigin,
-          expectedMarketplaceListing: distribution,
-        });
-      } catch (error) {
-        await changeService.shutdown().catch(() => undefined);
-        throw error;
-      }
-      if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'installation') {
-        // Every Runner acquisition is a first install into a fresh home and
-        // must reach Install and Trust. Anything else is refused rather than
-        // installed without the endpoint user deciding.
-        await changeService.shutdown().catch(() => undefined);
-        throw new Error(`runner_reviewed_plugin_acquisition_${requested.kind}`);
-      }
-      const pendingChangeId = requested.pendingChangeId;
-      let settled = false;
-      return Object.freeze({
-        review: requested.review,
-        apply: async ({ signal: applySignal }) => {
-          applySignal.throwIfAborted();
-          settled = true;
-          let decided;
-          try {
-            decided = await changeService.decidePluginChange({ pendingChangeId, decision: 'installAndTrust' });
-          } finally {
-            await changeService.shutdown().catch(() => undefined);
-          }
-          if (decided.kind !== 'committed') {
-            throw new Error(`runner_reviewed_plugin_acquisition_${decided.kind}`);
-          }
-        },
-        release: async () => {
-          if (settled) return;
-          settled = true;
-          try {
-            await changeService.decidePluginChange({ pendingChangeId, decision: 'cancel' }).catch(() => undefined);
-          } finally {
-            await changeService.shutdown().catch(() => undefined);
-          }
-        },
-      });
-    },
+    prepareReviewedPluginAcquisition: async (input) => await prepareReviewedRunnerPluginAcquisition(input),
     prepareAgent: async ({ manifest, environment, homeDirectory, signal }) => {
       const platform = resolvePlatformFromNodePlatform(process.platform);
       if (!platform) throw new Error('runner_platform_unsupported');

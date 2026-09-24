@@ -4,6 +4,7 @@ import {
     normalizeServerIdentityIdCapability,
     type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
@@ -36,7 +37,7 @@ type LegacyManualHomeDescriptor = Readonly<{
     displayName?: string;
 }>;
 
-export const HAPPIER_CLOUD_SERVER_URL = 'https://api.happier.dev' as const;
+export const HAPPIER_CLOUD_SERVER_URL = DEFAULT_HAPPIER_CLOUD_SERVER_URL;
 
 export type ServerProfile = Readonly<{
     id: string;
@@ -288,6 +289,22 @@ function defaultServerNameFromUrl(serverUrl: string): string {
     } catch {
         return normalized;
     }
+}
+
+/**
+ * The name a person or Home gave this profile, or null when the stored name is only the address it
+ * was defaulted from (a profile named after its own URL has no name of its own).
+ */
+export function readServerProfileHomeName(profile: Pick<ServerProfile, 'name' | 'serverUrl' | 'canonicalServerUrl' | 'publicServerUrl'>): string | null {
+    const name = profile.name.trim();
+    if (!name) return null;
+    const comparable = name.toLocaleLowerCase();
+    for (const url of [profile.serverUrl, profile.canonicalServerUrl, profile.publicServerUrl]) {
+        if (!url) continue;
+        if (comparable === defaultServerNameFromUrl(url).toLocaleLowerCase()) return null;
+        if (comparable === normalizeUrl(url).toLocaleLowerCase()) return null;
+    }
+    return name;
 }
 
 function nowMs(): number {
@@ -1404,10 +1421,6 @@ export function updateHomeViewState(
     });
 }
 
-/**
- * Updates global group definitions while applying the active target at the
- * requested platform scope. A tab-scoped update never rewrites the device default.
- */
 export function subscribeHomeViewState(listener: () => void): () => void {
     homeViewStateListeners.add(listener);
     ensureWebPersistedStateObserver();
@@ -1470,10 +1483,11 @@ function getWebSameOriginServerUrl(): string | null {
     try {
         const parsed = new URL(origin);
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-        // Official hosted web app (app.happier.dev) is a static SPA; the API lives on api.happier.dev.
+        // Official hosted web apps are static SPAs; the API lives on api.happier.dev.
         // When builds are missing EXPO_PUBLIC_HAPPIER_SERVER_URL (and legacy aliases), this prevents the default server
         // from incorrectly pointing at the web host.
-        if (parsed.hostname.toLowerCase() === 'app.happier.dev') {
+        const hostname = parsed.hostname.toLowerCase();
+        if (hostname === 'cloud.happier.dev' || hostname === 'app.happier.dev') {
             return HAPPIER_CLOUD_SERVER_URL;
         }
         // In stack context, the UI can be served by an Expo/Metro dev server (e.g. http://localhost:8081).
@@ -1743,15 +1757,6 @@ export function setAccountServiceEndpoint(endpoint: AccountServiceEndpointV1): P
         const state = readPersistedState();
         writePersistedState({ ...state, accountServiceEndpoint: parsed });
         notifyIndependentListeners(accountServiceEndpointListeners, [parsed], 'account_service_endpoint_changed');
-    });
-}
-
-export function resetAccountServiceToDefault(): Promise<void> {
-    const endpoint = DEFAULT_ACCOUNT_SERVICE_ENDPOINT;
-    return withPersistedStateMutation(() => {
-        const state = readPersistedState();
-        writePersistedState({ ...state, accountServiceEndpoint: endpoint });
-        notifyIndependentListeners(accountServiceEndpointListeners, [endpoint], 'account_service_endpoint_changed');
     });
 }
 
@@ -2738,4 +2743,22 @@ export function setServerProfileShareableUrl(
         emitServerProfilesChanged();
         emitActiveServerChanged(previousSnapshot);
     });
+}
+
+/** Resets process-local profile caches between owner tests without reloading the module graph. */
+export function resetServerProfilesRuntimeForTests(): void {
+    activeServerGeneration = 0;
+    activeRuntimeTargetGeneration = 0;
+    activeServerSnapshotCache = null;
+    activeRuntimeOriginLease = null;
+    serverProfilesGeneration = 0;
+    persistedStateStorage = null;
+    persistedStateParseCache = null;
+    demoPersistenceSuspendDepth = 0;
+    durablePersistedStateStorageDuringDemo = null;
+    activeServerListeners.clear();
+    runtimeOriginListeners.clear();
+    serverProfilesListeners.clear();
+    homeViewStateListeners.clear();
+    accountServiceEndpointListeners.clear();
 }

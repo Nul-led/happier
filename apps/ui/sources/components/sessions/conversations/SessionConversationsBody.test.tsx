@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tryWriteServerEnabledBitInPlace, type SessionDiscussionOpenedSummaryV1 } from '@happier-dev/protocol';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -72,7 +73,7 @@ async function renderConversations(options: Readonly<{ activeDifferentHome?: boo
         : null;
     const profile = await upsertServerProfile({ name: 'Conversations Home', serverUrl: 'https://conversations.example.test' });
     const features = createRootLayoutFeaturesResponse();
-    for (const feature of ['sharing.session', 'sessions.collaboration', 'sessions.conversations'] as const) {
+    for (const feature of ['sharing.session', 'sessions.conversations'] as const) {
         if (!tryWriteServerEnabledBitInPlace(features, feature, true)) throw new Error(`Unable to enable ${feature}`);
     }
     primeServerFeaturesSnapshot({ serverId: profile.id, snapshot: { status: 'ready', features } });
@@ -211,6 +212,32 @@ describe('SessionConversationsBody (Lane 05 canonical Conversations body)', () =
         expect(screen.findByTestId('session-agent-conversations-section')?.props.accessibilityRole).toBe('header');
     });
 
+    it('keeps the new-conversation action usable while write capability is unknown and disables it on a known refusal', async () => {
+        useEmptyDiscussionApi();
+        const { profile, screen } = await renderConversations();
+
+        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-new')).not.toBeNull());
+        // No exact-Session access projection yet: the server stays the authority
+        // and the affordance must not be taken away from a writer.
+        expect(screen.findByTestId('session-discussion-new')?.props.disabled).not.toBe(true);
+
+        await act(async () => {
+            storage.setState((state) => ({
+                sessions: {
+                    ...state.sessions,
+                    'conversation-session': {
+                        ...createSessionFixture({ id: 'conversation-session', accessLevel: 'view' }),
+                        serverId: profile.id,
+                    },
+                },
+            }));
+        });
+
+        await vi.waitFor(() => expect(screen.findByTestId('session-discussion-new')?.props.disabled).toBe(true));
+        expect(screen.findByTestId('session-discussion-new')?.props.accessibilityHint)
+            .toBe('You can no longer post in this Session.');
+    });
+
     it('paginates active summaries through the shared repository and selects the opened Details resource', async () => {
         const first = summary('discussion-active-1', { title: 'Release readiness', messageSeq: 2 });
         const second = summary('discussion-active-2', { title: 'Design review', messageSeq: 1 });
@@ -263,7 +290,12 @@ describe('SessionConversationsBody (Lane 05 canonical Conversations body)', () =
         const { screen } = await renderConversations();
 
         await vi.waitFor(() => expect(readListItems(screen).map((item) => item.kind)).toContain('human_empty'));
-        expect(discussionApi.list.mock.calls.some(([input]) => input?.state === 'archived')).toBe(false);
+        // Before the disclosure opens the archived route is reached only by the
+        // bounded existence probe; no page and no cursor is preloaded.
+        expect(discussionApi.list.mock.calls
+            .filter(([input]) => input?.state === 'archived')
+            .every(([input]) => (input as Readonly<{ limit?: number; cursor?: string }>).limit === 1
+                && (input as Readonly<{ cursor?: string }>).cursor === undefined)).toBe(true);
 
         await screen.pressByTestIdAsync('session-discussion-archived-disclosure');
         await vi.waitFor(() => expect(screen.findByTestId('session-discussion-row-discussion-archived-1')).not.toBeNull());
@@ -282,6 +314,40 @@ describe('SessionConversationsBody (Lane 05 canonical Conversations body)', () =
         expect(consoleError.mock.calls.some((args) => args.some((value) => (
             typeof value === 'string' && value.includes('Cannot update a component')
         )))).toBe(false);
+    });
+
+    /**
+     * The archived disclosure is a claim about archived Discussions. Leading with
+     * it before archived existence is known lets the reader open it only to be
+     * told the list is empty, so the collapsed row waits for a proven answer.
+     */
+    it('offers the archived disclosure only until the bounded probe proves there is nothing archived', async () => {
+        useEmptyDiscussionApi();
+        const { screen } = await renderConversations();
+
+        await vi.waitFor(() => expect(readListItems(screen).map((item) => item.kind)).toContain('human_empty'));
+        await vi.waitFor(() => expect(
+            discussionApi.list.mock.calls.some(([input]) => input?.state === 'archived'),
+        ).toBe(true));
+        await vi.waitFor(() => expect(
+            readListItems(screen).map((item) => item.kind),
+        ).not.toContain('archived_disclosure'));
+    });
+
+    it('keeps the archived disclosure when the probe could not answer', async () => {
+        discussionApi.list.mockImplementation((input?: Readonly<{ state?: 'active' | 'archived' }>) => (
+            input?.state === 'archived'
+                ? Promise.resolve({ kind: 'failed' as const, errorCode: 'offline' })
+                : succeededList([], null)
+        ));
+        const { screen } = await renderConversations();
+
+        await vi.waitFor(() => expect(readListItems(screen).map((item) => item.kind)).toContain('human_empty'));
+        await vi.waitFor(() => expect(
+            discussionApi.list.mock.calls.some(([input]) => input?.state === 'archived'),
+        ).toBe(true));
+        // An unanswered probe must never read as "nothing archived".
+        expect(readListItems(screen).map((item) => item.kind)).toContain('archived_disclosure');
     });
 
     it('does not own a second repository decision apart from the shared Lane 05 registry', async () => {

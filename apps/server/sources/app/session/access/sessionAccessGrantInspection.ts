@@ -87,7 +87,17 @@ export async function inspectSessionAccessGrants(params: Readonly<{
         });
         const grants: SessionAccessGrantRowV1[] = [];
         for (const row of facts) {
+            // "May this be changed?" and "may this be removed?" are two questions
+            // the one subject resolver already answers in its two modes. The grant
+            // writer admits removing a retained grant whose subject has since been
+            // archived or deactivated, so the affordance asks it the same way
+            // instead of deriving removal from the set verdict. Removal mode only
+            // skips checks the set mode also applies, so an accepted set verdict
+            // needs no second read.
             const eligibility = await resolveSessionAccessGrantSubjectInTx(tx, { actorAccountId: params.actorAccountId, sessionOwnerAccountId: session.accountId, subject: row.grant.subject, hasExistingGrant: true });
+            const removalEligibility = eligibility.ok
+                ? eligibility
+                : await resolveSessionAccessGrantSubjectInTx(tx, { actorAccountId: params.actorAccountId, sessionOwnerAccountId: session.accountId, subject: row.grant.subject, hasExistingGrant: true, removingExistingGrant: true });
             const required = row.grant.subject.kind === "team" && "requiredByTeamPolicy" in row.grant && row.grant.requiredByTeamPolicy === true
                 && await teamPolicyStillRequiresGrant(tx, row.grant.subject.teamId);
             const external = externalSharing !== null && primaryTeamId !== null
@@ -97,6 +107,7 @@ export async function inspectSessionAccessGrants(params: Readonly<{
                 canDelegate: admission.access.capabilities.managePermissionDelegation,
                 requiredByTeamPolicy: required,
                 ...(eligibility.ok ? {} : { ineligible: eligibility.error }),
+                ...(removalEligibility.ok ? {} : { removalIneligible: removalEligibility.error }),
                 ...(external && externalSharing !== null ? { externalSharing } : {}),
             }) });
         }

@@ -90,6 +90,8 @@ export type TeamAcceptedChoiceFacts =
         descriptorOffered: boolean;
     }>;
 
+export type TeamAcceptedChoiceAvailability = "usable" | "unavailable" | "unreadable";
+
 /**
  * The one answer to "is this accepted reference currently usable?", shared by the
  * policy resolver (entry, administration, activation) and the credential
@@ -104,7 +106,7 @@ export type TeamAcceptedChoiceFacts =
  */
 export function resolveTeamAcceptedChoiceAvailability(
     facts: TeamAcceptedChoiceFacts,
-): "usable" | "unavailable" | "unreadable" {
+): TeamAcceptedChoiceAvailability {
     if (facts.kind === "home_method") {
         if (facts.instanceUnreadable) return "unreadable";
         if (!facts.offered) return "unavailable";
@@ -112,6 +114,27 @@ export function resolveTeamAcceptedChoiceAvailability(
     }
     if (facts.connectionUnreadable) return "unreadable";
     return facts.connected && facts.descriptorOffered ? "usable" : "unavailable";
+}
+
+/**
+ * The one set-level reduction over `resolveTeamAcceptedChoiceAvailability`,
+ * shared by the policy resolver and the credential qualifier so one accepted
+ * alternative can never be judged differently on the two paths.
+ *
+ * A policy is a disjunction: any currently usable alternative satisfies it. An
+ * `unreadable` alternative is therefore only decisive when nothing else is
+ * usable — then the policy's current state is genuinely unknown and both owners
+ * fail closed. It must never hide the Team's other accepted alternatives, which
+ * is exactly what `resolveTeamAcceptedChoiceAvailability` already documents.
+ */
+export function reduceTeamAcceptedChoiceAvailabilities<T>(
+    availability: readonly (readonly [T, TeamAcceptedChoiceAvailability])[],
+): Readonly<{ status: "readable"; usable: readonly T[] }> | Readonly<{ status: "unreadable" }> {
+    const usable = availability.flatMap(([choice, value]) => value === "usable" ? [choice] : []);
+    if (usable.length === 0 && availability.some(([, value]) => value === "unreadable")) {
+        return { status: "unreadable" };
+    }
+    return { status: "readable", usable };
 }
 
 export function hasUsableTeamAuthenticationChoiceOtherThan(
@@ -227,7 +250,9 @@ export async function resolveTeamAuthenticationPolicyInTx(
                 && teamDescriptorByProviderId.has(normalizeAuthMethodId(connection.providerInstanceId)),
         })] as const;
     });
-    if ([...homeMethodAvailability, ...teamConnectionAvailability].some(([, availability]) => availability === "unreadable")) {
+    if (reduceTeamAcceptedChoiceAvailabilities(
+        [...homeMethodAvailability, ...teamConnectionAvailability],
+    ).status === "unreadable") {
         const resolution: ResolvedTeamAuthenticationPolicy = { status: "unavailable" };
         return {
             resolution,

@@ -34,9 +34,15 @@ export async function setSessionAttentionStanding(params: Readonly<{
             sessionId: params.sessionId,
             request: params.standing !== undefined ? { standing: params.standing } : { remindAt: params.remindAt ?? null },
         });
-        getStorage().getState().commitSessionOrganizationOptimistic(recordId);
-        const reconcileRecordId = getStorage().getState().setSessionAttentionStandingOptimistic(params.serverId, params.sessionId, response.standing);
-        getStorage().getState().commitSessionOrganizationOptimistic(reconcileRecordId);
+        // Confirm this write's own key through the optimistic-record owner: a second blind
+        // optimistic write would republish this response over a newer reminder change that is
+        // still in flight for the same Session.
+        getStorage().getState().confirmSessionOrganizationOptimistic(
+            recordId,
+            'sessionOrganizationAttentionStandingsBySessionKey',
+            buildSessionOrganizationSessionKey(params.serverId, params.sessionId),
+            response.standing,
+        );
     } catch (error) {
         getStorage().getState().rollbackSessionOrganizationOptimistic(recordId);
         throw error;

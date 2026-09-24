@@ -13,6 +13,7 @@ import {
     runWithOAuthScreen,
     setAuthState,
     setPendingExternalConnectState,
+    setStoredCredentialsState,
 } from './test/oauthReturnHarness';
 
 type FetchResult = {
@@ -409,6 +410,83 @@ describe('/oauth/[provider] (connect flow)', () => {
         });
 
         promptSpy.mockRestore();
+        alertSpy.mockRestore();
+    });
+    it('finalizes a Team connect on the exact Home that started it while another Home stays focused', async () => {
+        // Home A is focused (its credential is the in-memory auth state); the Team
+        // connect was started with the saved credential of Home B (TA-R14/TA-R16).
+        setAuthenticated();
+        replaceSpy.mockReset();
+        loginWithCredentialsSpy.mockClear();
+        setStoredCredentialsState({ token: 'home-b-token' });
+        setPendingExternalConnectState({
+            provider: 'github',
+            returnTo: '/teams/team-1/sign-in?target=home-b',
+            serverId: 'server-b',
+            serverUrl: 'https://home-b.example.test',
+        });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'connected',
+            pending: 'p-team',
+            username: 'member',
+        });
+        const fetchMock = stubFetch(async (url, init) => {
+            if (url === 'https://home-b.example.test/v1/connect/external/github/finalize') {
+                expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer home-b-token');
+                return { ok: true, body: { success: true, token: 'home-b-replacement' } };
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects();
+            expect(fetchMock).toHaveBeenCalledWith(
+                'https://home-b.example.test/v1/connect/external/github/finalize',
+                expect.anything(),
+            );
+            // The replacement is persisted for Home B without focusing it or touching A.
+            expect(loginWithCredentialsSpy).toHaveBeenCalledWith(
+                { token: 'home-b-replacement' },
+                { target: { serverUrl: 'https://home-b.example.test', serverId: 'server-b' } },
+            );
+            expect(replaceSpy).toHaveBeenCalledWith('/teams/team-1/sign-in?target=home-b');
+        });
+    });
+
+    it('presents a typed Team refusal from the exact Home instead of a generic failure', async () => {
+        setAuthenticated();
+        replaceSpy.mockReset();
+        loginWithCredentialsSpy.mockClear();
+        setStoredCredentialsState({ token: 'home-b-token' });
+        setPendingExternalConnectState({
+            provider: 'github',
+            returnTo: '/teams/team-1/sign-in?target=home-b',
+            serverId: 'server-b',
+            serverUrl: 'https://home-b.example.test',
+        });
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'connect',
+            status: 'connected',
+            pending: 'p-team',
+            username: 'member',
+        });
+        stubFetch(async (url) => {
+            if (url === 'https://home-b.example.test/v1/connect/external/github/finalize') {
+                return { ok: false, status: 403, body: { error: 'team_authentication_required' } };
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        });
+        const alertSpy = vi.spyOn(modal, 'alert').mockImplementation(async () => {});
+
+        await runWithOAuthScreen(async (screen) => {
+            await flushOAuthEffects();
+            expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
+            expect(alertSpy).not.toHaveBeenCalled();
+            expect(JSON.stringify(screen.toJSON())).toContain(t('teams.entry.notProvisionedTitle'));
+        });
         alertSpy.mockRestore();
     });
 });

@@ -41,6 +41,20 @@ describe('DateTimePickerPopover.web', () => {
         expect(onDismiss).toHaveBeenCalledOnce();
     });
 
+    it('scrolls the selected minute into the column instead of past it', async () => {
+        const { resolveTimeColumnScrollOffset } = await import('./DateTimePickerPopover.web');
+        const viewportHeight = 207;
+        const optionHeight = 44;
+        const pitch = 46;
+        for (const selected of [0, 30, 59]) {
+            const offset = resolveTimeColumnScrollOffset({ selected, viewportHeight });
+            const rowTop = selected * pitch;
+            expect(offset).toBeLessThanOrEqual(rowTop);
+            expect(rowTop + optionHeight).toBeLessThanOrEqual(offset + viewportHeight);
+        }
+        expect(resolveTimeColumnScrollOffset({ selected: 0, viewportHeight })).toBe(0);
+    });
+
     it('offers exact hour and minute choices without delegating to the browser picker', async () => {
         const { DateTimePickerPopover } = await import('./DateTimePickerPopover.web');
         function Harness() {

@@ -333,9 +333,10 @@ describe('core e2e: socket-first session convergence contract', () => {
       recipientSocket.connect();
       await waitFor(() => recipientSocket.isConnected(), { timeoutMs: 20_000 });
 
-      const shareStart = recipientSocket.getEvents().length;
-      const share = await fetchJson<{ share?: { id?: string; accessLevel?: string; canApprovePermissions?: boolean } }>(
-        `${server.baseUrl}/v1/sessions/${sessionId}/shares`,
+      // The canonical grant route is the only direct-share writer; it still
+      // publishes the released direct-share socket events to the recipient.
+      const setGrant = (canApprovePermissions: boolean) => fetchJson<{ changed?: boolean }>(
+        `${server!.baseUrl}/v2/sessions/access-grants/set`,
         {
           method: 'POST',
           headers: {
@@ -343,18 +344,19 @@ describe('core e2e: socket-first session convergence contract', () => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            userId: recipientId,
+            sessionId,
+            subject: { kind: 'account', accountId: recipientId },
             accessLevel: 'edit',
-            canApprovePermissions: false,
+            canApprovePermissions,
           }),
           timeoutMs: 15_000,
         },
       );
+
+      const shareStart = recipientSocket.getEvents().length;
+      const share = await setGrant(false);
       expect(share.status).toBe(200);
-      const shareId = share.data?.share?.id;
-      if (typeof shareId !== 'string') {
-        throw new Error('Expected created share id');
-      }
+      expect(share.data?.changed).toBe(true);
 
       const sharedUpdateRef: { current: Record<string, unknown> | null } = { current: null };
       await waitFor(() => {
@@ -364,26 +366,17 @@ describe('core e2e: socket-first session convergence contract', () => {
           type: 'session-shared',
           afterIndex: shareStart,
         });
-        return sharedUpdateRef.current?.shareId === shareId && sharedUpdateRef.current?.canApprovePermissions === false;
+        return typeof sharedUpdateRef.current?.shareId === 'string' && sharedUpdateRef.current?.canApprovePermissions === false;
       }, { timeoutMs: 20_000 });
       const sharedUpdate = sharedUpdateRef.current;
       if (!sharedUpdate) throw new Error('Expected session-shared update');
       expect(sharedUpdate?.accessLevel).toBe('edit');
+      const shareId = sharedUpdate.shareId;
 
       const updateStart = recipientSocket.getEvents().length;
-      const update = await fetchJson<{ share?: { accessLevel?: string; canApprovePermissions?: boolean } }>(
-        `${server.baseUrl}/v1/sessions/${sessionId}/shares/${shareId}`,
-        {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${owner.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ canApprovePermissions: true }),
-          timeoutMs: 15_000,
-        },
-      );
+      const update = await setGrant(true);
       expect(update.status).toBe(200);
+      expect(update.data?.changed).toBe(true);
 
       const updatedShareRef: { current: Record<string, unknown> | null } = { current: null };
       await waitFor(() => {

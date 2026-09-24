@@ -25,8 +25,16 @@ export type SessionReminderDateTimeResult = Readonly<{
     preset?: SessionReminderPresetV1;
 }>;
 
+export type SessionReminderDateTimeSubmitResult = Readonly<{ success: boolean; message?: string }>;
+
 export function SessionReminderDateTimeModal(props: Readonly<{
     nowMs: number;
+    /**
+     * The one canonical save. It runs while this modal is still mounted so a failure keeps the
+     * chosen date, time and Add-to-presets switch and can be retried, instead of discarding the
+     * draft into an alert.
+     */
+    onSubmit: (value: SessionReminderDateTimeResult) => Promise<SessionReminderDateTimeSubmitResult>;
     onResolve: (value: SessionReminderDateTimeResult | null) => void;
 }> & CustomModalInjectedProps) {
     const { theme } = useUnistyles();
@@ -37,8 +45,15 @@ export function SessionReminderDateTimeModal(props: Readonly<{
     }, props.nowMs)), [props.nowMs]);
     const [draft, setDraft] = React.useState<LocalDateTimeDraft>(() => toLocalDateTimeDraft(initial));
     const [savePreset, setSavePreset] = React.useState(false);
-    const validTimestamp = resolveFutureLocalDateTime(draft, props.nowMs);
-    const rule = validTimestamp === null ? null : inferSessionReminderPresetRule(validTimestamp, props.nowMs);
+    const [saving, setSaving] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    // `props.nowMs` is the instant the menu action opened this modal. A submit re-reads the clock,
+    // so a chosen time that expired while the modal was open is refused and explained here instead
+    // of being scheduled as an already-due reminder.
+    const [observedNowMs, setObservedNowMs] = React.useState(props.nowMs);
+    const nowMs = Math.max(props.nowMs, observedNowMs);
+    const validTimestamp = resolveFutureLocalDateTime(draft, nowMs);
+    const rule = validTimestamp === null ? null : inferSessionReminderPresetRule(validTimestamp, nowMs);
 
     const finish = React.useCallback((value: SessionReminderDateTimeResult | null) => {
         props.onResolve(value);
@@ -47,20 +62,39 @@ export function SessionReminderDateTimeModal(props: Readonly<{
 
     const footer = React.useMemo(() => (
         <View style={{ paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
-            <RoundButton display="inverted" title={t('common.cancel')} onPress={() => finish(null)} />
+            <RoundButton display="inverted" title={t('common.cancel')} disabled={saving} onPress={() => finish(null)} />
             <RoundButton
                 title={t('sessionsList.reminders.setReminder')}
-                disabled={validTimestamp === null}
+                disabled={validTimestamp === null || saving}
+                loading={saving}
                 onPress={() => {
-                    if (validTimestamp === null) return;
-                    finish({
-                        remindAt: validTimestamp,
-                        ...(savePreset && rule ? { preset: { rule } } : {}),
-                    });
+                    const submittedAtMs = Date.now();
+                    const submitted = resolveFutureLocalDateTime(draft, submittedAtMs);
+                    if (submitted === null) {
+                        setObservedNowMs(submittedAtMs);
+                        setError(null);
+                        return;
+                    }
+                    const submittedRule = savePreset ? inferSessionReminderPresetRule(submitted, submittedAtMs) : null;
+                    const value: SessionReminderDateTimeResult = {
+                        remindAt: submitted,
+                        ...(submittedRule ? { preset: { rule: submittedRule } } : {}),
+                    };
+                    setSaving(true);
+                    setError(null);
+                    void (async () => {
+                        const result = await props.onSubmit(value);
+                        if (result.success) {
+                            finish(value);
+                            return;
+                        }
+                        setSaving(false);
+                        setError(result.message ?? t('errors.unknownError'));
+                    })();
                 }}
             />
         </View>
-    ), [finish, rule, savePreset, validTimestamp]);
+    ), [draft, finish, props, saving, savePreset, validTimestamp]);
 
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
@@ -74,7 +108,7 @@ export function SessionReminderDateTimeModal(props: Readonly<{
     return (
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 18, gap: 16 }}>
             <LocalDateTimeEditor
-                nowMs={props.nowMs}
+                nowMs={nowMs}
                 value={draft}
                 onChange={setDraft}
                 testIDPrefix="session-reminder"
@@ -89,7 +123,7 @@ export function SessionReminderDateTimeModal(props: Readonly<{
                 <Item
                     title={t('sessionsList.reminders.addToPresets')}
                     subtitle={savePreset
-                        ? (rule ? formatSessionReminderPresetRuleLabel(rule, props.nowMs) : t('sessionsList.reminders.presetPreviewUnavailable'))
+                        ? (rule ? formatSessionReminderPresetRuleLabel(rule, nowMs) : t('sessionsList.reminders.presetPreviewUnavailable'))
                         : undefined}
                     rightElement={(
                         <Switch
@@ -105,6 +139,16 @@ export function SessionReminderDateTimeModal(props: Readonly<{
                     showDivider={false}
                 />
             </View>
+
+            {error ? <Item
+                testID="session-reminder-error"
+                title={error}
+                titleLines={0}
+                mode="info"
+                accessibilityLiveRegion="polite"
+                showChevron={false}
+                showDivider={false}
+            /> : null}
         </ScrollView>
     );
 }

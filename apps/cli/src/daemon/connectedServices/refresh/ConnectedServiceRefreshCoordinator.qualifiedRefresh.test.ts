@@ -297,6 +297,7 @@ describe('ConnectedServiceRefreshCoordinator qualified refresh integration', () 
         configuration: {
           read: vi.fn(async () => null),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -605,6 +606,7 @@ describe('ConnectedServiceRefreshCoordinator qualified refresh integration', () 
         configuration: {
           read: vi.fn(async () => serviceConfiguration),
           secrets: {
+            admit: vi.fn(async () => undefined),
             has: vi.fn(async () => false),
             read: vi.fn(async () => null),
           },
@@ -749,6 +751,7 @@ describe('ConnectedServiceRefreshCoordinator qualified refresh integration', () 
         }),
         destroyAttempt: vi.fn(),
         secrets: {
+          admit: vi.fn(async () => undefined),
           has: vi.fn(async () => false),
           read: vi.fn(async () => null),
         },

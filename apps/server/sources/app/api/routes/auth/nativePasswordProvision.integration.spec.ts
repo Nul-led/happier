@@ -37,6 +37,7 @@ describe("native fresh Account admission through the registered method", () => {
         });
     }, 120_000);
     afterEach(async () => {
+        harness.resetEnv();
         await db.homeGovernancePolicy.deleteMany();
         await db.team.deleteMany();
         await db.account.deleteMany();
@@ -164,6 +165,42 @@ describe("native fresh Account admission through the registered method", () => {
             expect(result.json()).toEqual({ error: "method_not_available" });
             expect(await db.account.count()).toBe(0);
             expect(await inTx((tx) => readNativeAuthOneTimeOperation(tx, { purpose: "verify_native_email", token: issued.rawBearer }))).not.toBeNull();
+        } finally { await server.close(); }
+    });
+
+    it("honours the public-signup provisioning restriction and exempts invitation admission", async () => {
+        harness.resetEnv({ HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "email_password" });
+        const issued = await proof();
+        const server = app();
+        try {
+            const denied = await server.inject({
+                method: "POST", url: "/v1/auth/email/provision", remoteAddress: "203.0.113.10",
+                payload: {
+                    v: 1, email: "signup@example.test",
+                    admission: { kind: "native_email_verification", token: issued.rawBearer },
+                    account: { mode: "plain", password },
+                },
+            });
+            expect(denied.statusCode, denied.body).toBe(403);
+            expect(denied.json()).toEqual({ error: "method_not_available" });
+            expect(await db.account.count()).toBe(0);
+            expect(await db.accountIdentity.count()).toBe(0);
+            expect(await db.accountPasswordCredential.count()).toBe(0);
+            expect(await inTx((tx) => readNativeAuthOneTimeOperation(tx, {
+                purpose: "verify_native_email", token: issued.rawBearer,
+            }))).not.toBeNull();
+
+            const invited = await invitation();
+            const admitted = await server.inject({
+                method: "POST", url: "/v1/auth/email/provision", remoteAddress: "203.0.113.10",
+                payload: {
+                    v: 1, email: "invited@example.test",
+                    admission: { kind: "team_invitation", token: invited.token },
+                    account: { mode: "plain", password },
+                },
+            });
+            expect(admitted.statusCode, admitted.body).toBe(200);
+            expect(admitted.json().teamId).toBe(invited.team.id);
         } finally { await server.close(); }
     });
 

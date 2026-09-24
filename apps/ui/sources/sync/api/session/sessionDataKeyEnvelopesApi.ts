@@ -130,12 +130,11 @@ async function runWithEnvelopeCollectionAuthority<TResult>(
     options: SessionDataKeyEnvelopeRequestOptions,
     operation: (bound: BoundEnvelopeCollection) => Promise<TResult>,
 ): Promise<TResult> {
-    // A Home that only serves released direct sharing has no v2 envelope
-    // collection. Failing the operation is the whole contract: probing for the
-    // resource, or falling back to the direct-share seam, would either invent a
-    // capability or quietly narrow a Team/Group audience to one Account.
-    if (options.availability !== 'full_collaboration') {
-        throw new SessionAccessApiError('unsupported_action');
+    // A Home that does not share Sessions has no v2 envelope collection.
+    // Failing the operation is the whole contract: probing for the resource
+    // would invent a capability the Home's own decision withholds.
+    if (options.availability !== 'available') {
+        throw new SessionAccessApiError('session_access_sharing_unavailable');
     }
     return await runWithServerAccountScopeRequestGuard({
         scope: options.scope,

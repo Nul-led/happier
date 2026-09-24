@@ -369,6 +369,118 @@ describe("Team authentication policy catalog resolution (SQLite integration)", (
         });
     });
 
+    it("keeps a usable accepted alternative when another accepted instance is unreadable", async () => {
+        const usableProvider = await db.identityProviderInstance.create({
+            data: {
+                kind: "oidc",
+                displayName: "Company login",
+                enabled: true,
+                firstEnabledAt: new Date("2026-09-06T00:00:00.000Z"),
+                config: managedOidcConfig,
+            },
+        });
+        await db.identityProviderInstance.update({
+            where: { id: usableProvider.id },
+            data: {
+                encryptedSecrets: encryptString(
+                    ["storage", "identity_provider_instance", usableProvider.id, "oidc", "secrets", "v1"],
+                    JSON.stringify({ v: 1, kind: "oidc", clientSecret: "secret" }),
+                ),
+            },
+        });
+        const descriptor = await inTx(async (tx) => (await listProviderDescriptorsInTx(tx, managedEnv))
+            .find((candidate) => candidate.reference.id === usableProvider.id));
+        expect(descriptor).toBeDefined();
+        await db.identityProviderInstance.update({
+            where: { id: usableProvider.id },
+            data: {
+                lastSuccessfulTestAt: new Date("2026-09-06T00:01:00.000Z"),
+                lastSuccessfulTestRuntimeFingerprint: descriptor!.reference.runtimeFingerprint,
+                lastSuccessfulTestSecurityRevision: usableProvider.securityRevision,
+            },
+        });
+        const unreadableProvider = await db.identityProviderInstance.create({
+            data: {
+                kind: "oidc",
+                displayName: "Unreadable login",
+                enabled: true,
+                config: { v: 1, kind: "oidc" },
+            },
+        });
+        const policy = {
+            v: 1 as const,
+            mode: "restricted" as const,
+            accepted: [
+                { kind: "home_method" as const, methodId: unreadableProvider.id },
+                { kind: "home_method" as const, methodId: usableProvider.id },
+            ],
+        };
+
+        const mixed = await inTx(async (tx) => resolveTeamAuthenticationPolicyInTx(tx, {
+            env: managedEnv,
+            teamId: "team-not-needed-for-home-choices",
+            policy,
+        }));
+        if (mixed.resolution.status !== "restricted") throw new Error("Expected a restricted resolution");
+        // `normalizeTeamAuthenticationPolicyV1` sorts the accepted set by its
+        // canonical key, so the assertion is keyed by reference rather than by
+        // the order the policy was authored in.
+        expect(new Map(mixed.resolution.choices.map((choice) => [
+            choice.reference.kind === "home_method" ? choice.reference.methodId : choice.reference.connectionId,
+            choice.availability,
+        ]))).toEqual(new Map([
+            [usableProvider.id, "usable"],
+            [unreadableProvider.id, "unavailable"],
+        ]));
+        expect(mixed.activationReadiness).toBe("ready");
+
+        const account = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" },
+        });
+        const identity = await db.accountIdentity.create({
+            data: { accountId: account.id, provider: usableProvider.id, providerUserId: "home-subject" },
+        });
+        const team = await db.team.create({ data: { name: "Mixed readability", authenticationPolicy: policy } });
+        const evidence = [{
+            kind: "provider" as const,
+            providerId: usableProvider.id,
+            identityId: identity.id,
+            runtimeFingerprint: descriptor!.reference.runtimeFingerprint,
+        }];
+        await expect(inTx((tx) => qualifyTeamAuthenticationInTx(tx, {
+            env: managedEnv,
+            team,
+            accountId: account.id,
+            verifiedCredentialEvidence: evidence,
+            operationContext: { kind: "present_user" },
+        }))).resolves.toEqual({
+            status: "satisfied",
+            matched: { kind: "home_method", methodId: usableProvider.id },
+        });
+
+        // Removing the one usable alternative leaves an unreadable read as the
+        // only fact, and that stays fail-closed at both owners.
+        const unreadableOnly = {
+            ...policy,
+            accepted: [{ kind: "home_method" as const, methodId: unreadableProvider.id }],
+        };
+        await expect(inTx(async (tx) => resolveTeamAuthenticationPolicyInTx(tx, {
+            env: managedEnv,
+            teamId: "team-not-needed-for-home-choices",
+            policy: unreadableOnly,
+        }))).resolves.toEqual({
+            resolution: { status: "unavailable" },
+            activationReadiness: "unavailable",
+        });
+        await expect(inTx((tx) => qualifyTeamAuthenticationInTx(tx, {
+            env: managedEnv,
+            team: { id: team.id, authenticationPolicy: unreadableOnly },
+            accountId: account.id,
+            verifiedCredentialEvidence: evidence,
+            operationContext: { kind: "present_user" },
+        }))).resolves.toEqual({ status: "unavailable" });
+    });
+
     it("treats a connected choice the provider catalog does not offer as unavailable, not unreadable", async () => {
         const team = await db.team.create({ data: { name: "Catalog omission Team" } });
         const provider = await db.identityProviderInstance.create({

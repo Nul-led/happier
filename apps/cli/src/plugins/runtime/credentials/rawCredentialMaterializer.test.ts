@@ -16,6 +16,10 @@ import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixtu
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import {
+  SavedSecretOperationAdmissionError,
+  type refreshSavedSecretCatalogForOperation,
+} from '@/settings/secrets/hydrateSavedSecretCatalog';
+import {
   createConnectedAccountPurposeBindingOwner,
   type ConnectedAccountPurposeBindingStore,
 } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
@@ -229,7 +233,6 @@ function createHarness(input: Readonly<{
   materializeAccount?: Parameters<typeof createConnectedAccountPurposeBindingOwner>[0]['materializeAccount'];
   readPrincipal?: () => Promise<ReturnType<typeof principalSnapshot> | null>;
   isRuntimeAuthorityCurrent?: () => boolean;
-  immutableGenerationId?: string;
   grantSubject?: PluginPermissionSubjectV1;
   grantAuthoritySource?: PluginPermissionGrantAuthoritySourceV1;
   currentAuthoritySource?: PluginPermissionGrantAuthoritySourceV1 | null;
@@ -242,6 +245,12 @@ function createHarness(input: Readonly<{
     readNumber: number,
     replace: (next: ActiveAccountSettingsSnapshot) => void,
   ) => void;
+  /**
+   * The canonical operation-admission refresh. These tests drive the local
+   * snapshot directly, so the default stands in for a Home that confirms the
+   * hydrated row; a case that revokes at the Home supplies its own.
+   */
+  refreshSavedSecretCatalogForOperation?: typeof refreshSavedSecretCatalogForOperation;
 }> = {}) {
   let currentSnapshot: ActiveAccountSettingsSnapshot | null = input.initialSnapshot === undefined
     ? snapshot()
@@ -340,7 +349,6 @@ function createHarness(input: Readonly<{
       machineId: 'machine-a',
       materializationId: 'materialization-a',
     },
-    immutableGenerationId: input.immutableGenerationId ?? 'generation-a',
     isRuntimeAuthorityCurrent: input.isRuntimeAuthorityCurrent
       ?? (() => generationCurrent),
   };
@@ -365,6 +373,8 @@ function createHarness(input: Readonly<{
     ...(input.getLifetimeToken
       ? { getAccountSettingsSnapshotLifetimeToken: input.getLifetimeToken }
       : {}),
+    refreshSavedSecretCatalogForOperation: input.refreshSavedSecretCatalogForOperation
+      ?? (async () => currentSnapshot as NonNullable<typeof currentSnapshot>),
   };
   const materializer = createPluginRawCredentialMaterializer(materializerInput);
   return {
@@ -388,7 +398,6 @@ describe('plugin raw credential materializer', () => {
         realm: 'daemon',
         phase: 'speech',
         machineId: null,
-        immutableGenerationId: 'generation-a',
         isRuntimeAuthorityCurrent: () => true,
       },
       currentInstallReviewPrincipal: { readCurrent: async () => principalSnapshot(principalA) },
@@ -402,7 +411,7 @@ describe('plugin raw credential materializer', () => {
       pluginId: contribution.pluginId,
       capability: 'credentials.materialize.raw',
       targetScope: { kind: 'account' },
-      subject: { installReviewPrincipalDigest: principalA },
+      subject: { kind: 'credential_access_disclosure' },
     });
     expect(inspection.disclosures).toEqual([{
       sourceClass: { kind: 'connectedAccount', service },
@@ -435,8 +444,6 @@ describe('plugin raw credential materializer', () => {
         accessDeclarationDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
         selectedAuthorityDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
         selectedRawAccessDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        installedGenerationId: 'generation-a',
-        installReviewPrincipalDigest: principalA,
       },
     });
     expect(Object.isFrozen(inspection)).toBe(true);
@@ -551,7 +558,7 @@ describe('plugin raw credential materializer', () => {
     });
   });
 
-  it('does not let a raw-credential grant follow selected authority or installed generation', async () => {
+  it('does not let a raw-credential grant follow selected authority and does follow authority-neutral code updates', async () => {
     const approved = createHarness();
     const inspection = await approved.materializer.inspectAuthorization(connectedHeaderRequest);
 
@@ -638,11 +645,11 @@ describe('plugin raw credential materializer', () => {
     });
 
     const generationTurnover = createHarness({
-      immutableGenerationId: 'generation-b',
       grantSubject: inspection.subject,
     });
-    await expect(generationTurnover.materializer.materialize(connectedHeaderRequest)).rejects.toMatchObject({
-      code: 'plugin_voice_credential_access_unavailable',
+    await expect(generationTurnover.materializer.materialize(connectedHeaderRequest)).resolves.toEqual({
+      kind: 'httpHeaders',
+      headers: { authorization: 'Bearer connected:account-a' },
     });
   });
 
@@ -667,23 +674,36 @@ describe('plugin raw credential materializer', () => {
     expect(JSON.stringify(inspection.subject)).not.toContain('saved-secret-raw');
   });
 
-  it('fails the authorized materialization when the principal or admitted runtime changes across it', async () => {
+  it('keeps Account identity outside the credential subject while fencing the active Account lifetime', async () => {
+    const accountATokenOne = createHarness({
+      initialSnapshot: snapshot({ source: 'savedSecret', scopeKey: 'account-a-token-one' }),
+    });
+    const accountATokenTwo = createHarness({
+      initialSnapshot: snapshot({ source: 'savedSecret', scopeKey: 'account-a-token-two' }),
+    });
+
+    const first = await accountATokenOne.materializer.inspectAuthorization(connectedHeaderRequest);
+    const refreshed = await accountATokenTwo.materializer.inspectAuthorization(connectedHeaderRequest);
+
+    expect(refreshed.subject).toEqual(first.subject);
+  });
+
+  it('ignores install-review changes but fails when the admitted runtime changes across it', async () => {
     let principalReads = 0;
     const principalTurnover = createHarness({
       readPrincipal: async () => principalSnapshot(++principalReads === 1 ? principalA : principalB),
     });
-    // The grant list was evaluated for the principal read before it; a
-    // principal that has since changed must not reach the credential.
-    await expect(principalTurnover.materializer.materialize(connectedHeaderRequest)).rejects.toMatchObject({
-      code: 'plugin_voice_credential_access_unavailable',
+    await expect(principalTurnover.materializer.materialize(connectedHeaderRequest)).resolves.toEqual({
+      kind: 'httpHeaders',
+      headers: { authorization: 'Bearer connected:account-a' },
     });
 
     let runtimeCurrent = true;
     const runtimeTurnover = createHarness({
       isRuntimeAuthorityCurrent: () => runtimeCurrent,
-      readPrincipal: async () => {
+      readCurrentAuthoritySource: async () => {
         runtimeCurrent = false;
-        return principalSnapshot(principalA);
+        return machineA;
       },
     });
     await expect(runtimeTurnover.materializer.inspectAuthorization(connectedHeaderRequest)).rejects.toMatchObject({
@@ -707,7 +727,6 @@ describe('plugin raw credential materializer', () => {
         contribution,
         credentialSlotId: 'api_key',
         purpose: 'voice.speech',
-        installReviewPrincipalDigest: principalA,
       },
     });
     expect(harness.listInputs.at(-1)?.subject).toMatchObject({
@@ -1089,9 +1108,8 @@ describe('plugin raw credential materializer', () => {
     }
   });
 
-  it('discards results after principal or admitted-generation authority changes', async () => {
+  it('discards results after the admitted occurrence retires', async () => {
     for (const revoke of [
-      (harness: ReturnType<typeof createHarness>) => harness.setPrincipal(principalB),
       (harness: ReturnType<typeof createHarness>) => harness.setGenerationCurrent(false),
     ]) {
       const started = deferred<void>();
@@ -1190,6 +1208,30 @@ describe('plugin raw credential materializer', () => {
     })).rejects.toMatchObject({
       code: 'plugin_voice_credential_access_unavailable',
     });
+  });
+
+  it('admits a new raw-credential materialization against Home-current shared material, not the hydrated row', async () => {
+    const references: string[] = [];
+    const saved = createHarness({
+      initialSnapshot: snapshot({ source: 'savedSecret', sharedSecret: true }),
+      refreshSavedSecretCatalogForOperation: async (refreshInput) => {
+        for (const reference of refreshInput.references ?? []) references.push(reference.ref);
+        // The Home has revoked this shared resource since hydration and the
+        // AccountChange hint was never delivered; the hydrated row still reads
+        // ready.
+        throw new SavedSecretOperationAdmissionError({
+          reason: 'reference_unavailable',
+          reference: refreshInput.references?.[0]?.ref ?? '',
+        });
+      },
+    });
+
+    await expect(saved.materializer.materialize({
+      kind: 'environment', keys: ['VOICE_TOKEN'],
+    })).rejects.toMatchObject({
+      code: 'plugin_voice_credential_access_unavailable',
+    });
+    expect(references).toEqual(['happier:shared-secret:v1:resource_plugin_voice']);
   });
 
   it('uses semantic SavedSecret currentness across unrelated Account Settings mutations and revokes real changes', async () => {
@@ -1353,7 +1395,6 @@ describe('plugin raw credential materializer', () => {
         realm: 'daemon',
         phase: 'speech',
         machineId: null,
-        immutableGenerationId: 'generation-a',
         isRuntimeAuthorityCurrent: () => true,
       },
       currentInstallReviewPrincipal: { readCurrent: async () => principalSnapshot(principalA) },

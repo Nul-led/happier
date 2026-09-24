@@ -5,8 +5,10 @@ import {
     applyExternalGroupContributionInTx,
     applyExternalManagedGroupInTx,
     applyExternalTeamMembershipInTx,
+    directoryGroupContributorIdentityWhere,
     removeExternalGroupBindingInTx,
 } from "../memberships/externalFacts";
+import { projectDirectorySyncFreshness } from "./directorySourceProjection";
 import type { DirectoryGroup, DirectoryGroupMember, DirectoryPerson } from "./directorySourceEvidence";
 import {
     isDirectorySourceCompletedEvidenceAllowedInTx,
@@ -628,15 +630,12 @@ async function applyNativeDirectoryFactsInTx(
                 where: {
                     directorySourceId: sourceId,
                     externalGroupId: binding.externalGroupId,
-                    // The bound Account is the whole address. Requiring this
-                    // source to also own the Team-membership lifetime would
-                    // drop every natively-managed and second-source person
-                    // from its rosters; the contribution owner below still
-                    // requires a current membership.
-                    identity: {
-                        boundAccountId: { not: null },
-                        state: { in: ["active", "suspended"] },
-                    },
+                    // The bound Account is the whole address: natively
+                    // managed and second-source people keep contributing.
+                    // A deactivated person does so only while this source
+                    // owns (and so suspends) their lifetime; otherwise the
+                    // existing contribution is withdrawn below.
+                    identity: directoryGroupContributorIdentityWhere(),
                 },
                 select: { identity: { select: { boundAccountId: true } } },
             });
@@ -798,13 +797,11 @@ export async function commitActiveWorkosProjectionEvent(
             },
         });
         if (advanced.count !== 1) throw new StaleProjectionRunError();
-        if (!published) {
-            await publishDirectorySourceStatusTransitionInTx(tx, {
-                teamId: current.teamId,
-                before: current,
-                after: { state: current.state, lastErrorCode: null },
-            });
-        }
+        // An applied event is an upstream person, Group or roster change the
+        // directory People/Groups lists show even when it changes no native
+        // fact (an unbound person, an unmapped Group). It is driven by upstream
+        // change, not a timer, so wake the Team once for it.
+        if (!published) await publishTeamChangedInTx(tx, { teamId: current.teamId });
         return { applied: true };
     }).catch((error: unknown) => {
         if (error instanceof StaleProjectionRunError) return { applied: false, reason: "stale_run" };
@@ -835,7 +832,7 @@ export async function completeActiveWorkosEmptyPoll(params: Readonly<{
         };
         const before = await tx.teamDirectorySource.findFirst({
             where,
-            select: { teamId: true, state: true, lastErrorCode: true },
+            select: { teamId: true, kind: true, state: true, lastErrorCode: true, lastSuccessAt: true },
         });
         if (!before) return { applied: false, reason: "stale_run" };
         const updated = await tx.teamDirectorySource.updateMany({
@@ -848,14 +845,20 @@ export async function completeActiveWorkosEmptyPoll(params: Readonly<{
             },
         });
         if (updated.count !== 1) return { applied: false, reason: "stale_run" };
-        // An identical poll that only moves the success horizon changes nothing
-        // a reader sees; clearing a recorded failure is the recovery an
+        // A poll on an already-fresh source only moves the success horizon on
+        // a timer, and waking every Team reader for that is pure fanout. A poll
+        // that makes a stale or never-synced source fresh changes the shown
+        // freshness, and clearing a recorded failure is the recovery an
         // administrator is watching for.
-        await publishDirectorySourceStatusTransitionInTx(tx, {
-            teamId: before.teamId,
-            before,
-            after: { state: before.state, lastErrorCode: null },
-        });
+        if (projectDirectorySyncFreshness(before, completedAt) !== "fresh") {
+            await publishTeamChangedInTx(tx, { teamId: before.teamId });
+        } else {
+            await publishDirectorySourceStatusTransitionInTx(tx, {
+                teamId: before.teamId,
+                before,
+                after: { state: before.state, lastErrorCode: null },
+            });
+        }
         return { applied: true };
     });
 }

@@ -130,6 +130,11 @@ export function createProductionFreshWorkflowSessionConversation(deps: Readonly<
           ? {
               connectedServices: connectedServicesDefault.connectedServices,
               connectedServicesUpdatedAt: connectedServicesDefault.connectedServicesUpdatedAt,
+              // Defaulted Team targets are admitted only through the Session's
+              // own Team slot bindings, created with it.
+              ...(connectedServicesDefault.teamCredentialBindings
+                ? { teamCredentialBindings: connectedServicesDefault.teamCredentialBindings }
+                : {}),
             }
           : {}),
       ...(selection.mcpSelection ? { mcpSelection: selection.mcpSelection } : {}),

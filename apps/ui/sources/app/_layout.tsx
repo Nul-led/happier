@@ -54,8 +54,6 @@ import { WebCryptoStartupGate } from '@/components/web/WebCryptoStartupGate';
 import { consumeRestartBugReportIntent } from '@/utils/system/restartBugReportIntent';
 import { getCurrentReactOwnerHint, getUnexpectedPrimitiveViewChildInfo } from '@/utils/system/debugUnexpectedTextNodeCapture';
 import { resolveForegroundNotificationBehavior } from '@/activity/notifications/resolveForegroundNotificationBehavior';
-import { noteActivityAlertPresented } from '@/activity/notifications/remoteAlerts/activityAlertPresentationNotes';
-import { resolveRemoteAlertForegroundPresentation } from '@/activity/notifications/remoteAlerts/resolveRemoteAlertForegroundPresentation';
 import { resolveBootCredentials } from '@/boot/resolveBootCredentials';
 import { runAppBootSequence, type AppBootReadyState } from '@/boot/runAppBootSequence';
 import { prepareSessionDraftPersistenceStorage } from '@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage';
@@ -66,7 +64,8 @@ import { DesktopShellUpdateIndicatorHost } from '@/components/navigation/shell/d
 import { DesktopShellWindowControlsHost } from '@/components/navigation/shell/desktopChrome/DesktopShellWindowControlsHost';
 import { useResolvedDesktopWindowControls } from '@/components/navigation/shell/desktopChrome/useResolvedDesktopWindowControls';
 import { isTerminalConnectWebPathname } from '@/utils/path/terminalConnectUrl';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { desktopHostKind, isDesktopHost } from '@/utils/platform/desktopHost';
+import { installTauriExternalLinkClicks } from '@/utils/url/installTauriExternalLinkClicks';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { resolveAppShellChromeHost } from '@/components/appShell/resolveAppShellChromeHost';
 import { isDesktopActivityOverlayWindowContext } from '@/activity/adapters/desktop/runtime/isDesktopActivityOverlayWindowContext';
@@ -303,42 +302,14 @@ function configureForegroundNotificationHandler(Notifications: ExpoNotifications
     // Suppresses same-session notifications and respects the foregroundBehavior setting.
     Notifications.setNotificationHandler({
         handleNotification: async (notification) => {
-        const { data } = notification.request.content;
-        const notifSessionId = typeof data?.sessionId === 'string' ? data.sessionId : null;
-
-        // A Home-submitted collaborator alert is qualified by its own Home and by
-        // what this device already showed for the same committed event.
-        const remoteAlert = resolveRemoteAlertForegroundPresentation({
-            data,
+        // One owner names the arrival's exact Home, event and channel, applies
+        // exact-Home same-Session suppression and asks the delivery-plan owner.
+        const foregroundBehavior = await resolveForegroundNotificationBehavior({
+            content: notification.request.content,
+            localSettings: storage.getState().localSettings,
+            now: new Date(),
             isSessionVisible: (address) => isSessionSurfaceVisible(address.sessionId, address.serverId),
         });
-        if (remoteAlert.kind === 'suppress') {
-            return { shouldPlaySound: false, shouldSetBadge: true, shouldShowBanner: false, shouldShowList: false };
-        }
-
-        // Same-session suppression: user already sees real-time updates.
-        if (remoteAlert.kind === 'not_remote_alert' && notifSessionId && isSessionSurfaceVisible(notifSessionId)) {
-            return { shouldPlaySound: false, shouldSetBadge: true, shouldShowBanner: false, shouldShowList: false };
-        }
-
-        // NotificationsSettingsV1Schema uses .catch(), so parse always succeeds.
-        const foregroundBehavior = resolveForegroundNotificationBehavior({
-            localSettings: storage.getState().localSettings,
-            accountSettings: storage.getState().settings,
-        });
-
-        if (
-            remoteAlert.kind === 'present'
-            && remoteAlert.target.eventIdentity
-            && foregroundBehavior !== 'off'
-        ) {
-            noteActivityAlertPresented({
-                address: remoteAlert.target.address,
-                event: remoteAlert.target.event,
-                identity: remoteAlert.target.eventIdentity,
-                source: 'home_remote_alert',
-            });
-        }
 
         switch (foregroundBehavior) {
             case 'off':
@@ -622,6 +593,7 @@ async function loadFonts() {
             // Inter family (default typography)
             'Inter-Regular': require('@/assets/fonts/Inter-Regular.ttf'),
             'Inter-Italic': require('@/assets/fonts/Inter-Italic.ttf'),
+            'Inter-Medium': require('@/assets/fonts/Inter-Medium.ttf'),
             'Inter-SemiBold': require('@/assets/fonts/Inter-SemiBold.ttf'),
 
             // IBM Plex Mono family
@@ -655,6 +627,11 @@ async function loadFonts() {
 }
 
 function RootLayout() {
+    React.useEffect(() => {
+        if (Platform.OS === 'web' && desktopHostKind() === 'tauri') {
+            return installTauriExternalLinkClicks();
+        }
+    }, []);
     const { theme } = useUnistyles();
     const isDesktopOverlayWindow = isDesktopOverlayWindowContext();
     useWebUiFontScale();

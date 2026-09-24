@@ -8,11 +8,10 @@ import type { AttentionDeviceOverridesV1 } from '@/sync/domains/settings/attenti
 import { t } from '@/text';
 import type { AttentionDeliveryPolicyV1 } from '@happier-dev/protocol';
 import { Icon } from '@/components/ui/icons/Icon';
-
-const NIGHTLY_QUIET_HOURS_WINDOW = {
-    startLocalTime: '22:00',
-    endLocalTime: '07:00',
-} as const;
+import {
+    isNightlyQuietHoursWindowSet,
+    NIGHTLY_QUIET_HOURS_WINDOW,
+} from '@/activity/delivery/resolveQuietHoursState';
 
 type QuietHoursOverride = AttentionDeviceOverridesV1['quietHoursOverride'];
 type QuietHoursPolicy = AttentionDeliveryPolicyV1['quietHours'];
@@ -24,26 +23,33 @@ type NotificationQuietHoursSectionProps = Readonly<{
     setDeviceQuietHoursOverride: (override: QuietHoursOverride) => void;
 }>;
 
+function readDeviceTimezone(): string {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch {
+        return '';
+    }
+}
+
 function resolveDefaultTimezone(policy: AttentionDeliveryPolicyV1): string {
     const configured = policy.quietHours.timezone.trim();
     if (configured.length > 0 && configured !== 'UTC') {
         return configured;
     }
 
-    try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone || configured || 'UTC';
-    } catch {
-        return configured || 'UTC';
-    }
+    return readDeviceTimezone() || configured || 'UTC';
 }
 
-function hasNightlyQuietHours(policy: AttentionDeliveryPolicyV1): boolean {
-    return policy.quietHours.enabled === true
-        && policy.quietHours.windows.some((window) => (
-            window.startLocalTime === NIGHTLY_QUIET_HOURS_WINDOW.startLocalTime
-            && window.endLocalTime === NIGHTLY_QUIET_HOURS_WINDOW.endLocalTime
-            && (window.days === undefined || window.days.length === 0)
-        ));
+/**
+ * The schedule's own zone, shown only when it is not this device's. Quiet hours are local times in
+ * an Account-wide zone, so a device in another zone is otherwise told "10 PM to 7 AM" while the
+ * effective window is somewhere else entirely — the one reachable cross-device untruth here.
+ */
+function foreignScheduleTimezone(timezone: string | undefined): string | undefined {
+    const configured = timezone?.trim();
+    if (!configured) return undefined;
+    const device = readDeviceTimezone();
+    return device && configured !== device ? configured : undefined;
 }
 
 export function NotificationQuietHoursSection({
@@ -54,7 +60,15 @@ export function NotificationQuietHoursSection({
 }: NotificationQuietHoursSectionProps): React.ReactElement {
     const { theme } = useUnistyles();
     const accountEnabled = policy.quietHours.enabled === true;
-    const accountNightlySelected = hasNightlyQuietHours(policy);
+    // Selected means "this row IS the configured schedule", so a foreign or richer schedule is
+    // neither mislabelled nor silently replaced by pressing the preset.
+    const accountNightlySelected = accountEnabled && isNightlyQuietHoursWindowSet(policy.quietHours.windows);
+    const deviceNightlySelected = deviceOverride.mode === 'custom'
+        && isNightlyQuietHoursWindowSet(deviceOverride.windows);
+    const accountScheduleTimezone = accountEnabled ? foreignScheduleTimezone(policy.quietHours.timezone) : undefined;
+    const deviceScheduleTimezone = deviceOverride.mode === 'custom'
+        ? foreignScheduleTimezone(deviceOverride.timezone)
+        : undefined;
 
     const setAccountOff = React.useCallback(() => {
         setAccountQuietHours({
@@ -107,6 +121,7 @@ export function NotificationQuietHoursSection({
                 title={t('settingsNotifications.quietHours.accountNightlyTitle')}
                 subtitle={t('settingsNotifications.quietHours.accountNightlySubtitle')}
                 icon={<Icon name="moon" size={29} color={theme.colors.text.secondary} />}
+                detail={accountScheduleTimezone}
                 selected={accountNightlySelected}
                 onPress={setAccountNightly}
                 showChevron={false}
@@ -134,7 +149,8 @@ export function NotificationQuietHoursSection({
                 title={t('settingsNotifications.quietHours.deviceCustomNightlyTitle')}
                 subtitle={t('settingsNotifications.quietHours.deviceCustomNightlySubtitle')}
                 icon={<Icon name="moon" size={29} color={theme.colors.text.secondary} />}
-                selected={deviceOverride.mode === 'custom'}
+                detail={deviceScheduleTimezone}
+                selected={deviceNightlySelected}
                 onPress={setDeviceCustomNightly}
                 showChevron={false}
             />

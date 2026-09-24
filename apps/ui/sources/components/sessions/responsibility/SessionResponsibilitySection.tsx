@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { Avatar } from '@/components/ui/avatar/Avatar';
@@ -44,6 +45,7 @@ export function SessionResponsibilitySection(props: Readonly<{
     testID?: string;
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
+    const router = useRouter();
     const controller = props.controller;
     const editable = controller.availability === 'editable';
     const pickerHost = props.pickerHost;
@@ -76,9 +78,8 @@ export function SessionResponsibilitySection(props: Readonly<{
         );
     }
 
-    // An older or non-projecting server says nothing about responsibility. It is
+    // A Home that does not project responsibility says nothing about it. It is
     // never rendered as "No one": that would be a confident, wrong statement.
-    // `direct_only` availability is also unsupported: hide rather than claim.
     if (controller.availability === 'unsupported') return null;
 
     const assigned = responsibleAccountId;
@@ -114,6 +115,24 @@ export function SessionResponsibilitySection(props: Readonly<{
                     disabled={controller.pending}
                     onPress={editable ? pickerHost.openPicker : undefined}
                 />
+                {controller.pendingApproval ? (
+                    // The canonical Action policy is holding this assignment for
+                    // confirmation. The row above still shows the committed
+                    // assignee; this row says what is waiting and opens the one
+                    // approval where it is decided.
+                    <Item
+                        testID="session-responsibility-approval"
+                        title={t('approvals.title')}
+                        subtitle={t('approvals.status.open')}
+                        accessibilityLiveRegion="polite"
+                        onPress={() => {
+                            const pendingApproval = controller.pendingApproval;
+                            if (!pendingApproval) return;
+                            router.push(`/inbox/approvals/${encodeURIComponent(pendingApproval.artifactId)}?serverId=${encodeURIComponent(pendingApproval.serverId)}`);
+                        }}
+                        showChevron={false}
+                    />
+                ) : null}
                 {controller.assignmentAutoFollowed ? (
                     <Text
                         testID="session-responsibility-auto-follow-explanation"

@@ -7,12 +7,14 @@ import {
     adoptHomeProfile,
     getServerProfileById,
     removeServerProfile,
+    resolveServerProfileScopeIdForIdentifier,
     setActiveServerId,
     upsertServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
 import { createRootLayoutFeaturesResponse } from '../fixtures/featureFixtures';
+import { createArtifactStoreBoundary, type ArtifactStoreBoundary } from './artifactStoreBoundary';
 
 /**
  * One or more Homes, each answering for itself.
@@ -61,6 +63,12 @@ export type AddHomeOptions = Readonly<{
     serverUrl: string;
     /** Seeds the Home-published public HTTPS projection when the surface requires it. */
     publicServerUrl?: string | null;
+    /**
+     * The Home's stable portable identity, as a Home publishes it. A surface
+     * that stamps or resolves that identity (approval origins, portable links)
+     * needs it; omission models a manually added Home that published none.
+     */
+    serverIdentityId?: string;
     /** The Account this device holds there. `null` means signed out of it. */
     accountId?: string | null;
     /** Seeds the canonical `teams` feature decision for that Home. */
@@ -104,6 +112,8 @@ type HomeRecord = {
     accountId: string | null;
     token: string | null;
     answers: Map<string, HomeDomainAnswer>;
+    /** This Home's Artifact rows for its Account; an explicit `answer` for a path wins. */
+    artifacts: ArtifactStoreBoundary;
 };
 
 export type HomeGovernanceHarness = Readonly<{
@@ -111,7 +121,12 @@ export type HomeGovernanceHarness = Readonly<{
     requests: RecordedHomeRequest[];
     /** Saves a Home on this device and returns the id every path is keyed by. */
     addHome(options: AddHomeOptions): Promise<string>;
-    /** What one Home answers for one path. A later call replaces an earlier one. */
+    /**
+     * What one Home answers for one path. A later call replaces an earlier one.
+     * A route that serves several methods on one path (a read and a create of
+     * the same resource) is answered per method by prefixing it: `'POST /v1/x'`.
+     * A method-prefixed answer wins over the bare path for that method.
+     */
     answer(serverId: string, path: string, answer: HomeDomainAnswer): void;
     /**
      * Makes one exact Action explicitly approval-required for this Home's
@@ -130,6 +145,13 @@ export type HomeGovernanceHarness = Readonly<{
     requireUiApproval(serverId: string, actionId: string): Promise<void>;
     /** Requests recorded for one path, for asserting what was asked and where. */
     requestsFor(path: string): RecordedHomeRequest[];
+    /**
+     * The Artifact rows this Home persists for its Account. Every Home serves
+     * its Artifact routes statefully, with the Home's versioned
+     * compare-and-set, so approval requests are created, read, claimed and
+     * settled through the real client writer and codec.
+     */
+    artifacts(serverId: string): ArtifactStoreBoundary;
     /**
      * Puts several saved Homes into the exact set the user is looking at, using
      * the real Home-view selection owner rather than a stubbed selection hook.
@@ -168,12 +190,13 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
     harness = Object.freeze({
         requests,
         async addHome(options: AddHomeOptions): Promise<string> {
-            const profile = options.publicServerUrl === undefined
+            const profile = options.publicServerUrl === undefined && options.serverIdentityId === undefined
                 ? await upsertServerProfile({ serverUrl: options.serverUrl, name: options.name })
                 : await adoptHomeProfile({
                     descriptor: {
                         serverUrl: options.serverUrl,
-                        publicServerUrl: options.publicServerUrl,
+                        ...(options.publicServerUrl === undefined ? {} : { publicServerUrl: options.publicServerUrl }),
+                        ...(options.serverIdentityId === undefined ? {} : { homeServerIdentityId: options.serverIdentityId }),
                         displayName: options.name,
                     },
                     source: 'manual',
@@ -190,6 +213,7 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                 accountId,
                 token: accountId === null ? null : createAccountTokenForTests(accountId),
                 answers: new Map(),
+                artifacts: createArtifactStoreBoundary(),
             };
             homesByServerId.set(serverId, record);
             homesByServerUrl.set(storedServerUrl, record);
@@ -288,8 +312,16 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                     actions: { [actionId]: { approvalRequiredSurfaces: ['ui'] } },
                 },
             } as const;
+            // The live Account scope, as the sync owner establishes it for the
+            // active Home: it activates the settings and profile scopes
+            // together (`activateAccountSettingsScope`), and the Artifact
+            // publication and approval readers each check one of the two. The
+            // sync owner names the Home by the active snapshot's scope id, which
+            // for a Home that publishes a portable identity is that identity.
+            const scope = { serverId: resolveServerProfileScopeIdForIdentifier(serverId), accountId: record.accountId };
             storage.setState({
-                settingsScope: { serverId, accountId: record.accountId },
+                settingsScope: scope,
+                profileScope: scope,
                 settings: settings as never,
             });
             // The Action front door may capture the exact Home while another
@@ -301,15 +333,16 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                 body: { content: { t: 'plain', v: settings }, version: 1 },
             });
             seededApprovalRequirement = true;
-            // Creating the approval request crosses the Artifact write boundary,
-            // so the Home has to answer it or the requirement reads as a
-            // transport failure instead of a deferred intent.
-            record.answers.set(ARTIFACT_CREATE_PATH, {
-                body: { headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 },
-            });
+            // The approval request itself crosses the Artifact write boundary,
+            // which every Home already answers statefully (`artifacts`).
         },
         requestsFor(path: string): RecordedHomeRequest[] {
             return requests.filter((request) => request.path === path);
+        },
+        artifacts(serverId: string): ArtifactStoreBoundary {
+            const record = homesByServerId.get(serverId);
+            if (!record) throw new Error(`No Home saved for ${serverId}`);
+            return record.artifacts;
         },
         async selectHomes(serverIds: readonly string[]): Promise<void> {
             const groupId = 'home-governance-test-group';
@@ -351,6 +384,7 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                 const current = storage.getState().settings ?? {};
                 storage.setState({
                     settingsScope: null,
+                    profileScope: null,
                     settings: { ...current, actionsSettingsV1: undefined } as never,
                 });
             }
@@ -374,9 +408,10 @@ function requireHarness(): HomeGovernanceHarness {
 async function answerForEndpoint(
     serverUrl: string,
     url: string,
-    body: BodyInit | null | undefined,
+    init: RequestInit | undefined,
     token: string | null,
 ): Promise<Response> {
+    const body = init?.body;
     const current = requireHarness();
     const record = current.findByServerUrl(serverUrl);
     const path = url.startsWith(serverUrl) ? url.slice(serverUrl.length) : url;
@@ -395,7 +430,12 @@ async function answerForEndpoint(
         token,
     }));
 
-    const answer = record?.answers.get(path);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const answer = record?.answers.get(`${method} ${path}`) ?? record?.answers.get(path);
+    if (!answer) {
+        const artifactResponse = record?.artifacts.handle(path, init);
+        if (artifactResponse) return await artifactResponse;
+    }
     // A Home that was given no answer for this path behaves like one that does
     // not serve it, rather than silently succeeding.
     if (!answer) return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
@@ -403,7 +443,7 @@ async function answerForEndpoint(
     // No `code`, because a lost connection after dispatch carries none. That is
     // precisely what makes the committed outcome unknowable to the client.
     if (answer.dispatchThenFail) throw new TypeError('Failed to fetch');
-    const responseBody = path === '/v1/artifacts'
+    const responseBody = path === ARTIFACT_CREATE_PATH
         && input && typeof input === 'object'
         && !Array.isArray(input)
         && answer.body && typeof answer.body === 'object'
@@ -458,7 +498,7 @@ export function installHomeGovernanceBoundaries(harness: HomeGovernanceHarness):
                 return await answerForEndpoint(
                     active.serverUrl,
                     path,
-                    init?.body,
+                    init,
                     null,
                 );
             },
@@ -474,7 +514,7 @@ export function installHomeGovernanceBoundaries(harness: HomeGovernanceHarness):
                 return answerForEndpoint(
                     params.endpointUrl,
                     path,
-                    init?.body,
+                    init,
                     params.credentials?.token ?? null,
                 );
             },
@@ -493,7 +533,7 @@ export function installHomeGovernanceBoundaries(harness: HomeGovernanceHarness):
             return answerForEndpoint(
                 params.serverUrl,
                 params.url,
-                params.init?.body,
+                params.init,
                 params.token ?? null,
             );
         },

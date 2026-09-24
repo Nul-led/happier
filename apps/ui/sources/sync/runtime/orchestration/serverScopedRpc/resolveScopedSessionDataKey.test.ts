@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resetScopedSessionDataKeyCacheForTests, resolveScopedSessionDataKey } from './resolveScopedSessionDataKey';
+import { resetScopedSessionDataKeyCacheForTests, resolveScopedSessionCryptoContext } from './resolveScopedSessionDataKey';
+
+/** The standalone, transferable Session DEK the scoped crypto context yields, if any. */
+async function resolveScopedSessionDataKey(
+  params: Parameters<typeof resolveScopedSessionCryptoContext>[0],
+): Promise<Uint8Array | null> {
+  const context = await resolveScopedSessionCryptoContext(params);
+  return context.encryptionMode === 'e2ee' ? context.sessionDataKey : null;
+}
 
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
 
@@ -137,6 +145,38 @@ describe('resolveScopedSessionDataKey', () => {
     expect(runtimeFetchMock.mock.calls.some(([input]) =>
       String(input) === 'http://127.0.0.1:3010/v2/sessions/session-1',
     )).toBe(false);
+  });
+
+  it('loads the exact Session row through a selected semantic Home carrier', async () => {
+    runtimeFetchMock.mockRejectedValue(new Error('canonical Home URL is unreachable'));
+    const request = vi.fn(async (_url: string, _init: RequestInit) => new Response(JSON.stringify({
+      session: { ...validSessionById, encryptionMode: 'plain', dataEncryptionKey: null },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const decrypt = vi.fn(async () => new Uint8Array(32).fill(9));
+
+    await expect(resolveScopedSessionDataKey({
+      serverId: 's-id',
+      serverUrl: 'https://server.example.test',
+      token: 'token',
+      sessionId: 'session-1',
+      decryptEncryptionKey: decrypt,
+      homeCarrier: {
+        endpointId: 'home-endpoint',
+        readObservedPath: () => 'relay',
+        request,
+        createWebSocket: vi.fn(),
+      },
+    })).resolves.toBeNull();
+
+    expect(request).toHaveBeenCalledWith(
+      'https://server.example.test/v2/sessions/session-1',
+      expect.objectContaining({
+        method: 'GET',
+      }),
+    );
+    expect(new Headers(request.mock.calls[0]?.[1].headers).get('Authorization')).toBe('Bearer token');
+    expect(runtimeFetchMock).not.toHaveBeenCalled();
+    expect(decrypt).not.toHaveBeenCalled();
   });
 
   it('returns null and does not call decryption for an invalid by-id shape', async () => {

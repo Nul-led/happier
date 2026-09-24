@@ -7,6 +7,21 @@ import { inTx, type Tx } from "@/storage/inTx";
 import type { OAuthSecurityBinding } from "./oauthExternalSchemas";
 import { OAuthProviderConfigurationChangedError } from "./oauthExternalErrors";
 
+/**
+ * Whether a pending's Team admission replaces this Home's own method decision.
+ *
+ * A Team-OWNED identity connection is not one of the Home's authentication
+ * methods, so `resolveEffectiveHomeAuthMethods` can never answer for it: the
+ * Team owner (`finalizeTeamOAuthAdmissionInTx`) and the Home's Team-provider
+ * ceiling (`identityProviderCatalog`) decide it instead. A Team admission that
+ * runs on a HOME-owned provider (`providerOrigin: "home"`, no connection) is
+ * still one of this Home's own methods, so it keeps the ordinary gate and a
+ * Home that disabled the method refuses the finalize.
+ */
+export function isTeamOwnedConnectionAdmission(binding: OAuthSecurityBinding | undefined): boolean {
+    return binding?.purpose === "team_admission" && binding.connection !== null;
+}
+
 /** Resolves only the runtime bound by the server-held attempt/pending, never a newer replacement. */
 export async function resolveOAuthSecurityBinding(input: Readonly<{
     env: NodeJS.ProcessEnv;

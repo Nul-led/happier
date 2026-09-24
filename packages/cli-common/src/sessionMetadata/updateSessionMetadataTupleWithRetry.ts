@@ -76,6 +76,17 @@ export type SessionMetadataTupleMutationV1<M, A> =
   | Readonly<{
       kind: 'agentState';
       update: (agentState: A) => A | Promise<A>;
+    }>
+  /**
+   * The owner's explicit request to split a layout-0 tuple into the canonical
+   * layout-1 owner/shared tuple without changing any value (PA-L2). It commits
+   * through the same `owner_migration` CAS as a value-changing owner mutation.
+   * A tuple that is already layout 1 is complete and commits nothing; a
+   * layout-0 tuple without owner currentness is refused typed, never written
+   * through the legacy writer.
+   */
+  | Readonly<{
+      kind: 'ownerMigration';
     }>;
 
 export type SessionMetadataTupleMutationCryptoV1 = Readonly<{
@@ -301,13 +312,14 @@ async function prepareLegacyOwnerMigration<M, A>(params: Readonly<{
     if (tupleValuesEqual(updatedMetadata, current.value.metadata)) {
       return null;
     }
-  } else {
+  } else if (mutation.kind === 'agentState') {
     const baseAgentState = current.value.agentState ?? ({} as A);
     updatedAgentState = await mutation.update(baseAgentState);
     if (tupleValuesEqual(updatedAgentState, baseAgentState)) {
       return null;
     }
   }
+  // An explicit `ownerMigration` keeps every value: the split is the change.
   const createdOwnerMetadata = createSessionOwnerMetadataV1({
     metadata: updatedMetadata,
   });
@@ -411,6 +423,9 @@ async function prepareTupleMutation<M, A>(params: Readonly<{
       'metadata_privacy_upgrade_required',
     );
   }
+
+  // A layout-1 tuple has already been migrated; the explicit request is complete.
+  if (mutation.kind === 'ownerMigration') return null;
 
   if (current.mode === 'shared_editor') {
     if (mutation.kind !== 'metadata') {
@@ -591,8 +606,11 @@ export async function prepareSessionMetadataTuplePatchV1<M, A>(
  * reapplies the same semantic mutation after an explicit conflict refresh.
  * Transport adapters only open/seal/encrypt, commit, refetch, and update state.
  *
- * Ordinary layout 0 delegates to the compatible legacy owner. Ordinary owner
- * and shared-editor conflicts retain their bounded retry behavior.
+ * Ordinary layout 0 delegates to the compatible legacy owner unless owner
+ * migration currentness is available, in which case the mutation commits the
+ * layout-0 → layout-1 split. An explicit `ownerMigration` request performs that
+ * split with no value change. Ordinary owner and shared-editor conflicts retain
+ * their bounded retry behavior.
  */
 export async function updateSessionMetadataTupleWithRetry<M, A>(
   params: Readonly<{
@@ -771,6 +789,12 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
   }
 
   if (current.mode === 'legacy_owner') {
+    if (params.mutation.kind === 'ownerMigration') {
+      throw createTupleMutationError(
+        'Session metadata owner migration currentness is unavailable',
+        'metadata_privacy_upgrade_required',
+      );
+    }
     if (!params.mutateLegacy) {
       throw createTupleMutationError(
         'Legacy Session metadata mutation delegate is unavailable',

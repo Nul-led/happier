@@ -123,12 +123,15 @@ export async function projectSessionFollowSourceForRunnerInTx(
     });
     if (!source || source.archivedAt !== null || (source.encryptionMode !== "plain" && source.encryptionMode !== "e2ee")) return null;
     // The Runner reports the observation it is hydrating, but those sequence
-    // numbers are never read authority. Bind the lower bound to the exact
+    // numbers are never read authority. Bound the lower bound by the exact
     // transaction-loaded edge frontier so a stale or malicious caller cannot
     // replay already-delivered history, and reject an upper bound beyond the
-    // source frontier this same transaction can currently observe.
+    // source frontier this same transaction can currently observe. A cursor
+    // above the frontier is a continuation inside the same pending range: a
+    // wake scans past a full nonhuman page for protected human ingress (09D
+    // §6.3), which delivery and ACK never skip.
     if (
-        input.request.afterTranscriptSeq !== edge.deliveredTranscriptSeq
+        input.request.afterTranscriptSeq < edge.deliveredTranscriptSeq
         || input.request.observedTranscriptSeq > source.seq
     ) return null;
     const fetched = await tx.sessionMessage.findMany({

@@ -45,6 +45,9 @@ function inlineEntry(input: Readonly<{
         pluginId: input.pluginId,
         contributionKind: 'surfacePlacement',
         descriptorId: input.localId,
+        // The daemon producer stamps every projected UI entry with its exact plugin-slot
+        // occurrence; a fixture without one is not a projection the product can produce.
+        occurrenceId: `${input.pluginId}#1`,
         binding,
         target: binding.target,
         renderer: { kind: 'declarative', contributionId: 'review-native' },

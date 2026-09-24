@@ -24,9 +24,11 @@ export type SessionFollowHydrateObservation = (input: Readonly<{
   observation: SessionFollowPendingObservationV1;
   signal: AbortSignal;
   readMode: SessionFollowHydrationReadModeV1;
+  /** Wake discovery: also report whether protected human ingress exists anywhere in the pending range. */
+  discoverHumanIngress?: boolean;
 }>) => Promise<(SessionFollowUpdateEnvelopeV1 & Partial<Pick<
   SessionFollowHydratedUpdate,
-  'sourceRecencyMs' | 'transcriptConsumedThroughByRenderedMessageCount'
+  'sourceRecencyMs' | 'transcriptConsumedThroughByRenderedMessageCount' | 'pendingHumanIngress'
 >>) | null>;
 
 export type SessionFollowPreparedContext = Readonly<{
@@ -41,6 +43,29 @@ export type SessionFollowPreparedContext = Readonly<{
     kind: 'context_only_wake';
     eventLocalId: string;
   }>) => void;
+}>;
+
+/**
+ * What the reconciler returns: prepared context that can re-enter the same
+ * server admission at a later effect boundary. A context-only wake is prepared
+ * before it is queued and before the checkpoint capture, so its dispatch
+ * boundary must ask again whether every represented edge is still admitted
+ * (09D §6.3 "final access + exact runtime authority recheck").
+ */
+export type SessionFollowReconciledContext = SessionFollowPreparedContext & Readonly<{
+  recheckAdmission: (signal: AbortSignal) => Promise<boolean>;
+}>;
+
+type SessionFollowAdmissionObservationEntry = SessionFollowPendingObservationV1 & Readonly<{
+  voiceExpected?: SessionFollowPendingObservationV1['delivered'] | null;
+}>;
+
+type SessionFollowAdmissionObservation = Readonly<{
+  ok: boolean;
+  publisherGeneration?: string;
+  executionRunOccurrenceId?: string;
+  currentSourceSessionIds?: readonly string[];
+  observations?: readonly SessionFollowAdmissionObservationEntry[];
 }>;
 
 export type SessionFollowObserverV1 =
@@ -89,7 +114,7 @@ export function createSessionFollowContextReconciler(input: Readonly<{
   maxFollowContextUtf8Bytes?: number | null;
   deliveryIntent?: 'natural' | 'wake';
   executionRunId?: string;
-}>) => Promise<SessionFollowPreparedContext | null> {
+}>) => Promise<SessionFollowReconciledContext | null> {
   return async ({ signal, maxFollowContextUtf8Bytes: invocationAllowance, deliveryIntent = 'natural', executionRunId }) => {
     const observer = input.observer ?? {
       kind: 'destination_session' as const,
@@ -104,44 +129,72 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     if (!canAdmitFollowContext && !input.sourceMaterialController) {
       return null;
     }
-    let observed: Readonly<{
-      ok: boolean;
-      publisherGeneration?: string;
-      executionRunOccurrenceId?: string;
-      currentSourceSessionIds?: readonly string[];
-      observations?: readonly (SessionFollowPendingObservationV1 & Readonly<{
-        voiceExpected?: SessionFollowPendingObservationV1['delivered'] | null;
-      }>)[];
-    }>;
-    try {
-      if (observer.kind === 'account_voice') {
-        if (!executionRunId?.trim()) return null;
-        const voice = await input.session.observePendingAccountVoiceFollow({ executionRunId });
-        observed = voice.ok ? {
-          ok: true,
-          publisherGeneration: voice.publisherGeneration,
-          executionRunOccurrenceId: voice.executionRunOccurrenceId,
-          observations: voice.observations.map((entry) => ({
-            sourceSessionId: entry.sourceSessionId,
-            destinationSessionId: entry.voiceSessionId,
-            delivered: entry.expected ?? SESSION_FOLLOW_ZERO_FRONTIER_V1,
-            observed: entry.observed,
-            mode: 'next_turn',
-            voiceExpected: entry.expected,
-          })),
-        } : { ok: false };
-      } else {
-        observed = await input.session.observePendingSessionFollow();
+    if (observer.kind === 'account_voice' && !executionRunId?.trim()) return null;
+    /**
+     * The one server admission observation. It runs before hydration, again after
+     * hydration immediately before injection, and — for a queued wake — again at
+     * the final dispatch boundary. It also retains authoritative source material.
+     */
+    const observeAdmission = async (): Promise<SessionFollowAdmissionObservation | null> => {
+      let current: SessionFollowAdmissionObservation;
+      try {
+        if (observer.kind === 'account_voice') {
+          const voice = await input.session.observePendingAccountVoiceFollow({ executionRunId: executionRunId! });
+          current = voice.ok ? {
+            ok: true,
+            publisherGeneration: voice.publisherGeneration,
+            executionRunOccurrenceId: voice.executionRunOccurrenceId,
+            observations: voice.observations.map((entry) => ({
+              sourceSessionId: entry.sourceSessionId,
+              destinationSessionId: entry.voiceSessionId,
+              delivered: entry.expected ?? SESSION_FOLLOW_ZERO_FRONTIER_V1,
+              observed: entry.observed,
+              mode: 'next_turn',
+              voiceExpected: entry.expected,
+            })),
+          } : { ok: false };
+        } else {
+          current = await input.session.observePendingSessionFollow();
+        }
+      } catch {
+        // Follow is optional host context. Home unavailable, unsupported runtime, or a
+        // test double without Follow transport must never break the real admitted turn.
+        return null;
       }
-    } catch {
-      // Follow is optional host context. Home unavailable, unsupported runtime, or a
-      // test double without Follow transport must never break the real admitted turn.
-      return null;
-    }
-    if (!observed.ok) return null;
-    if (observer.kind === 'destination_session' && observed.currentSourceSessionIds) {
-      input.sourceMaterialController?.retainSources(observed.currentSourceSessionIds);
-    }
+      if (observer.kind === 'destination_session' && current.ok && current.currentSourceSessionIds) {
+        input.sourceMaterialController?.retainSources(current.currentSourceSessionIds);
+      }
+      return current;
+    };
+    const observedOrNull = await observeAdmission();
+    if (!observedOrNull?.ok) return null;
+    const observed = observedOrNull;
+    /** The exact edge, frontier, mode and publisher this context was prepared from are still admitted. */
+    const isStillAdmitted = (
+      current: SessionFollowAdmissionObservation | null,
+      observation: SessionFollowAdmissionObservationEntry,
+    ): boolean => Boolean(
+      current?.ok
+      && current.publisherGeneration === observed.publisherGeneration
+      && current.executionRunOccurrenceId === observed.executionRunOccurrenceId
+      && current.observations?.some((entry) => (
+        entry.sourceSessionId === observation.sourceSessionId
+        && entry.destinationSessionId === observation.destinationSessionId
+        && isSessionFollowFrontierEqualV1(entry.delivered, observation.delivered)
+        && entry.mode === observation.mode
+        && (
+          observer.kind !== 'account_voice'
+          || (
+            entry.voiceExpected === null
+              ? observation.voiceExpected === null
+              : entry.voiceExpected !== undefined
+                && observation.voiceExpected !== null
+                && observation.voiceExpected !== undefined
+                && isSessionFollowFrontierEqualV1(entry.voiceExpected, observation.voiceExpected)
+          )
+        )
+      )),
+    );
     if (!canAdmitFollowContext) return null;
     if (!observed.publisherGeneration || !observed.observations || observed.observations.length === 0) return null;
     const destinationSessionId = (input.session as Pick<ApiSessionClient, 'sessionId'>).sessionId;
@@ -158,7 +211,12 @@ export function createSessionFollowContextReconciler(input: Readonly<{
           observer,
           voiceExpected: observation.voiceExpected,
         });
-        const update = await input.hydrateObservation({ observation, signal, readMode });
+        const update = await input.hydrateObservation({
+          observation,
+          signal,
+          readMode,
+          ...(deliveryIntent === 'wake' ? { discoverHumanIngress: true } : {}),
+        });
         if (!update) return null;
         if (update.edge.sourceSessionId !== observation.sourceSessionId) return null;
         if (update.edge.destinationSessionId !== observation.destinationSessionId) return null;
@@ -171,10 +229,18 @@ export function createSessionFollowContextReconciler(input: Readonly<{
             observation.observed,
           )
         ) return null;
-        if (deliveryIntent === 'wake' && !update.recentMessages.some(isAuthoritativeHumanSessionFollowMessageV1)) return null;
+        // A wake needs protected human ingress somewhere in the pending range, not
+        // necessarily in the one page delivered now (09D §6.2/§6.3): delivery stays
+        // the oldest contiguous prefix and only that prefix is acknowledged.
+        if (
+          deliveryIntent === 'wake'
+          && !update.recentMessages.some(isAuthoritativeHumanSessionFollowMessageV1)
+          && update.pendingHumanIngress !== true
+        ) return null;
         const {
           sourceRecencyMs = 0,
           transcriptConsumedThroughByRenderedMessageCount,
+          pendingHumanIngress: _pendingHumanIngress,
           ...rawPromptUpdate
         } = update;
         if (transcriptConsumedThroughByRenderedMessageCount !== undefined) {
@@ -212,52 +278,9 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     // before prompt injection. A revoked/replaced edge, broadened/public audience,
     // publisher handoff, or lost destination input authority omits optional context
     // without rejecting the real turn.
-    let readmitted: typeof observed;
-    try {
-      if (observer.kind === 'account_voice') {
-        const voice = await input.session.observePendingAccountVoiceFollow({ executionRunId: executionRunId! });
-        readmitted = voice.ok ? {
-          ok: true,
-          publisherGeneration: voice.publisherGeneration,
-          executionRunOccurrenceId: voice.executionRunOccurrenceId,
-          observations: voice.observations.map((entry) => ({
-            sourceSessionId: entry.sourceSessionId,
-            destinationSessionId: entry.voiceSessionId,
-            delivered: entry.expected ?? SESSION_FOLLOW_ZERO_FRONTIER_V1,
-            observed: entry.observed,
-            voiceExpected: entry.expected,
-            mode: 'next_turn',
-          })),
-        } : { ok: false };
-      } else {
-        readmitted = await input.session.observePendingSessionFollow();
-      }
-    } catch {
-      return null;
-    }
-    if (observer.kind === 'destination_session' && readmitted.ok && readmitted.currentSourceSessionIds) {
-      input.sourceMaterialController?.retainSources(readmitted.currentSourceSessionIds);
-    }
-    if (signal.aborted || !readmitted.ok || readmitted.publisherGeneration !== observed.publisherGeneration
-      || readmitted.executionRunOccurrenceId !== observed.executionRunOccurrenceId) return null;
-    if (!readmitted.observations) return null;
-    const stillAdmitted = admitted.filter(({ observation }) => readmitted.observations!.some((current) => (
-      current.sourceSessionId === observation.sourceSessionId
-      && current.destinationSessionId === observation.destinationSessionId
-      && isSessionFollowFrontierEqualV1(current.delivered, observation.delivered)
-      && current.mode === observation.mode
-      && (
-        observer.kind !== 'account_voice'
-        || (
-          current.voiceExpected === null
-            ? observation.voiceExpected === null
-            : current.voiceExpected !== undefined
-              && observation.voiceExpected !== null
-              && observation.voiceExpected !== undefined
-              && isSessionFollowFrontierEqualV1(current.voiceExpected, observation.voiceExpected)
-        )
-      )
-    )));
+    const readmitted = await observeAdmission();
+    if (signal.aborted) return null;
+    const stillAdmitted = admitted.filter(({ observation }) => isStillAdmitted(readmitted, observation));
     if (stillAdmitted.length === 0) return null;
 
     let budget: ReturnType<typeof applySessionFollowContextBudgetV1>;
@@ -342,6 +365,14 @@ export function createSessionFollowContextReconciler(input: Readonly<{
     return {
       updates: prepared.map(({ update }) => update),
       ...(wakeEventLocalId ? { wakeEventLocalId } : {}),
+      recheckAdmission: async (dispatchSignal) => {
+        if (signal.aborted || dispatchSignal.aborted) return false;
+        const current = await observeAdmission();
+        if (signal.aborted || dispatchSignal.aborted) return false;
+        // All or nothing: the wake event identity and its ACK name every represented
+        // source, so a context that lost any of them is withdrawn rather than narrowed.
+        return prepared.every(({ observation }) => isStillAdmitted(current, observation));
+      },
       acknowledgeAccepted: (acceptance) => {
         if (
           acceptance.kind === 'context_only_wake'

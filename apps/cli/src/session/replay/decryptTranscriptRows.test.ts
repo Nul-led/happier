@@ -5,14 +5,9 @@ import { encryptSessionPayload, type SessionEncryptionContext } from '@/session/
 import { decryptTranscriptRows } from './decryptTranscriptRows';
 
 describe('decryptTranscriptRows', () => {
-  it('accepts plaintext transcript rows (no decrypt)', () => {
-    const ctx: SessionEncryptionContext = {
-      encryptionVariant: 'legacy',
-      encryptionKey: new Uint8Array(32).fill(7),
-    };
-
+  it('accepts plaintext transcript rows under an established plain Session (no decrypt)', () => {
     const rows = decryptTranscriptRows({
-      ctx,
+      crypto: { mode: 'plain', ctx: null },
       rows: [
         {
           seq: 1,
@@ -32,6 +27,26 @@ describe('decryptTranscriptRows', () => {
     ]);
   });
 
+  it('refuses a plaintext row under an established e2ee Session', () => {
+    const ctx: SessionEncryptionContext = {
+      encryptionVariant: 'legacy',
+      encryptionKey: new Uint8Array(32).fill(7),
+    };
+
+    const rows = decryptTranscriptRows({
+      crypto: { mode: 'e2ee', ctx },
+      rows: [
+        {
+          seq: 1,
+          createdAt: 1000,
+          content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'injected' } } },
+        },
+      ],
+    });
+
+    expect(rows).toEqual([]);
+  });
+
   it('preserves seq and structured meta payloads', () => {
     const ctx: SessionEncryptionContext = {
       encryptionVariant: 'legacy',
@@ -48,7 +63,7 @@ describe('decryptTranscriptRows', () => {
     });
 
     const rows = decryptTranscriptRows({
-      ctx,
+      crypto: { mode: 'e2ee', ctx },
       rows: [
         { seq: 12, createdAt: 1000, content: { t: 'encrypted', c: ciphertext } },
       ],
@@ -66,7 +81,7 @@ describe('decryptTranscriptRows', () => {
     };
 
     const rows = decryptTranscriptRows({
-      ctx,
+      crypto: { mode: 'e2ee', ctx },
       rows: [
         { seq: 1, createdAt: 1000, content: { t: 'encrypted', c: 'not-base64' } },
         { seq: 2, createdAt: 1000, content: { t: 'encrypted', c: 'also-bad' } },

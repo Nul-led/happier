@@ -6,7 +6,7 @@ import { signProviderBrokerRouteGrantV1 } from './signProviderBrokerRouteGrantV1
 const payload: ProviderBrokerRouteGrantPayloadV1 = {
     v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
     teamId: 'team', resourceId: 'resource',
-    expectedResourceRevision: 7, modelId: 'gpt-5', sourceRevision: 'source-revision-7',
+    sourceRevision: 'source-revision-7',
     initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
     consumer: { kind: 'session', sessionId: 'session' },

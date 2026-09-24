@@ -12,6 +12,14 @@ import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { admitTeamMemberInTx } from "@/app/teams/memberships/membershipService";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+
+const ACCEPTED_EMAIL_PASSWORD = { kind: "home_method" as const, methodId: "email_password" };
+const EMAIL_PASSWORD_EVIDENCE = [ACCEPTED_EMAIL_PASSWORD];
+const HOME_OFFERS_EMAIL_PASSWORD = {
+    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+    HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+};
 
 import {
     applyMembershipSessionDataKeyEnvelopes,
@@ -39,7 +47,6 @@ describe("Membership session data-key envelope history (SQLite)", () => {
             tempDirPrefix: "happier-membership-envelopes-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
@@ -551,6 +558,105 @@ describe("Membership session data-key envelope history (SQLite)", () => {
             subject,
             query: { state: "action_required", limit: 2, cursor: "sdke_cursor_v1_not-this-resource" },
         })).toEqual({ ok: false, error: "invalid_cursor" });
+    });
+
+    it("serves a restricted Team's history to the manager whose credential qualified for this exact request", async () => {
+        const { manager, target, team, subject } = await history();
+        await db.team.update({
+            where: { id: team.id },
+            data: { authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] } },
+        });
+        await db.accountIdentity.create({
+            data: { accountId: manager.id, provider: "email", providerUserId: `${manager.id}@example.test`, profile: {} },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: manager.id,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("manager password factor")),
+                },
+            },
+        });
+        const granted = await grantedSession(team, manager);
+
+        const qualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authority: "present_user",
+            authenticationEvidence: EMAIL_PASSWORD_EVIDENCE,
+        } as const;
+        const unqualified = { ...qualified, authenticationEvidence: undefined } as const;
+
+        // A manager presenting no evidence of the accepted method stays refused.
+        expect(await readMembershipSessionDataKeyEnvelopePage({
+            actorAccountId: manager.id, subject, authentication: unqualified,
+            query: { state: "action_required", limit: 24 },
+        })).toEqual({ ok: false, error: "team_authentication_required" });
+
+        const page = readyPage(await readMembershipSessionDataKeyEnvelopePage({
+            actorAccountId: manager.id, subject, authentication: qualified,
+            query: { state: "action_required", limit: 24 },
+        }));
+        expect(page.recipientAccountId).toBe(target.id);
+        expect(page.items.map(item => item.sessionId)).toEqual([granted.sessionId]);
+
+        const openedByCaller = openEncryptedDataKeyEnvelopeV1({
+            envelope: decodeBase64(page.items[0]!.callerDataKeyEnvelope),
+            recipientSecretKeyOrSeed: manager.keys.contentSecretKey,
+        });
+        const entries = [{
+            sessionId: granted.sessionId,
+            encryptedDataKey: encodeBase64(seal(openedByCaller!, decodeBase64(
+                page.contentKey.status === "available" ? page.contentKey.contentPublicKey : "",
+            ))),
+        }];
+        expect(await applyMembershipSessionDataKeyEnvelopes({
+            actorAccountId: manager.id, authentication: unqualified, subject,
+            request: { recipientAccountId: target.id, entries },
+        })).toEqual({ ok: false, error: "team_authentication_required" });
+        expect(await applyMembershipSessionDataKeyEnvelopes({
+            actorAccountId: manager.id, authentication: qualified, subject,
+            request: { recipientAccountId: target.id, entries },
+        })).toEqual({ ok: true, appliedCount: 1 });
+    });
+
+    it("writes nothing when the membership disappears between the page and the apply", async () => {
+        const { manager, target, team, subject, targetMembershipId } = await history();
+        const granted = await grantedSession(team, manager);
+        const page = readyPage(await readPage(manager.id, subject));
+        const openedByCaller = openEncryptedDataKeyEnvelopeV1({
+            envelope: decodeBase64(page.items[0]!.callerDataKeyEnvelope),
+            recipientSecretKeyOrSeed: manager.keys.contentSecretKey,
+        });
+        const entries = [{
+            sessionId: granted.sessionId,
+            encryptedDataKey: encodeBase64(seal(openedByCaller!, decodeBase64(
+                page.contentKey.status === "available" ? page.contentKey.contentPublicKey : "",
+            ))),
+        }];
+
+        // The target leaves the Team after the caller read its work.
+        await db.teamMembership.delete({ where: { id: targetMembershipId } });
+        const changesBefore = await db.accountChange.count({ where: { accountId: target.id } });
+
+        expect(await applyMembershipSessionDataKeyEnvelopes({
+            actorAccountId: manager.id, authentication, subject,
+            request: { recipientAccountId: target.id, entries },
+        })).toEqual({ ok: false, error: "membership_not_found" });
+        expect(await db.sessionDataKeyEnvelope.count({ where: { recipientAccountId: target.id } })).toBe(0);
+        expect(await db.accountChange.count({ where: { accountId: target.id } })).toBe(changesBefore);
+
+        // A Group subject whose Group membership disappeared answers the same way.
+        const group = await db.teamGroup.create({ data: {
+            teamId: team.id, name: crypto.randomUUID(), nameKey: crypto.randomUUID(),
+        } });
+        expect(await applyMembershipSessionDataKeyEnvelopes({
+            actorAccountId: manager.id, authentication,
+            subject: { kind: "group", teamId: team.id, groupId: group.id, accountId: target.id },
+            request: { recipientAccountId: target.id, entries },
+        })).toEqual({ ok: false, error: "membership_not_found" });
+        expect(await db.sessionDataKeyEnvelope.count({ where: { recipientAccountId: target.id } })).toBe(0);
     });
 
     it("conceals the membership from an Account that cannot view the Team", async () => {

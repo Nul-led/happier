@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 
 import type {
     ConnectedServiceBindingsV2,
+    PluginContributionIdentityV1,
     PluginProjectedAgentConnectedAccountPurposeV2,
 } from '@happier-dev/protocol';
 
@@ -32,6 +33,7 @@ import type { SessionAuthoringConnectedServicesContext } from './sessionAuthorin
 
 export function SessionAuthoringConnectedServicesField(props: Readonly<{
     agentId: string;
+    agentIdentity: PluginContributionIdentityV1 | null;
     connectedAccounts: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
     context: SessionAuthoringConnectedServicesContext;
     value: ConnectedServiceBindingsV2 | null | undefined;
@@ -107,11 +109,15 @@ export function SessionAuthoringConnectedServicesField(props: Readonly<{
     const { connectedServicesBindingsPayload, connectedServicesAuthChip } = useNewSessionConnectedServices({
         agentCore,
         defaultAuthAgentId: props.agentId,
+        defaultAuthConsumer: props.agentIdentity,
         connectedAccounts: props.connectedAccounts,
         agentOptionState,
         settings: {
             connectedServicesProfileLabelByKey: settings.connectedServicesProfileLabelByKey ?? {},
             connectedServicesDefaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId ?? {},
+            ...(settings.connectedAccountPurposeBindingsV1 === undefined
+                ? {}
+                : { connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1 }),
             ...(settings.connectedServicesDefaultAuthByAgentIdV1 === undefined
                 ? {}
                 : { connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1 }),

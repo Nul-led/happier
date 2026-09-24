@@ -27,6 +27,11 @@ import {
   SessionCreationTargetPreparationResultV1Schema,
   SessionCreationDirectoryApprovalV1Schema,
   HandoffTargetReplacementPreflightResultV1Schema,
+  deriveWorkspaceSyncTopology,
+  WorkspaceSyncRelationshipsListRpcResultV1Schema,
+  WorkspaceSyncConflictPageV1Schema,
+  WorkspaceSyncConflictInspectRpcResultV1Schema,
+  WorkspaceSyncConflictResolutionResultV1Schema,
   SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
   SessionAuthoringTerminalV1Schema,
   normalizeSessionCreationOrganizationPlacementV1,
@@ -37,6 +42,7 @@ import {
   supportsMachineOperationProtocolCapabilityV1,
   supportsMachineSessionSpawnProtocolVersionV1,
   ProviderConnectionIdSchema,
+  isNativeAutomaticModelSelectionInputV1,
   resolveExplicitSessionSpawnMachineTarget,
   resolveSessionModelSelectionInputRefV1,
   mergeSpawnConfigOptionAliases,
@@ -45,7 +51,6 @@ import {
   readRuntimeDescriptorV1FromMetadata,
   resolveActionBackendTargetSelection,
   withExecutionRunStartFailureDetails,
-  type ConnectedServiceBindingsV2,
   type SessionAgentSpawnPolicyV1,
   type SpawnConfigOptionValue,
   type SessionBridgeLifecycleHookEventIdV1,
@@ -123,6 +128,7 @@ import { buildReplaySeededSpawnRecipe } from '@/session/replay/buildReplaySeeded
 import { resolveReplaySourceContextAuthority } from '@/session/replay/resolveReplaySourceContextAuthority';
 import {
   type ResolveSpawnConnectedServicesTeamResourceCatalog,
+  mergeSessionTeamCredentialBindingIntents,
   resolveSessionSpawnConnectedServicesDefaultsPayload,
 } from '@/session/services/spawnConnectedServicesDefaults';
 import { getSessionEvents } from '@/session/services/getSessionEvents';
@@ -213,6 +219,7 @@ import {
 import type {
   SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionStoredContentCodec';
+import type { SessionTransportEncryptionMaterial } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   cancelExecutionRunStream,
   ensureExecutionRun,
@@ -252,7 +259,6 @@ import { executePluginDevLoopAction } from '@/plugins/devLoop/actions';
 import { executePluginSettingsAdministrationAction } from '@/plugins/settings/administration';
 import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
-import { resolveSessionAgentSpawnInheritedOverridesFromMetadata } from '@/session/fork/resolveForkInheritedOverridesFromMetadata';
 import { createCliActionInventoryDeps } from './cliActionDeps/createCliActionInventoryDeps';
 import {
   readSessionAgentState,
@@ -287,7 +293,7 @@ import {
   type ResolveAutomationEventAdoptedDefinitionSetV1,
 } from '@/plugins/runtime/automations/automationEventActionExecutor';
 import type {
-  RevalidatePluginActionCallerImmutableGeneration,
+  RevalidatePluginActionCallerOccurrence,
   RevalidatePluginActionCallerMaterialization,
 } from '@/plugins/runtime/invocation/services/actionCaller';
 import { executeScmActionOperation } from '@/scm/actions/executeScmActionOperation';
@@ -584,10 +590,7 @@ async function resolveSpawnConnectedServicesDefaultPayload(params: Readonly<{
   backendTarget: NonNullable<ReturnType<typeof readBackendTargetRefV2>>;
   credentials: StoredCredentials;
   resolveTeamCredentialResourceCatalog?: ResolveSpawnConnectedServicesTeamResourceCatalog;
-}>): Promise<Readonly<{
-  connectedServices: ConnectedServiceBindingsV2;
-  connectedServicesUpdatedAt: number;
-}> | null> {
+}>): Promise<Awaited<ReturnType<typeof resolveSessionSpawnConnectedServicesDefaultsPayload>>> {
   if (params.backendTarget.sourceKind !== 'built_in') return null;
   // ONE defaulting owner (QA2-F02): session spawn and execution-run start resolve defaults
   // through the same fresh-bootstrap owner; no local settings-snapshot path.
@@ -679,7 +682,7 @@ export function createCliActionDeps(params: Readonly<{
   readRegisteredPromptAssetAdapters?: () => ReadonlyMap<string, PromptAssetAdapter>;
   resolveAutomationEventAdoptedDefinitionSet?: ResolveAutomationEventAdoptedDefinitionSetV1;
   revalidatePluginActionCallerMaterialization?: RevalidatePluginActionCallerMaterialization;
-  revalidatePluginActionCallerImmutableGeneration?: RevalidatePluginActionCallerImmutableGeneration;
+  revalidatePluginActionCallerOccurrence?: RevalidatePluginActionCallerOccurrence;
   isUsageLimitRecoveryEnabled?: (() => Promise<boolean> | boolean) | null;
   externalSessionPluginAdmissionOwner?: ExternalSessionPluginAdmissionOwner;
   machineAdmissionTransport?: NonNullable<
@@ -702,6 +705,12 @@ export function createCliActionDeps(params: Readonly<{
   /** Exact Home-bound policy/settings snapshot owned by the runtime constructor. */
   actionsSettingsProvider?: RuntimeActionSettingsProvider;
   resolveTeamCredentialResourceCatalog?: ResolveSpawnConnectedServicesTeamResourceCatalog;
+  /**
+   * Stored-content material this composition already holds for one exact
+   * Session, for a host whose credentials carry no Account encryption material.
+   * Passed straight to the Session-scoped Action owners that need it.
+   */
+  resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
   /** Existing daemon authority owner shared with coordinator effect currentness. */
   workflowAcceptedAuthorizationCurrentness?: (input: Readonly<{
     authorization: import('@happier-dev/protocol').WorkflowAcceptedAuthorizationV1;
@@ -765,8 +774,8 @@ export function createCliActionDeps(params: Readonly<{
       ...(params.revalidatePluginActionCallerMaterialization
         ? { revalidateCallerMaterialization: params.revalidatePluginActionCallerMaterialization }
         : {}),
-      ...(params.revalidatePluginActionCallerImmutableGeneration
-        ? { revalidateCallerImmutableGeneration: params.revalidatePluginActionCallerImmutableGeneration }
+      ...(params.revalidatePluginActionCallerOccurrence
+        ? { revalidateCallerOccurrence: params.revalidatePluginActionCallerOccurrence }
         : {}),
     })
     : null;
@@ -777,8 +786,8 @@ export function createCliActionDeps(params: Readonly<{
       ...(params.revalidatePluginActionCallerMaterialization
         ? { revalidateCallerMaterialization: params.revalidatePluginActionCallerMaterialization }
         : {}),
-      ...(params.revalidatePluginActionCallerImmutableGeneration
-        ? { revalidateCallerImmutableGeneration: params.revalidatePluginActionCallerImmutableGeneration }
+      ...(params.revalidatePluginActionCallerOccurrence
+        ? { revalidateCallerOccurrence: params.revalidatePluginActionCallerOccurrence }
         : {}),
     })
     : null;
@@ -828,6 +837,59 @@ export function createCliActionDeps(params: Readonly<{
       request: input.request,
       ...(input.signal ? { signal: input.signal } : {}),
     });
+  };
+
+  const resolveWorkspaceSyncReadController = async (input: Readonly<{
+    controllerMachineId?: string;
+    workspaceRefId?: string;
+    relationshipId?: string;
+  }>): Promise<string> => {
+    if (!params.credentials) {
+      throw Object.assign(new Error('Workspace sync read requires an authenticated Account'), { code: 'not_authenticated' });
+    }
+    const current = await bootstrapAccountSettingsContext({
+      credentials: params.credentials,
+      mode: 'blocking',
+      refresh: 'force',
+    });
+    const currentServerId = params.serverId ?? configuration.activeServerId;
+    const workspaceRefs = current.settings.workspaceRefsV1;
+    const relationships = current.settings.workspaceSyncRelationshipsV1;
+    let resolvedController: string | undefined;
+    if (input.workspaceRefId) {
+      const topology = deriveWorkspaceSyncTopology({ workspaceRefs, relationships });
+      const matching = topology.sets.filter((set) => set.relationships.some((relationship) => (
+        relationship.alphaWorkspaceRefId === input.workspaceRefId
+        || relationship.betaWorkspaceRefId === input.workspaceRefId
+      )));
+      if (matching.length !== 1 || topology.issues.some((issue) => issue.workspaceRefIds.includes(input.workspaceRefId!))) {
+        throw Object.assign(new Error('Workspace sync membership is unavailable'), { code: 'workspace_sync_topology_invalid' });
+      }
+      const set = matching[0]!;
+      const memberIds = new Set(set.relationships.flatMap((relationship) => [
+        relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId,
+      ]));
+      if ([...memberIds].some((id) => resolveWorkspaceRefById(workspaceRefs, id)?.serverId !== currentServerId)) {
+        throw Object.assign(new Error('Workspace sync membership belongs to another Home'), { code: 'workspace_ref_not_ready' });
+      }
+      resolvedController = set.controllerMachineId;
+    }
+    if (input.relationshipId) {
+      const relationship = relationships.find((entry) => entry.relationshipId === input.relationshipId);
+      if (!relationship || [relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId]
+        .some((id) => resolveWorkspaceRefById(workspaceRefs, id)?.serverId !== currentServerId)) {
+        throw Object.assign(new Error('Workspace sync relationship is unavailable'), { code: 'relationship_not_ready' });
+      }
+      if (resolvedController && resolvedController !== relationship.controllerMachineId) {
+        throw Object.assign(new Error('Workspace sync relationship changed'), { code: 'relationship_changed' });
+      }
+      resolvedController = relationship.controllerMachineId;
+    }
+    if (input.controllerMachineId && resolvedController && input.controllerMachineId !== resolvedController) {
+      throw Object.assign(new Error('Workspace sync controller changed'), { code: 'relationship_changed' });
+    }
+    return resolvedController ?? input.controllerMachineId
+      ?? (() => { throw Object.assign(new Error('Workspace sync controller is unavailable'), { code: 'relationship_not_ready' }); })();
   };
 
   const readCurrentSessionMetadata = async (): Promise<Record<string, unknown> | null> => {
@@ -2571,20 +2633,29 @@ export function createCliActionDeps(params: Readonly<{
       request,
       signal,
     ),
+    // One destination-approval preflight for both destination-choosing Action
+    // families. Handoff expresses its intent through a workspace action; direct
+    // Project linking has no Session and states its intent and mode explicitly.
     sessionHandoffTargetReplacementApprovalPreflight: async ({
       targetMachineId,
       targetPath,
       workspaceAction,
+      activatesExactMirror,
+      destinationIntent,
       serverId,
       operationId,
       signal,
     }) => {
-      if (workspaceAction?.kind !== 'copy_once' && workspaceAction?.kind !== 'create_relationship') {
+      const handoffChoosesDestination = workspaceAction?.kind === 'copy_once'
+        || workspaceAction?.kind === 'create_relationship';
+      if (!handoffChoosesDestination && destinationIntent === undefined) {
         return { type: 'not_required' as const };
       }
       if (!params.credentials || !targetPath?.trim() || !serverId?.trim() || !operationId.trim()) {
         return { type: 'error' as const, result: { ok: false, errorCode: 'invalid_input', error: 'invalid_input' } };
       }
+      const mirrors = activatesExactMirror
+        ?? (workspaceAction?.kind === 'create_relationship' && workspaceAction.mode === 'mirror_exactly');
       try {
         return HandoffTargetReplacementPreflightResultV1Schema.parse(await callMachineAction({
           machineId: targetMachineId,
@@ -2595,9 +2666,8 @@ export function createCliActionDeps(params: Readonly<{
             machineId: targetMachineId,
             operationId: operationId.trim(),
             targetPath: targetPath.trim(),
-            ...(workspaceAction.kind === 'create_relationship' && workspaceAction.mode === 'mirror_exactly'
-              ? { activatesExactMirror: true }
-              : {}),
+            ...(mirrors ? { activatesExactMirror: true } : {}),
+            ...(destinationIntent ? { destinationIntent } : {}),
           },
           ...(signal ? { signal } : {}),
         }));
@@ -2605,6 +2675,95 @@ export function createCliActionDeps(params: Readonly<{
         const errorCode = readRpcErrorCode(error) ?? 'target_unavailable';
         return { type: 'error' as const, result: { ok: false, errorCode, error: errorCode } };
       }
+    },
+    workspaceSyncRelationshipCreate: async ({
+      input,
+      operationId,
+      serverId,
+      targetReplacementApproval,
+      targetReplacementApprovalReceiptId,
+      signal,
+    }) => {
+      if (!params.credentials) return notSupported();
+      // Linking runs on the machine that hosts the selected source Workspace.
+      // Its address comes from current Account settings, never from the caller.
+      const settings = await bootstrapAccountSettingsContext({
+        credentials: params.credentials,
+        mode: 'blocking',
+        refresh: 'force',
+      });
+      const source = resolveWorkspaceRefById(settings.settings.workspaceRefsV1, input.sourceWorkspaceRefId);
+      if (!source) {
+        return { ok: false, errorCode: 'workspace_ref_not_ready', error: 'workspace_ref_not_ready' };
+      }
+      const currentServerId = normalizeStringValue(serverId) ?? params.serverId ?? configuration.activeServerId;
+      if (source.serverId !== currentServerId) {
+        return { ok: false, errorCode: 'workspace_ref_not_ready', error: 'workspace_ref_not_ready' };
+      }
+      return await callMachineAction({
+        machineId: source.machineId,
+        method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIP_CREATE,
+        request: {
+          v: 1,
+          operationId,
+          actionInput: input,
+          ...(targetReplacementApproval && targetReplacementApprovalReceiptId
+            ? { targetReplacementApproval, targetReplacementApprovalReceiptId }
+            : {}),
+        },
+        ...(signal ? { signal } : {}),
+      });
+    },
+    workspaceSyncConflictResolve: async ({ actionReceiptId, input, signal }) => {
+      if (!params.credentials) {
+        throw Object.assign(new Error('Workspace sync resolution requires an authenticated Account'), { code: 'not_authenticated' });
+      }
+      try {
+        return WorkspaceSyncConflictResolutionResultV1Schema.parse(await callMachineAction({
+          machineId: input.controllerMachineId,
+          method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE,
+          request: { actionReceiptId, actionInput: input },
+          ...(signal ? { signal } : {}),
+        }));
+      } catch (error) {
+        if (isRpcMethodNotAvailableError(error) || isRpcMethodNotFoundError(error)) {
+          throw Object.assign(new Error('Controller must be updated for workspace conflict resolution'), {
+            code: 'workspace_sync_update_required',
+          });
+        }
+        throw error;
+      }
+    },
+    workspaceSyncRelationshipsList: async ({ input, signal }) => {
+      const machineId = await resolveWorkspaceSyncReadController(input);
+      return WorkspaceSyncRelationshipsListRpcResultV1Schema.parse(await callMachineAction({
+        machineId,
+        method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST,
+        request: input.workspaceRefId ? { workspaceRefId: input.workspaceRefId } : {},
+        ...(signal ? { signal } : {}),
+      }));
+    },
+    workspaceSyncConflictsList: async ({ input, signal }) => {
+      const machineId = await resolveWorkspaceSyncReadController(input);
+      return WorkspaceSyncConflictPageV1Schema.parse(await callMachineAction({
+        machineId,
+        method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST,
+        request: { relationshipId: input.relationshipId, limit: input.limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        ...(signal ? { signal } : {}),
+      }));
+    },
+    workspaceSyncConflictInspect: async ({ input, signal }) => {
+      const machineId = await resolveWorkspaceSyncReadController(input);
+      return WorkspaceSyncConflictInspectRpcResultV1Schema.parse(await callMachineAction({
+        machineId,
+        method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT,
+        request: {
+          workspaceRefId: input.workspaceRefId,
+          path: input.path,
+          ...(input.preview ? { preview: input.preview } : {}),
+        },
+        ...(signal ? { signal } : {}),
+      }));
     },
     sessionHandoffStart: async ({
       sessionId,
@@ -2873,6 +3032,12 @@ export function createCliActionDeps(params: Readonly<{
       const resolvedConnectedServices = connectedServices
         ?? connectedServicesDefaults?.connectedServices;
       const resolvedConnectedServicesUpdatedAt = connectedServicesDefaults?.connectedServicesUpdatedAt;
+      // Defaulted Team targets reach the Session only through its own Team
+      // slot bindings; an explicit slot choice wins.
+      const resolvedTeamCredentialBindings = mergeSessionTeamCredentialBindingIntents({
+        explicit: teamCredentialBindings,
+        admitted: connectedServicesDefaults?.teamCredentialBindings ?? null,
+      });
       const normalizedPlacement =
         normalizeSessionCreationOrganizationPlacementV1(organizationPlacement);
       const normalizedTerminal = terminal === undefined
@@ -3065,7 +3230,9 @@ export function createCliActionDeps(params: Readonly<{
           directory: normalizedDirectory,
           ...(initialAccess !== undefined ? { initialAccess } : {}),
           ...(primaryTeamId !== undefined ? { primaryTeamId } : {}),
-          ...(teamCredentialBindings !== undefined ? { teamCredentialBindings } : {}),
+          ...(resolvedTeamCredentialBindings !== undefined
+            ? { teamCredentialBindings: resolvedTeamCredentialBindings }
+            : {}),
           machineId: executionTarget.machineId,
           backendTarget,
           sessionCreationTag,
@@ -3201,6 +3368,9 @@ export function createCliActionDeps(params: Readonly<{
         const details = readRecord(readRecord(error).details);
         for (const candidate of [details, details.errorDetail, readRecord(details.spawnResponse).errorDetail]) {
           const detail = normalizeSpawnSessionErrorDetail(candidate);
+          if (detail?.kind === SPAWN_SESSION_ERROR_DETAIL_KINDS.SESSION_CREATION_ACCESS_REFUSED) {
+            return { type: 'error', code: detail.code, retryable: false };
+          }
           if (detail?.kind === 'update_required') {
             return { type: 'error', code: 'update_required', retryable: false, details: detail };
           }
@@ -3275,7 +3445,19 @@ export function createCliActionDeps(params: Readonly<{
         && (normalizedModelOverride === undefined || normalizedModelOverride === null)) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
-      const modelSelectionInput = normalizedModelOverride === undefined
+      // `--model default` (and its canonical `modelOverride: null` binding) is
+      // the Agent-native reset, not a model named `default`. The structured
+      // per-message ref cannot carry a reset — the canonical selection owner
+      // rejects a native `default` ref outright — so the same owner's
+      // native-automatic predicate decides which of the two existing carriers
+      // this send uses, instead of the reset being re-derived here as a
+      // provider-bound literal a provider never published.
+      const nativeModelReset = normalizedModelOverride !== undefined
+        && isNativeAutomaticModelSelectionInputV1({
+          providerConnectionId: normalizedProviderConnectionId ?? null,
+          modelId: normalizedModelOverride,
+        });
+      const modelSelectionInput = normalizedModelOverride === undefined || nativeModelReset
         ? undefined
         : {
             ...(normalizedProviderConnectionId !== undefined
@@ -3436,6 +3618,20 @@ export function createCliActionDeps(params: Readonly<{
         }
       };
 
+      // Both admissions resolve the Session again inside the send service, so
+      // the exact Home's feature snapshot this dependency is already bound to
+      // must travel with them; without it that second resolution decides
+      // `sharing.session` for a Home it never observed.
+      const sendServerFeaturesSnapshot = await readServerFeaturesSnapshot();
+      const sendModelSelection = {
+        ...(sendServerFeaturesSnapshot ? { serverFeaturesSnapshot: sendServerFeaturesSnapshot } : {}),
+        ...(modelSelectionInput
+          ? { modelSelectionInput }
+          : nativeModelReset
+            ? { modelOverride: null }
+            : {}),
+      } as const;
+
       const protectedInputAdmission = pluginInputAdmission ?? causalSessionInputAdmission;
       if (protectedInputAdmission) {
         const protectedResult = await sendSessionMessage({
@@ -3470,7 +3666,7 @@ export function createCliActionDeps(params: Readonly<{
           ...(params.machineActionDirectTargetTransport
             ? { machineResumeTransport: params.machineActionDirectTargetTransport.invoke }
             : {}),
-          ...(modelSelectionInput ? { modelSelectionInput } : {}),
+          ...sendModelSelection,
           ...(signal ? { signal } : {}),
         });
         const admissionResult = projectSessionMessageSendActionResult(protectedResult);
@@ -3527,7 +3723,7 @@ export function createCliActionDeps(params: Readonly<{
             ? { localId }
             : {}),
         ...(normalizedPermissionModeOverride ? { permissionModeOverride: normalizedPermissionModeOverride } : {}),
-        ...(modelSelectionInput ? { modelSelectionInput } : {}),
+        ...sendModelSelection,
         ...(resolveAuthorizationHeaders ? { resolveAuthorizationHeaders } : {}),
         ...(params.machineActionDirectTargetTransport
           ? { machineResumeTransport: params.machineActionDirectTargetTransport.invoke }
@@ -4267,6 +4463,9 @@ export function createCliActionDeps(params: Readonly<{
     sessionBoardAction: params.credentials
       ? createSessionBoardActionDeps({
           credentials: params.credentials,
+          ...(params.resolveExactSessionEncryptionMaterial
+            ? { resolveExactSessionEncryptionMaterial: params.resolveExactSessionEncryptionMaterial }
+            : {}),
           ...(params.resolveServerFeaturesSnapshot
             ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
             : {}),
@@ -4319,6 +4518,9 @@ export function createCliActionDeps(params: Readonly<{
     sessionDiscussionAction: params.credentials
       ? createSessionDiscussionActionDeps({
           credentials: params.credentials,
+          ...(params.resolveExactSessionEncryptionMaterial
+            ? { resolveExactSessionEncryptionMaterial: params.resolveExactSessionEncryptionMaterial }
+            : {}),
           ...(params.resolveServerFeaturesSnapshot
             ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
             : {}),

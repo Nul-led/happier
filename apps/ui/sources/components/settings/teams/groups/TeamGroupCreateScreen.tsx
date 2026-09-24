@@ -29,6 +29,8 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
     const [submitting, setSubmitting] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const submitInFlightRef = React.useRef(false);
+    const nameInputRef = React.useRef<{ focus(): void } | null>(null);
+    const descriptionInputRef = React.useRef<{ focus(): void } | null>(null);
 
     React.useEffect(() => () => {
         submitInFlightRef.current = false;
@@ -54,9 +56,18 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
     }, [context.address, router]);
 
     const submit = React.useCallback(async () => {
-        if (submitInFlightRef.current
-            || nameValidation.status !== 'ok'
-            || descriptionValidation.status !== 'ok') return;
+        if (submitInFlightRef.current) return;
+        // The canonical validators decide, and the person is told which field
+        // to fix: a submit that returns silently is indistinguishable from a
+        // request that was sent and lost.
+        if (nameValidation.status !== 'ok') {
+            nameInputRef.current?.focus();
+            return;
+        }
+        if (descriptionValidation.status !== 'ok') {
+            descriptionInputRef.current?.focus();
+            return;
+        }
         submitInFlightRef.current = true;
         setSubmitting(true);
         setError(null);
@@ -111,10 +122,11 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
     return (
         <>
             <ItemGroup
-                title={t('teams.groups.createTitle', { team: context.team.name })}
+                title={t('teams.groups.nameLabel')}
                 footer={t('teams.groups.emptyBody')}
             >
                 <TextInput
+                    ref={nameInputRef}
                     testID="team-group-create-name"
                     value={name}
                     onChangeText={setName}
@@ -122,7 +134,16 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
                     accessibilityLabel={t('teams.groups.nameLabel')}
                     maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
                 />
+            </ItemGroup>
+
+            <ItemGroup
+                title={t('teams.create.descriptionLabel')}
+                footer={descriptionValidation.status !== 'ok'
+                    ? t('teams.errors.invalidDescription')
+                    : undefined}
+            >
                 <TextInput
+                    ref={descriptionInputRef}
                     testID="team-group-create-description"
                     value={description}
                     onChangeText={setDescription}
@@ -137,7 +158,13 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
                     testID="team-group-create-submit"
                     title={t('teams.groups.submit')}
                     loading={submitting}
-                    disabled={nameValidation.status !== 'ok' || submitting || !context.canMutate}
+                    // The description is as much a reason to withhold Create as
+                    // the name: the text is preserved, the field says what is
+                    // wrong, and no request is issued that the Home would refuse.
+                    disabled={nameValidation.status !== 'ok'
+                        || descriptionValidation.status !== 'ok'
+                        || submitting
+                        || !context.canMutate}
                     onPress={() => void submit()}
                     showChevron={false}
                 />

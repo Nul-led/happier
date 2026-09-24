@@ -2,6 +2,7 @@ import { StructuredQuestionAnswersV1Schema } from '../tools/structuredQuestionAn
 import type { ApprovalRequest } from '../approvals/approvalRequestV1.js';
 import { getActionSpec } from './actionSpecs.js';
 import { resolveEffectiveActionInputFields } from './actionInputHintsRuntime.js';
+import { actionInputFieldAcceptsNull } from './actionInputSchemaPath.js';
 import type { ActionId } from './actionIds.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -199,7 +200,12 @@ export function describeApprovalActionFields(input: Readonly<{
     }
     const value = formatApprovalFieldValues(values);
     if (value === null) {
-      if (field.required) {
+      // A required field whose schema declares `null` and that carries exactly
+      // that null is present context with nothing to display, not missing context.
+      const declaredNull = values.length > 0
+        && values.every((entry) => entry === null)
+        && actionInputFieldAcceptsNull(spec, field.path);
+      if (field.required && !declaredNull) {
         const reason = 'missing_required_context' as const;
         unrepresentable ??= { path: field.path, reason };
         rows.push({ kind: 'unrepresentable', path: field.path, title: field.title, reason });

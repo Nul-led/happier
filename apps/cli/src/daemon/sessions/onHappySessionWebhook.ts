@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 
 import { findHappyProcessByPid } from '../doctor';
 import { readProcessIdentityByPid } from '../processIdentity';
-import type { TrackedSession } from '../types';
+import type { DaemonSpawnStartupReadinessFailure, TrackedSession } from '../types';
 import {
   hashProcessCommand,
   listSessionMarkers,
@@ -383,6 +383,25 @@ function createStartupReadinessGate(): Readonly<{
 }
 
 /**
+ * The spawn result for an exact no-effect Session creation refusal, whichever
+ * creator (the runner, or the daemon committing before launch) met it.
+ */
+export function buildSessionCreationTerminalSpawnErrorResult(
+  errorDetail: SessionCreationTerminalSpawnErrorDetail,
+): DaemonSpawnStartupReadinessFailure {
+  return {
+    type: 'error',
+    errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
+    errorMessage: errorDetail.kind === 'session_creation_correspondence_conflict'
+      ? 'Session creation correspondence conflicts with the existing Session'
+      : errorDetail.kind === 'update_required'
+        ? 'Session initial access requires updated collaboration support'
+        : 'Session creation organization placement is invalid',
+    errorDetail,
+  };
+}
+
+/**
  * Settles the pre-existing spawn webhook waiter when the runner reaches the
  * server create-or-load boundary but receives its exact organization-placement
  * rejection before it has a Session to report. The nonce is the daemon-owned
@@ -423,16 +442,8 @@ export function createOnDaemonSessionStartupFailure(params: Readonly<{
     const awaiter = params.pidToAwaiter.get(awaiterPid);
     if (!awaiter) return false;
 
-    tracked.spawnStartupReadinessFailure ??= {
-      type: 'error',
-      errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
-      errorMessage: input.errorDetail.kind === 'session_creation_correspondence_conflict'
-        ? 'Session creation correspondence conflicts with the existing Session'
-        : input.errorDetail.kind === 'update_required'
-          ? 'Session initial access requires updated collaboration support'
-          : 'Session creation organization placement is invalid',
-      errorDetail: input.errorDetail,
-    };
+    tracked.spawnStartupReadinessFailure ??=
+      buildSessionCreationTerminalSpawnErrorResult(input.errorDetail);
     // Claim before invoking the existing waiter so duplicate/later callbacks
     // cannot race its cleanup path or settle this spawn twice.
     params.pidToAwaiter.delete(awaiterPid);

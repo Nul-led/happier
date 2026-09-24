@@ -76,6 +76,40 @@ describe("publicSignupProvisioningPolicy", () => {
         ).toBe(false);
     });
 
+    it("denies a combined provision action whenever a branch it offers is denied", () => {
+        const env = {
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "email_password",
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: "keyless",
+        } as NodeJS.ProcessEnv;
+
+        // An `either` action offers both branches, so it cannot be partly
+        // denied by omission: the restriction applies to the whole action.
+        expect(
+            shouldDenyPublicSignupProvisioningAction({
+                env,
+                requestIp: "203.0.113.10",
+                methodId: "email_password",
+                mode: "either",
+            }),
+        ).toBe(true);
+        expect(
+            shouldDenyPublicSignupProvisioningAction({
+                env,
+                requestIp: "10.0.0.5",
+                methodId: "email_password",
+                mode: "either",
+            }),
+        ).toBe(false);
+        expect(
+            shouldDenyPublicSignupProvisioningAction({
+                env,
+                requestIp: "203.0.113.10",
+                methodId: "key_challenge",
+                mode: "either",
+            }),
+        ).toBe(false);
+    });
+
     it("disables only matching provision actions for public requests", () => {
         const payload = resolveFeaturesFromEnv({
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "1",
@@ -106,7 +140,7 @@ describe("publicSignupProvisioningPolicy", () => {
         expect(findActionEnabled(restricted, "key_challenge", "keyed")).toBe(false);
         expect(findActionEnabled(restricted, "github", "keyless")).toBe(false);
         expect(
-            restricted.capabilities.auth.methods.find((method: any) => String(method?.id ?? "").toLowerCase() === "github")
+            restricted.capabilities.auth.methods?.find((method: any) => String(method?.id ?? "").toLowerCase() === "github")
                 ?.actions,
         ).toEqual(expect.arrayContaining([expect.objectContaining({ id: "login", enabled: true, mode: "keyless" })]));
     });

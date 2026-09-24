@@ -171,8 +171,8 @@ installNewSessionModulesCommonModuleMocks({
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         return createModalModuleMock({
             spies: {
-                show: (...args: any[]) => modalShowMock(...args),
-                confirm: (...args: any[]) => modalConfirmMock(...args),
+                show: modalShowMock,
+                confirm: modalConfirmMock,
             },
         }).module;
     },
@@ -452,6 +452,7 @@ describe('useNewSessionConnectedServices', () => {
         const hook = await renderHook(() =>
             useNewSessionConnectedServices({
                 agentCore: { id: 'claude', connectedServices: null },
+                defaultAuthConsumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
                 connectedAccounts: CLAUDE_CONNECTED_ACCOUNTS,
                 agentOptionState: null,
                 settings: {
@@ -491,6 +492,65 @@ describe('useNewSessionConnectedServices', () => {
         await hook.unmount();
     });
 
+    it('applies the Team resource purpose default chosen on the Agent page over a released service-keyed default', async () => {
+        const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
+        const teamSelection = {
+            source: 'team_resource',
+            resourceId: 'resource-acme',
+            deliveryMode: 'direct',
+            disclosedMember: { service: { pluginId: 'happier.agent.claude', localId: 'anthropic' }, accountId: 'source-member' },
+        } as const;
+
+        const hook = await renderHook(() =>
+            useNewSessionConnectedServices({
+                agentCore: { id: 'claude', connectedServices: null },
+                defaultAuthConsumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                connectedAccounts: CLAUDE_CONNECTED_ACCOUNTS,
+                agentOptionState: null,
+                settings: {
+                    connectedServicesProfileLabelByKey: {},
+                    connectedServicesDefaultProfileByServiceId: {},
+                    // What the Agent page chooser persists: the canonical Team
+                    // selection of its Team (lane 10 child 02 :271).
+                    connectedAccountPurposeBindingsV1: {
+                        v: 1,
+                        bindings: [],
+                        teamResourceSelections: [{
+                            purpose: {
+                                consumer: { pluginId: 'happier.agent.claude', localId: 'claude' },
+                                purpose: 'primary',
+                            },
+                            teamId: 'team-acme',
+                            selection: teamSelection,
+                        }],
+                    },
+                    // A stale released default for the same Agent never wins.
+                    connectedServicesDefaultAuthByAgentIdV1: {
+                        v: 1,
+                        bindingsByAgentId: {
+                            claude: {
+                                v: 1,
+                                bindingsByServiceId: {
+                                    [CLAUDE_SERVICE_KEY]: { source: 'connected', selection: 'profile', profileId: 'work' },
+                                },
+                            },
+                        },
+                    },
+                },
+                targetServerId: null,
+                router: { push: vi.fn() },
+                setAgentOptionStateForCurrentAgent: vi.fn(),
+            }),
+        );
+
+        expect(hook.getCurrent().connectedServicesBindingsPayload).toEqual({
+            v: 2,
+            bindingsByServiceId: { [CLAUDE_SERVICE_KEY]: teamSelection },
+        });
+
+        await hook.unmount();
+    });
+
     it('applies an installed Agent default through its selected routing identity', async () => {
         const { useNewSessionConnectedServices } = await import('./useNewSessionConnectedServices');
         const installedAgentId = 'acme.review/reviewer';
@@ -513,6 +573,7 @@ describe('useNewSessionConnectedServices', () => {
             useNewSessionConnectedServices({
                 agentCore: null,
                 defaultAuthAgentId: installedAgentId,
+                defaultAuthConsumer: { pluginId: 'acme.review', localId: 'reviewer' },
                 connectedAccounts: NOVEL_CONNECTED_ACCOUNTS,
                 agentOptionState: null,
                 settings: {
@@ -586,6 +647,7 @@ describe('useNewSessionConnectedServices', () => {
         const hook = await renderHook(() =>
             useNewSessionConnectedServices({
                 agentCore: { id: 'codex', connectedServices: null },
+                defaultAuthConsumer: { pluginId: 'happier.agent.codex', localId: 'codex' },
                 connectedAccounts: [
                     { purpose: 'primary', service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' } },
                 ],
@@ -652,6 +714,7 @@ describe('useNewSessionConnectedServices', () => {
         const hook = await renderHook(() =>
             useNewSessionConnectedServices({
                 agentCore: { id: 'codex', connectedServices: null },
+                defaultAuthConsumer: { pluginId: 'happier.agent.codex', localId: 'codex' },
                 connectedAccounts: [
                     { purpose: 'primary', service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' } },
                 ],

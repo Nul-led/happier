@@ -118,6 +118,11 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
         path: targetPath,
     });
     const listingTargetKey = React.useRef<string | null>(null);
+    // The accepted target whose key list has already been requested by the
+    // screen itself. Accepting a target and the view becoming manageable both
+    // ask for the first read; this makes them one read. Explicit retry and
+    // outcome-unknown recovery call `reload` directly and are not affected.
+    const initialListTargetKey = React.useRef<string | null>(null);
     const reloadAcceptedTarget = React.useRef<() => void>(() => {});
     const revealWouldBeLost = reveal !== null && !secretCopied;
     const revealWouldBeLostRef = React.useRef(revealWouldBeLost);
@@ -198,6 +203,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
             setSecretCopied(false);
             copyFeedback.clearCopiedFeedback();
             setNotice(null);
+            initialListTargetKey.current = nextTarget.key;
             reloadAcceptedTarget.current();
         })).then((continued) => {
             if (active && !continued) replaceRoute(previousPath);
@@ -241,8 +247,10 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 
     React.useEffect(() => {
         if (!availability.available || !view.canManage) return;
+        if (acceptedTarget.current.key !== targetKey || initialListTargetKey.current === targetKey) return;
+        initialListTargetKey.current = targetKey;
         void reload();
-    }, [availability.available, view.canManage, reload]);
+    }, [availability.available, view.canManage, reload, targetKey]);
 
     const clearReveal = React.useCallback(() => {
         if (!reveal) return;
@@ -535,6 +543,10 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                     disabled={operationBusy || !keyListTrusted || !membershipId || trimmedLabel.length === 0}
                     onPress={async () => {
                         if (!membershipId || trimmedLabel.length === 0 || operationBusy || !keyListTrusted) return;
+                        // A new creation replaces the open reveal, and that
+                        // reveal is the only copy of its bearer: ask the same
+                        // one reveal-loss question leaving the screen asks.
+                        if (!await runUnsavedChangesGuard(revealLossGuard, clearReveal)) return;
                         const requestedTargetKey = targetKey;
                         setBusy(true); setNotice(null);
                         try {

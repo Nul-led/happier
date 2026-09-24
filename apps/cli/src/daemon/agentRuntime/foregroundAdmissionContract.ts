@@ -4,6 +4,7 @@ import {
   AgentIdV1Schema,
   BackendTargetRefV2Schema,
   ProviderErrorV1Schema,
+  PluginSourceCustodyV1Schema,
   SecretReferenceOverlayV1Schema,
   SessionModelSelectionV1Schema,
   SessionProviderBindingMetadataV1Schema,
@@ -14,6 +15,7 @@ import type {
   AgentCliSessionCommandOptionsV1,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
+import { SessionTeamCredentialBindingIntentsV1Schema } from '@happier-dev/protocol/teams';
 import { AgentRuntimeDaemonSessionDescriptorV1Schema } from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
 import { ConnectedServicesBindingsIngressSchema } from '@/daemon/connectedServices/parseConnectedServicesBindings';
 
@@ -128,6 +130,14 @@ export const ForegroundAgentRuntimeAdmissionResponseV1Schema =
         authorityFilePath: z.string().min(1).max(32_768),
         descriptor: AgentRuntimeDaemonSessionDescriptorV1Schema,
       }).strict(),
+      /**
+       * What the foreground process must submit when it creates the Session:
+       * the Team slot bindings that make the admitted durable Team purpose
+       * targets usable by this Session at the Home.
+       */
+      sessionCreation: z.object({
+        teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema,
+      }).strict().optional(),
       launchPolicy: z.object({
         reservedEnvironmentVariableNames: z.array(BoundedIdSchema).max(256),
         profileSecretRequirementNamesMissingBinding:
@@ -152,7 +162,8 @@ export const ForegroundAgentRuntimeClaimRequestV1Schema = z.object({
   foregroundPid: z.number().int().positive(),
   pluginId: BoundedIdSchema,
   agentId: AgentIdV1Schema,
-  generation: BoundedIdSchema,
+  occurrenceId: z.string().trim().min(1).max(512),
+  sourceCustody: PluginSourceCustodyV1Schema,
   capability: z.string().min(1).max(4_096),
   foregroundSatisfiedProfileSecretRequirementNames:
     z.array(BoundedIdSchema).max(256),

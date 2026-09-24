@@ -485,6 +485,80 @@ describe("Team credential resource lifecycle", () => {
         })).resolves.toEqual([{ teamGroupId: group.id, deliveryMode: "brokered" }]);
     });
 
+    // The full editor's replacement narrows through the same rule as the PATCH
+    // above. A source custodian who is not a Team manager sends the audience it
+    // cannot edit unchanged; narrowing still withdraws only its direct half.
+    // A manager's deliberately chosen broker grant saved in the same
+    // replacement is an explicit grant, not an automatic conversion.
+    it("applies the one narrowing rule when a full replacement narrows the ceiling", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const owner = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const directMember = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const team = await db.team.create({ data: { name: "Replacement narrowing" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "member" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+        const directMembership = await db.teamMembership.create({ data: { teamId: team.id, accountId: directMember.id, role: "member" } });
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: "Both", nameKey: "both" } });
+        const brokerFor = (accountId: string) => db.machine.create({ data: {
+            id: `replacement-narrowing-broker-${accountId}`, accountId, metadata: "{}", kind: "persistent",
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        const source = TeamCredentialSourceBindingV1Schema.parse({ v: 1, kind: "provider_connection", connectionId: "connection",
+            connectionSecurityFingerprint: "connection-security:v1:test:replacement-narrowing", credentialSlotId: "apiKey" });
+        const createResource = async (custodianAccountId: string, brokerMachineId: string) => await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId, displayName: "Replacement narrowing",
+            disclosureCeiling: "direct_allowed", sessionUsePolicy: "personal_allowed",
+            allMembersDeliveryMode: "direct", brokerMachineId, sourceBindingJson: JSON.stringify(source),
+            memberGrants: { create: { teamMembershipId: directMembership.id, deliveryMode: "direct" } },
+            groupGrants: { create: { teamGroupId: group.id, deliveryMode: "both" } },
+        } });
+        const replacementOf = (brokerMachineId: string) => ({
+            enabled: true, displayName: "Replacement narrowing",
+            sessionUsePolicy: "personal_allowed" as const, requestPolicy: null,
+            allMembersDeliveryMode: "direct" as const,
+            groupGrants: [{ teamGroupId: group.id, deliveryMode: "both" as const }],
+            memberGrants: [{ teamMembershipId: directMembership.id, deliveryMode: "direct" as const }],
+            usageLimitDelta: { upserts: [], deleteIds: [] },
+            custodian: {
+                source, disclosureCeiling: "brokered_only" as const,
+                brokerPlacement: { kind: "machine" as const, machineId: brokerMachineId },
+            },
+        });
+
+        const custodianBroker = await brokerFor(custodian.id);
+        const custodianResource = await createResource(custodian.id, custodianBroker.id);
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: custodianResource.id, expectedRevision: 0, replacement: replacementOf(custodianBroker.id) },
+        }))).resolves.toEqual({ ok: true, resourceId: custodianResource.id, revision: 1 });
+        await expect(db.teamCredentialResource.findUniqueOrThrow({ where: { id: custodianResource.id } })).resolves.toMatchObject({
+            disclosureCeiling: "brokered_only",
+            allMembersDeliveryMode: null,
+        });
+        await expect(db.teamCredentialMemberGrant.findMany({ where: { resourceId: custodianResource.id } })).resolves.toEqual([]);
+        await expect(db.teamCredentialGroupGrant.findMany({
+            where: { resourceId: custodianResource.id }, select: { teamGroupId: true, deliveryMode: true },
+        })).resolves.toEqual([{ teamGroupId: group.id, deliveryMode: "brokered" }]);
+
+        const ownerBroker = await brokerFor(owner.id);
+        const ownerResource = await createResource(owner.id, ownerBroker.id);
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: owner.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: ownerResource.id, expectedRevision: 0, replacement: {
+                ...replacementOf(ownerBroker.id),
+                allMembersDeliveryMode: null,
+                groupGrants: [{ teamGroupId: group.id, deliveryMode: "brokered" as const }],
+                memberGrants: [{ teamMembershipId: directMembership.id, deliveryMode: "brokered" as const }],
+            } },
+        }))).resolves.toEqual({ ok: true, resourceId: ownerResource.id, revision: 1 });
+        await expect(db.teamCredentialMemberGrant.findMany({
+            where: { resourceId: ownerResource.id }, select: { teamMembershipId: true, deliveryMode: true },
+        })).resolves.toEqual([{ teamMembershipId: directMembership.id, deliveryMode: "brokered" }]);
+    });
+
     it("keeps exact broker Machine selection under the source custodian authority", async () => {
         const custodian = await db.account.create({ data: { encryptionMode: "plain" } });
         const manager = await db.account.create({ data: { encryptionMode: "plain" } });

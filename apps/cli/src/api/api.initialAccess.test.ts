@@ -13,6 +13,7 @@ import { getOrCreateSessionByTag } from '@/session/transport/http/sessionsHttp';
 import { ApiClient } from './api';
 import { initializeBackendRunSession } from '@/agent/runtime/initializeBackendRunSession';
 import { createSpawnedSession } from '@/session/services/createSpawnedSession';
+import { resetServerFeaturesClientForTests } from '@/features/serverFeaturesClient';
 
 const initialAccess: SessionInitialAccessDraftV1 = {
   grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'edit', canApprovePermissions: false }],
@@ -25,13 +26,14 @@ const metadata = {
 const creation = { credentials, tag: 'access-create', metadata, agentState: null, state: null };
 
 function features(
-  collaboration: boolean | undefined,
+  sharing: boolean,
   storagePolicy: 'required_e2ee' | 'optional' | 'plaintext_only' = 'plaintext_only',
 ) {
+  // Initial access is Session sharing: there is no separate collaboration bit.
   return {
     features: {
-      sessions: { enabled: true, ...(collaboration === undefined ? {} : { collaboration: { enabled: collaboration } }) },
-      sharing: { session: { enabled: true } },
+      sessions: { enabled: true },
+      sharing: { session: { enabled: sharing } },
     },
     capabilities: {
       accountStoredContentCompatibility: {
@@ -54,6 +56,9 @@ for (const owner of ['api', 'http'] as const) {
     };
     beforeEach(() => {
       createdByServer = true;
+      // The public feature snapshot is a process-local TTL cache keyed by Home
+      // URL; each case stubs its own Home answer at the fetch boundary.
+      resetServerFeaturesClientForTests();
       vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true)))));
       vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: {
         mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
@@ -266,11 +271,11 @@ for (const owner of ['api', 'http'] as const) {
     });
 
     if (owner === 'api') it('carries fresh bootstrap access through the real API and preserves refusal before opening a session', async () => {
-      const refusal = {
-        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
-      };
+      // The Home refuses access-bearing creation with its own typed reason
+      // when Session sharing is off; nothing is created and nothing is opened.
+      const refusal = { code: 'session_access_sharing_unavailable', status: 409, retryable: false };
       vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response: {
-        status: 409, data: { error: 'update_required', ...refusal },
+        status: 409, data: { error: 'session_access_sharing_unavailable' },
       } });
       await expect(initializeBackendRunSession({
         api: await ApiClient.create(credentials),
@@ -285,22 +290,22 @@ for (const owner of ['api', 'http'] as const) {
       expect(vi.mocked(axios.post).mock.calls[0]?.[1]).toMatchObject({ initialAccess, primaryTeamId: 'team-1' });
     });
 
-    it.each([false, undefined])('refuses explicit initial access before POST when collaboration=%s', async (enabled) => {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(enabled)))));
-      await expect(create({ initialAccess })).rejects.toMatchObject({
-        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
-      });
+    it('refuses explicit initial access before POST when Session sharing is disabled', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(false)))));
+      const refusal = await create({ initialAccess }).catch((error: unknown) => error);
+      // The same typed reason the Home's atomic create answers, never an update requirement.
+      expect(refusal).toMatchObject({ code: 'session_access_sharing_unavailable', retryable: false });
+      expect(refusal).not.toMatchObject({ kind: 'update_required' });
       expect(axios.post).not.toHaveBeenCalled();
     });
 
-    it('preserves the explicit update-required refusal from a mixed server peer', async () => {
-      const updateRequired = {
-        kind: 'update_required', operation: 'session.spawn_new', component: 'server', reason: 'session_initial_access_update_required',
-      };
-      const response = { status: 409, data: { error: 'update_required', ...updateRequired } };
+    it('preserves the Home\'s typed sharing-unavailable refusal from the atomic create', async () => {
+      const response = { status: 409, data: { error: 'session_access_sharing_unavailable' } };
       if (owner === 'api') vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response });
       else vi.mocked(axios.post).mockResolvedValueOnce(response);
-      await expect(create({ initialAccess })).rejects.toMatchObject(updateRequired);
+      await expect(create({ initialAccess })).rejects.toMatchObject({
+        code: 'session_access_sharing_unavailable', status: 409, retryable: false,
+      });
       expect(axios.post).toHaveBeenCalledTimes(1);
     });
 
@@ -335,14 +340,6 @@ for (const owner of ['api', 'http'] as const) {
       expect(axios.post).not.toHaveBeenCalled();
     });
 
-    it('uses the shared sharing dependency even when collaboration itself is enabled', async () => {
-      const snapshot = features(true);
-      snapshot.features.sharing.session.enabled = false;
-      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(snapshot))));
-      await expect(create({ initialAccess })).rejects.toMatchObject({ kind: 'update_required' });
-      expect(axios.post).not.toHaveBeenCalled();
-    });
-
     if (owner === 'api') it('retains access and creation identity across the existing transient-server retry', async () => {
       vi.stubEnv('HAPPIER_API_CREATE_SESSION_RETRY_BASE_DELAY_MS', '0');
       vi.mocked(axios.post).mockRejectedValueOnce({ isAxiosError: true, response: { status: 503, data: { error: 'unavailable' } } });
@@ -353,7 +350,7 @@ for (const owner of ['api', 'http'] as const) {
       ]);
     });
 
-    it('still creates without collaboration when no access or Team context was requested', async () => {
+    it('still creates without Session sharing when no access or Team context was requested', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(false)))));
       await create({});
       const body = vi.mocked(axios.post).mock.calls[0]?.[1];

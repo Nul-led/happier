@@ -1,4 +1,5 @@
 import {
+    authenticateRunnerArtifactAgainstSignedChecksumsV1,
     runnerArtifactTargetPlatform,
     type VerifiedRunnerArtifactV1,
 } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
@@ -57,13 +58,19 @@ export async function acquireRunnerArtifact(input: Readonly<{
         fetchImpl(input.artifact.checksumsUrl, { signal: input.signal }).then(readRequiredText),
         fetchImpl(input.artifact.checksumsSignatureUrl, { signal: input.signal }).then(readRequiredText),
     ]);
-    const trusted = resolveVerifiedReleaseArtifactDigest({ artifactName, checksumsText, checksumsSignatureFile,
-        minisignPublicKeyFile: input.minisignPublicKeyFile ?? DEFAULT_MINISIGN_PUBLIC_KEY });
-    if (!trusted.ok || trusted.sha256 !== input.artifact.identity.sha256) throw new Error('runner_artifact_identity_mismatch');
-    if (!trusted.archiveMetadata
-        || JSON.stringify(trusted.archiveMetadata) !== JSON.stringify({ sizeBytes: input.artifact.sizeBytes, entries: input.artifact.entries })) {
-        throw new Error('runner_artifact_identity_mismatch');
-    }
+    // The same composite predicate the Home applies, from its one owner: the
+    // creator's last-line check before executing downloaded bytes must not be
+    // able to drift from the Home's.
+    const trusted = authenticateRunnerArtifactAgainstSignedChecksumsV1({
+        verified: resolveVerifiedReleaseArtifactDigest({ artifactName, checksumsText, checksumsSignatureFile,
+            minisignPublicKeyFile: input.minisignPublicKeyFile ?? DEFAULT_MINISIGN_PUBLIC_KEY }),
+        expected: {
+            sha256: input.artifact.identity.sha256,
+            sizeBytes: input.artifact.sizeBytes,
+            entries: input.artifact.entries,
+        },
+    });
+    if (!trusted.ok) throw new Error('runner_artifact_identity_mismatch');
 
     const response = await fetchImpl(input.artifact.url, { signal: input.signal });
     if (!response.ok || !response.body) throw new Error('runner_artifact_download_unavailable');

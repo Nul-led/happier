@@ -162,6 +162,21 @@ export async function recordTeamCredentialDirectDeliveryActivityInTx(
     });
 }
 
+/**
+ * Whether usable material of this resource was ever delivered to anyone. Once
+ * it has been, use outside Happier is possible and unknowable, whatever the
+ * current audience says. Retained metadata only, like the per-recipient read.
+ */
+export async function hasTeamCredentialResourceDirectDeliveryActivityInTx(
+    tx: Tx,
+    input: Readonly<{ resourceId: string }>,
+): Promise<boolean> {
+    return (await tx.teamCredentialActivityEvent.findFirst({
+        where: { resourceId: input.resourceId, kind: "direct_delivered" },
+        select: { id: true },
+    })) !== null;
+}
+
 /** Reads only the retained metadata fact; live authority remains resource-owned. */
 export async function hasTeamCredentialDirectDeliveryActivityInTx(
     tx: Tx,

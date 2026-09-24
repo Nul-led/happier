@@ -26,6 +26,22 @@ export type NewSessionAccessDraftState = Readonly<{
     }> | null;
 }>;
 
+type DemandedSessionAccessEditorProps = React.ComponentProps<typeof SessionAccessEditor>
+    & Readonly<{ onDemand: (demanded: boolean) => void }>;
+
+/**
+ * The editor as the composer's popover mounts it, reporting for its mounted
+ * lifetime that an open presentation needs Home candidates. The collapsed chip
+ * renders none of this, so the directory stays idle until someone opens it.
+ */
+function DemandedSessionAccessEditor({ onDemand, ...editor }: DemandedSessionAccessEditorProps): React.ReactElement {
+    React.useEffect(() => {
+        onDemand(true);
+        return () => onDemand(false);
+    }, [onDemand]);
+    return <SessionAccessEditor {...editor} />;
+}
+
 function sameAccessDraft(
     left: SessionInitialAccessDraftV1 | null,
     right: SessionInitialAccessDraftV1 | null,
@@ -187,16 +203,25 @@ export function useNewSessionAccessDraft(input: Readonly<{
     const resolution = useServerCredentialAccountScopeResolution(serverId);
     const availability = useSessionCollaborationAvailability(serverId ?? '');
     const scope = resolution.kind === 'bound' ? resolution.scope : null;
+    const [screenOpen, setScreenOpen] = React.useState(false);
+    // The composer's collapsed chip needs only the authored-grant summary, so
+    // candidate discovery stays with the presentation that is actually open.
+    // Both hosts report through the one signal; the directory keeps its already
+    // acquired pages while undemanded, so reopening does not refetch.
+    const [popoverDemand, setPopoverDemand] = React.useState(0);
+    const demandEditor = React.useCallback((demanded: boolean) => {
+        setPopoverDemand((current) => Math.max(0, current + (demanded ? 1 : -1)));
+    }, []);
     const controller = useNewSessionAccessDraftController({
         scope: scope ?? { serverId: serverId ?? '', accountId: '' },
         access,
         primaryTeamId,
         availability,
         homeReconciled,
+        demanded: screenOpen || popoverDemand > 0,
         onChange: updateAccess,
         onPrimaryTeamIdChange: updatePrimaryTeamId,
     });
-    const [screenOpen, setScreenOpen] = React.useState(false);
     const screenFocusReturnRef = React.useRef<View | null>(null);
     const closeScreen = React.useCallback(() => setScreenOpen(false), []);
 
@@ -243,7 +268,8 @@ export function useNewSessionAccessDraft(input: Readonly<{
             // The host's render form, so Escape drains an access sub-step first,
             // then closes this popover and returns focus to the real chip trigger.
             popoverContent: ({ requestClose }) => (
-                <SessionAccessEditor
+                <DemandedSessionAccessEditor
+                    onDemand={demandEditor}
                     model={controller.model}
                     actions={controller.actions}
                     presentation="compact"
@@ -252,7 +278,7 @@ export function useNewSessionAccessDraft(input: Readonly<{
                 />
             ),
         };
-    }, [access?.grants.length, availability, controller.actions, controller.model, homeReconciled, input.useScreenHost, scope]);
+    }, [access?.grants.length, availability, controller.actions, controller.model, demandEditor, homeReconciled, input.useScreenHost, scope]);
 
     // An unresolved scope hides the control; it never discards an authored
     // draft, which is authority-bearing creation input.

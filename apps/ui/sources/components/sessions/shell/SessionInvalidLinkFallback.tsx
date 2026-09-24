@@ -11,7 +11,7 @@ import type { SelectionListStep } from '@/components/ui/selectionList/_types';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { getServerProfileById, listServerProfiles, resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
 import { t } from '@/text';
 
 const styles = StyleSheet.create((theme) => ({
@@ -20,7 +20,11 @@ const styles = StyleSheet.create((theme) => ({
     back: { marginVertical: 12 },
 }));
 
-function SessionHomeChooser(props: Readonly<{ sessionId: string; candidateServerIds: readonly string[] }>) {
+function SessionHomeChooser(props: Readonly<{
+    sessionId: string;
+    candidateServerIds: readonly string[];
+    descriptionKey: 'session.whichHomeDescription' | 'session.whichHomeUnknownDescription';
+}>) {
     const navigateToSession = useNavigateToSession();
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -45,7 +49,7 @@ function SessionHomeChooser(props: Readonly<{ sessionId: string; candidateServer
     const backToSessions = React.useCallback(() => router.replace('/'), [router]);
     return (
         <View testID="session-home-chooser" style={[styles.chooser, maxWidthStyle, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-            <Text style={styles.description}>{t('session.whichHomeDescription')}</Text>
+            <Text style={styles.description}>{t(props.descriptionKey)}</Text>
             <SelectionList
                 rootStep={step}
                 selectedOptionId={null}
@@ -64,10 +68,16 @@ function SessionHomeChooser(props: Readonly<{ sessionId: string; candidateServer
     );
 }
 
-export function SessionInvalidLinkFallback(props: Readonly<{ sessionId?: string; candidateServerIds?: readonly string[] }> = {}) {
-    if (props.sessionId && props.candidateServerIds && props.candidateServerIds.length > 1) {
-        return <SessionHomeChooser sessionId={props.sessionId} candidateServerIds={props.candidateServerIds} />;
-    }
+function UnknownSessionHomeChooser(props: Readonly<{ sessionId: string }>) {
+    const profilesGeneration = useServerProfilesGeneration();
+    const savedServerIds = React.useMemo(() => [...new Set(
+        listServerProfiles().map((profile) => resolveServerProfileScopeId(profile)).filter(Boolean),
+    )], [profilesGeneration]);
+    if (savedServerIds.length === 0) return <SessionInvalidLinkMessage />;
+    return <SessionHomeChooser sessionId={props.sessionId} candidateServerIds={savedServerIds} descriptionKey="session.whichHomeUnknownDescription" />;
+}
+
+function SessionInvalidLinkMessage() {
     return (
         <View testID="session-invalid-link" style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }}>
             <Text style={{ textAlign: 'center', marginBottom: 8 }}>
@@ -78,4 +88,25 @@ export function SessionInvalidLinkFallback(props: Readonly<{ sessionId?: string;
             </Text>
         </View>
     );
+}
+
+/**
+ * A bare Session link resolves only when its origin names the Home or exactly one
+ * known Session address matches (Lane 07.1). Several known candidates ask which of
+ * them; a link no Home is known to hold (`homeChoice: 'unknown'`) is never answered
+ * by the focused Home — the person chooses which saved Home to open it on, with no
+ * preselection, and that choice opens the exact qualified route.
+ */
+export function SessionInvalidLinkFallback(props: Readonly<{
+    sessionId?: string;
+    candidateServerIds?: readonly string[];
+    homeChoice?: 'unknown';
+}> = {}) {
+    if (props.sessionId && props.candidateServerIds && props.candidateServerIds.length > 1) {
+        return <SessionHomeChooser sessionId={props.sessionId} candidateServerIds={props.candidateServerIds} descriptionKey="session.whichHomeDescription" />;
+    }
+    if (props.sessionId && props.homeChoice === 'unknown') {
+        return <UnknownSessionHomeChooser sessionId={props.sessionId} />;
+    }
+    return <SessionInvalidLinkMessage />;
 }

@@ -9,6 +9,7 @@ import {
   FeaturesResponseSchema,
   MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
   PENDING_INPUT_PROTOCOL_VERSION_V3,
+  projectSessionAccessCapabilitiesV1,
   SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
   sealEncryptedDataKeyEnvelopeV1,
   sealRunnerMachineContentKeyVerifierFactV1,
@@ -47,7 +48,7 @@ import {
   createSessionRuntimeActivityHomeStub,
   createSessionTurnMutationAppliedSocketAck,
 } from '@/testkit/backends/apiSessionSocketHarness';
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { createCurrentSessionProjectionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import {
   materializeSamplePluginFixture,
   SAMPLE_PLUGIN_ID,
@@ -673,12 +674,24 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
         return {
           status: 200,
           data: {
-            session: createSessionRecordFixture({
+            // This Home advertises `sharing.session`, so the Runner reads the
+            // current access projection; its direct edit share is projected
+            // exactly as the Home's canonical effective-access owner states it.
+            session: createCurrentSessionProjectionRecordFixture({
               id: 'session-1',
               active: true,
               encryptionMode: 'e2ee',
               metadataLayoutVersion: 1,
               share: { accessLevel: 'edit', canApprovePermissions: false },
+              effectiveAccess: {
+                v: 1,
+                level: 'edit',
+                sources: [{ kind: 'direct', shareId: 'share-runner-session' }],
+                capabilities: projectSessionAccessCapabilitiesV1({
+                  owner: false,
+                  grants: [{ accessLevel: 'edit', canApprovePermissions: false }],
+                }),
+              },
               metadata: SESSION_SHARED_METADATA_CIPHERTEXT,
               metadataVersion: 1,
               pendingCount: 0,
@@ -721,8 +734,6 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
           expiresAt: Date.now() + 60_000,
           teamId: 'team-1',
           resourceId: 'resource-1',
-          expectedResourceRevision: 3,
-          modelId: 'gpt-5',
           sourceRevision: 'source-3',
           initiator: {
             accountId: 'account-1',
@@ -858,6 +869,7 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
         installationPrivateKey,
         signal: controller.signal,
         onRuntimeStopReady: () => undefined,
+        onRuntimeConnectionState: () => undefined,
       } as never);
       await vi.waitFor(() => expect(machineSocket.emitWithAck).toHaveBeenCalledWith(
         MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,

@@ -3,6 +3,7 @@ import type { FastifyCorsOptions } from "@fastify/cors";
 import {
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1,
+    SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
 } from "@happier-dev/protocol";
 import { log, logger } from "@/utils/logging/log";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
@@ -30,7 +31,6 @@ import { enableOptionalStatics } from "./utils/enableOptionalStatics";
 import { userRoutes } from "./routes/user/userRoutes";
 import { feedRoutes } from "./routes/feed/feedRoutes";
 import { kvRoutes } from "./routes/kv/kvRoutes";
-import { shareRoutes } from "./routes/share/shareRoutes";
 import { publicShareRoutes } from "./routes/share/publicShareRoutes";
 import { featuresRoutes } from "./routes/features/featuresRoutes";
 import { sessionPendingRoutes } from "./routes/session/pendingRoutes";
@@ -95,6 +95,7 @@ export const API_CORS_ALLOWED_HEADERS = [
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     'idempotency-key',
     V2_SESSION_LIST_SERVER_TIMING_REQUEST_HEADER,
+    SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
 ];
 export const API_CORS_EXPOSED_HEADERS = [
     'server-timing',
@@ -187,7 +188,6 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     userRoutes(typed);
     feedRoutes(typed);
     kvRoutes(typed);
-    shareRoutes(typed);
     publicShareRoutes(typed);
     automationRoutes(typed);
     liveActivityTargetsRoutes(typed);

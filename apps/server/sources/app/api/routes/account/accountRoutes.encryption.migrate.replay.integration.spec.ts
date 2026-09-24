@@ -254,6 +254,91 @@ describe("Account encryption migration exact replay", () => {
         }
     });
 
+    it("rolls the migrated draft back when the Session inventory refuses the conversion", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST: "none",
+        });
+        const signing = tweetnacl.sign.keyPair();
+        const binding = createSignedContentKeyBinding(signing.secretKey);
+        const account = await db.account.create({ data: {
+            publicKey: Buffer.from(signing.publicKey).toString("hex"),
+            contentPublicKey: binding.contentPublicKeyBytes,
+            contentPublicKeySig: binding.contentPublicKeySigBytes,
+            encryptionMode: "e2ee", settings: "ciphertext", settingsVersion: 0,
+        } });
+        // A live Session makes the `assert_empty` inventory refuse, after the
+        // draft writer in the same transaction has already run.
+        await db.session.create({ data: {
+            accountId: account.id,
+            tag: "session-inventory-not-empty",
+            metadata: "shared-before-migration",
+            metadataVersion: 1,
+            metadataLayoutVersion: 1,
+            agentState: null,
+            agentStateVersion: 2,
+        } });
+        const address = { kind: "newSession" as const, draftId: randomUUID() };
+        const mutationId = randomUUID();
+        const content = { t: "plain" as const, v: { v: 2 as const, address, document: {
+            v: 2 as const,
+            composer: {
+                text: { mutationId, value: "Preserve this launch" },
+                mentions: { mutationId, value: [] },
+                attachments: { mutationId, value: [] },
+            },
+            target: { kind: "newSession" as const, authoring: { executionTarget: { mutationId, value: {
+                kind: "temporary_computer", serverId: "home-a", artifactTarget: "linux-x64", workspace: { kind: "endpoint_home" },
+            } } } },
+            extensions: {},
+        } } };
+        expect(await mutateSessionDraft({
+            accountId: account.id, address, expectedRevision: "absent",
+            content: { t: "encrypted", v: 2, c: "source-ciphertext" },
+            authentication,
+        })).toMatchObject({ status: "updated", record: { revision: 0 } });
+        const beforeConversion = await readSessionDraft({ accountId: account.id, address, epoch: "v2", authentication });
+        const currentAccount = await db.account.findUniqueOrThrow({ where: { id: account.id } });
+        const request = {
+            toMode: "plain", expectedAccountVersion: currentAccount.seq,
+            expectedSigningKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(signing.publicKey),
+            expectedContentKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(binding.contentPublicKeyBytes),
+            expectedSettingsVersion: 0, settingsContent: { t: "plain", v: {} },
+            connectedServices: { action: "assert_empty" }, automations: { action: "assert_empty" },
+            machines: { action: "assert_empty" }, todos: { action: "assert_empty" }, artifacts: { action: "assert_empty" },
+            sessions: { action: "assert_empty" }, reviewComments: { action: "assert_empty" },
+            sessionOrganization: { action: "assert_empty" }, pets: { action: "assert_empty" },
+            sessionDrafts: { v: 2, items: [{ address, expectedRevision: 0, content }] },
+        } satisfies AccountEncryptionMigrateRequest;
+        const app = createTestApp();
+        await app.ready();
+        try {
+            // The draft this test rolls back was published when it was written;
+            // only the refused conversion's own events are under assertion.
+            socketEmit.mockClear();
+            const response = await app.inject({
+                method: "POST", url: "/v1/account/encryption/migrate",
+                headers: {
+                    [ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER]: String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
+                    "content-type": "application/json", "x-test-user-id": account.id,
+                },
+                payload: request,
+            });
+            expect(response.statusCode, response.body).toBe(400);
+            expect(response.json()).toEqual({ error: "metadata_privacy_upgrade_required" });
+            expect(await readSessionDraft({ accountId: account.id, address, epoch: "v2", authentication }))
+                .toEqual(beforeConversion);
+            await expect(db.account.findUniqueOrThrow({
+                where: { id: account.id },
+                select: { encryptionMode: true, settings: true, settingsVersion: true },
+            })).resolves.toEqual({ encryptionMode: "e2ee", settings: "ciphertext", settingsVersion: 0 });
+            expect(socketEmit).not.toHaveBeenCalled();
+        } finally {
+            await app.close();
+        }
+    });
+
     it("returns exact e2ee-to-plain lost-response replay success without writes or events", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",

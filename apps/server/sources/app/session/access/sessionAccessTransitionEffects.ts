@@ -43,6 +43,11 @@ export async function applySessionAccessTransitionEffectsInTx(
     const revokedAccountIds: string[] = [];
     const accountCursors = new Map<string, number>();
     let anyEffectiveAccessChanged = false;
+    // Presence qualifies each socket against the source that grants it, so a
+    // source change can revoke one credential's view while the structural
+    // level/capabilities stay equal (Direct View removed, restricted Team View
+    // left). Any real projection change therefore rechecks the room.
+    let anyAccessProjectionChanged = false;
 
     for (const [accountId, beforeAccess] of params.before) {
         const afterAccess = params.after.get(accountId) ?? null;
@@ -50,11 +55,12 @@ export async function applySessionAccessTransitionEffectsInTx(
             accessFingerprint(beforeAccess) !== accessFingerprint(afterAccess);
         // A weaker Group grant may disappear while stronger Direct authority
         // survives. Refresh the ordinary projection so its old context cannot
-        // outlive that membership; presence still reacts only to capabilities.
+        // outlive that membership.
         const projectionChanged = JSON.stringify(beforeAccess ? projectSessionEffectiveAccessV1(beforeAccess) : null)
             !== JSON.stringify(afterAccess ? projectSessionEffectiveAccessV1(afterAccess) : null);
         if (!projectionChanged && accountId !== params.directGrantChangedAccountId) continue;
         if (effectiveAccessChanged) anyEffectiveAccessChanged = true;
+        if (projectionChanged) anyAccessProjectionChanged = true;
 
         changedAccountIds.push(accountId);
         if (!readTranscript(beforeAccess) && readTranscript(afterAccess)) {
@@ -100,7 +106,7 @@ export async function applySessionAccessTransitionEffectsInTx(
     if (revokedAccountIds.length > 0) {
         await clearSessionResponsibilityIfNoReadAccessInTx({ tx, sessionId: params.sessionId });
     }
-    if (anyEffectiveAccessChanged) {
+    if (anyAccessProjectionChanged) {
         // Presence rechecks the whole room itself, so only the Session identity is
         // meaningful at this seam.
         afterTx(tx, () => notifySessionHumanPresenceAccessChanged({ sessionId: params.sessionId }));

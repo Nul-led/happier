@@ -6,7 +6,9 @@ import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCa
 import { disconnectExternalIdentity } from "@/app/auth/providers/identity";
 import { IdentityManagementDeniedError } from "@/app/auth/providers/accountIdentityLifecycle";
 import { deleteOAuthPendingBestEffort, loadValidOAuthPending } from "./connectRoutes.oauthPending";
-import { createExternalAuthorizeUrl } from "./oauthExternal/createExternalAuthorizeUrl";
+import { createExternalAuthorizeAttempt, createExternalAuthorizeUrl } from "./oauthExternal/createExternalAuthorizeUrl";
+import { resolveTeamAdmissionStartBinding } from "./oauthExternal/teamAdmissionStartBinding";
+import { isTeamMembershipAdmissionEnabled } from "@/app/teams/memberships/membershipService";
 import { oauthExternalRateLimitConnectParamsPerUser } from "./oauthExternal/oauthExternalRateLimits";
 import { connectPendingSchema } from "./oauthExternal/oauthExternalSchemas";
 import { OAUTH_STATE_UNAVAILABLE_CODE } from "@/app/auth/oauthStateErrors";
@@ -28,16 +30,37 @@ export function connectConnectExternalRoutes(app: Fastify) {
             params: z.object({ provider: z.string() }),
             querystring: z.object({
                 connectFinalization: z.literal("credential_adoption_v1").optional(),
+                purpose: z.literal("team_admission").optional(),
+                teamId: z.string().optional(),
+                connectionId: z.string().optional(),
+                origin: z.enum(["home", "team"]).optional(),
             }),
             response: {
                 200: ExternalOAuthParamsResponseSchema,
                 400: ExternalOAuthErrorResponseSchema,
+                403: ExternalOAuthErrorResponseSchema,
                 404: z.union([NotFoundSchema, z.object({ error: z.literal("unsupported-provider") })]),
             },
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const resolved = await resolveOAuthRuntimeById(process.env, providerId);
+        // The authenticated Team entry. The member already holds this Account, so the
+        // Team identity is linked to it through the connect finalizer rather than
+        // seeding a second, freshly provisioned Account.
+        const teamAdmission = request.query.purpose === "team_admission";
+        const teamId = teamAdmission ? String(request.query.teamId ?? "").trim() : "";
+        const teamProviderOrigin = teamAdmission ? request.query.origin ?? "team" : null;
+        if (teamAdmission && !teamId) {
+            return reply.code(400).send({ error: "invalid-team-admission" });
+        }
+        if (teamAdmission && !isTeamMembershipAdmissionEnabled()) {
+            return reply.code(403).send({ error: "invalid-team-admission" });
+        }
+        const resolved = await resolveOAuthRuntimeById(
+            process.env,
+            providerId,
+            teamAdmission && teamProviderOrigin === "team" ? { kind: "team", teamId } : undefined,
+        );
         if (!resolved) return reply.code(404).send({ error: "unsupported-provider" });
         const { provider, reference } = resolved;
 
@@ -47,6 +70,41 @@ export function connectConnectExternalRoutes(app: Fastify) {
                 providerId,
                 headers: request.headers as any,
             });
+            if (teamAdmission) {
+                const binding = await resolveTeamAdmissionStartBinding({
+                    teamId,
+                    providerId,
+                    origin: teamProviderOrigin!,
+                    connectionId: String(request.query.connectionId ?? "").trim(),
+                    invitationToken: typeof request.headers["x-happier-team-invitation"] === "string"
+                        ? request.headers["x-happier-team-invitation"].trim()
+                        : "",
+                });
+                if (!binding) return reply.code(403).send({ error: "invalid-team-admission" });
+                const attempt = await createExternalAuthorizeAttempt({
+                    flow: "connect",
+                    env: process.env,
+                    providerId,
+                    provider,
+                    reference,
+                    userId: request.userId,
+                    purpose: "team_admission",
+                    ...(binding.connection ? { connection: binding.connection } : {}),
+                    admission: binding.admission,
+                    // Team admission is decided by the authenticated finalizer, so the
+                    // callback must hand back a pending rather than complete the link
+                    // itself: this start never offers the predecessor direct-connect path.
+                    connectFinalization: "credential_adoption_v1",
+                    ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
+                });
+                if (!attempt) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
+                return reply.send({
+                    url: attempt.url,
+                    purpose: "team_admission" as const,
+                    teamId,
+                    admissionReference: attempt.attemptId,
+                });
+            }
             const url = await createExternalAuthorizeUrl({
                 flow: "connect",
                 env: process.env,

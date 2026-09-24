@@ -6,6 +6,7 @@ import { Platform } from 'react-native';
 import {
     isPushNotificationBundledSoundId,
     isSessionAwarenessContentReadableV1,
+    resolveActivityRequestEventIdentityV1,
     resolveActivitySequenceEventIdentityV1,
     resolveSessionPersonalEventEligibilityV1,
     resolveExpoNotificationSoundName,
@@ -52,7 +53,7 @@ function resolveLocalNotificationEventKind(event: ActivityLocalNotificationEvent
 }
 
 function resolveLocalNotificationEventIdentity(event: ActivityLocalNotificationEvent): string | undefined {
-    if (event.kind === 'agent-request') return `request:${event.requestId}`;
+    if (event.kind === 'agent-request') return resolveActivityRequestEventIdentityV1(event.requestId);
     return event.committedSequence
         ? resolveActivitySequenceEventIdentityV1(event.committedSequence)
         : undefined;
@@ -122,8 +123,8 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
     // hydrates the woken Home so the Activity event below can be presented
     // while the app is in the background. Reconciling its task registration
     // here keeps the consumer and its transport together, and the task owner —
-    // not this mount — decides which platforms can run it and unregisters a
-    // registration left behind on one that cannot.
+    // not this mount — decides which platforms can run it without touching
+    // native task APIs on unsupported platforms.
     React.useEffect(() => {
         void syncSessionChangedBackgroundWakeTaskRegistration();
     }, []);

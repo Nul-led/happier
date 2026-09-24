@@ -380,6 +380,31 @@ matching material.
 
 ## Daemon architecture
 
+### Plugin UI artifacts
+
+The daemon is the single Plugin UI build owner. Manifest artifact references
+and exact package exports feed one esbuild compiler, which emits a minified
+platform-neutral CommonJS bundle and a V2 digest manifest. Hosted web files are
+staged separately as static artifacts. Clients fetch admitted bytes by digest;
+there is no platform-specific build selector or parallel Vite/Re.Pack loader.
+
+The same daemon owner also holds one process-local slot per plugin. Managed
+third-party packages load from immutable installation generations, bundled
+first-party packages load from the exact CLI version root or a pinned runner
+snapshot, and trusted development/drop-in plugins load from their selected
+source in place. Only a fully prepared candidate replaces its plugin's current
+occurrence; a failed in-process edit preserves the incumbent without rotating
+unrelated slots. A daemon restart rebuilds current development source and never
+claims to restore a historical copied source.
+
+Artifact digests identify bytes, not trust, release selection, or slot
+currentness. Portable installed UI follows Account release/digest adoption;
+bundled and development UI follows the selected daemon projection. Collection
+migration callbacks are prepared before slot publication and promoted through
+the server's atomic Collection owner. Slot replacement never infers Collection
+absence; the server-owned `absenceEpoch` continues to fence deletion and
+re-creation.
+
 ```mermaid
 graph TB
     subgraph "Daemon Process"
@@ -547,6 +572,35 @@ nonce recovery preserve it. The Action returns `update_required` with
 failure or an unknown-outcome timeout. The outer daemon error remains
 `SPAWN_VALIDATION_FAILED` for consumers that do not understand the added detail.
 
+#### Direct Team launch material commits the Session first
+
+Normally the runner creates a fresh Session from its creation tag. A fresh daemon
+launch is different when its connected services select a Team resource with
+direct delivery. The Home gives direct material only to an existing Session
+that carries its own accepted Team binding, and the daemon opens launch material
+before the runner starts. So the daemon first commits the Session through the
+runner's own create-or-load call (`ApiClient.getOrCreateSession`, same creation
+tag). That call sends the initial access, primary Team and Team slot bindings, so
+the Home writes the accepted binding in the create transaction. From then on the
+launch is an attach to that exact Session:
+
+- the pre-spawn materialization subject names the Session as its direct-material
+  consumer;
+- the runner receives `--existing-session` and the attach file, with
+  `replace_with_runtime_identity`;
+- the daemon-held create-or-rejoin outcome is carried on the tracked Session.
+
+The creator seeds only the launch intents an attaching runner never takes from
+its own process: session mode, configuration overrides and MCP selection. A
+launch refused before its runner starts archives a Session this call created.
+Creation refusals keep their exact terminal spawn detail, through the same
+classification the runner uses.
+
+CLI-originated and workflow spawns that default to a durable Team target send
+that target's Session Team slot binding with the create request. The binding is
+resolved against the same Home catalog read as the default, and an explicit slot
+choice wins.
+
 #### Pool resolution stays outside the daemon target
 
 In the 0.3 development Machine Pools flow, the Home resolves
@@ -677,7 +731,7 @@ Generated-contract validation and mutable compiler-input preparation are separat
 
 Incrementality is deliberately owned at the layer that can validate it. Canonical package builds retain compiler worktrees, build-info state, currentness fingerprints, and last-green `dist` outputs behind the workspace build owner. UI and Plugin UI source checks use their TypeScript build-info files; the remaining cold source/API programs use Turbo's exact-result cache rather than a long-lived compiler daemon. Plugin projection persists canonical serialized per-Plugin artifacts and reruns only affected Plugin checks before the aggregate comparison. A cache miss may therefore still construct a large TypeScript graph, but an unchanged candidate does not need to repeat it in the next local or CI invocation.
 
-First-party plugin packages are discovered through the workspace glob and canonical bundled-plugin membership owner rather than an enumerated Turbo list. The canonical first-party template supplies the finite build/projection scripts, so a newly scaffolded package joins the same graph after the normal membership projection. First-party plugin build and projection remain separate tasks: the build always passes through the package owner, the read-only targeted projection check may be cached, and one non-cacheable aggregate check consumes the serialized artifacts. The workspace-derived Plugin test/typecheck runner uses a bounded two-package queue and still attempts every discovered package before reporting failures. The public `happier plugins dev` loop does not depend on Turbo and continues to own author-source watching, candidate preparation, reload, and diagnostics in standalone plugin repositories.
+First-party plugin packages are discovered through the workspace glob and canonical bundled-plugin membership owner rather than an enumerated Turbo list. The canonical first-party template supplies the finite build/projection scripts, so a newly scaffolded package joins the same graph after the normal membership projection. First-party plugin build and projection remain separate tasks: the build always passes through the package owner, the read-only targeted projection check may be cached, and one non-cacheable aggregate check consumes the serialized artifacts. The workspace-derived Plugin test/typecheck runner uses a bounded two-package queue and still attempts every discovered package before reporting failures. The public `happier plugins dev` command does not depend on Turbo: it registers the trusted source with the daemon and renders daemon-owned status. The daemon owns author-source watching, candidate preparation, reload, and diagnostics in standalone plugin repositories.
 
 Live CLI dependency preparation also isolates Plugin build failures without serializing every healthy Plugin behind them: shared non-Plugin prerequisites build first, then up to two independent Plugin packages build concurrently through the same canonical workspace owner. Artifact publication keeps its fail-closed all-included-Plugins contract and delegates the complete Plugin set to that owner's own dependency-aware scheduler.
 

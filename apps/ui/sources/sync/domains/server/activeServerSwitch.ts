@@ -70,26 +70,19 @@ async function presentRetainedTargetCustody(): Promise<void> {
     });
 }
 
+/**
+ * A focus change is not a credential mutation: it neither removes nor replaces any
+ * Home's credentials, so retained first-key custody on one Home (PA-CUSTODY1 guards
+ * destructive transitions of the Home that holds it) cannot block focusing another
+ * Home. The custody stays byte-preserved on its own Home and is presented, through
+ * the same shared lifecycle, when that exact Home is entered.
+ */
 async function runGuardedActiveServerSwitch(
     run: () => Promise<void>,
 ): Promise<Exclude<ActiveServerSwitchResult, 'already_active'>> {
-    let switched = false;
-    await presentFirstKeyCredentialLifecycle({
-        run: async () => {
-            const guard =
-                await guardAccountEncryptionFirstKeyCredentialMutation();
-            if (guard.kind !== 'allowed') {
-                return guard;
-            }
-            await run();
-            switched = true;
-            return { kind: 'completed' };
-        },
-    });
-    if (switched) {
-        await presentRetainedTargetCustody();
-    }
-    return switched ? 'switched' : 'blocked';
+    await run();
+    await presentRetainedTargetCustody();
+    return 'switched';
 }
 
 function canSkipActiveServerUrlSwitch(params: Readonly<{

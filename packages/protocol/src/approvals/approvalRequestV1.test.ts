@@ -5,6 +5,7 @@ import {
   ApprovalRequestSchema,
   ApprovalRequestV1Schema,
   ApprovalRequestV2Schema,
+  requiresExactDaemonApprovalReplay,
 } from './approvalRequestV1.js';
 import { readApprovalExecutionFailure } from './approvalExecutionFailure.js';
 
@@ -201,7 +202,16 @@ describe('ApprovalRequestV1Schema', () => {
         v: 1,
         authority: 'account_automation',
         surface: 'agent',
-        caller: { kind: 'plugin', pluginId: 'plugin.example', contributionLocalId: 'tool' },
+        caller: {
+          kind: 'plugin',
+          pluginId: 'plugin.example',
+          contributionLocalId: 'tool',
+          sourceCustody: {
+            kind: 'managed',
+            immutableGenerationId: 'generation-1',
+            installSource: 'npm',
+          },
+        },
         serverId: 'home-1',
         accountId: 'account-1',
         sessionId: 's1',
@@ -237,6 +247,13 @@ describe('ApprovalRequestV1Schema', () => {
     expect(ApprovalRequestV2Schema.safeParse({
       ...base,
       executionOriginV1: { ...base.executionOriginV1, bearer: 'secret-token' },
+    }).success).toBe(false);
+    expect(ApprovalRequestV2Schema.safeParse({
+      ...base,
+      executionOriginV1: {
+        ...base.executionOriginV1,
+        caller: { ...base.executionOriginV1.caller, occurrenceId: 'process-local' },
+      },
     }).success).toBe(false);
     expect(ApprovalRequestV2Schema.safeParse({ ...base, unknown: true }).success).toBe(false);
     expect(ApprovalRequestV2Schema.safeParse({
@@ -637,5 +654,97 @@ describe('ApprovalRequestV1Schema', () => {
         requestId: 'request-1',
       },
     }).success).toBe(false);
+  });
+});
+
+describe('requiresExactDaemonApprovalReplay', () => {
+  function approvalWithCaller(caller: unknown): unknown {
+    return {
+      v: 2,
+      status: 'approved',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      createdBy: { surface: 'system' },
+      requestedSurface: 'ui',
+      actionId: 'session.title.set',
+      actionArgs: { sessionId: 'session-1', title: 'Reviewed title' },
+      summary: 'Set title',
+      decision: { kind: 'approve', decidedAtMs: 2 },
+      executionOriginV1: {
+        v: 1,
+        authority: 'present_user',
+        surface: 'ui',
+        caller,
+        serverId: 'home-1',
+        accountId: 'account-1',
+        sessionId: 'session-1',
+        target: { kind: 'session', sessionId: 'session-1' },
+        actionId: 'session.title.set',
+        requestId: 'request-1',
+      },
+    };
+  }
+
+  it('routes every caller whose currentness only the admitting daemon owns', () => {
+    const host = ApprovalRequestV2Schema.parse(approvalWithCaller({ kind: 'host' }));
+    expect(requiresExactDaemonApprovalReplay(host)).toBe(false);
+
+    const workflowRun = ApprovalRequestV2Schema.parse(approvalWithCaller({
+      kind: 'workflowRun',
+      runId: 'workflow-run-1',
+      authorization: {
+        admittedPermissionCeiling: 'default',
+        principal: {
+          kind: 'api',
+          accountId: 'account-1',
+          principalId: 'principal-1',
+          credentialId: 'credential-1',
+        },
+      },
+    }));
+    expect(requiresExactDaemonApprovalReplay(workflowRun)).toBe(true);
+
+    const automationCaller = {
+      kind: 'automationRun',
+      runId: 'automation-run-1',
+      automationId: 'automation-1',
+      cause: { kind: 'manual', invokedAt: 1_700_000_000_000 },
+    } as const;
+    const automationRun = ApprovalRequestV2Schema.parse({
+      ...approvalWithCaller(automationCaller) as Record<string, unknown>,
+      executionOriginV1: {
+        ...(approvalWithCaller(automationCaller) as { executionOriginV1: Record<string, unknown> }).executionOriginV1,
+        runId: 'automation-run-1',
+      },
+    });
+    expect(requiresExactDaemonApprovalReplay(automationRun)).toBe(true);
+  });
+
+  it('keeps every non-present-human surface on the exact daemon', () => {
+    for (const surface of ['agent', 'mcp', 'cli', 'rpc'] as const) {
+      const request = ApprovalRequestV2Schema.parse({
+        ...approvalWithCaller({ kind: 'host' }) as Record<string, unknown>,
+        requestedSurface: surface,
+        executionOriginV1: {
+          ...(approvalWithCaller({ kind: 'host' }) as { executionOriginV1: Record<string, unknown> }).executionOriginV1,
+          authority: 'account_automation',
+          surface,
+        },
+      });
+      expect(requiresExactDaemonApprovalReplay(request), surface).toBe(true);
+    }
+
+    const apiRequest = ApprovalRequestV2Schema.parse({
+      ...approvalWithCaller({ kind: 'host' }) as Record<string, unknown>,
+      requestedSurface: 'api',
+      executionOriginV1: {
+        ...(approvalWithCaller({ kind: 'host' }) as { executionOriginV1: Record<string, unknown> }).executionOriginV1,
+        authority: 'account_automation',
+        surface: 'api',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+      },
+    });
+    expect(requiresExactDaemonApprovalReplay(apiRequest)).toBe(true);
   });
 });

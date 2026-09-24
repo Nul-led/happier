@@ -149,11 +149,44 @@ describe('Connected Services Team credential broker source', () => {
     expect(readResource).toHaveBeenCalledTimes(3);
   });
 
-  it('releases custody when the exact resource revision is withdrawn during acquisition', async () => {
+  it('keeps the operation current across a policy edit, which only advances the resource revision', async () => {
+    // The revision is a mutable policy fact the Home rechecks on every request
+    // (`04-private-iroh-broker-transport.md:272`); it is not source identity.
+    let revision = 7;
+    const readResource = vi.fn(async () => resource({ revision }));
+    const cleanup = vi.fn();
+    const custody: ManagedProviderExplicitStartCustody = Object.freeze({
+      acquire: vi.fn(async () => Object.freeze({
+        access: Object.freeze({ endpointUrl: vi.fn(() => null), request: vi.fn() }),
+        isCurrent: vi.fn(() => true),
+        cleanup,
+      })),
+      retire: vi.fn(async () => true),
+      retireExternalApiKey: vi.fn(async () => true),
+      revalidateRetainedClaims: vi.fn(async () => 0),
+      retireAll: vi.fn(async () => 0),
+    });
+    const open = createConnectedServicesBrokerSourceOpen({
+      readResource,
+      resolveBindingIntentSelection: bindingSelectionResolver(),
+      custody,
+    });
+
+    const opened = await open(request());
+    expect(opened).not.toBeNull();
+    revision = 8;
+    await expect(opened!.sourceCurrentness.isCurrent()).resolves.toBe(true);
+    // A real withdrawal of the resource still ends the operation.
+    readResource.mockImplementation(async () => resource({ revision, enabled: false }));
+    await expect(opened!.sourceCurrentness.isCurrent()).resolves.toBe(false);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('releases custody when the resource is disabled during acquisition', async () => {
     let reads = 0;
     const readResource = vi.fn(async () => {
       reads += 1;
-      return reads < 3 ? resource() : resource({ revision: 8 });
+      return reads < 3 ? resource() : resource({ enabled: false });
     });
     const cleanup = vi.fn();
     const custody: ManagedProviderExplicitStartCustody = Object.freeze({
@@ -290,9 +323,11 @@ describe('Connected Services Team credential broker source', () => {
     }));
     selectionCurrent = false;
     await expect(opened?.sourceCurrentness.isCurrent()).resolves.toBe(false);
+    // Retirement is idempotent at the one broker-source acquisition owner, so
+    // a repeated release never issues a second custody retirement.
     await opened?.retire();
     await opened?.retire();
-    expect(custody.retire).toHaveBeenCalledTimes(2);
+    expect(custody.retire).toHaveBeenCalledOnce();
     expect(custody.retire).toHaveBeenLastCalledWith({
       identity: {
         pluginId: 'happier.provider.cliproxyapi',

@@ -15,6 +15,7 @@ import {
   getActiveAccountSettingsSnapshot,
   resetActiveAccountSettingsSnapshotForTests,
   setActiveAccountSettingsSnapshot,
+  subscribeActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { createSavedSecretMaterializerFromSnapshotV1 } from './savedSecretCatalog';
@@ -880,5 +881,101 @@ describe('Saved Secret catalog hydration', () => {
     expect(createSavedSecretMaterializerFromSnapshotV1(refreshed).resolve(ref))
       .toMatchObject({ status: 'ready', value: 'current-value' });
     expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes one Account Settings snapshot per refresh, and only when the authorized catalog changed', async () => {
+    const token = 'account-token';
+    const resourceId = 'resource-published-on-change';
+    const ref = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+    const row = {
+      resourceId,
+      encryptionMode: 'plain' as const,
+      entry: {
+        ref,
+        source: 'shared_resource' as const,
+        relationship: 'recipient' as const,
+        name: 'Shared API key',
+        kind: 'apiKey' as const,
+        ownerAccountId: 'owner-account',
+        revision: 4,
+        materialStatus: 'ready' as const,
+        capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+      },
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId,
+        mode: 'plain',
+        content: { v: 1, name: 'Shared API key', kind: 'apiKey', value: 'shared-value' },
+      }),
+      recipientEnvelope: null,
+    };
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: AccountSettingsSchema.parse({}),
+      settingsVersion: 1,
+      loadedAtMs: 1,
+      settingsSecretsReadKeys: [],
+      scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+    });
+    persistenceMocks.readStoredCredentials.mockResolvedValue({ token, encryption: null });
+    const publications = vi.fn();
+    const unsubscribe = subscribeActiveAccountSettingsSnapshot(publications);
+    const resolveActive = () => {
+      const snapshot = getActiveAccountSettingsSnapshot();
+      if (!snapshot) throw new Error('expected active Account snapshot');
+      return createSavedSecretMaterializerFromSnapshotV1(snapshot).resolve(ref);
+    };
+    try {
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: [row] } });
+      await hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) });
+      expect(publications).toHaveBeenCalledTimes(1);
+      expect(resolveActive()).toMatchObject({ status: 'ready', value: 'shared-value' });
+
+      // An AccountChange wake or an operation admission that observes the same
+      // authorized catalog must not wake any consumer. While the Home is being
+      // observed, a synchronous reader still sees the material withdrawn.
+      vi.mocked(axios.get).mockImplementation(async () => {
+        expect(resolveActive()).toEqual({ status: 'temporarily_unavailable' });
+        return { status: 200, data: { resources: [row] } };
+      });
+      await hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) });
+      await refreshSavedSecretCatalogForOperation({
+        expectedScopeKey: resolveAccountSettingsScopeKeyForToken(token),
+        references: [{ ref }],
+      });
+      expect(axios.get).toHaveBeenCalledTimes(3);
+      expect(publications).toHaveBeenCalledTimes(1);
+      expect(resolveActive()).toMatchObject({ status: 'ready', value: 'shared-value' });
+
+      // A real revocation is published once.
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: [] } });
+      await hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) });
+      expect(publications).toHaveBeenCalledTimes(2);
+      expect(resolveActive().status).not.toBe('ready');
+
+      // A lost observation withdraws and publishes once; repeating it changes nothing.
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: [row] } });
+      await hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) });
+      expect(publications).toHaveBeenCalledTimes(3);
+      vi.mocked(axios.get).mockResolvedValue({ status: 503, data: {} });
+      await expect(hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) }))
+        .rejects.toThrow('saved_secret_catalog_http_503');
+      expect(publications).toHaveBeenCalledTimes(4);
+      expect(resolveActive()).toEqual({ status: 'temporarily_unavailable' });
+      await expect(hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) }))
+        .rejects.toThrow('saved_secret_catalog_http_503');
+      expect(publications).toHaveBeenCalledTimes(4);
+
+      // A malformed Home answer also ends the refresh with the withdrawn state published.
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: [row] } });
+      await hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) });
+      expect(publications).toHaveBeenCalledTimes(5);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: 'malformed' } });
+      await expect(hydrateSavedSecretCatalog({ token, serverFeatures: serverFeatures(true) }))
+        .rejects.toThrow();
+      expect(publications).toHaveBeenCalledTimes(6);
+      expect(resolveActive()).toEqual({ status: 'temporarily_unavailable' });
+    } finally {
+      unsubscribe();
+    }
   });
 });

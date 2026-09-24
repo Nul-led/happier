@@ -13,7 +13,7 @@ import {
     resetRunnerCreatorMachineContentKeyTrustProjectionForTests,
     retainRunnerCreatorMachineContentKeyTrust,
 } from '@/sync/domains/ephemeralRunner/runnerCreatorMachineContentKeyTrust';
-import { resolveExpectedRunnerMachineContentKeyBindingV1 } from './runnerMachineContentKeyTrust';
+import { resolveRunnerMachineContentKeyTrustV1 } from './runnerMachineContentKeyTrust';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -108,22 +108,27 @@ async function retainCreatorTrust(activationSigningPublicKey: string): Promise<v
     });
 }
 
-describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
+describe('resolveRunnerMachineContentKeyTrustV1', () => {
     it('trusts the creator activation identity for a data-key credential with no Account signing key', async () => {
         const activationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
         const activationSigningPublicKey = encodeBase64(activationSigning.publicKey, 'base64url');
         await retainCreatorTrust(activationSigningPublicKey);
 
-        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+        const expected = resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
         });
         expect(expected).toEqual({
-            homeServerIdentityId: 'home-one',
-            creatorAccountId: 'account-one',
-            machineId: 'machine-one',
-            accountSigningPublicKeyBase64Url: activationSigningPublicKey,
+            expectedRunnerBinding: {
+                homeServerIdentityId: 'home-one',
+                creatorAccountId: 'account-one',
+                machineId: 'machine-one',
+                accountSigningPublicKeyBase64Url: activationSigningPublicKey,
+            },
+            // Creator custody for this exact Machine is the one classification
+            // the Home cannot rewrite, so the resolver may trust it.
+            trustedMachineKind: 'ephemeral_session_runner',
         });
 
         const dataKey = new Uint8Array(32).fill(11);
@@ -150,7 +155,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             },
             openedDataEncryptionKey: dataKey,
             expectedAccountMode: 'e2ee',
-            expectedRunnerBinding: expected!,
+            expectedRunnerBinding: expected!.expectedRunnerBinding,
         })).toEqual({ status: 'e2ee', dataKey });
     });
 
@@ -176,14 +181,14 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             activationSigningSecretKey: colluding.secretKey,
         });
 
-        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+        const expected = resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
         });
         // The verifier identity comes from creator-local custody, so the published
         // one is never consulted and the substituted triple fails closed.
-        expect(expected?.accountSigningPublicKeyBase64Url)
+        expect(expected?.expectedRunnerBinding.accountSigningPublicKeyBase64Url)
             .not.toBe(encodeBase64(colluding.publicKey, 'base64url'));
         expect(resolvePublishedMachineDataEncryptionKeyV1({
             machine: {
@@ -195,26 +200,30 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             },
             openedDataEncryptionKey: substitutedKey,
             expectedAccountMode: 'e2ee',
-            expectedRunnerBinding: expected!,
+            expectedRunnerBinding: expected!.expectedRunnerBinding,
         })).toEqual({ status: 'unavailable' });
     });
 
     it('resolves the Account-material route on a device without creator activation custody', async () => {
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one')).resolves.toBeNull();
-        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
+        expect(resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
         })).toEqual({
-            homeServerIdentityId: 'home-one',
-            creatorAccountId: 'account-one',
-            machineId: 'machine-one',
-            accountScopedMaterial: accountMaterial,
+            // No creator custody here: the Account-material route authenticates
+            // the binding but classifies nothing, so no trusted kind is claimed.
+            expectedRunnerBinding: {
+                homeServerIdentityId: 'home-one',
+                creatorAccountId: 'account-one',
+                machineId: 'machine-one',
+                accountScopedMaterial: accountMaterial,
+            },
         });
     });
 
     it('locks the Runner Machine for a token-only device, which holds neither custody nor Account material', async () => {
-        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
+        expect(resolveRunnerMachineContentKeyTrustV1({
             credentials: { token: TOKEN } as never,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -231,7 +240,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
                 activationSigningPublicKey: encodeBase64(activationSigning.publicKey, 'base64url'),
             }),
         });
-        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+        const expected = resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -247,7 +256,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             },
             openedDataEncryptionKey: dataKey,
             expectedAccountMode: 'e2ee',
-            expectedRunnerBinding: expected!,
+            expectedRunnerBinding: expected!.expectedRunnerBinding,
         })).toEqual({ status: 'e2ee', dataKey });
     });
 
@@ -256,7 +265,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
         // consistent triple whose verifier fact it cannot seal under the Account.
         const colluding = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(23));
         const substitutedKey = new Uint8Array(32).fill(12);
-        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+        const expected = resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -284,7 +293,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
                 },
                 openedDataEncryptionKey: substitutedKey,
                 expectedAccountMode: 'e2ee',
-                expectedRunnerBinding: expected!,
+                expectedRunnerBinding: expected!.expectedRunnerBinding,
             })).toEqual({ status: 'unavailable' });
         }
     });
@@ -294,7 +303,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
         // the creator-sealed fact of a different Runner onto this Machine row.
         const otherRunnerSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(31));
         const dataKey = new Uint8Array(32).fill(13);
-        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+        const expected = resolveRunnerMachineContentKeyTrustV1({
             credentials: secondDeviceCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
@@ -318,7 +327,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             },
             openedDataEncryptionKey: dataKey,
             expectedAccountMode: 'e2ee',
-            expectedRunnerBinding: expected!,
+            expectedRunnerBinding: expected!.expectedRunnerBinding,
         })).toEqual({ status: 'unavailable' });
     });
 
@@ -327,21 +336,21 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
         await retainCreatorTrust(encodeBase64(activationSigning.publicKey, 'base64url'));
         resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
 
-        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
+        expect(resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
-        })?.accountSigningPublicKeyBase64Url).toBeUndefined();
+        })?.expectedRunnerBinding.accountSigningPublicKeyBase64Url).toBeUndefined();
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one'))
             .resolves.toEqual({
                 activationId: ACTIVATION_ID,
                 activationSigningPublicKey: encodeBase64(activationSigning.publicKey, 'base64url'),
             });
-        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
+        expect(resolveRunnerMachineContentKeyTrustV1({
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
-        })?.accountSigningPublicKeyBase64Url)
+        })?.expectedRunnerBinding.accountSigningPublicKeyBase64Url)
             .toBe(encodeBase64(activationSigning.publicKey, 'base64url'));
     });
 });

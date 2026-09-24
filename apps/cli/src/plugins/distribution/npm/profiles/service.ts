@@ -30,11 +30,21 @@ type MutationErrorCode = Extract<DaemonNpmRegistryProfileMutationResponseV1, { s
 
 export class NpmRegistryProfileOperationError extends Error {
   readonly code: 'authentication_failed' | 'authentication_required' | 'source_changed';
+  /**
+   * For an authentication outcome: the registry origin that refused and this
+   * Home's profile for it (`null` when the request went out anonymously), so a
+   * caller can ask for that exact registry to be selected or signed in again.
+   */
+  readonly registry: Readonly<{ origin: string; profileId: string | null }> | null;
 
-  constructor(code: NpmRegistryProfileOperationError['code']) {
+  constructor(
+    code: NpmRegistryProfileOperationError['code'],
+    registry: Readonly<{ origin: string; profileId: string | null }> | null = null,
+  ) {
     super(code);
     this.name = 'NpmRegistryProfileOperationError';
     this.code = code;
+    this.registry = registry;
   }
 }
 
@@ -124,6 +134,42 @@ function toResolverProfiles(profiles: readonly PersistedNpmRegistryProfile[]): r
     createdAtMs: profile.updatedAtMs,
     updatedAtMs: profile.updatedAtMs,
   }));
+}
+
+/**
+ * What one availability check records on its profile and source. Shared by
+ * `test` and by `login`, whose sign-in runs the same check on the new
+ * credential so a signed-in profile is usable (or truthfully refused) without a
+ * caller chaining a separate `test`.
+ */
+function recordCheck(
+  current: NpmRegistryProfileFile,
+  profileId: string,
+  origin: string,
+  probe: ProbeResult,
+  now: number,
+  signIn: Readonly<{ credentialSecretRef: string }> | null,
+): NpmRegistryProfileFile {
+  return {
+    ...current,
+    profiles: current.profiles.map((entry) => entry.profileId === profileId ? {
+      ...entry,
+      ...(signIn ? { credentialSecretRef: signIn.credentialSecretRef, credentialRevision: entry.credentialRevision + 1 } : {}),
+      availability: probe.status === 'authentication_failed' ? 'sign_in_required' : probe.status,
+      lastSuccessfulCheckAtMs: probe.status === 'available' ? now : entry.lastSuccessfulCheckAtMs,
+      updatedAtMs: now,
+    } : entry),
+    pausedSources: replacePause(current, origin, probe.status === 'available' ? null : probe.status, now),
+  };
+}
+
+function answerCheck(
+  probe: ProbeResult,
+  snapshot: DaemonNpmRegistryProfileSnapshotV1,
+): DaemonNpmRegistryProfileMutationResponseV1 {
+  if (probe.status === 'authentication_failed') return rpcError('authentication_failed', { currentRevision: snapshot.revision });
+  if (probe.status === 'offline') return rpcError('offline', { retryable: true, currentRevision: snapshot.revision });
+  return { status: 'success', snapshot };
 }
 
 export function createNpmRegistryProfileService(params: Readonly<{
@@ -227,8 +273,36 @@ export function createNpmRegistryProfileService(params: Readonly<{
     }
   }
 
+  async function runProbe(profile: PersistedNpmRegistryProfile, authorizationHeader: string | undefined): Promise<ProbeResult> {
+    if (!params.probe) throw new Error('npm_registry_probe_unavailable');
+    try {
+      return await params.probe({ profile, ...(authorizationHeader ? { authorizationHeader } : {}) });
+    } catch {
+      return { status: 'offline' };
+    }
+  }
+
+  /**
+   * Checks a sign-in's new credential before it is committed, outside the
+   * authority lock exactly like `test`. The commit's expected revision still
+   * fences the profile that was checked. `null` when no check can run here: a
+   * service without a probe, a replayed mutation (answered by its receipt), or
+   * an unknown profile (answered by the commit).
+   */
+  async function checkSignIn(
+    request: Extract<DaemonNpmRegistryProfileMutationRequestV1, { action: 'login' }>,
+  ): Promise<ProbeResult | null> {
+    if (!params.probe) return null;
+    const file = await store.read();
+    if (file.mutations.some((entry) => entry.mutationId === request.mutationId)) return null;
+    const profile = file.profiles.find((entry) => entry.profileId === request.profileId);
+    if (!profile) return null;
+    return await runProbe(profile, `Bearer ${request.credential.secret}`);
+  }
+
   async function mutateParsed(
     request: DaemonNpmRegistryProfileMutationRequestV1,
+    signInCheck: ProbeResult | null = null,
   ): Promise<DaemonNpmRegistryProfileMutationResponseV1> {
     if (request.action === 'add' || request.action === 'update') {
       const priorProfile = request.action === 'update'
@@ -286,6 +360,11 @@ export function createNpmRegistryProfileService(params: Readonly<{
       const result = await applyStoreMutation(request, (current) => {
         const currentProfile = current.profiles.find((entry) => entry.profileId === request.profileId);
         if (!currentProfile) throw new Error('profile_conflict');
+        if (signInCheck) {
+          return recordCheck(current, request.profileId, currentProfile.origin, signInCheck, now(), {
+            credentialSecretRef: secretRef,
+          });
+        }
         return {
           ...current,
           profiles: current.profiles.map((entry) => entry.profileId === request.profileId ? {
@@ -305,7 +384,8 @@ export function createNpmRegistryProfileService(params: Readonly<{
       if (profile.credentialSecretRef && profile.credentialSecretRef !== secretRef) {
         await credentials.delete(profile.credentialSecretRef).catch(() => undefined);
       }
-      return { status: 'success', snapshot: await project(result) };
+      const snapshot = await project(result);
+      return signInCheck ? answerCheck(signInCheck, snapshot) : { status: 'success', snapshot };
     }
 
     if (request.action === 'logout' || request.action === 'remove') {
@@ -343,39 +423,21 @@ export function createNpmRegistryProfileService(params: Readonly<{
       authorizationHeader = await credentials.get(profile.credentialSecretRef) ?? undefined;
       if (!authorizationHeader) return rpcError('authentication_required');
     }
-    let probe: ProbeResult;
-    try {
-      probe = await params.probe({ profile, ...(authorizationHeader ? { authorizationHeader } : {}) });
-    } catch {
-      probe = { status: 'offline' };
-    }
-    const result = await applyStoreMutation(request, (current) => ({
-      ...current,
-      profiles: current.profiles.map((entry) => entry.profileId === request.profileId ? {
-        ...entry,
-        availability: probe.status === 'authentication_failed' ? 'sign_in_required' : probe.status,
-        lastSuccessfulCheckAtMs: probe.status === 'available' ? now() : entry.lastSuccessfulCheckAtMs,
-        updatedAtMs: now(),
-      } : entry),
-      pausedSources: replacePause(
-        current,
-        profile.origin,
-        probe.status === 'available' ? null : probe.status,
-        now(),
-      ),
-    }));
+    const probe = await runProbe(profile, authorizationHeader);
+    const result = await applyStoreMutation(request, (current) => (
+      recordCheck(current, request.profileId, profile.origin, probe, now(), null)
+    ));
     if ('status' in result) return result;
-    if (probe.status === 'authentication_failed') return rpcError('authentication_failed', { currentRevision: result.revision });
-    if (probe.status === 'offline') return rpcError('offline', { retryable: true, currentRevision: result.revision });
-    return { status: 'success', snapshot: await project(result) };
+    return answerCheck(probe, await project(result));
   }
 
   async function mutate(raw: DaemonNpmRegistryProfileMutationRequestV1): Promise<DaemonNpmRegistryProfileMutationResponseV1> {
     const parsed = DaemonNpmRegistryProfileMutationRequestV1Schema.safeParse(raw);
     if (!parsed.success) return rpcError('invalid_request');
-    return parsed.data.action === 'test'
-      ? await mutateParsed(parsed.data)
-      : await withAuthority(async () => await mutateParsed(parsed.data));
+    const request = parsed.data;
+    if (request.action === 'test') return await mutateParsed(request);
+    const signInCheck = request.action === 'login' ? await checkSignIn(request) : null;
+    return await withAuthority(async () => await mutateParsed(request, signInCheck));
   }
 
   async function withAuthorization<T>(profileId: string, use: (input: Readonly<{
@@ -411,13 +473,19 @@ export function createNpmRegistryProfileService(params: Readonly<{
       || paused?.reason === 'credentials_missing'
       || paused?.reason === 'profile_removed'
     )) {
-      throw new NpmRegistryProfileOperationError('authentication_required');
+      throw new NpmRegistryProfileOperationError('authentication_required', {
+        origin: request.registryOrigin,
+        profileId: profile.profileId,
+      });
     }
     const authorizationHeader = profile?.credentialSecretRef
       ? await credentials.get(profile.credentialSecretRef) ?? undefined
       : undefined;
     if (profile?.credentialSecretRef && !authorizationHeader) {
-      throw new NpmRegistryProfileOperationError('authentication_required');
+      throw new NpmRegistryProfileOperationError('authentication_required', {
+        origin: request.registryOrigin,
+        profileId: profile.profileId,
+      });
     }
     return {
       request,
@@ -480,7 +548,15 @@ export function createNpmRegistryProfileService(params: Readonly<{
       await assertSourceUnchanged(access.profile);
       return result;
     } catch (error) {
-      if (!(error instanceof NpmRegistryHttpError) || error.code !== 'authentication_failed' || !access.profile) throw error;
+      if (!(error instanceof NpmRegistryHttpError) || error.code !== 'authentication_failed') throw error;
+      // A registry that refuses an anonymous request needs a registry profile
+      // on this Home; nothing here may infer one.
+      if (!access.profile) {
+        throw new NpmRegistryProfileOperationError('authentication_required', {
+          origin: access.request.registryOrigin,
+          profileId: null,
+        });
+      }
 
       const refreshed = await withAuthority(async () => await resolveArtifactAccess(input));
       if (refreshed.profile?.profileId !== access.profile.profileId || refreshed.profile.origin !== access.profile.origin) {
@@ -491,7 +567,10 @@ export function createNpmRegistryProfileService(params: Readonly<{
         && refreshed.profile.credentialRevision > access.profile.credentialRevision;
       if (!credentialRotated) {
         await recordAuthenticationFailure(access.profile);
-        throw new NpmRegistryProfileOperationError('authentication_failed');
+        throw new NpmRegistryProfileOperationError('authentication_failed', {
+          origin: access.request.registryOrigin,
+          profileId: access.profile.profileId,
+        });
       }
 
       access = refreshed;
@@ -505,7 +584,10 @@ export function createNpmRegistryProfileService(params: Readonly<{
       } catch (retryError) {
         if (retryError instanceof NpmRegistryHttpError && retryError.code === 'authentication_failed' && access.profile) {
           await recordAuthenticationFailure(access.profile);
-          throw new NpmRegistryProfileOperationError('authentication_failed');
+          throw new NpmRegistryProfileOperationError('authentication_failed', {
+            origin: access.request.registryOrigin,
+            profileId: access.profile.profileId,
+          });
         }
         throw retryError;
       }

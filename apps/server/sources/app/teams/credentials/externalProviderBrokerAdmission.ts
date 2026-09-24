@@ -53,9 +53,17 @@ async function authorizeCurrentExternalProviderKeyInTx(
         brokerPoolId: key.brokerPoolId,
         sourceBindingJson: key.sourceBindingJson,
     };
-    // Every external request is its own selection: the presented Machine must
-    // be the exact placement or a current enabled Pool member, and eligible.
-    const broker = await admitTeamCredentialBrokerMachineForResourceInTx(tx, { resource, brokerMachineId });
+    // The presented Machine is the one the external placement owner already
+    // resolved for this key's per-key operation and dispatched to — the
+    // Machine that established it, or a fresh Pool selection. Pool tier
+    // reordering, disabling and removal affect future opens only (L11/03 §6
+    // step 7), so current membership is not an ongoing ACL here; an exact
+    // placement still names its one Machine and eligibility is rechecked.
+    const broker = await admitTeamCredentialBrokerMachineForResourceInTx(tx, {
+        resource,
+        brokerMachineId,
+        selection: 'established',
+    });
     if (!broker.ok) return failure(broker.error === 'update_required' ? 'broker_unavailable' : broker.error);
     const actor = await resolveTeamActorContextInTx(tx, {
         teamId: resource.teamId,
@@ -192,7 +200,10 @@ export async function admitTeamCredentialExternalProviderRequestInTx(
 }
 
 /** Authenticates the reporting broker Machine, then delegates the immutable
- * unavailable terminal fact to the canonical UsageEvent writer. Revocation
+ * terminal fact to the canonical UsageEvent writer. The broker carries the
+ * Provider's own observed tokens for the routes whose protocol reports them and
+ * `unavailable` otherwise; no cost is accepted because no canonical price
+ * exists for these routes and an estimate is not a Team usage fact. Revocation
  * after admission does not erase the already-observed terminal outcome. */
 export async function recordTeamCredentialExternalProviderTerminalUsageInTx(
     tx: Tx,
@@ -236,8 +247,8 @@ export async function recordTeamCredentialExternalProviderTerminalUsageInTx(
             completedAt: new Date(request.completedAtMs),
             outcome: request.outcome,
             measurement: request.measurement,
-            modelId: null,
-            tokens: null,
+            modelId: request.actualModelId,
+            tokens: request.tokens,
             cost: null,
             authority: {
                 kind: 'teamCredentialExternalTerminal',

@@ -177,9 +177,6 @@ export const UI_FEATURE_REGISTRY = {
     'sessions.following': {
         settingsToggle: undefined,
     },
-    'sessions.collaboration': {
-        settingsToggle: undefined,
-    },
     'sessions.conversations': {
         settingsToggle: undefined,
     },
@@ -313,9 +310,6 @@ export const UI_FEATURE_REGISTRY = {
         settingsToggle: undefined,
     },
     'plugins.ui.reactNativeBundles': {
-        settingsToggle: undefined,
-    },
-    'plugins.ui.reactNativeBundles.devHotReload': {
         settingsToggle: undefined,
     },
     devices: {

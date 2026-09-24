@@ -13,6 +13,7 @@ import {
   setActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { SavedSecretCatalogResourceInputV1 } from '@/settings/secrets/savedSecretCatalog';
+import { SavedSecretOperationAdmissionError } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import {
   createVoiceCredentialResolver,
   type VoiceCredentialResolver,
@@ -329,6 +330,9 @@ describe('Voice credential resolver', () => {
       machineId: null,
       getSnapshot: () => snapshot,
       getLifetimeToken: () => 1,
+      // This case is about the post-use revision fence, so the Home admits the
+      // operation unchanged; its own refusals are the next two cases.
+      refreshForOperation: async () => snapshot as never,
     });
 
     expect(resolver.status(identityFor(GOOGLE_STT_CONTRIBUTION))).toEqual({
@@ -407,6 +411,103 @@ describe('Voice credential resolver', () => {
       })).rejects.toMatchObject({ code: 'credential_unavailable', materialStatus: resolvedStatus });
     },
   );
+
+  it('admits a new Voice operation against Home-current shared material, not the hydrated row', async () => {
+    const resourceId = 'resource_voice_admission';
+    const secretId = `happier:shared-secret:v1:${resourceId}`;
+    const sharedResource = (revision: number, value: string) => ({
+      resourceId,
+      ownerAccountId: 'owner-account',
+      displayName: 'Shared Voice key',
+      kind: 'apiKey' as const,
+      encryptionMode: 'plain' as const,
+      revision,
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId,
+        mode: 'plain',
+        content: { v: 1 as const, name: 'Shared Voice key', kind: 'apiKey' as const, value },
+      }),
+      materialStatus: 'ready' as const,
+    });
+    publishQualified({
+      scopeKey: 'account-a',
+      accountValue: 'unused-personal-key',
+      contribution: GOOGLE_STT_CONTRIBUTION,
+      secretId,
+      savedSecretResources: [sharedResource(1, 'stale-plaintext')],
+    });
+    const hydrated = getActiveAccountSettingsSnapshot();
+
+    // 1. The Home revoked this shared reference and its AccountChange hint was
+    //    never delivered, so the hydrated row still looks ready. The operation
+    //    must be refused before any plaintext reaches `use`.
+    const revokedCalls: unknown[] = [];
+    let used = false;
+    const revoked = createVoiceCredentialResolver({
+      machineId: null,
+      getSnapshot: () => hydrated,
+      getLifetimeToken: () => 1,
+      refreshForOperation: async (input) => {
+        revokedCalls.push(input);
+        throw new SavedSecretOperationAdmissionError({
+          reason: 'reference_unavailable',
+          reference: secretId,
+        });
+      },
+    });
+    expect(revoked.status(identityFor(GOOGLE_STT_CONTRIBUTION)).materialStatus).toBe('ready');
+    await expect(revoked.withSecret({
+      identity: identityFor(GOOGLE_STT_CONTRIBUTION),
+      use: async () => { used = true; return 'never'; },
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      materialStatus: 'temporarily_unavailable',
+    });
+    expect(used).toBe(false);
+    // Exactly one bounded batch for this operation's own reference set.
+    expect(revokedCalls).toEqual([{
+      expectedScopeKey: 'account-a',
+      references: [{ ref: secretId }],
+    }]);
+
+    // 2. A stale reference is a distinct typed refusal, not a generic failure.
+    const stale = createVoiceCredentialResolver({
+      machineId: null,
+      getSnapshot: () => hydrated,
+      getLifetimeToken: () => 1,
+      refreshForOperation: async () => {
+        throw new SavedSecretOperationAdmissionError({
+          reason: 'reference_stale',
+          reference: secretId,
+        });
+      },
+    });
+    await expect(stale.withSecret({
+      identity: identityFor(GOOGLE_STT_CONTRIBUTION),
+      use: async () => 'never',
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      materialStatus: 'repair_required',
+    });
+
+    // 3. An admitted operation runs against the material the Home returned,
+    //    not the plaintext the cached snapshot still holds.
+    const rotated = hydrated && {
+      ...hydrated,
+      loadedAtMs: 2,
+      savedSecretResources: [sharedResource(2, 'rotated-plaintext')],
+    };
+    const admitted = createVoiceCredentialResolver({
+      machineId: null,
+      getSnapshot: () => rotated,
+      getLifetimeToken: () => 1,
+      refreshForOperation: async () => rotated as never,
+    });
+    await expect(admitted.withSecret({
+      identity: identityFor(GOOGLE_STT_CONTRIBUTION),
+      use: async (secret) => secret,
+    })).resolves.toBe('rotated-plaintext');
+  });
 
   it('reports an authoritatively absent shared resource distinctly from temporary unavailability', async () => {
     publishQualified({

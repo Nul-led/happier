@@ -20,7 +20,7 @@ import { getConnectedServiceCredentialSealed } from '@/sync/api/account/apiConne
 import { buildAccountEncryptionMigrateToE2eeRequest } from '@/sync/ops/account/buildAccountEncryptionMigrateToE2eeRequest';
 import { getConnectedServiceCredentialPlain } from '@/sync/api/account/apiConnectedServicesV3';
 import { getQualifiedConnectedAccountConfigurationV4, getQualifiedConnectedAccountCredentialV4 } from '@/sync/api/account/apiQualifiedConnectedAccountsV4';
-import { AccountEncryptionMigrateInvalidParamsReasonSchema, AccountEncryptionMigrateRequestSchema, type AccountEncryptionMigrateRequest } from '@happier-dev/protocol';
+import { AccountEncryptionMigrateInvalidParamsReasonSchema, AccountEncryptionMigrateRequestSchema, createAccountEncryptionMigrateRequestBindingDigestV1, type AccountEncryptionMigrateRequest } from '@happier-dev/protocol';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchMachineRows } from '@/sync/engine/machines/syncMachines';
 import { kvList } from '@/sync/api/account/apiKv';
@@ -30,7 +30,7 @@ import { fetchAccountEncryptionMigrationSessionInventory } from '@/sync/ops/acco
 import { fetchReviewCommentAccountEncryptionMigrationInventory } from '@/sync/domains/reviews/comments/accountEncryptionMigrationApi';
 import { fetchSessionOrganizationAccountEncryptionMigrationInventory } from '@/sync/ops/account/fetchSessionOrganizationAccountEncryptionMigrationInventory';
 import { prepareAccountEncryptionMigrateToE2eeKey } from '@/sync/ops/account/prepareAccountEncryptionMigrateToE2eeKey';
-import { openAccountEncryptionFirstKeyExternalAuthUrl, retryPendingAccountEncryptionFirstKeyExternalAuth, resumeAccountEncryptionFirstKeyExternalAuth, startAccountEncryptionFirstKeyExternalAuth } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
+import { openAccountEncryptionFirstKeyExternalAuthUrl, requestAccountEncryptionFirstKeyPasswordProof, retryPendingAccountEncryptionFirstKeyExternalAuth, resumeAccountEncryptionFirstKeyExternalAuth, startAccountEncryptionFirstKeyExternalAuth } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { acknowledgeNewSessionDraftEncryptionMigration, listNewSessionDraftEncryptionMigrationCandidates } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
@@ -595,6 +595,23 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     baseRequest: request,
                                                 });
                                                 request = AccountEncryptionMigrateRequestSchema.parse({ ...request, passwordCredential });
+                                            }
+                                            // A retained-key Plain Account with a password proves the
+                                            // current password for this exact request (L02-R22); the
+                                            // keyless first-key journey below obtains the same proof.
+                                            if (transitionPassword !== null && nextMode === 'e2ee'
+                                                && !preparedE2eeKey!.requiresExternalAuthProof) {
+                                                const externalAuthProof = await requestAccountEncryptionFirstKeyPasswordProof({
+                                                    request: serverFetch,
+                                                    token: credentials.token,
+                                                    password: transitionPassword,
+                                                    requestDigest: createAccountEncryptionMigrateRequestBindingDigestV1({
+                                                        request,
+                                                        accountId: profile.id,
+                                                        sourceMode: 'plain',
+                                                    }),
+                                                });
+                                                request = AccountEncryptionMigrateRequestSchema.parse({ ...request, externalAuthProof });
                                             }
 
                                             const result =

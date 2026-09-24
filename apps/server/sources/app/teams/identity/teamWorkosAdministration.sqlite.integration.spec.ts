@@ -11,6 +11,8 @@ import {
     setTeamWorkosConnection,
 } from "./teamWorkosAdministration";
 import { startTeamIdentityConnectionTestForActor } from "./teamIdentityConnectionAdministration";
+import { setTeamIdentityConnectionEnabledInTx } from "./teamIdentityConnectionLifecycle";
+import { inTx } from "@/storage/inTx";
 import { TEAM_CHANGE_ENTITY_ID } from "../teamChanges";
 
 describe("Team WorkOS administration", () => {
@@ -22,17 +24,8 @@ describe("Team WorkOS administration", () => {
             tempDirPrefix: "happier-team-workos-administration-",
             initAuth: true,
         });
-        await db.homeGovernancePolicy.create({
-            data: {
-                id: "home",
-                teamProviderPolicy: {
-                    v: 1,
-                    allowedTeamProviderKinds: ["workos_sso"],
-                    teamJitAllowed: false,
-                    approvedGitHubEnterpriseOrigins: [],
-                },
-            },
-        });
+        // A fresh Home: no Team-provider narrowing is stored, so WorkOS is
+        // allowed by the inherited deployment ceiling (teams-lane-01/02 :230).
     }, 120_000);
 
     afterAll(async () => {
@@ -271,6 +264,95 @@ describe("Team WorkOS administration", () => {
             where: { ownerTeamId: team.id, kind: "workos_sso" },
         })).resolves.toBe(1);
         await expect(db.teamIdentityConnection.count({ where: { teamId: team.id } })).resolves.toBe(1);
+    });
+
+    it("recovers an activated namespace with a coexisting new provider connection and leaves the old one immutable", async () => {
+        const actor = await db.account.create({ data: {} });
+        const team = await db.team.create({ data: { name: "Recovering WorkOS" } });
+        await db.teamMembership.create({ data: {
+            teamId: team.id,
+            accountId: actor.id,
+            role: TeamRole.owner,
+            status: TeamMembershipStatus.active,
+        } });
+        let upstream = [
+            { id: "conn_old", organizationId: "org_recover", name: "Acme Okta", type: "SAML", state: "active" },
+        ];
+        const dependencies = platform({
+            organizations: {
+                getOrganizationByExternalId: vi.fn(async () => ({ id: "org_recover", name: "Recovering WorkOS" })),
+                createOrganization: vi.fn(),
+            },
+            adminPortal: { generateLink: vi.fn(async () => ({ link: "https://setup.workos.test/portal" })) },
+            sso: {
+                listConnections: vi.fn(async () => ({ data: upstream, listMetadata: { after: null } })),
+                getConnection: vi.fn(async (id: string) => upstream.find((row) => row.id === id)),
+            },
+        } as unknown as WorkOS);
+        const input = {
+            ...interactiveAuthentication,
+            v: 1 as const,
+            actorAccountId: actor.id,
+            teamId: team.id,
+            env: { HAPPIER_WEBAPP_URL: "https://app.example.test" },
+        };
+        const setUp = async (connectionId: string) => {
+            await expect(createTeamWorkosAdminPortalLink({ ...input, connectionId, intent: "sso" }, dependencies))
+                .resolves.toMatchObject({ ok: true });
+            const { revision } = await db.teamIdentityConnection.findUniqueOrThrow({ where: { id: connectionId } });
+            return await reconcileTeamWorkosConnection({ ...input, connectionId, expectedRevision: revision }, dependencies);
+        };
+
+        const original = await createTeamWorkosConnection(input, dependencies);
+        if (!original.ok) throw new Error(`create failed: ${original.error}`);
+        await expect(setUp(original.value.id)).resolves.toMatchObject({ ok: true, value: { outcome: "connected" } });
+        const configured = await db.teamIdentityConnection.findUniqueOrThrow({ where: { id: original.value.id } });
+        await expect(inTx((tx) => setTeamIdentityConnectionEnabledInTx(tx, {
+            id: original.value.id,
+            teamId: team.id,
+            expectedRevision: configured.revision,
+            enabled: true,
+        }))).resolves.toMatchObject({ status: "applied" });
+
+        // The IdP connection is replaced upstream. The activated namespace is retained for diagnosis.
+        upstream = [{ id: "conn_new", organizationId: "org_recover", name: "Acme Entra", type: "SAML", state: "active" }];
+        const enabled = await db.teamIdentityConnection.findUniqueOrThrow({ where: { id: original.value.id } });
+        await expect(reconcileTeamWorkosConnection({
+            ...input,
+            connectionId: original.value.id,
+            expectedRevision: enabled.revision,
+        }, dependencies)).resolves.toMatchObject({ ok: true, value: { outcome: "needs_attention" } });
+
+        // Recovery creates a new provider instance/Team connection beside the old one (child 03 §6.3.7).
+        const replacement = await createTeamWorkosConnection(input, dependencies);
+        if (!replacement.ok) throw new Error(`replacement failed: ${replacement.error}`);
+        expect(replacement.value.id).not.toBe(original.value.id);
+        expect(replacement.value.provider.id).not.toBe(original.value.provider.id);
+        await expect(createTeamWorkosConnection(input, dependencies)).resolves.toMatchObject({
+            ok: true,
+            value: { id: replacement.value.id },
+        });
+        await expect(setUp(replacement.value.id)).resolves.toMatchObject({
+            ok: true,
+            value: {
+                outcome: "connected",
+                connection: { externalReference: { organizationId: "org_recover", connectionId: "conn_new" } },
+            },
+        });
+
+        const old = await db.teamIdentityConnection.findUniqueOrThrow({ where: { id: original.value.id } });
+        expect(old.externalReference).toEqual({
+            v: 1,
+            kind: "workos_sso",
+            organizationId: "org_recover",
+            connectionId: "conn_old",
+        });
+        expect(old.enabled).toBe(true);
+        expect(old.firstEnabledAt).not.toBeNull();
+        await expect(db.teamIdentityConnection.count({ where: { teamId: team.id } })).resolves.toBe(2);
+        await expect(db.identityProviderInstance.count({
+            where: { ownerTeamId: team.id, kind: "workos_sso" },
+        })).resolves.toBe(2);
     });
 
     it("resumes deterministic organization setup and returns an unpersisted exact-Team portal link", async () => {

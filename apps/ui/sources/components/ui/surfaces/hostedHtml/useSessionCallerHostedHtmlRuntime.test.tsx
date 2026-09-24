@@ -3,12 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@/dev/testkit';
 
 const platformState = vi.hoisted(() => ({ current: 'web' }));
-const approvalsState = vi.hoisted(() => ({
-    current: {} as Record<string, true>,
-    set: vi.fn((next: Record<string, true>) => {
-        approvalsState.current = next;
-    }),
-}));
 const currentnessState = vi.hoisted(() => ({ account: true, session: true }));
 const frameAvailability = vi.hoisted(() => ({ current: true }));
 
@@ -24,18 +18,23 @@ vi.mock('react-native', async () => {
     });
 });
 
+// Like the real owner (a memoized projection of stable scope entries), one Home's
+// binding keeps its identity across renders; currentness is read through it.
+const bindingsByServerId = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
-    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => new Map(serverIds.map((serverId) => [
-        serverId,
-        {
-            serverId,
-            accountId: `account:${serverId}`,
-            scope: { serverId, accountId: `account:${serverId}` },
-            revision: 1,
-            isCurrent: () => currentnessState.account,
-            onRetire: () => ({ dispose() {} }),
-        },
-    ])),
+    useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => new Map(serverIds.map((serverId) => {
+        if (!bindingsByServerId.has(serverId)) {
+            bindingsByServerId.set(serverId, {
+                serverId,
+                accountId: `account:${serverId}`,
+                scope: { serverId, accountId: `account:${serverId}` },
+                revision: 1,
+                isCurrent: () => currentnessState.account,
+                onRetire: () => ({ dispose() {} }),
+            });
+        }
+        return [serverId, bindingsByServerId.get(serverId)];
+    })),
 }));
 
 vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({
@@ -46,15 +45,12 @@ vi.mock('@/sync/engine/sessions/normalizeSessionAccessProjection', () => ({
     normalizeSessionAccessProjection: () => ({ capabilities: { readTranscript: currentnessState.session } }),
 }));
 
-vi.mock('@/sync/store/hooks', () => ({
-    useLocalSettingMutable: () => [approvalsState.current, approvalsState.set],
-}));
-
 vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
     createFrontDoorActionExecute: () => vi.fn(),
 }));
 
-vi.mock('@/sync/domains/plugins/settings/scopedPluginSettingsRuntime', () => ({
+vi.mock('@/sync/domains/plugins/settings/scopedPluginSettingsRuntime', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/plugins/settings/scopedPluginSettingsRuntime')>(),
     resolveScopedPluginSettingsServerIdentity: (serverId: string) => `identity:${serverId}`,
 }));
 
@@ -84,8 +80,6 @@ describe('useSessionCallerHostedHtmlRuntime', () => {
         platformState.current = 'web';
         currentnessState.account = true;
         currentnessState.session = true;
-        approvalsState.current = {};
-        approvalsState.set.mockClear();
         frameAvailability.current = true;
     });
 
@@ -130,6 +124,28 @@ describe('useSessionCallerHostedHtmlRuntime', () => {
         currentnessState.account = false;
         await hook.rerender();
         expect(hook.getCurrent()).toBeNull();
+    });
+
+    it('keeps one physical mount lifetime and request owner while another item\'s approval changes', async () => {
+        // The real local-settings owner holds approvals; approving item B and
+        // revoking it must not hand item A a new mount lifetime or controller.
+        const hook = await renderHook(() => useSessionCallerHostedHtmlRuntime('home-a', 'session-a'));
+        const before = hook.getCurrent()!;
+        const approval = { v: 1 } as never;
+        expect(before.isApproved(approval, 'item-b-key')).toBe(false);
+
+        before.approve(approval, 'item-b-key');
+        await hook.rerender();
+        const approved = hook.getCurrent()!;
+        expect(approved.isApproved(approval, 'item-b-key')).toBe(true);
+        expect(approved.lifetime).toBe(before.lifetime);
+        expect(approved.createRequestController).toBe(before.createRequestController);
+
+        approved.revoke(approval, 'item-b-key');
+        await hook.rerender();
+        const revoked = hook.getCurrent()!;
+        expect(revoked.isApproved(approval, 'item-b-key')).toBe(false);
+        expect(revoked.lifetime).toBe(before.lifetime);
     });
 
     it.each(['ios', 'android'])('does not advertise caller HTML on %s without the native registrar', async (platform) => {

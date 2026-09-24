@@ -110,8 +110,13 @@ on any Session they can edit. The fix lives at the canonical historical-batch wr
 server owner. It does two things in sequence, not one:
 
 1. `commitSessionAgentCurrentView` — one narrow transaction: owner access, `archivedAt = null`,
-   `active = false`, metadata and version CAS, and clearing the current runtime-activity and
-   source-runtime-request projections.
+   `active = false`, metadata and version CAS, clearing the current runtime-activity and
+   source-runtime-request projections, and — when the target's Team defaults resolved — writing the
+   target's Session Team slot bindings (`teamCredentialBindings`) through the canonical binding owner
+   (`writeSessionTeamCredentialBindingsInTx`). The cutover is the transition's one Session switch
+   mutation, so the witness the Home admits Team credential use through is accepted by the same
+   owner that writes it at Session create (lane 10 child 01 principle 3). A refused binding aborts the
+   transaction: neither the target view nor the witness commits (`400`, `effect: none`).
 2. the divider, appended through the canonical message owner `createSessionMessage` as an ordered
    idempotent write.
 
@@ -222,15 +227,19 @@ fix is at the stop owner, not a machine guess in the coordinator.
 1. **Preflight, no source effect.** Transport resolve, session match, not archived, owner-metadata
    decrypt (failure is `forbidden`), external/linked-session exclusion,
    already-target reconciliation, currentness (`stale_selection`), target catalog and model
-   resolution (`target_unavailable`), idle wait (`source_not_idle`).
+   resolution (`target_unavailable`), the target's connected-service binding from the Account's
+   stored default through the one spawn-defaulting owner (a durable Team default that no longer
+   resolves on the Home is `target_unavailable`, never a silent native launch), idle wait
+   (`source_not_idle`).
 2. **Quiesce and stop.** The input fence is taken *before* the request, so every pre-stop exit
    reopens it. Then `requestSessionStop`.
 3. **Context.** Native eligibility is resolved before the brief; the bounded activation brief is
    built; `unavailable` is `partially_applied / source_stopped / context_unavailable`. An empty
    source is `available` with a `null` seed — collapsing it into `unavailable` stopped a fresh
    Session and then failed the transition.
-4. **Cutover.** Seal the target current view, call the server owner, retry a `version-mismatch`
-   exactly once by refetch-and-rebuild; a second loss is `cutover_conflict`.
+4. **Cutover.** Seal the target current view, call the server owner with the target's Team slot
+   bindings the defaults owner resolved in preflight, retry a `version-mismatch` exactly once by
+   refetch-and-rebuild; a second loss is `cutover_conflict`.
 5. **Custody, then activation.**
 
 ### "Confirmed stop" has an exact meaning

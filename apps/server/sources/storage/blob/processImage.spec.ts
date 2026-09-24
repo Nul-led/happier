@@ -54,6 +54,40 @@ describe("processImage publication contract", () => {
         expect(small.height).toBe(120);
     });
 
+    it("applies EXIF orientation so the published image is not sideways", async () => {
+        // A phone photograph is commonly stored unrotated with an orientation
+        // tag. Re-encoding drops all source metadata, so the rotation has to be
+        // applied to the pixels — otherwise the client confirms an upright
+        // preview of its own source bytes and the Home publishes a sideways one.
+        // Orientation 6 means "rotate 90° clockwise to display".
+        const landscapeStoredAsPortrait = await sharp({
+            create: { width: 1600, height: 800, channels: 3, background: { r: 255, g: 0, b: 0 } },
+        })
+            .withMetadata({ orientation: 6 })
+            .jpeg()
+            .toBuffer();
+
+        const contained = await processImage(landscapeStoredAsPortrait, { fit: "contain", maxEdge: 512 });
+
+        // Displayed, this image is 800 wide by 1600 tall.
+        expect(contained.width).toBe(256);
+        expect(contained.height).toBe(512);
+        const publishedContain = await sharp(contained.bytes).metadata();
+        expect(publishedContain.width).toBe(contained.width);
+        expect(publishedContain.height).toBe(contained.height);
+
+        // The square crop must use the *displayed* shorter edge.
+        const smallSideways = await sharp({
+            create: { width: 300, height: 120, channels: 3, background: { r: 0, g: 255, b: 0 } },
+        })
+            .withMetadata({ orientation: 6 })
+            .jpeg()
+            .toBuffer();
+        const covered = await processImage(smallSideways, { fit: "cover", maxEdge: 512 });
+        expect(covered.width).toBe(120);
+        expect(covered.height).toBe(120);
+    });
+
     it("keeps transparency as PNG and publishes opaque input as JPEG", async () => {
         const transparent = await processImage(await pngWithAlpha(300, 300), { fit: "cover", maxEdge: 512 });
         expect(transparent.format).toBe("png");

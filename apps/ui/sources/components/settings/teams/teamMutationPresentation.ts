@@ -27,6 +27,9 @@ export function teamMutationFailureLabel(failure: HomeDomainFailure<string>): st
     if (failure.code === 'team_owner_transfer_required') return t('teams.members.lastOwnerBlocked');
     if (failure.code === 'managed_by_directory') return t('teams.members.managedReadOnly');
     if (failure.code === 'management_conflict') return t('teams.members.managementConflict');
+    // Admission and every new ownership require an active Account (L01/01 :337);
+    // the pickers cannot know it, so the Home's typed refusal says it.
+    if (failure.code === 'account_ineligible') return t('teams.members.accountInactive');
     switch (failure.kind) {
         case 'outcome_unknown':
             return t('teams.errors.outcomeUnknown');

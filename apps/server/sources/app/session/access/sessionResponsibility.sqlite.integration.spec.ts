@@ -97,7 +97,6 @@ describe("Session responsibility owner (SQLite integration)", () => {
             tempDirPrefix: "happier-session-responsibility-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });
@@ -604,10 +603,10 @@ describe("Session responsibility owner (SQLite integration)", () => {
             });
         });
 
-        it("refuses responsibility operations while collaboration is disabled", async () => {
+        it("refuses responsibility operations while Session sharing is disabled", async () => {
             const fixture = await createFixture();
-            const previous = process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
-            process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = "0";
+            const previous = process.env.HAPPIER_BUILD_FEATURES_DENY;
+            process.env.HAPPIER_BUILD_FEATURES_DENY = "sharing.session";
             try {
                 await withAuthenticatedTestApp(registerSessionResponsibilityRoutes, async (app) => {
                     for (const [operation, payload] of [
@@ -626,8 +625,8 @@ describe("Session responsibility owner (SQLite integration)", () => {
                     expect((await readSession(fixture.session.id)).responsibleAccountId).toBeNull();
                 });
             } finally {
-                if (previous === undefined) delete process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
-                else process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = previous;
+                if (previous === undefined) delete process.env.HAPPIER_BUILD_FEATURES_DENY;
+                else process.env.HAPPIER_BUILD_FEATURES_DENY = previous;
             }
         });
 

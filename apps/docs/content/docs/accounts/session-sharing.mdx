@@ -11,10 +11,9 @@ The released sharing workflow supports two paths:
 - **Public links** for read-only access
 
 The current 0.3 development channel also has a collaboration path for **Teams**
-and **Groups**. It is on by default, carried by the `sessions.collaboration`
-server feature, and depends on the normal session-sharing feature — a Home with
-session sharing turned off closes it too. It uses the same access authority as
-direct sharing. This is development-channel behavior, not a stable-release
+and **Groups**. It is part of the normal session-sharing feature, so it is
+available wherever session sharing is on, and a Home with session sharing turned
+off closes it too. It uses the same access authority as direct sharing. This is development-channel behavior, not a stable-release
 availability claim.
 
 ## Where shared sessions appear
@@ -108,7 +107,7 @@ personal choices with their own settings.
 
 ### Session discussions (0.3 development)
 
-When both `sessions.collaboration` and `sessions.conversations` are enabled, a
+When both session sharing and `sessions.conversations` are enabled, a
 current Session reader can read its human discussions. People with edit access
 can start discussions and post messages; discussion creators can rename or
 archive their own active discussions while Session managers can also restore
@@ -208,10 +207,9 @@ viewer is in the Session presence room at that moment.
 
 Viewing and typing do not mark a Session read, change unread state, Follow it,
 add it to My Work or Activity, suppress notifications, or create a badge. Human
-presence is negotiated independently of the `sessions.collaboration` feature.
-It is visible in the 0.3 development Collaboration host whenever normal Session
-sharing is available, while Team/Group grants and responsibility remain behind
-`sessions.collaboration`. Loaded web/native and clustered access-loss journeys
+presence is negotiated independently of the session-sharing feature. It is
+visible in the 0.3 development Collaboration host whenever normal Session
+sharing is available, as are Team/Group grants and responsibility. Loaded web/native and clustered access-loss journeys
 are still validation gates, not stable-release availability claims.
 
 ## Public links

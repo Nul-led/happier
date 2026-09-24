@@ -32,7 +32,7 @@ describe('external Provider broker dispatcher', () => {
         })).toEqual({ error: 'policy_denied' });
     });
 
-    it('accepts the admitted broker machine binary response for the exact relay substream', async () => {
+    async function dispatchWithUpstreamResponse(response: Uint8Array) {
         let receive: ((envelope: PeerTcpTunnelRelayEnvelope) => void) | undefined;
         let responseSent = false;
         const relaySocketId = 'relay-socket-1';
@@ -58,7 +58,6 @@ describe('external Provider broker dispatcher', () => {
                     });
                     if (!decoded.ok || decoded.header.kind !== 'data') return;
                     responseSent = true;
-                    const response = new TextEncoder().encode('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok');
                     receive?.({
                         v: 2,
                         scopeUserId: accountId,
@@ -118,12 +117,34 @@ describe('external Provider broker dispatcher', () => {
             },
         });
 
+        return { result, removeAbortListener, transportCloseCount: () => transportCloseCount };
+    }
+
+    function httpResponse(body: string) {
+        return new TextEncoder().encode(
+            `HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`,
+        );
+    }
+
+    // The relay coalesces whatever it has: a small control response and a legal
+    // 32 KiB body can both arrive in the dispatcher's first chunk. The header
+    // budget bounds headers, so neither may be refused as an oversized header.
+    it.each([128, 32 * 1024])('accepts the admitted broker machine binary response coalesced with a %i-byte body', async (size) => {
+        const body = 'o'.repeat(size);
+        const { result, removeAbortListener, transportCloseCount } = await dispatchWithUpstreamResponse(httpResponse(body));
         expect(result).toMatchObject({ ok: true, statusCode: 200 });
         if (!result.ok) return;
         const chunks: Uint8Array[] = [];
         for await (const chunk of result.body) chunks.push(chunk);
-        expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')).toBe('ok');
+        expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')).toBe(body);
         expect(removeAbortListener).toHaveBeenCalledWith('abort', expect.any(Function));
-        expect(transportCloseCount).toBe(1);
+        expect(transportCloseCount()).toBe(1);
+    });
+
+    it('still refuses a header segment larger than the header budget', async () => {
+        const { result } = await dispatchWithUpstreamResponse(
+            new TextEncoder().encode(`HTTP/1.1 200 OK\r\nX-Oversized: ${'h'.repeat(24 * 1024)}`),
+        );
+        expect(result).toEqual({ ok: false, error: 'upstream_unavailable' });
     });
 });

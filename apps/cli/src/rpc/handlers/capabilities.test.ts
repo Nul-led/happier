@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CapabilitiesDescribeResponse } from '@/capabilities/types';
 import { reloadConfiguration } from '@/configuration';
@@ -28,6 +28,7 @@ import { createCliCapabilitiesService } from './capabilities';
 const loadMarketplaceIndexSourceMock = vi.hoisted(() => vi.fn());
 const decideDaemonPluginChangeMock = vi.hoisted(() => vi.fn());
 const requestDaemonPluginChangeMock = vi.hoisted(() => vi.fn());
+const controlDaemonPluginDevelopmentMock = vi.hoisted(() => vi.fn());
 const listDaemonPluginChangesMock = vi.hoisted(() => vi.fn<
     typeof import('@/daemon/controlClient').listDaemonPluginChanges
 >(async () => ({ changes: [] })));
@@ -72,8 +73,8 @@ function createMarketplaceSnapshot(params: Readonly<{
             categories: ['actions'],
             media: [],
             updatePolicy: params.source.kind === 'curated'
-                ? 'reviewSensitiveChanges' as const
-                : 'reviewEveryUpdate' as const,
+                ? 'allowed' as const
+                : 'allowed' as const,
             links: {},
         }],
         diagnostics: [],
@@ -162,6 +163,7 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/daemon/controlClient')>()),
     decideDaemonPluginChange: (...args: unknown[]) => decideDaemonPluginChangeMock(...args),
     requestDaemonPluginChange: (...args: unknown[]) => requestDaemonPluginChangeMock(...args),
+    controlDaemonPluginDevelopment: (...args: unknown[]) => controlDaemonPluginDevelopmentMock(...args),
     listDaemonPluginChanges: listDaemonPluginChangesMock,
     readDaemonPluginChangeStatus: (...args: unknown[]) => readDaemonPluginChangeStatusMock(...args),
 }));
@@ -322,10 +324,18 @@ describe('createCliCapabilitiesService dep.az', () => {
 });
 
 describe('createCliCapabilitiesService tool.plugins', () => {
+    beforeEach(() => {
+        controlDaemonPluginDevelopmentMock.mockResolvedValue({
+            kind: 'status',
+            status: { roots: [], plugins: [] },
+        });
+    });
+
     afterEach(() => {
         loadMarketplaceIndexSourceMock.mockReset();
         decideDaemonPluginChangeMock.mockReset();
         requestDaemonPluginChangeMock.mockReset();
+        controlDaemonPluginDevelopmentMock.mockReset();
         listDaemonPluginChangesMock.mockReset();
         listDaemonPluginChangesMock.mockResolvedValue({ changes: [] });
         readDaemonPluginChangeStatusMock.mockReset();
@@ -446,7 +456,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         // the outstanding decisions too, and the by-id rejoin is what the app
         // re-reads before asking a user to approve anything.
         const sourceRootReview = {
-            kind: 'sourceRootReviewRequired',
+            kind: 'reviewRequired', reviewKind: 'projectTrust',
             pendingChangeId: 'pending-agent-1',
             review: { source: { kind: 'path', locator: '/workspace/plugins/agent-authored' } },
         } as const;
@@ -495,10 +505,9 @@ describe('createCliCapabilitiesService tool.plugins', () => {
     it('keeps a generic curated install prepare-only even if a downstream adapter reports a commit', async () => {
         const home = await createTempDir('happier-cli-capabilities-curated-install-');
         const sourceUrl = 'https://marketplace.example.test/catalog.json';
-        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         envScope.patch({
             HAPPIER_HOME_DIR: home,
-            HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
         });
         reloadConfiguration();
         loadMarketplaceIndexSourceMock.mockImplementation(async ({ source }) => createMarketplaceSnapshot({ source }));
@@ -511,7 +520,10 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         });
 
         try {
-            const sourceId = (await createMarketplaceSourceRegistryStore({ happyHomeDir: home }).read()).sources[0]!.id;
+            const sourceId = (await createMarketplaceSourceRegistryStore({
+                happyHomeDir: home,
+                curatedSourceUrl: sourceUrl,
+            }).read()).sources[0]!.id;
             const service = await createCliCapabilitiesService();
             const installResponse = await service.invoke({
                 id: 'tool.plugins',
@@ -570,7 +582,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         reloadConfiguration();
         loadMarketplaceIndexSourceMock.mockImplementation(async ({ source }) => createMarketplaceSnapshot({ source }));
         requestDaemonPluginChangeMock.mockResolvedValue({
-            kind: 'reviewRequired',
+            kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
             pendingChangeId: 'pending-community',
             review,
         });
@@ -586,11 +598,102 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                 result: {
                     action: 'install',
                     pluginId: SAMPLE_PLUGIN_ID,
-                    change: { kind: 'reviewRequired', pendingChangeId: 'pending-community', review },
+                    change: { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-community', review },
                 },
             });
             expect(promptConfirmYesNoMock).not.toHaveBeenCalled();
             expect(decideDaemonPluginChangeMock).not.toHaveBeenCalled();
+        } finally {
+            envScope.restore();
+            reloadConfiguration();
+            await removeTempDir(home);
+        }
+    });
+
+    it('hands a registry selection back to the present user, from the listing and from preparation', async () => {
+        const home = await createTempDir('happier-cli-capabilities-registry-selection-');
+        const sourceUrl = 'https://marketplace.example.test/catalog.json';
+        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
+        envScope.patch({ HAPPIER_HOME_DIR: home });
+        reloadConfiguration();
+        // The curated listing is published on a private registry this Home has
+        // no profile or source binding for; only the remote index is a fixture.
+        loadMarketplaceIndexSourceMock.mockImplementation(async ({ source }) => {
+            const snapshot = createMarketplaceSnapshot({ source });
+            if (source.kind !== 'curated') return snapshot;
+            return {
+                ...snapshot,
+                entries: snapshot.entries.map((entry) => ({
+                    ...entry,
+                    distribution: { ...entry.distribution, registryOrigin: 'https://npm.acme.example' },
+                })),
+            };
+        });
+
+        try {
+            const sourceId = (await createMarketplaceSourceRegistryStore({
+                happyHomeDir: home,
+                curatedSourceUrl: sourceUrl,
+            }).read()).sources[0]!.id;
+            const service = await createCliCapabilitiesService();
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'install',
+                params: { sourceId, pluginId: SAMPLE_PLUGIN_ID },
+            })).resolves.toEqual({
+                ok: true,
+                result: {
+                    action: 'install',
+                    pluginId: SAMPLE_PLUGIN_ID,
+                    change: {
+                        kind: 'registryProfileRequired',
+                        registryOrigin: 'https://npm.acme.example',
+                        packageName: '@acme/sample',
+                        registryProfileId: null,
+                    },
+                },
+            });
+            expect(requestDaemonPluginChangeMock).not.toHaveBeenCalled();
+
+            // A registry that refuses at download is the same selection, named by
+            // the daemon's change owner.
+            requestDaemonPluginChangeMock.mockResolvedValue({
+                kind: 'registryProfileRequired',
+                registryOrigin: 'https://registry.npmjs.org',
+                packageName: '@acme/sample',
+                registryProfileId: 'registry_team',
+            });
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'install',
+                params: { sourceId: 'marketplace:community-npm', pluginId: SAMPLE_PLUGIN_ID },
+            })).resolves.toEqual({
+                ok: true,
+                result: {
+                    action: 'install',
+                    pluginId: SAMPLE_PLUGIN_ID,
+                    change: {
+                        kind: 'registryProfileRequired',
+                        registryOrigin: 'https://registry.npmjs.org',
+                        packageName: '@acme/sample',
+                        registryProfileId: 'registry_team',
+                    },
+                },
+            });
+            // An update whose trusted channel's registry now refuses is the same
+            // present-user selection, not a generic failure.
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'update',
+                params: { pluginId: SAMPLE_PLUGIN_ID },
+            })).resolves.toMatchObject({
+                ok: true,
+                result: {
+                    action: 'update',
+                    pluginId: SAMPLE_PLUGIN_ID,
+                    change: { kind: 'registryProfileRequired', registryProfileId: 'registry_team' },
+                },
+            });
         } finally {
             envScope.restore();
             reloadConfiguration();
@@ -629,10 +732,9 @@ describe('createCliCapabilitiesService tool.plugins', () => {
     it('exposes private lifecycle methods through the canonical daemon change owner without restoring reload or source-url mutation', async () => {
         const home = await createTempDir('happier-cli-capabilities-plugin-lifecycle-');
         const sourceUrl = 'https://marketplace.example.test/catalog.json';
-        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         envScope.patch({
             HAPPIER_HOME_DIR: home,
-            HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
         });
         reloadConfiguration();
         const review = {
@@ -647,7 +749,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         loadMarketplaceIndexSourceMock.mockImplementation(async ({ source }) => createMarketplaceSnapshot({ source }));
         requestDaemonPluginChangeMock.mockImplementation(async (request: Readonly<{ kind: string; pluginId?: string }>) => (
             request.kind === 'update'
-                ? { kind: 'reviewRequired', pendingChangeId: 'pending-update', review }
+                ? { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-update', review }
                 : {
                     kind: 'committed',
                     pluginId: request.pluginId ?? SAMPLE_PLUGIN_ID,
@@ -662,7 +764,10 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         ));
 
         try {
-            const sourceId = (await createMarketplaceSourceRegistryStore({ happyHomeDir: home }).read()).sources[0]!.id;
+            const sourceId = (await createMarketplaceSourceRegistryStore({
+                happyHomeDir: home,
+                curatedSourceUrl: sourceUrl,
+            }).read()).sources[0]!.id;
             const service = await createCliCapabilitiesService();
             const described = service.describe() as CapabilitiesDescribeResponse;
             const plugins = described.capabilities.find((capability) => capability.id === 'tool.plugins');
@@ -697,7 +802,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                     action: 'update',
                     pluginId: SAMPLE_PLUGIN_ID,
                     change: {
-                        kind: 'reviewRequired',
+                        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
                         pendingChangeId: 'pending-update',
                         review,
                     },
@@ -721,20 +826,20 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             await expect(service.invoke({
                 id: 'tool.plugins',
                 method: 'setUpdatePolicy',
-                params: { pluginId: SAMPLE_PLUGIN_ID, policy: 'reviewSensitiveChanges' },
+                params: { pluginId: SAMPLE_PLUGIN_ID, policy: 'allowed' },
             })).resolves.toMatchObject({
                 ok: true,
                 result: {
                     action: 'setUpdatePolicy',
                     pluginId: SAMPLE_PLUGIN_ID,
-                    policy: 'reviewSensitiveChanges',
+                    policy: 'allowed',
                     change: { kind: 'committed' },
                 },
             });
             expect(requestDaemonPluginChangeMock).toHaveBeenNthCalledWith(2, {
                 kind: 'setUpdatePolicy',
                 pluginId: SAMPLE_PLUGIN_ID,
-                policy: 'reviewSensitiveChanges',
+                policy: 'allowed',
             });
             await expect(service.invoke({
                 id: 'tool.plugins',
@@ -803,7 +908,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             });
 
             requestDaemonPluginChangeMock.mockResolvedValueOnce({
-                kind: 'reviewRequired',
+                kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
                 pendingChangeId: 'pending-unexpected',
                 review,
             });
@@ -854,10 +959,9 @@ describe('createCliCapabilitiesService tool.plugins', () => {
     it('routes update through the canonical installed-update owner so a pinned installation is refused with its own reason', async () => {
         const home = await createTempDir('happier-cli-capabilities-plugin-pinned-update-');
         const sourceUrl = 'https://marketplace.example.test/catalog.json';
-        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         envScope.patch({
             HAPPIER_HOME_DIR: home,
-            HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: sourceUrl,
         });
         reloadConfiguration();
         // A newer version is genuinely offered by the catalog: an update arm that
@@ -910,7 +1014,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             // is the real canonical installed-update owner's decision.
             requestDaemonPluginChangeMock.mockImplementation(async (request: Readonly<{ kind: string; pluginId?: string }>) => {
                 if (request.kind !== 'update') {
-                    return { kind: 'reviewRequired', pendingChangeId: 'pending-exact-install', review: {} };
+                    return { kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [], pendingChangeId: 'pending-exact-install', review: {} };
                 }
                 const installed = (await createPluginRegistryStateStore({ happyHomeDir: home }).read())
                     .plugins[request.pluginId ?? ''];
@@ -945,7 +1049,10 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             })();
             expect(canonicalRefusal.code).toBe('plugin_update_pinned');
 
-            const sourceId = (await createMarketplaceSourceRegistryStore({ happyHomeDir: home }).read()).sources[0]!.id;
+            const sourceId = (await createMarketplaceSourceRegistryStore({
+                happyHomeDir: home,
+                curatedSourceUrl: sourceUrl,
+            }).read()).sources[0]!.id;
             const service = await createCliCapabilitiesService();
             await expect(service.invoke({
                 id: 'tool.plugins',
@@ -969,6 +1076,121 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         } finally {
             envScope.restore();
             reloadConfiguration();
+            await removeTempDir(home);
+        }
+    });
+
+    it('resolves the current folder or single-file Edit target and rejects stale development state', async () => {
+        const home = await createTempDir('happier-cli-capabilities-plugin-edit-');
+        const parent = await mkdtemp(join(tmpdir(), 'happier-plugin-edit-source-'));
+        const folderSource = join(parent, 'folder-plugin');
+        const singleFileSource = join(parent, 'file-plugin.ts');
+        const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
+        envScope.patch({ HAPPIER_HOME_DIR: home });
+        reloadConfiguration();
+
+        const writeDevelopmentSource = async (input: Readonly<{
+            locator: string;
+            resolvedPath: string;
+            devWatch: boolean;
+        }>) => {
+            await createPluginStateStore({ happyHomeDir: home }).write({
+                t: 'happier_plugin_state_v1',
+                schemaVersion: 1,
+                plugins: {
+                    'acme.edit-target': {
+                        source: {
+                            kind: 'path',
+                            locator: input.locator,
+                            resolvedPath: input.resolvedPath,
+                            manifestPath: input.locator,
+                            trustPolicy: 'prompt',
+                            installPolicy: 'link',
+                            devWatch: input.devWatch,
+                        },
+                        compatibility: { status: 'compatible', diagnostics: [] },
+                        install: { mode: 'link', manifestVersion: '0.1.0' },
+                        state: { enabled: true },
+                    },
+                },
+            });
+        };
+
+        try {
+            await mkdir(folderSource, { recursive: true });
+            await writeFile(singleFileSource, 'export function activate() {}\n', 'utf8');
+            const service = await createCliCapabilitiesService();
+            expect((service.describe() as CapabilitiesDescribeResponse).capabilities
+                .find((capability) => capability.id === 'tool.plugins')).toMatchObject({
+                methods: expect.objectContaining({ edit: expect.any(Object) }),
+            });
+
+            await writeDevelopmentSource({
+                locator: folderSource,
+                resolvedPath: folderSource,
+                devWatch: true,
+            });
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'edit',
+                params: { pluginId: 'acme.edit-target', sourceRootPath: '/client/stale-source' },
+            })).resolves.toEqual({
+                ok: true,
+                result: {
+                    action: 'edit',
+                    pluginId: 'acme.edit-target',
+                    sourceRootPath: folderSource,
+                    sessionDirectory: folderSource,
+                },
+            });
+
+            await writeDevelopmentSource({
+                locator: singleFileSource,
+                resolvedPath: parent,
+                devWatch: true,
+            });
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'edit',
+                params: { pluginId: 'acme.edit-target' },
+            })).resolves.toEqual({
+                ok: true,
+                result: {
+                    action: 'edit',
+                    pluginId: 'acme.edit-target',
+                    sourceRootPath: singleFileSource,
+                    sessionDirectory: parent,
+                },
+            });
+
+            await writeDevelopmentSource({
+                locator: singleFileSource,
+                resolvedPath: parent,
+                devWatch: false,
+            });
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'edit',
+                params: { pluginId: 'acme.edit-target' },
+            })).resolves.toMatchObject({
+                ok: false,
+                error: { code: 'plugin-development-source-unavailable' },
+            });
+
+            await createPluginStateStore({ happyHomeDir: home }).write({
+                t: 'happier_plugin_state_v1',
+                schemaVersion: 1,
+                plugins: {},
+            });
+            await expect(service.invoke({
+                id: 'tool.plugins',
+                method: 'edit',
+                params: { pluginId: 'acme.edit-target' },
+            })).resolves.toMatchObject({ ok: false, error: { code: 'plugin-not-found' } });
+        } finally {
+            envScope.restore();
+            reloadConfiguration();
+            await rm(parent, { recursive: true, force: true });
             await removeTempDir(home);
         }
     });
@@ -1030,6 +1252,19 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                     createDevelopmentCatalogEntry(pluginRoot),
                 ]),
             });
+            controlDaemonPluginDevelopmentMock.mockResolvedValueOnce({
+                kind: 'status',
+                status: {
+                    roots: [{ kind: 'explicit', rootPath: pluginRoot, trusted: true, persisted: true }],
+                    plugins: [{
+                        pluginId: 'acme.development-actions',
+                        sourceRootPath: pluginRoot,
+                        phase: 'active',
+                        occurrenceId: 'occurrence-development-actions',
+                        uiArtifactDigest: 'sha256:development-actions',
+                    }],
+                },
+            });
             const described = service.describe() as CapabilitiesDescribeResponse;
             expect(described.capabilities.find((capability) => capability.id === 'tool.plugins')).toMatchObject({
                 methods: expect.objectContaining({
@@ -1046,17 +1281,21 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                         ok: true,
                         data: {
                             developmentActions: { create: true },
-                            developmentSources: [{
-                                pluginId: 'acme.development-actions',
-                                sourceRootPath: pluginRoot,
-                                watch: { state: 'configured' },
-                                reload: { state: 'clear', diagnostics: [] },
-                                actions: { test: true, pack: true },
-                            }],
+                            developmentStatus: {
+                                roots: [{ kind: 'explicit', rootPath: pluginRoot, trusted: true, persisted: true }],
+                                plugins: [{
+                                    pluginId: 'acme.development-actions',
+                                    sourceRootPath: pluginRoot,
+                                    phase: 'active',
+                                    occurrenceId: 'occurrence-development-actions',
+                                    uiArtifactDigest: 'sha256:development-actions',
+                                }],
+                            },
                         },
                     },
                 },
             });
+            expect(controlDaemonPluginDevelopmentMock).toHaveBeenCalledWith({ kind: 'status' });
 
             const createdRoot = join(parent, 'created-plugin');
             await expect(service.invoke({
@@ -1105,6 +1344,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                     archivePath: expect.stringMatching(/\.tgz$/u),
                 },
             });
+
         } finally {
             envScope.restore();
             reloadConfiguration();
@@ -1209,16 +1449,15 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         }
     });
 
-    it('returns the source-root review to the client instead of approving a local development source itself', async () => {
+    it('registers a local development source through the daemon development-root owner', async () => {
         const home = await createTempDir('happier-cli-capabilities-develop-');
         const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         envScope.patch({ HAPPIER_HOME_DIR: home });
         reloadConfiguration();
         const sourceRootPath = join(home, 'workspace', 'acme-plugin');
-        requestDaemonPluginChangeMock.mockResolvedValue({
-            kind: 'sourceRootReviewRequired',
-            pendingChangeId: 'pending-source-root',
-            review: { source: { kind: 'path', locator: sourceRootPath } },
+        controlDaemonPluginDevelopmentMock.mockResolvedValue({
+            kind: 'status',
+            status: { roots: [], plugins: [] },
         });
 
         try {
@@ -1236,20 +1475,14 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                 result: {
                     action: 'develop',
                     sourceRootPath,
-                    change: {
-                        kind: 'sourceRootReviewRequired',
-                        pendingChangeId: 'pending-source-root',
-                        review: { source: { kind: 'path', locator: sourceRootPath } },
-                    },
+                    status: { roots: [], plugins: [] },
                 },
             });
-            // The daemon's single development-change transaction is the trust,
-            // preparation, build, and submission owner. The capability sends
-            // the source once and returns its present-user decision unchanged.
-            expect(requestDaemonPluginChangeMock).toHaveBeenCalledWith({
-                kind: 'development',
-                sourceRootPath,
+            expect(controlDaemonPluginDevelopmentMock).toHaveBeenCalledWith({
+                kind: 'registerExplicit',
+                rootPath: sourceRootPath,
             });
+            expect(requestDaemonPluginChangeMock).not.toHaveBeenCalled();
             expect(runPluginAuthorToolchainMock).not.toHaveBeenCalled();
             expect(promptConfirmYesNoMock).not.toHaveBeenCalled();
             expect(decideDaemonPluginChangeMock).not.toHaveBeenCalled();
@@ -1269,7 +1502,30 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         }
     });
 
-    it('submits an approved remote development source through the one daemon-owned change cycle', async () => {
+    it('unregisters a local development source through the same daemon owner', async () => {
+        const sourceRootPath = '/workspace/acme-plugin';
+        controlDaemonPluginDevelopmentMock.mockResolvedValue({
+            kind: 'status',
+            status: { roots: [], plugins: [] },
+        });
+        const service = await createCliCapabilitiesService();
+
+        await expect(service.invoke({
+            id: 'tool.plugins',
+            method: 'unregisterDevelopment',
+            params: { sourceRootPath },
+        })).resolves.toMatchObject({
+            ok: true,
+            result: { action: 'unregisterDevelopment', sourceRootPath },
+        });
+        expect(controlDaemonPluginDevelopmentMock).toHaveBeenCalledWith({
+            kind: 'unregisterExplicit',
+            rootPath: sourceRootPath,
+        });
+        expect(requestDaemonPluginChangeMock).not.toHaveBeenCalled();
+    });
+
+    it('registers a scaffolded development source through the daemon development-root owner', async () => {
         const home = await createTempDir('happier-cli-capabilities-develop-authorized-');
         const parent = await mkdtemp(join(tmpdir(), 'happier-plugin-capabilities-develop-authorized-'));
         const pluginRoot = join(parent, 'plugin');
@@ -1287,12 +1543,9 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             expect(scaffold.ok).toBe(true);
             if (!scaffold.ok) return;
 
-            requestDaemonPluginChangeMock.mockResolvedValueOnce({
-                kind: 'committed',
-                pluginId,
-                desiredGeneration: 'generation-1',
-                appliedGeneration: 'generation-1',
-                pendingSurfaces: [],
+            controlDaemonPluginDevelopmentMock.mockResolvedValueOnce({
+                kind: 'status',
+                status: { roots: [], plugins: [] },
             });
 
             const service = await createCliCapabilitiesService();
@@ -1305,15 +1558,15 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                 result: {
                     action: 'develop',
                     sourceRootPath: pluginRoot,
-                    change: { kind: 'committed', pluginId },
+                    status: { roots: [], plugins: [] },
                 },
             });
 
-            expect(requestDaemonPluginChangeMock).toHaveBeenCalledWith({
-                kind: 'development',
-                sourceRootPath: pluginRoot,
-                pluginId,
+            expect(controlDaemonPluginDevelopmentMock).toHaveBeenCalledWith({
+                kind: 'registerExplicit',
+                rootPath: pluginRoot,
             });
+            expect(requestDaemonPluginChangeMock).not.toHaveBeenCalled();
             expect(runPluginAuthorToolchainMock).not.toHaveBeenCalled();
         } finally {
             envScope.restore();
@@ -1323,7 +1576,7 @@ describe('createCliCapabilitiesService tool.plugins', () => {
         }
     });
 
-    it('returns renewed source trust review without attempting client-side preparation', async () => {
+    it('returns a daemon development-root registration failure without attempting client-side preparation', async () => {
         const home = await createTempDir('happier-cli-capabilities-develop-revoked-');
         const parent = await mkdtemp(join(tmpdir(), 'happier-plugin-capabilities-develop-revoked-'));
         const pluginRoot = join(parent, 'plugin');
@@ -1341,10 +1594,11 @@ describe('createCliCapabilitiesService tool.plugins', () => {
             expect(scaffold.ok).toBe(true);
             if (!scaffold.ok) return;
 
-            requestDaemonPluginChangeMock.mockResolvedValueOnce({
-                kind: 'sourceRootReviewRequired',
-                pendingChangeId: 'pending-revoked-root',
-                review: { source: { kind: 'path', locator: pluginRoot } },
+            controlDaemonPluginDevelopmentMock.mockResolvedValueOnce({
+                kind: 'failed',
+                code: 'plugin_development_root_invalid',
+                message: 'Development root is unavailable',
+                status: { roots: [], plugins: [] },
             });
 
             const service = await createCliCapabilitiesService();
@@ -1353,23 +1607,16 @@ describe('createCliCapabilitiesService tool.plugins', () => {
                 method: 'develop',
                 params: { sourceRootPath: pluginRoot, pluginId },
             })).resolves.toMatchObject({
-                ok: true,
-                result: {
-                    action: 'develop',
-                    sourceRootPath: pluginRoot,
-                    change: {
-                        kind: 'sourceRootReviewRequired',
-                        pendingChangeId: 'pending-revoked-root',
-                    },
-                },
+                ok: false,
+                error: { code: 'plugin_development_root_invalid' },
             });
 
             expect(runPluginAuthorToolchainMock).not.toHaveBeenCalled();
-            expect(requestDaemonPluginChangeMock).toHaveBeenCalledWith({
-                kind: 'development',
-                sourceRootPath: pluginRoot,
-                pluginId,
+            expect(controlDaemonPluginDevelopmentMock).toHaveBeenCalledWith({
+                kind: 'registerExplicit',
+                rootPath: pluginRoot,
             });
+            expect(requestDaemonPluginChangeMock).not.toHaveBeenCalled();
             expect(promptConfirmYesNoMock).not.toHaveBeenCalled();
             expect(decideDaemonPluginChangeMock).not.toHaveBeenCalled();
         } finally {

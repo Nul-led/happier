@@ -37,6 +37,12 @@ import { openSessionFollowSourcePicker } from './openSessionFollowDestinationPic
 import {
     prepareSessionFollowSourceKey,
 } from './prepareSessionFollowSourceKey';
+import {
+    createIdleSessionFollowMutationIntent,
+    reduceSessionFollowMutationIntent,
+    type SessionFollowMutationIntentEvent,
+    type SessionFollowMutationIntentState,
+} from './sessionFollowMutationIntent';
 
 function sourcePreparationKey(preparationTargetKey: string, sourceSessionId: string): string {
     return `${preparationTargetKey}\u0000${sourceSessionId}`;
@@ -46,6 +52,22 @@ type SessionFollowSourceMutationRequest = Readonly<{
     targetKey: string;
     sourceSessionId: string;
 }>;
+
+/**
+ * The exact operation a failed Stop-following or mode change owes: reloading the list is not a
+ * retry of either, and a successful reload must not make the error disappear while the relation
+ * is still active and still supplying updates.
+ */
+type SessionFollowSourceIntent =
+    | Readonly<{ kind: 'remove'; sourceSessionId: string }>
+    | Readonly<{ kind: 'mode'; sourceSessionId: string; mode: SessionFollowSourceModeV1 }>;
+
+function reduceSourceMutation(
+    state: SessionFollowMutationIntentState<SessionFollowSourceIntent>,
+    event: SessionFollowMutationIntentEvent<SessionFollowSourceIntent>,
+): SessionFollowMutationIntentState<SessionFollowSourceIntent> {
+    return reduceSessionFollowMutationIntent(state, event);
+}
 
 export function SessionFollowSourcesEditor(props: Readonly<{
     destination: Session;
@@ -63,6 +85,10 @@ export function SessionFollowSourcesEditor(props: Readonly<{
     const [loading, setLoading] = React.useState(false);
     const [savingId, setSavingId] = React.useState<string | null>(null);
     const [failed, setFailed] = React.useState(false);
+    const [mutation, dispatchMutation] = React.useReducer(
+        reduceSourceMutation,
+        createIdleSessionFollowMutationIntent<SessionFollowSourceIntent>(),
+    );
     const [preparedSourceKeys, setPreparedSourceKeys] = React.useState<ReadonlySet<string>>(() => new Set());
     const [preparingFlightKeys, setPreparingFlightKeys] = React.useState<ReadonlySet<string>>(() => new Set());
     const [preparationWaitingReasons, setPreparationWaitingReasons] = React.useState<ReadonlyMap<string, SessionFollowSourceKeyPreparationWaitingReasonV1>>(() => new Map());
@@ -111,6 +137,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                 return next.size === current.size ? current : next;
             });
             setFailed(false);
+            dispatchMutation({ kind: 'refreshed' });
         } else {
             setFailed(true);
         }
@@ -122,6 +149,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
             targetKeyRef.current = targetKey;
             setSources([]);
             setFailed(false);
+            dispatchMutation({ kind: 'abandoned' });
             setSavingId(null);
             activeMutationRequestRef.current = null;
             setPreparedSourceKeys(new Set());
@@ -172,6 +200,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
         };
         activeMutationRequestRef.current = request;
         setSavingId(sourceSessionId);
+        dispatchMutation({ kind: 'started', intent: { kind: 'remove', sourceSessionId } });
         const input = { serverId: props.serverId, destinationSessionId: props.destination.id, sourceSessionId };
         const result = await removeSessionFollowSource(input);
         if (
@@ -179,6 +208,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
             || activeMutationRequestRef.current !== request
         ) return;
         if (result.kind === 'ok') {
+            dispatchMutation({ kind: 'succeeded' });
             await refresh();
             if (
                 preparationTargetKeyRef.current !== request.targetKey
@@ -186,7 +216,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
             ) return;
             addSourceRef.current?.focus();
         }
-        else setFailed(true);
+        else dispatchMutation({ kind: 'failed', error: true });
         activeMutationRequestRef.current = null;
         setSavingId(null);
     }, [online, preparationTargetKey, props.destination.id, props.serverId, refresh, savingId]);
@@ -199,6 +229,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
         };
         activeMutationRequestRef.current = request;
         setSavingId(sourceSessionId);
+        dispatchMutation({ kind: 'started', intent: { kind: 'mode', sourceSessionId, mode } });
         const result = await setSessionFollowSource({
             serverId: props.serverId,
             destinationSessionId: props.destination.id,
@@ -210,13 +241,14 @@ export function SessionFollowSourcesEditor(props: Readonly<{
             || activeMutationRequestRef.current !== request
         ) return;
         if (result.kind === 'ok') {
+            dispatchMutation({ kind: 'succeeded' });
             await refresh();
             if (
                 preparationTargetKeyRef.current !== request.targetKey
                 || activeMutationRequestRef.current !== request
             ) return;
         }
-        else setFailed(true);
+        else dispatchMutation({ kind: 'failed', error: true });
         activeMutationRequestRef.current = null;
         setSavingId(null);
     }, [online, preparationTargetKey, props.destination.id, props.serverId, refresh, savingId]);
@@ -394,12 +426,19 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                     />}
                 />;
             })}
-            {failed ? <Item
+            {failed || mutation.error !== null ? <Item
                 testID="session-follow-sources-error"
                 title={t('errors.unknownError')}
                 detail={t('common.retry')}
                 accessibilityLiveRegion="polite"
-                onPress={() => { void refresh(); }}
+                // Retry re-executes the exact operation that failed; only a failed list load
+                // retries by loading the list again.
+                onPress={() => {
+                    const intent = mutation.failed;
+                    if (!intent) { void refresh(); return; }
+                    if (intent.kind === 'remove') { void remove(intent.sourceSessionId); return; }
+                    void updateMode(intent.sourceSessionId, intent.mode);
+                }}
             /> : null}
         </ItemGroup>
         <ItemGroup title={t('common.add')}>

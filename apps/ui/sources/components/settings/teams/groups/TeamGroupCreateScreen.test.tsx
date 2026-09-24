@@ -121,6 +121,40 @@ describe('TeamGroupCreateScreen', () => {
             .toHaveBeenCalledWith(`/settings/teams/${serverId}/team-1/groups/group-new`);
     });
 
+    it('says an overlong description is the problem instead of a Create that does nothing', async () => {
+        // The canonical Group description rule is 500 characters. A valid name
+        // plus an overlong description used to leave Create enabled and produce
+        // no request, no notice and no focus change.
+        const serverId = await addHome({ manageGroups: true });
+        harness.answer(serverId, GROUP_CREATE_PATH, {
+            body: teamGroupFixture({ id: 'group-new', name: 'Design', memberCount: 0 }),
+        });
+
+        const screen = await renderCreate(serverId);
+        await waitForTestId(screen, 'team-group-create-name');
+        act(() => screen.changeTextByTestId('team-group-create-name', 'Design'));
+        act(() => screen.changeTextByTestId('team-group-create-description', 'd'.repeat(501)));
+
+        await vi.waitFor(() => {
+            expect(screen.getTextContent()).toContain('teams.errors.invalidDescription');
+        });
+        expect(screen.findByTestId('team-group-create-submit')?.props.disabled).toBe(true);
+        await screen.pressByTestIdAsync('team-group-create-submit');
+        expect(harness.requestsFor(GROUP_CREATE_PATH)).toHaveLength(0);
+        // The text is preserved, and correcting it makes the same submission work.
+        expect(screen.findByTestId('team-group-create-description')?.props.value)
+            .toBe('d'.repeat(501));
+
+        act(() => screen.changeTextByTestId('team-group-create-description', 'd'.repeat(500)));
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('team-group-create-submit')?.props.disabled).toBe(false);
+        });
+        await screen.pressByTestIdAsync('team-group-create-submit');
+        await vi.waitFor(() => {
+            expect(harness.requestsFor(GROUP_CREATE_PATH)).toHaveLength(1);
+        });
+    });
+
     it('names a same-Team name collision and keeps the typed form', async () => {
         const serverId = await addHome({ manageGroups: true });
         harness.answer(serverId, GROUP_CREATE_PATH, {

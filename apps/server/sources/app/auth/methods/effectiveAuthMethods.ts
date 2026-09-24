@@ -6,6 +6,7 @@ import type {
     EffectiveAuthMethodAction,
 } from "@/app/auth/methods/types";
 import type { HomeAuthenticationPolicyReadV1 } from "@happier-dev/protocol";
+import type { TeamIdentityProviderKindV1 } from "@happier-dev/protocol/teams";
 
 import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
 import { resolveAuthMethodRegistry } from "@/app/auth/methods/registry";
@@ -14,6 +15,7 @@ import {
     resolveRecommendedAccountProvisionMode,
 } from "@/app/auth/methods/accountProvisionModes";
 import { resolveDeploymentAuthProviderFeatures } from "@/app/auth/providers/deploymentProviderFeatures";
+import type { AuthProviderFeatures } from "@/app/auth/providers/types";
 import { resolveKeylessAutoProvisionEligibility } from "@/app/auth/keyless/resolveKeylessAutoProvisionEligibility";
 import { resolveKeylessAccountsEnabled } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
@@ -23,8 +25,42 @@ export type EffectiveAuthMethodDecision = Readonly<{
     actions: readonly EffectiveAuthMethodAction[];
     allowedProvisionModes: readonly AccountProvisionMode[];
     recommendedProvisionMode: AccountProvisionMode | null;
-    ui?: AuthMethod["ui"];
+    ui?: EffectiveAuthMethodPresentation;
 }>;
+
+/**
+ * A method's safe presentation, as the provider descriptor projects it
+ * (teams-lane-03/01 §10.2): provider kind, display name, icon hint,
+ * connect-button colour and profile-badge support. The auth-entry projector
+ * carries all of it; the retained `/v1/features` method list publishes only its
+ * own `ui` fields.
+ */
+export type EffectiveAuthMethodPresentation = NonNullable<AuthMethod["ui"]> & Readonly<{
+    providerKind?: TeamIdentityProviderKindV1;
+    connectButtonColor?: string | null;
+    supportsProfileBadge?: boolean;
+}>;
+
+/**
+ * The one mapping from a provider descriptor's `ui` to its decision's
+ * presentation, shared by the deployment and managed-provider decision
+ * builders so neither can drop a descriptor field the other carries.
+ */
+export function projectProviderDecisionPresentation(
+    ui: AuthProviderFeatures["ui"],
+    providerKind?: TeamIdentityProviderKindV1,
+): Readonly<{ ui?: EffectiveAuthMethodPresentation }> {
+    if (!ui?.displayName) return {};
+    return {
+        ui: {
+            displayName: ui.displayName,
+            iconHint: ui.iconHint ?? null,
+            ...(providerKind ? { providerKind } : {}),
+            ...(ui.connectButtonColor ? { connectButtonColor: ui.connectButtonColor } : {}),
+            ...(ui.supportsProfileBadge !== undefined ? { supportsProfileBadge: ui.supportsProfileBadge } : {}),
+        },
+    };
+}
 
 export type EffectiveAuthMethodInputs = Readonly<{
     env: NodeJS.ProcessEnv;
@@ -42,18 +78,6 @@ export type EffectiveAuthMethodInputs = Readonly<{
         kind: "team_invitation" | "team_provisioned_identity" | "team_jit_identity";
     }>;
 }>;
-
-/**
- * Method IDs the supported released 0.2 web/mobile/desktop clients would
- * misclassify as an external OAuth provider, routing them to
- * `/v1/auth/external/<id>/params`.
- *
- * This list is the exact input to the `/v1/features` compatibility subset. Its
- * producers are the effective decisions below; its consumers are those clients'
- * existing auth-capability paths. Remove an entry only when no supported
- * stable/preview artifact with that behavior remains.
- */
-export const OLD_CLIENT_UNSAFE_AUTH_METHOD_IDS: readonly string[] = Object.freeze(["email_password"]);
 
 function normalizeId(value: unknown): string {
     return String(value ?? "").trim().toLowerCase();
@@ -128,6 +152,25 @@ function actionHasPermittedAccountMode(
     return permittedModes.includes(action.mode === "keyed" ? "e2ee" : "plain");
 }
 
+/**
+ * The persisted Home narrowing, asked about one Account mode.
+ *
+ * Every admission path that may construct an Account answers this question, so
+ * it has one owner: the ordinary decision narrowing below filters
+ * `allowedProvisionModes` through it, and the Team-provider admission fallback
+ * in `effectiveHomeAuthMethods.ts` bounds its requested mode with it. An
+ * unreadable document fails closed, exactly as the decision narrowing does.
+ */
+export function isAccountProvisionModePermittedByHomePolicy(
+    homePolicy: HomeAuthenticationPolicyReadV1 | undefined,
+    mode: AccountProvisionMode,
+): boolean {
+    if (!homePolicy || homePolicy.status === "inherited") return true;
+    if (homePolicy.status === "unreadable") return false;
+    const permitted = homePolicy.policy.permittedAccountModes;
+    return !permitted || permitted.includes(mode);
+}
+
 /** Applies the persisted Home document only as a narrowing of a deployment-backed decision. */
 export function narrowAuthMethodDecisionForHomePolicy(
     decision: EffectiveAuthMethodDecision,
@@ -151,9 +194,8 @@ export function narrowAuthMethodDecisionForHomePolicy(
     const policy = homePolicy.policy;
     const enabledMethodIds = policy.enabledMethodIds?.map(normalizeId);
     const methodEnabled = !enabledMethodIds || enabledMethodIds.includes(normalizeId(decision.id));
-    const allowedProvisionModes = policy.permittedAccountModes
-        ? decision.allowedProvisionModes.filter((mode) => policy.permittedAccountModes!.includes(mode))
-        : decision.allowedProvisionModes;
+    const allowedProvisionModes = decision.allowedProvisionModes
+        .filter((mode) => isAccountProvisionModePermittedByHomePolicy(homePolicy, mode));
     const recommendedProvisionMode = policy.recommendedProvisioningMode
         ? (allowedProvisionModes.includes(policy.recommendedProvisioningMode)
             ? policy.recommendedProvisioningMode
@@ -244,39 +286,18 @@ export function resolveEffectiveAuthMethodDecisions(
                 }),
                 allowedProvisionModes,
                 recommendedProvisionMode,
-                ...(details.ui?.displayName
-                    ? { ui: { displayName: details.ui.displayName, iconHint: details.ui.iconHint ?? null } }
-                    : {}),
+                ...projectProviderDecisionPresentation(details.ui, provider.providerKind),
             } satisfies EffectiveAuthMethodDecision, inputs.homeAuthenticationPolicy, inputs.admission);
         })
         .sort((a, b) => a.id.localeCompare(b.id));
 
-    const decisions = [...coreDecisions, ...providerDecisions];
-    const keyedKeyChallengeLoginEnabled = decisions.some((decision) =>
-        decision.id === "key_challenge"
-        && decision.actions.some((action) => action.id === "login"
-            && action.enabled
-            && (action.mode === "keyed" || action.mode === "either")));
-
-    // Native E2EE password login unlocks the local envelope and then completes
-    // the existing Key Challenge finalizer. Keep that dependency in this one
-    // decision owner: route publication must not claim a keyed password login
-    // when Home policy disabled its required finalizer. Plain password login is
-    // independent and remains available when an `either` action loses only its
-    // keyed branch.
-    return Object.freeze(decisions.map((decision) => decision.id !== "email_password"
-        ? decision
-        : {
-            ...decision,
-            actions: decision.actions.map((action) => {
-                if (action.id !== "login" || !action.enabled || keyedKeyChallengeLoginEnabled) return action;
-                if (action.mode === "either") return { ...action, mode: "keyless" as const };
-                if (action.mode === "keyed") {
-                    return { ...action, enabled: false, reason: "method_not_enabled" as const };
-                }
-                return action;
-            }),
-        }));
+    // Native E2EE password login completes through the Key Challenge finalizer,
+    // but that finalizer qualifies a password-stamped challenge as
+    // `email_password` and gates on this method's own decision
+    // (`registerKeyChallengeAuthRoute.ts`). So `key_challenge` policy does not
+    // bound keyed password login: narrowing it here would let a Home create
+    // E2EE Accounts it then refuses to sign in.
+    return Object.freeze([...coreDecisions, ...providerDecisions]);
 }
 
 export function findEffectiveAuthMethodDecision(
@@ -303,17 +324,23 @@ export function isEffectiveAuthMethodActionEnabled(
 }
 
 /**
- * Translation-only compatibility adapter for the retained `/v1/features` method
- * lists. It removes exactly the old-client-unsafe IDs and decides nothing else.
+ * Wire shape of the effective decisions for the `/v1/features` method list. It
+ * translates only and decides nothing.
  */
-export function toOldClientSafeAuthMethods(
+export function toPublishedAuthMethods(
     decisions: readonly EffectiveAuthMethodDecision[],
 ): AuthMethod[] {
     return decisions
-        .filter((decision) => !OLD_CLIENT_UNSAFE_AUTH_METHOD_IDS.includes(decision.id))
         .map((decision) => ({
             id: decision.id,
             actions: decision.actions.map(({ id, enabled, mode }) => ({ id, enabled, mode })),
-            ...(decision.ui ? { ui: decision.ui } : {}),
+            ...(decision.ui
+                ? {
+                    ui: {
+                        ...(decision.ui.displayName !== undefined ? { displayName: decision.ui.displayName } : {}),
+                        ...(decision.ui.iconHint !== undefined ? { iconHint: decision.ui.iconHint } : {}),
+                    },
+                }
+                : {}),
         }));
 }

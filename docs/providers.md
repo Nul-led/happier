@@ -187,7 +187,11 @@ second credential store. Resource access has two intentionally different privacy
   can configure that Machine directly or choose a personal Machine Pool. For a genuinely new
   Pool-backed open, the source-owning daemons return only current eligibility status, the Home
   applies the canonical Pool selector once, and the ordinary exact-Machine broker path continues.
-  The Home admits the current Account, Team resource, Session or execution run, policy, limits,
+  An external API key has one operation per key, established on its first admitted inference:
+  the admission UsageEvent names that broker Machine, and the key's later requests go back to it
+  while it is present, an eligible broker and able to run the source. Pool tier reordering,
+  disabling and removal therefore affect only future opens; a gone or source-invalid Machine
+  ends the operation and the next request is a fresh selection, never a replay. The Home admits the current Account, Team resource, Session or execution run, policy, limits,
   and placement for each request; the broker then performs the Provider request. Recipients do
   not receive credential bytes, the private Pool roster, or Pool-management authority.
 - **Direct** access deliberately discloses usable current material to an authorized recipient for
@@ -277,7 +281,7 @@ Large catalogs must use the app's virtualized option-list path. OpenRouter-scale
 
 Catalog and health refresh is demand-driven. Enabling a connection, a semantic connection-detail or model-picker read, an explicit Test/Refresh, or an eligible read of expired cached data may schedule work through the canonical Provider probe scheduler. Cache expiry makes that read schedule a refresh; it does not create a timer, background crawler, lease, or global refresh budget. The scheduler owns single-flight execution, concurrency, retry/backoff, and freshness. UI and plugin code must not add a second polling path.
 
-An Agent may declare a native credential source for that same catalog observation. The host reads only the declared secret file under the Agent's declared native home and routes the credential into the existing Provider catalog observer; native authentication does not create a second HTTP probe, parser, cache, or refresh scheduler. Claude uses this path for its native Claude Code OAuth login when no selected Connected Service supplies the catalog credential. Its account setting and environment kill switch are evaluated before either credential source, cache, or network is touched.
+An Agent may declare a native credential source for that same catalog observation. The host reads only the declared secret file under the Agent's declared native home and routes the credential into the existing Provider catalog observer; native authentication does not create a second HTTP probe, catalog parser, cache, or refresh scheduler. Claude uses this path for its native Claude Code OAuth login when no selected Connected Service supplies the catalog credential. Its account setting and environment kill switch are evaluated before either credential source, cache, or network is touched.
 
 A model-picker read waits for the demand it schedules only when a connection is **cold**: it has no catalog observation yet and would therefore contribute no row at all. Answering that read immediately would be a silently empty picker with nothing to follow it, because the projection response is the only completion signal the client has. A connection that already holds an observation—even an empty, stale, or failed one—renders from that observation and keeps its refresh advisory, so an unreachable endpoint never blocks a later read. Waiting does not change work ownership: the demand still goes to the one probe scheduler, which keeps its single-flight execution, admission concurrency, typed local-capacity refusal, and failure backoff. Demand the scheduler refuses for capacity is left for a later read; no caller retains a second queue for it.
 

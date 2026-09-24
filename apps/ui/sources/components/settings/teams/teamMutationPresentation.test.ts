@@ -31,4 +31,12 @@ describe('teamMutationFailureLabel', () => {
         expect(teamMutationFailureLabel({ kind: 'conflict', retryable: false, code: null }))
             .toBe('teams.errors.conflict');
     });
+
+    it('explains a refusal over an inactive Account instead of a generic conflict', () => {
+        // Every new Team ownership requires an active Account (L01/01 :337); the
+        // role picker cannot know the target's Account status, so the Home's
+        // typed refusal is the answer the person must be able to act on.
+        expect(teamMutationFailureLabel({ kind: 'conflict', retryable: false, code: 'account_ineligible' }))
+            .toBe('teams.members.accountInactive');
+    });
 });

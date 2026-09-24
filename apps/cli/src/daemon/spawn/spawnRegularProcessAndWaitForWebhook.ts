@@ -64,6 +64,8 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
   options: SpawnSessionOptions;
   trackedSpawnOptions: SpawnSessionOptions;
   normalizedExistingSessionId: string;
+  /** Creation outcome of a Session the daemon committed before launch; its attaching runner reports none. */
+  sessionCreationOutcome?: TrackedSession['sessionCreationOutcome'];
   effectiveResume: string;
   directoryCreated: boolean;
   extraEnvForChildWithMessage: Record<string, string>;
@@ -188,6 +190,9 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
     pid,
     childProcess: happyProcess,
     spawnOptions: params.trackedSpawnOptions,
+    ...(params.sessionCreationOutcome
+        ? { sessionCreationOutcome: params.sessionCreationOutcome }
+        : {}),
     acceptedSpawnMarkerGate,
     ...(params.runnerAgentSessionBootstrapAuthorization ? {
       agentRuntimeDaemonServiceAuthorityFilePath:

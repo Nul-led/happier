@@ -19,10 +19,7 @@ import {
 } from "./resourceSourceResolver";
 import { matchesTeamCredentialRecipientBinding } from "./recipientMaterialCurrentness";
 import { recordTeamCredentialDirectDeliveryActivityInTx } from "./resourceActivity";
-import {
-    admitSessionTeamCredentialBindingInTx,
-    validatePlannedSessionTeamCredentialResourceInTx,
-} from "./sessionBinding";
+import { admitTeamCredentialOperationBindingInTx } from "./sessionBinding";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 type RecipientMode = "plain" | "e2ee";
@@ -32,8 +29,28 @@ export type TeamCredentialRecipientMaterialReadResult =
     | Readonly<{ ok: false; reason: "access_removed" | "disabled" | "preparing" | "source_changed" | "recipient_mode_mismatch" | "resource_corrupt" }>;
 
 export type TeamCredentialRecipientMaterialUpsertResult =
-    | Readonly<{ ok: true; resourceId: string; recipientAccountId: string; sourceMemberKey: string; sourceVersion: string }>
+    /** `changed` is false when the same logical tuple was already stored. */
+    | Readonly<{ ok: true; resourceId: string; recipientAccountId: string; sourceMemberKey: string; sourceVersion: string; changed: boolean }>
     | Readonly<{ ok: false; reason: "resource_not_found" | "source_owner_required" | "access_removed" | "disabled" | "invalid_material" | "resource_corrupt" | "resource_changed" | "source_changed" | "recipient_binding_changed" | "material_changed" | "team_authentication_required" | "team_authentication_policy_unavailable" }>;
+
+/**
+ * Whether a stored tuple is the current one for its recipient: bound to the
+ * published source version, to the source version the Home can itself derive
+ * (when it can), and to the recipient's current encryption binding. The
+ * readiness census and the preparation census answer with this one decision.
+ */
+function isStoredTeamCredentialRecipientTupleCurrent(
+    row: Readonly<{ sourceVersion: string; recipientMode: string; recipientContentPublicKeyFingerprint: string | null }>,
+    input: Readonly<{
+        publishedSourceVersion: string | undefined;
+        homeSourceVersion: string | null | undefined;
+        recipient: Parameters<typeof matchesTeamCredentialRecipientBinding>[1];
+    }>,
+): boolean {
+    return row.sourceVersion === input.publishedSourceVersion
+        && (input.homeSourceVersion === null || row.sourceVersion === input.homeSourceVersion)
+        && matchesTeamCredentialRecipientBinding(row, input.recipient);
+}
 
 function encodeStoredMaterial(stored: TeamCredentialDirectMaterialStoredV1): Buffer {
     return Buffer.from(new TextEncoder().encode(JSON.stringify(stored)));
@@ -155,10 +172,11 @@ export async function readTeamCredentialDirectMaterialCensusInTx(
         const ready = memberKeys.length > 0 && memberKeys.every(memberKey => rows.some(row => (
             row.recipientAccountId === membership.accountId
             && row.sourceMemberKey === memberKey
-            && row.sourceVersion === published[memberKey]
-            && (currentSourceVersions.get(memberKey) === null
-                || row.sourceVersion === currentSourceVersions.get(memberKey))
-            && matchesTeamCredentialRecipientBinding(row, encryption.currentness)
+            && isStoredTeamCredentialRecipientTupleCurrent(row, {
+                publishedSourceVersion: published[memberKey],
+                homeSourceVersion: currentSourceVersions.get(memberKey),
+                recipient: encryption.currentness,
+            })
         )));
         recipients.push({
             recipientAccountId: membership.accountId,
@@ -172,6 +190,46 @@ export async function readTeamCredentialDirectMaterialCensusInTx(
         recipients,
         nextCursor: membershipRows.length > 100 ? page.at(-1)?.id ?? null : null,
     };
+}
+
+/**
+ * Drop the prepared direct material of every recipient this resource no longer
+ * delivers to, and keep every row whose recipient still holds an effective
+ * direct grant.
+ *
+ * Who may receive direct material is decided by one owner —
+ * `resolveTeamCredentialEntitlementInTx`, the same owner the readiness census
+ * above already consults per recipient. An audience edit that removes one
+ * overlapping grant, or adds an unrelated member, changes that answer for the
+ * affected recipients only, so erasing everyone's material re-derives the
+ * answer as "nobody" and needs the source custodian online to rebuild what was
+ * still valid (`06-direct-credential-delivery.md:572,:579`).
+ *
+ * A change to the source itself or to the disclosure ceiling invalidates every
+ * row rather than a subset; those callers keep their unconditional delete and
+ * clear the published versions with it.
+ */
+export async function retainEntitledTeamCredentialRecipientMaterialInTx(
+    tx: Tx,
+    input: Readonly<{ resourceId: string }>,
+): Promise<void> {
+    const rows = await tx.teamCredentialRecipientMaterial.findMany({
+        where: { resourceId: input.resourceId },
+        select: { recipientAccountId: true },
+        distinct: ["recipientAccountId"],
+    });
+    const unentitled: string[] = [];
+    for (const row of rows) {
+        const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
+            resourceId: input.resourceId,
+            accountId: row.recipientAccountId,
+        });
+        if (!entitlement.ok || !entitlement.mayReceiveDirect) unentitled.push(row.recipientAccountId);
+    }
+    if (unentitled.length === 0) return;
+    await tx.teamCredentialRecipientMaterial.deleteMany({
+        where: { resourceId: input.resourceId, recipientAccountId: { in: unentitled } },
+    });
 }
 
 function prismaBytes(value: Buffer): Uint8Array<ArrayBuffer> {
@@ -241,6 +299,14 @@ export async function prepareTeamCredentialRecipientMaterialInTx(
     }
     const publishedSourceVersions = parsePublishedTeamCredentialSourceVersions(resource.directSourceVersionsJson);
     if (!publishedSourceVersions) return { ok: false as const, reason: "resource_corrupt" as const };
+    const storedTupleCurrent = (
+        stored: Parameters<typeof isStoredTeamCredentialRecipientTupleCurrent>[0] | undefined,
+        recipient: Parameters<typeof matchesTeamCredentialRecipientBinding>[1],
+    ) => stored !== undefined && isStoredTeamCredentialRecipientTupleCurrent(stored, {
+        publishedSourceVersion: publishedSourceVersions[input.sourceMemberKey],
+        homeSourceVersion: sourceCurrentness.sourceVersion,
+        recipient,
+    });
 
     const membershipRows = await tx.teamMembership.findMany({
         where: { teamId: resource.teamId },
@@ -262,9 +328,14 @@ export async function prepareTeamCredentialRecipientMaterialInTx(
             sourceMemberKey: input.sourceMemberKey,
             recipientAccountId: { in: page.map(row => row.accountId) },
         },
-        select: { recipientAccountId: true, sourceVersion: true },
+        select: {
+            recipientAccountId: true,
+            sourceVersion: true,
+            recipientMode: true,
+            recipientContentPublicKeyFingerprint: true,
+        },
     });
-    const existingByRecipient = new Map(materials.map(row => [row.recipientAccountId, row.sourceVersion]));
+    const existingByRecipient = new Map(materials.map(row => [row.recipientAccountId, row]));
     const recipients = [];
     for (const row of page) {
         const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
@@ -281,7 +352,11 @@ export async function prepareTeamCredentialRecipientMaterialInTx(
             recipientContentPublicKey: encryption.currentness.contentPublicKey === null
                 ? null
                 : Buffer.from(encryption.currentness.contentPublicKey).toString("base64"),
-            expectedStoredSourceVersion: existingByRecipient.get(row.accountId) ?? null,
+            expectedStoredSourceVersion: existingByRecipient.get(row.accountId)?.sourceVersion ?? null,
+            // The missing/stale census half (child 06 L10D-R13): the source
+            // daemon skips a recipient whose tuple is already current for the
+            // version it would produce, instead of re-sealing the audience.
+            storedTupleCurrent: storedTupleCurrent(existingByRecipient.get(row.accountId), encryption.currentness),
         });
     }
     return {
@@ -432,24 +507,18 @@ export async function readCurrentTeamCredentialRecipientMaterialInTx(
     // credential evidence into a generic access-removal projection.
     const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, input.authentication);
     if (!qualification.ok) return { ok: false as const, outcome: "operation_error" as const, error: qualification.error };
-    const admitted = input.consumer.kind === "session" || input.consumer.parentSessionId !== null
-        ? await admitSessionTeamCredentialBindingInTx(tx, {
-            sessionId: input.consumer.kind === "session"
-                ? input.consumer.sessionId
-                : input.consumer.parentSessionId!,
-            accountId: input.recipientAccountId,
-            slot: input.slot,
-            deliveryMode: "direct",
-            authentication: input.sessionAuthentication,
-        })
-        : await validatePlannedSessionTeamCredentialResourceInTx(tx, {
-            accountId: input.recipientAccountId,
-            resourceId: input.resourceId,
-            expectedResourceRevision: resource.revision,
-            plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
-            deliveryMode: "direct",
-            authentication: input.sessionAuthentication,
-        });
+    // A Session reads through its accepted witness; an Execution Run through
+    // its own Run-attested direct use, in its parent Session's context when
+    // attached — never through the parent's selection.
+    const admitted = await admitTeamCredentialOperationBindingInTx(tx, {
+        consumer: input.consumer.kind === "session"
+            ? input.consumer
+            : { kind: "execution_run", parentSessionId: input.consumer.parentSessionId, resourceId: input.resourceId },
+        accountId: input.recipientAccountId,
+        slot: input.slot,
+        deliveryMode: "direct",
+        authentication: input.sessionAuthentication,
+    });
     if (!admitted.ok || admitted.binding.resourceId !== input.resourceId) {
         return { ok: false as const, outcome: "unavailable" as const, reason: "access_removed" as const };
     }
@@ -630,23 +699,9 @@ export async function upsertTeamCredentialRecipientMaterialInTx(
     const publishedSourceVersions = parsePublishedTeamCredentialSourceVersions(resource.directSourceVersionsJson);
     if (!publishedSourceVersions) return { ok: false, reason: "resource_corrupt" };
     const publishedSourceVersion = publishedSourceVersions[input.sourceMemberKey] ?? null;
-    if (publishedSourceVersion !== input.sourceVersion) {
-        if (publishedSourceVersion !== input.expectedPublishedSourceVersion) {
-            return { ok: false, reason: "source_changed" };
-        }
-        const nextPublishedSourceVersions = JSON.stringify({
-            ...publishedSourceVersions,
-            [input.sourceMemberKey]: input.sourceVersion,
-        });
-        const published = await tx.teamCredentialResource.updateMany({
-            where: {
-                id: resource.id,
-                revision: resource.revision,
-                directSourceVersionsJson: resource.directSourceVersionsJson,
-            },
-            data: { directSourceVersionsJson: nextPublishedSourceVersions },
-        });
-        if (published.count !== 1) return { ok: false, reason: "source_changed" };
+    const advancesPublication = publishedSourceVersion !== input.sourceVersion;
+    if (advancesPublication && publishedSourceVersion !== input.expectedPublishedSourceVersion) {
+        return { ok: false, reason: "source_changed" };
     }
     if (input.recipientMode === "plain" && input.recipientContentPublicKeyFingerprint !== null) {
         return { ok: false, reason: "invalid_material" };
@@ -678,10 +733,49 @@ export async function upsertTeamCredentialRecipientMaterialInTx(
             recipientAccountId: input.recipientAccountId,
             sourceMemberKey: input.sourceMemberKey,
         } },
-        select: { sourceVersion: true },
+        select: { sourceVersion: true, recipientMode: true, recipientContentPublicKeyFingerprint: true },
     });
     if ((existing?.sourceVersion ?? null) !== input.expectedStoredSourceVersion) {
         return { ok: false, reason: "source_changed" };
+    }
+    // Child 06 row invariant (:372): an upsert of the same logical tuple is
+    // idempotent. E2EE sealing makes fresh bytes for an unchanged tuple, so
+    // the tuple — source member, source version and recipient binding — is
+    // what is compared, and an unchanged one is neither rewritten nor
+    // reported as a change the Team must be woken for.
+    if (existing
+        && !advancesPublication
+        && existing.sourceVersion === input.sourceVersion
+        && existing.recipientMode === input.recipientMode
+        && existing.recipientContentPublicKeyFingerprint === input.recipientContentPublicKeyFingerprint) {
+        return {
+            ok: true,
+            resourceId: input.resourceId,
+            recipientAccountId: input.recipientAccountId,
+            sourceMemberKey: input.sourceMemberKey,
+            sourceVersion: input.sourceVersion,
+            changed: false,
+        };
+    }
+    // The published version is the resource-level half of this one accepted
+    // tuple, so it is written only once every precondition of that tuple has
+    // passed. A rejected upload that had already advanced publication would
+    // strand every recipient still holding the previous version: their rows
+    // stop matching the published one and the census reports them unavailable.
+    if (advancesPublication) {
+        const nextPublishedSourceVersions = JSON.stringify({
+            ...publishedSourceVersions,
+            [input.sourceMemberKey]: input.sourceVersion,
+        });
+        const published = await tx.teamCredentialResource.updateMany({
+            where: {
+                id: resource.id,
+                revision: resource.revision,
+                directSourceVersionsJson: resource.directSourceVersionsJson,
+            },
+            data: { directSourceVersionsJson: nextPublishedSourceVersions },
+        });
+        if (published.count !== 1) return { ok: false, reason: "source_changed" };
     }
     if (existing) {
         const updated = await tx.teamCredentialRecipientMaterial.updateMany({
@@ -716,5 +810,6 @@ export async function upsertTeamCredentialRecipientMaterialInTx(
         recipientAccountId: input.recipientAccountId,
         sourceMemberKey: input.sourceMemberKey,
         sourceVersion: input.sourceVersion,
+        changed: true,
     };
 }

@@ -24,7 +24,7 @@ import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv"
 import { validateMachineInstallationProof } from "@/app/machines/installationProof";
 import { createMachineWithInstallationIdentityInTx } from "@/app/machines/machineMutations";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
-import { createFreshBoundLayout1SessionInTx } from "@/app/session/create/createFreshBoundLayout1Session";
+import { classifyLayout1SessionCreateThrow, createFreshBoundLayout1SessionInTx } from "@/app/session/create/createFreshBoundLayout1Session";
 import {
     prepareLayout1SessionCreate,
     type FreshBoundLayout1SessionCreateRejection,
@@ -67,6 +67,14 @@ function projectSessionCreateRejection(
     }
     if (rejection.reason === "encryption-mode-not-allowed" || rejection.reason === "privacy-upgrade-required") {
         return { status: "conflict", reason: "encryption_mismatch" };
+    }
+    if (
+        rejection.reason === "invalid-organization-placement"
+        || rejection.reason === "invalid-params"
+        || rejection.reason === "session-initial-access-invalid"
+        || rejection.reason === "team-credential-binding-invalid"
+    ) {
+        return { status: "conflict", reason: "session_create_rejected" };
     }
     return { status: "conflict", reason: "binding_mismatch" };
 }
@@ -336,6 +344,12 @@ export async function materializeEphemeralRunner(params: Readonly<{
         });
     } catch (error) {
         if (error instanceof RunnerMaterializationRollback) return error.result;
+        // The shared constructor throws its domain refusals so the caller's own
+        // transaction rolls back with the Session row; classifying them here is
+        // what keeps a folder removed between review and submit from surfacing
+        // as an unexpected 500 to the endpoint.
+        const rejection = classifyLayout1SessionCreateThrow(error);
+        if (rejection) return projectSessionCreateRejection(rejection);
         throw error;
     }
 }

@@ -116,6 +116,29 @@ function buildEmailVerificationReturnTo(token: string, homeTarget: string): stri
  * actions consume one-time bearers. Reuse the canonical action-admission owner
  * so a slow confirmation is visibly working and cannot be submitted twice.
  */
+/**
+ * Re-running the read this landing already owns. Only the read failed — the
+ * Home is resolved and recorded — so the retry re-enters the same effect
+ * instead of adding a second acquisition or bearer path.
+ */
+function useLandingReadRetry(): Readonly<{ attempt: number; retry: () => void }> {
+    const [attempt, setAttempt] = React.useState(0);
+    const retry = React.useCallback(() => setAttempt((current) => current + 1), []);
+    return React.useMemo(() => ({ attempt, retry }), [attempt, retry]);
+}
+
+function LandingRetryAction(props: Readonly<{ testID: string; onPress: () => void }>) {
+    return (
+        <WelcomeActionCard
+            testID={props.testID}
+            title={t('common.retry')}
+            iconName="arrow-clockwise"
+            primary
+            onPress={props.onPress}
+        />
+    );
+}
+
 function LandingShell(props: Readonly<{ title: string; children: React.ReactNode; testID: string }>) {
     const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
     const activeActionRef = React.useRef<string | null>(null);
@@ -178,6 +201,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
     const [admissionOpen, setAdmissionOpen] = React.useState(false);
     const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
     const [authActions, setAuthActions] = React.useState<NativeAuthLandingActions | null | undefined>(undefined);
+    const previewRead = useLandingReadRetry();
     const destination = useExactHomeDestination({
         refreshAuth: auth.refreshFromActiveServer,
         onFocused: React.useCallback(() => router.replace('/'), [router]),
@@ -219,7 +243,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
             }
         })();
         return () => { active = false; };
-    }, [landingTarget, props.token]);
+    }, [landingTarget, previewRead.attempt, props.token]);
 
     React.useEffect(() => {
         let active = true;
@@ -416,13 +440,11 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
                 {state.kind === 'invalid' ? t('settingsAccount.nativePassword.linkExpired') : problemMessage ?? t('settingsAccount.nativePassword.serverUnavailable')}
             </Text>
             {landingTarget.kind === 'unavailable' && landingTarget.retry ? (
-                <WelcomeActionCard
-                    testID="native-auth-verify-retry-home"
-                    title={t('common.retry')}
-                    iconName="arrow-clockwise"
-                    primary
-                    onPress={landingTarget.retry}
-                />
+                <LandingRetryAction testID="native-auth-verify-retry-home" onPress={landingTarget.retry} />
+            ) : state.kind === 'unavailable' && landingTarget.kind === 'ready' ? (
+                // The Home is already acquired; only the preview read failed,
+                // so this is not a dead end.
+                <LandingRetryAction testID="native-auth-verify-retry" onPress={previewRead.retry} />
             ) : null}
             <WelcomeActionCard
                 testID="native-auth-verify-return"
@@ -564,6 +586,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
     const [busy, setBusy] = React.useState(false);
     const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
     const [loginActions, setLoginActions] = React.useState<readonly HomeAuthenticationAction[] | null | undefined>(undefined);
+    const previewRead = useLandingReadRetry();
     const destination = useExactHomeDestination({
         refreshAuth: auth.refreshFromActiveServer,
         onFocused: React.useCallback(() => router.replace('/'), [router]),
@@ -599,7 +622,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
             }
         })();
         return () => { active = false; };
-    }, [landingTarget, props.token]);
+    }, [landingTarget, previewRead.attempt, props.token]);
 
     React.useEffect(() => {
         let active = true;
@@ -681,13 +704,9 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
                 {state.kind === 'invalid' ? t('settingsAccount.nativePassword.linkExpired') : problemMessage ?? t('settingsAccount.nativePassword.serverUnavailable')}
             </Text>
             {landingTarget.kind === 'unavailable' && landingTarget.retry ? (
-                <WelcomeActionCard
-                    testID="native-auth-reset-retry-home"
-                    title={t('common.retry')}
-                    iconName="arrow-clockwise"
-                    primary
-                    onPress={landingTarget.retry}
-                />
+                <LandingRetryAction testID="native-auth-reset-retry-home" onPress={landingTarget.retry} />
+            ) : state.kind === 'unavailable' && landingTarget.kind === 'ready' ? (
+                <LandingRetryAction testID="native-auth-reset-retry" onPress={previewRead.retry} />
             ) : null}
             <WelcomeActionCard
                 testID="native-auth-reset-return"

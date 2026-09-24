@@ -21,6 +21,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { deploymentAllowsPrivateIdentityNetwork } from "@/app/auth/providers/managed/managedIdentityNetworkPolicy";
+import { resolveDeploymentTeamProviderKinds } from "@/app/auth/providers/teamProviderDeploymentCeiling";
 import { resolveEffectiveHomeAuthMethodsInTx } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import {
     readAccountAdministrationAuthenticationByIdInTx,
@@ -36,7 +37,11 @@ import {
     type AccountDisplayProfileRow,
 } from "@/app/account/profile/accountDisplayProfile";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
-import { resolveTeamMembershipCapabilities } from "@/app/teams/memberships/capabilities";
+import {
+    qualifyTeamOperationAuthenticationInTx,
+    resolveTeamActorContextInTx,
+    type TeamOperationAuthenticationContext,
+} from "@/app/teams/actorContext";
 import {
     assertTeamOwnershipAllowsAccountErasureInTx,
     readTeamOwnershipErasureDecisionsInTx,
@@ -127,6 +132,7 @@ function projectHomeIdentityDeploymentServicesV1(
                 ? "partially_configured"
                 : "not_configured",
         privateIdentityNetworkAllowed: deploymentAllowsPrivateIdentityNetwork(env),
+        teamProviderKinds: [...resolveDeploymentTeamProviderKinds(env)],
     };
 }
 
@@ -423,47 +429,31 @@ export async function listHomeAccountsInTx(tx: Tx, input: Readonly<{
 }
 
 /**
- * Resolves the actor's current management authority over one exact Team.
- *
- * Team scope is authorized by that Team's own membership, through Lane 04's
- * capability owner, so managing one Team can never enumerate another Team or
- * the Home People projection.
- */
-async function actorManagesTeamInTx(tx: Tx, input: Readonly<{
-    actorAccountId: string;
-    teamId: string;
-}>): Promise<boolean> {
-    const membership = await tx.teamMembership.findFirst({
-        where: { teamId: input.teamId, accountId: input.actorAccountId },
-        select: {
-            role: true,
-            status: true,
-            account: { select: { status: true } },
-            team: { select: { archivedAt: true } },
-        },
-    });
-    if (!membership) return false;
-    return resolveTeamMembershipCapabilities({
-        role: membership.role,
-        membershipStatus: membership.status,
-        accountStatus: membership.account.status,
-        teamArchivedAt: membership.team.archivedAt,
-    }).manageMembers;
-}
-
-/**
  * The Account picker behind Home People, Team member add, and initial-owner
  * selection.
  *
- * One query answers three identities the Home already owns, as a union: the
+ * One query answers the identities the Home already owns, as a union: the
  * exact Account id, the exact verified mailbox (the same `AccountEmail`
  * evidence admission and invitations write, compared only after the shared
- * normalizer canonicalized the typed address), and a case-insensitive
- * username prefix through the directory's existing prefix filter. The page is
- * bounded to the People page size so a one-letter prefix can never enumerate
- * a whole Home in one answer. Nothing here changes who may ask: Home scope
- * still needs `manageAccounts`, and Team scope still needs management of that
- * exact Team.
+ * normalizer canonicalized the typed address), and — in Home scope only — a
+ * case-insensitive username prefix through the directory's existing prefix
+ * filter.
+ *
+ * The prefix arm's ceiling: it is offered only where the actor already holds
+ * Home-list authority. `manageAccounts` pages the entire roster through
+ * `home.accounts.list`, so exact-only there would protect nothing and only
+ * degrade the administrator's picker. Team management carries no such reach,
+ * and the Homes-owned directory/privacy classification that could widen it
+ * does not exist, so Team scope takes the plan's fallback and resolves exact
+ * identifiers only. Do not re-add the arm for Team scope without that
+ * classification producer. The page stays bounded to the People page size so a
+ * one-letter prefix can never enumerate a whole Home in one answer.
+ *
+ * Nothing here changes who may ask: Home scope still needs `manageAccounts`,
+ * and Team scope still needs management of that exact Team — resolved and
+ * qualified by the Team corridor's own owners, so a restricted Team refuses the
+ * picker for exactly the credentials for which it already refuses the member
+ * mutations the picker feeds.
  */
 export async function searchHomeAccountsInTx(tx: Tx, input: Readonly<{
     actorAccountId: string;
@@ -471,6 +461,7 @@ export async function searchHomeAccountsInTx(tx: Tx, input: Readonly<{
     scope: HomeAccountSearchScopeV1;
     teamsEnabled: boolean;
     env: NodeJS.ProcessEnv;
+    authentication?: TeamOperationAuthenticationContext;
 }>): Promise<HomeGovernanceResult<readonly HomeAccountPickerRowV1[]>> {
     if (input.scope.kind === "home") {
         const actor = await readHomeGovernanceAccountInTx(tx, input.actorAccountId);
@@ -479,11 +470,23 @@ export async function searchHomeAccountsInTx(tx: Tx, input: Readonly<{
         }
     } else {
         if (!input.teamsEnabled) return { status: "rejected", code: "home_governance_forbidden" };
-        const manages = await actorManagesTeamInTx(tx, {
-            actorAccountId: input.actorAccountId,
+        const context = await resolveTeamActorContextInTx(tx, {
             teamId: input.scope.teamId,
+            actorAccountId: input.actorAccountId,
         });
-        if (!manages) return { status: "rejected", code: "home_governance_forbidden" };
+        if (!context?.teamCapabilities.manageMembers) {
+            return { status: "rejected", code: "home_governance_forbidden" };
+        }
+        // Team-derived authority is qualified before it discloses anything,
+        // exactly as every other Team-derived read is. The picker keeps the
+        // Home's single refusal code: an unqualified caller learns nothing
+        // about the Team's policy from a disclosure surface, and the Team's own
+        // entry surface is where they qualify.
+        const qualification = await qualifyTeamOperationAuthenticationInTx(tx, {
+            ...input.authentication,
+            context,
+        });
+        if (!qualification.ok) return { status: "rejected", code: "home_governance_forbidden" };
     }
 
     const query = input.query.trim();
@@ -494,7 +497,9 @@ export async function searchHomeAccountsInTx(tx: Tx, input: Readonly<{
             OR: [
                 { id: query },
                 ...(mailbox ? [{ AccountEmail: { some: { normalizedEmail: mailbox.normalizedEmail } } }] : []),
-                { username: buildAccountTextPrefixFilter(query, getDbProviderFromEnv(input.env, "postgres")) },
+                ...(input.scope.kind === "home"
+                    ? [{ username: buildAccountTextPrefixFilter(query, getDbProviderFromEnv(input.env, "postgres")) }]
+                    : []),
             ],
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],

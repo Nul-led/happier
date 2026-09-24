@@ -1,3 +1,9 @@
+import {
+  resolveVoiceSessionUpdatePolicyV1,
+  type VoiceSessionUpdatePolicyV1,
+  type VoiceUpdateLevelV1,
+} from '@happier-dev/protocol';
+
 import { storage } from '@/sync/domains/state/storage';
 import {
   normalizeSessionAddress,
@@ -6,28 +12,15 @@ import {
 } from '@/sync/domains/session/sessionAddress';
 import { resolveVoiceSessionRef } from '@/voice/tools/actionImpl/sessionReference';
 
-export type VoiceUpdateLevel = 'none' | 'activity' | 'summaries' | 'snippets';
+export type VoiceUpdateLevel = VoiceUpdateLevelV1;
 
-export type VoiceSessionUpdatePolicy = Readonly<{
-  level: VoiceUpdateLevel;
-  isIncludedInVoice: boolean;
-  includeUserMessagesInSnippets: boolean;
-  snippetsMaxMessages: number;
-}>;
+export type VoiceSessionUpdatePolicy = VoiceSessionUpdatePolicyV1;
 
-function clampInt(value: unknown, { min, max, fallback }: { min: number; max: number; fallback: number }): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  const rounded = Math.floor(value);
-  if (rounded < min) return min;
-  if (rounded > max) return max;
-  return rounded;
-}
-
-function normalizeUpdateLevel(value: unknown, fallback: VoiceUpdateLevel): VoiceUpdateLevel {
-  if (value === 'none' || value === 'activity' || value === 'summaries' || value === 'snippets') return value;
-  return fallback;
-}
-
+/**
+ * The per-Session Voice update level. The decision itself lives in Protocol so
+ * the daemon Voice path answers identically; this keeps only the app's
+ * address-shaped call signature.
+ */
 export function resolveVoiceSessionUpdatePolicy(params: Readonly<{
   sessionId: string;
   sessionAddress?: SessionAddress | null;
@@ -35,26 +28,11 @@ export function resolveVoiceSessionUpdatePolicy(params: Readonly<{
   includeInVoice?: boolean;
   isCurrentAttemptTarget?: boolean;
 }>): VoiceSessionUpdatePolicy {
-  const settings = (params.settings ?? {}) as any;
-  const updates = settings?.voice?.ui?.updates ?? {};
-  const activeLevel = normalizeUpdateLevel(updates.activeSession, 'summaries');
-  const otherLevel = normalizeUpdateLevel(updates.otherSessions, 'activity');
-  const otherSnippetsMode = String(updates.otherSessionsSnippetsMode ?? 'on_demand_only');
-
-  const isIncludedInVoice = params.includeInVoice === true;
-  const hasActivePolicy = isIncludedInVoice || params.isCurrentAttemptTarget === true;
-  const baseLevel = hasActivePolicy ? activeLevel : otherLevel;
-
-  const level = (!hasActivePolicy && baseLevel === 'snippets' && otherSnippetsMode !== 'auto')
-    ? 'summaries'
-    : baseLevel;
-
-  return {
-    level,
-    isIncludedInVoice,
-    includeUserMessagesInSnippets: updates.includeUserMessagesInSnippets === true,
-    snippetsMaxMessages: clampInt(updates.snippetsMaxMessages, { min: 1, max: 10, fallback: 3 }),
-  };
+  return resolveVoiceSessionUpdatePolicyV1({
+    accountSettings: params.settings,
+    ...(params.includeInVoice === undefined ? {} : { includeInVoice: params.includeInVoice }),
+    ...(params.isCurrentAttemptTarget === undefined ? {} : { isCurrentAttemptTarget: params.isCurrentAttemptTarget }),
+  });
 }
 
 function readViewerIncludeInVoice(value: unknown): boolean {

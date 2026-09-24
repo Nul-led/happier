@@ -3,6 +3,7 @@ import { ScrollView, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { SessionWidgetHost } from '@/components/sessions/board/SessionWidgetHost';
+import type { SessionBoardItemRect } from '@/components/sessions/board/SessionBoardItemMoveHandle';
 import {
     defaultSessionBoardSourceAvailability,
     resolveSessionBoardItemTitle,
@@ -154,10 +155,23 @@ export type SessionCompanionContentProps = Readonly<{
      * Renders the real card shells for geometry only. Executable sources,
      * navigation, Actions, mutation controls, retry and hosted runtimes are all
      * withheld; the containing Host also removes this tree from interaction and
-     * accessibility. This is not a second presentation or data owner.
+     * accessibility. This is not a second presentation or data owner. The Summary
+     * keeps its live shape (compact rows, destinations, overflow) through inert
+     * handlers, because withholding them would measure a different, larger card.
      */
     measurementOnly?: boolean;
 }>;
+
+const INERT_SUMMARY_HANDLER = (): void => {};
+
+/** The same destination set, each one a no-op: identical row shape, no effect. */
+function inertSessionSummaryDestinations(
+    destinations: SessionSummaryDestinationHandlers,
+): SessionSummaryDestinationHandlers {
+    return Object.freeze(Object.fromEntries(Object.entries(destinations)
+        .filter(([, handler]) => handler !== undefined)
+        .map(([destination]) => [destination, INERT_SUMMARY_HANDLER]))) as SessionSummaryDestinationHandlers;
+}
 
 /**
  * The ordered Companion body, shared by the wide rail and the mobile screen.
@@ -183,6 +197,14 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
         inventory,
     }), [boardItemsById, controller.preference.items, inventory]);
     const itemMeasurementKeys = React.useMemo(() => items.map(companionItemMeasurementKey), [items]);
+    // Reorder needs a second item to reorder against, and a measurement pass has
+    // no person in front of it. Both halves of the required pair — pointer drag
+    // and the explicit Move commands — appear together or not at all.
+    const reorderable = props.measurementOnly !== true && items.length > 1;
+    // Viewer-local card geometry for the shared pointer-drop resolver. It never
+    // reaches persistence: a drop resolves to a semantic target index and the
+    // Companion preference stores order, not pixels.
+    const cardRectsRef = React.useRef(new Map<string, SessionBoardItemRect>());
     const measuredCardsRef = React.useRef(new Map<string, Readonly<{ widthPx: number; heightPx: number }>>());
     const reportLargestMeasuredCard = React.useCallback(() => {
         if (!props.onMeasuredCardBounds || measuredCardsRef.current.size === 0) return;
@@ -205,12 +227,18 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
         for (const key of measuredCardsRef.current.keys()) {
             if (!currentKeys.has(key)) measuredCardsRef.current.delete(key);
         }
+        for (const key of cardRectsRef.current.keys()) {
+            if (!currentKeys.has(key)) cardRectsRef.current.delete(key);
+        }
         reportLargestMeasuredCard();
     }, [itemMeasurementKeys, reportLargestMeasuredCard]);
     const reportCardLayout = React.useCallback((key: string, event: LayoutChangeEvent) => {
-        if (!props.onMeasuredCardBounds) return;
-        const { width, height } = event.nativeEvent.layout;
+        const { width, height, x, y } = event.nativeEvent.layout;
         if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return;
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+            cardRectsRef.current.set(key, { x, y, width, height });
+        }
+        if (!props.onMeasuredCardBounds) return;
         measuredCardsRef.current.set(key, { widthPx: width, heightPx: height });
         reportLargestMeasuredCard();
     }, [props.onMeasuredCardBounds, reportLargestMeasuredCard]);
@@ -242,6 +270,15 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
         noticeKeyPrefix,
         ...input,
     }), [controller, noticeKeyPrefix]);
+    // One reorder owner for the menu entries and the pointer/keyboard handle, so
+    // direct manipulation and the explicit Move commands can never diverge.
+    const moveCompanionItemTo = React.useCallback((entry: SessionCompanionContentItem, toIndex: number) => {
+        mutateCompanion({
+            kind: 'companion.item.move',
+            message: t('sessionBoard.companion.notices.reordered'),
+            apply: (companion) => companion.moveItem(entry.ref, toIndex),
+        });
+    }, [mutateCompanion]);
     const removeFromCompanion = React.useCallback((entry: SessionCompanionContentItem) => {
         mutateCompanion({
             kind: 'companion.item.remove',
@@ -250,6 +287,17 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
         });
     }, [mutateCompanion]);
 
+    // A measurement pass must size the SAME card the live rail shows: compact rows,
+    // row destinations and the "More details" overflow all shape its height. It keeps
+    // that shape with inert handlers, so nothing it renders can navigate.
+    const summaryDestinations = React.useMemo(() => (
+        props.measurementOnly && props.summaryDestinations
+            ? inertSessionSummaryDestinations(props.summaryDestinations)
+            : props.summaryDestinations
+    ), [props.measurementOnly, props.summaryDestinations]);
+    const summaryOpenFullSurface = props.measurementOnly && props.onOpenFullSurface
+        ? INERT_SUMMARY_HANDLER
+        : props.onOpenFullSurface;
     const renderBody = (entry: SessionCompanionContentItem): React.ReactNode => {
         if (entry.kind === 'summary') {
             return (
@@ -257,12 +305,8 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                     model={summary}
                     density={controller.preference.density}
                     testID={`${testID}-summary`}
-                    {...(!props.measurementOnly && props.summaryDestinations
-                        ? { destinations: props.summaryDestinations }
-                        : {})}
-                    {...(!props.measurementOnly && props.onOpenFullSurface
-                        ? { onOpenFullSurface: props.onOpenFullSurface }
-                        : {})}
+                    {...(summaryDestinations ? { destinations: summaryDestinations } : {})}
+                    {...(summaryOpenFullSurface ? { onOpenFullSurface: summaryOpenFullSurface } : {})}
                     presentation={full ? 'full' : 'card'}
                 />
             );
@@ -385,17 +429,21 @@ export const SessionCompanionContent = React.memo(function SessionCompanionConte
                         key={key}
                         testID={`${testID}-item-${key}`}
                         label={label(entry)}
-                        onLayout={props.onMeasuredCardBounds
+                        onLayout={props.onMeasuredCardBounds || reorderable
                             ? (event) => reportCardLayout(key, event)
                             : undefined}
+                        {...(reorderable ? {
+                            move: {
+                                itemKey: key,
+                                orderedKeys: itemMeasurementKeys,
+                                rects: cardRectsRef.current,
+                                moveToIndex: (toIndex: number) => { moveCompanionItemTo(entry, toIndex); },
+                            },
+                        } : {})}
                         actions={props.measurementOnly ? [] : buildSessionCompanionItemActions({
                             index,
                             count: items.length,
-                            moveTo: (toIndex) => { mutateCompanion({
-                                kind: 'companion.item.move',
-                                message: t('sessionBoard.companion.notices.reordered'),
-                                apply: (companion) => companion.moveItem(entry.ref, toIndex),
-                            }); },
+                            moveTo: (toIndex) => { moveCompanionItemTo(entry, toIndex); },
                             remove: () => { removeFromCompanion(entry); },
                             ...(entry.kind !== 'summary' && boardReachable && props.onRevealBoardItem
                                 ? { openOnBoard: () => props.onRevealBoardItem?.(entry.ref.widgetId) }

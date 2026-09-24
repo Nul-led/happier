@@ -6,7 +6,7 @@ import {
 } from './serverScopedRpcPool';
 import {
     resetScopedSessionDataKeyCacheForTests,
-    resolveScopedSessionDataKey,
+    resolveScopedSessionCryptoContext,
 } from './resolveScopedSessionDataKey';
 
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
@@ -163,9 +163,9 @@ describe('scoped data-key resolution coalesces concurrent callers', () => {
             if (isReachabilityProbe(input)) return reachabilityOk();
             return { ok: true, status: 200, json: async () => sessionByIdBody('session-1', 'k1') };
         });
-        const decrypt = vi.fn(async () => new Uint8Array([9, 9]));
+        const decrypt = vi.fn(async () => new Uint8Array(32).fill(9));
 
-        const results = await Promise.all(Array.from({ length: 6 }, () => resolveScopedSessionDataKey({
+        const results = await Promise.all(Array.from({ length: 6 }, () => resolveScopedSessionCryptoContext({
             serverId: 's-id',
             serverUrl: 'https://server.example.test',
             token: 'token',
@@ -174,7 +174,7 @@ describe('scoped data-key resolution coalesces concurrent callers', () => {
         })));
 
         for (const result of results) {
-            expect(result).toEqual(new Uint8Array([9, 9]));
+            expect(result).toEqual({ encryptionMode: 'e2ee', sessionDataKey: new Uint8Array(32).fill(9) });
         }
         expect(decrypt).toHaveBeenCalledTimes(1);
         expect(countCalls('/v2/sessions/session-1')).toBe(1);
@@ -192,16 +192,16 @@ describe('scoped data-key resolution coalesces concurrent callers', () => {
             };
         });
         const decrypt = vi.fn(async (value: string) => (
-            value === 'k2' ? new Uint8Array([2]) : new Uint8Array([1])
+            value === 'k2' ? new Uint8Array(32).fill(2) : new Uint8Array(32).fill(1)
         ));
 
-        const request = (sessionId: string) => resolveScopedSessionDataKey({
+        const request = async (sessionId: string) => (await resolveScopedSessionCryptoContext({
             serverId: 's-id',
             serverUrl: 'https://server.example.test',
             token: 'token',
             sessionId,
             decryptEncryptionKey: decrypt,
-        });
+        })).sessionDataKey;
 
         const [a, b, c, d] = await Promise.all([
             request('session-1'),
@@ -210,10 +210,10 @@ describe('scoped data-key resolution coalesces concurrent callers', () => {
             request('session-2'),
         ]);
 
-        expect(a).toEqual(new Uint8Array([1]));
-        expect(c).toEqual(new Uint8Array([1]));
-        expect(b).toEqual(new Uint8Array([2]));
-        expect(d).toEqual(new Uint8Array([2]));
+        expect(a).toEqual(new Uint8Array(32).fill(1));
+        expect(c).toEqual(new Uint8Array(32).fill(1));
+        expect(b).toEqual(new Uint8Array(32).fill(2));
+        expect(d).toEqual(new Uint8Array(32).fill(2));
         expect(decrypt).toHaveBeenCalledTimes(2);
     });
 });

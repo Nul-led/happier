@@ -107,6 +107,14 @@ type LegacyOwnerSnapshot<M, A> =
     SessionMetadataLegacyOwnerTupleMutationSnapshotV1<M, A>;
 
 /**
+ * A semantic owner-metadata change, or the owner's explicit request to split a
+ * layout-0 tuple into layout 1 without changing any value (PA-L2).
+ */
+export type SessionMetadataUpdateRequest<M> =
+    | ((base: M) => M)
+    | 'ownerMigration';
+
+/**
  * UI adapter for the one shared Session metadata mutation/currentness owner.
  *
  * Exact snapshots are classified before this adapter runs. Ordinary layout-0
@@ -138,7 +146,7 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
         applyTupleSnapshot: (
             next: Layout1TupleSnapshot<M, A>,
         ) => void;
-        updater: (base: M) => M;
+        updater: SessionMetadataUpdateRequest<M>;
         sessionExpectation?:
             SessionMetadataInactiveModelIntentExpectationV1;
         mutationIntent?: 'rename_session';
@@ -327,10 +335,9 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
     try {
         const updated = await updateSessionMetadataTupleWithRetry<M, A>({
             initialSnapshot: exactInitial,
-            mutation: {
-                kind: 'metadata',
-                update: updater,
-            },
+            mutation: updater === 'ownerMigration'
+                ? { kind: 'ownerMigration' }
+                : { kind: 'metadata', update: updater },
             crypto: tupleCrypto,
             commit: async (patch) => {
                 if (params.sessionExpectation && patch.mode !== 'owner') {

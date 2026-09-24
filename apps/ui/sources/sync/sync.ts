@@ -320,7 +320,7 @@ import {
 } from '@happier-dev/agents';
 import { SessionViewerProjectionV1Schema } from '@happier-dev/protocol';
 import { isSessionPersonallyTrackedForViewer } from './domains/session/readState/sessionViewer';
-import { updateSessionMetadataWithRetry as updateSessionMetadataWithRetryRpc, type UpdateMetadataAck } from './domains/session/metadata/updateSessionMetadataWithRetry';
+import { updateSessionMetadataWithRetry as updateSessionMetadataWithRetryRpc, type SessionMetadataUpdateRequest, type UpdateMetadataAck } from './domains/session/metadata/updateSessionMetadataWithRetry';
 import type { ArtifactHeader, DecryptedArtifact } from './domains/artifacts/artifactTypes';
 import type {
     AutomationDefinition,
@@ -1246,6 +1246,7 @@ class Sync {
     private sessionListHasMore = false;
     private sessionListAttentionNextCursor: string | null = null;
     private sessionListAttentionHasMore = false;
+    private sessionListMetadataUpgradeRequiredCount = 0;
     private sessionListScrollActive = false;
     private sessionListScrollActiveUntilMs = 0;
     private sessionListScrollSettleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2537,7 +2538,7 @@ class Sync {
             return isCurrent() ? { status: 'offline' } : { status: 'forbidden' };
         }
         try {
-            if (!isCurrent() || authority.scope.serverId !== sessionAddress.serverId) return { status: 'forbidden' };
+            if (!isCurrent() || !areServerProfileIdentifiersEquivalent(authority.scope.serverId, sessionAddress.serverId)) return { status: 'forbidden' };
             if (!authority.context.credentials) return { status: 'forbidden' };
             // Reuse the canonical exact-Session hydration and its in-flight
             // coalescer. Several record observers must not each perform another
@@ -2797,6 +2798,7 @@ class Sync {
         this.sessionListHasMore = false;
         this.sessionListAttentionNextCursor = null;
         this.sessionListAttentionHasMore = false;
+        this.sessionListMetadataUpgradeRequiredCount = 0;
         this.clearSessionListScrollActivity();
         this.sessionDataKeys.clear();
         this.sessionDataKeyEnvelopes.clear();
@@ -4526,14 +4528,14 @@ class Sync {
 
     private async updateSessionMetadataWithRetry(
         sessionId: string,
-        updater: (metadata: Metadata) => Metadata,
+        updater: SessionMetadataUpdateRequest<Metadata>,
         options?: Readonly<{
             serverId?: string | null;
             maxAttempts?: number;
             sessionExpectation?:
                 SessionMetadataInactiveModelIntentExpectationV1;
             mutationIntent?: 'rename_session';
-            accountLifetime?: ServerAccountScopeLifetime;
+            accountLifetime?: Pick<ServerAccountScopeLifetime, 'scope' | 'isCurrent'>;
             authority?: ServerAccountRequestAuthority;
         }>,
     ): Promise<void> {
@@ -6188,6 +6190,7 @@ class Sync {
         this.sessionListHasMore = frontier.hasNext;
         this.sessionListAttentionNextCursor = frontier.attentionNextCursor;
         this.sessionListAttentionHasMore = frontier.attentionHasNext;
+        this.sessionListMetadataUpgradeRequiredCount = frontier.metadataUpgradeRequiredCount ?? 0;
         if (isOrdinarySessionListFrontierComplete(frontier)) {
             this.publishActiveSessionListObservation('ready', Date.now(), activeServerId ?? undefined);
         }
@@ -6277,6 +6280,7 @@ class Sync {
         hasNext: this.sessionListHasMore,
         attentionNextCursor: this.sessionListAttentionNextCursor,
         attentionHasNext: this.sessionListAttentionHasMore,
+        metadataUpgradeRequiredCount: this.sessionListMetadataUpgradeRequiredCount,
     });
 
     public fetchMoreSessions = async (): Promise<void> => {
@@ -6898,14 +6902,14 @@ class Sync {
      */
     public patchSessionMetadataWithRetry = async (
         sessionId: string,
-        updater: (metadata: Metadata) => Metadata,
+        updater: SessionMetadataUpdateRequest<Metadata>,
         options?: Readonly<{
             serverId?: string | null;
             maxAttempts?: number;
             sessionExpectation?:
                 SessionMetadataInactiveModelIntentExpectationV1;
             mutationIntent?: 'rename_session';
-            accountLifetime?: ServerAccountScopeLifetime;
+            accountLifetime?: Pick<ServerAccountScopeLifetime, 'scope' | 'isCurrent'>;
         }>,
     ): Promise<void> => {
         if (!options?.accountLifetime) {
@@ -6947,6 +6951,23 @@ class Sync {
                 authority: fencedAuthority,
             });
         });
+    }
+
+    /**
+     * The owner's explicit request to move one historical (layout-0) Session to
+     * the canonical owner/shared tuple without changing its content (PA-L2), so
+     * the people it is shared with can read its shared projection. It runs the
+     * same tuple owner, CAS and exact-Account fencing as any owner metadata edit;
+     * an already-migrated Session commits nothing.
+     */
+    public migrateSessionMetadataOwnerLayout = async (
+        sessionId: string,
+        options?: Readonly<{
+            serverId?: string | null;
+            accountLifetime?: Pick<ServerAccountScopeLifetime, 'scope' | 'isCurrent'>;
+        }>,
+    ): Promise<void> => {
+        await this.patchSessionMetadataWithRetry(sessionId, 'ownerMigration', options);
     }
 
     public refreshAutomations = async () => {

@@ -176,8 +176,6 @@ export async function openExactSessionTeamCredentialProviderBinding(
   }
   if (
     authority.resourceId !== selection.resourceId
-    || authority.expectedResourceRevision !== selection.expectedResourceRevision
-    || authority.modelId !== selection.modelId
     || authority.sourceRevision !== selection.sourceRevision
     || !isDeepStrictEqual(authority.application, selection.application)
   ) {
@@ -292,11 +290,13 @@ export async function openExactSessionTeamCredentialProviderBinding(
               materializationReleased = true;
             }
           } finally {
-            try {
-              await tunnel.retire();
-            } finally {
-              await tunnel.close();
-            }
+            // The retirement DELETE travels over this tunnel, so the transport
+            // outlives the attempt: closing it on a failed retirement destroys
+            // the only way to reach the target and strands the operation it
+            // still holds. A failure leaves `closed` false, so the caller's
+            // next cleanup retries over the same transport.
+            await tunnel.retire();
+            await tunnel.close();
           }
         })().then(
           () => {
@@ -347,9 +347,13 @@ export async function openSessionTeamCredentialProviderBinding(input: Readonly<{
     : consumer.sessionId;
   input.signal.throwIfAborted();
   const rows = await input.readCatalog(input.signal);
+  // The selection's revision was the precondition of the selection mutation,
+  // not the binding's identity: a policy edit since then must not strand a
+  // fresh open. The catalog owner reports the current revision, the open binds
+  // it, and the Home rechecks it (`04-private-iroh-broker-transport.md:272`,
+  // 10.11 A2(3)-(4)).
   const row = rows.find((candidate) => (
     candidate.selection.resourceId === input.binding.resourceId
-    && candidate.selection.expectedResourceRevision === input.binding.expectedResourceRevision
     && candidate.selection.deliveryMode === input.binding.deliveryMode
     && candidate.selection.agentTargetKey === input.agentTargetKey
     && candidate.selection.modelId === input.modelId

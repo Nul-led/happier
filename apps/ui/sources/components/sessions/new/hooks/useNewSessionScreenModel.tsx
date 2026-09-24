@@ -76,6 +76,7 @@ import { resolveNewSessionShouldBottomAnchor } from '@/components/sessions/new/n
 import { assertLaunchProfileReviewCurrent, LaunchProfileEnvironmentUnavailableError, materializeLaunchProfileEnvironment, useProfileMap } from '@/components/sessions/new/modules/profileHelpers';
 import { newSessionScreenStyles } from '@/components/sessions/new/newSessionScreenStyles';
 import { resolveNewSessionCapabilityServerId } from '@/components/sessions/new/modules/resolveNewSessionCapabilityServerId';
+import { composeConnectedServiceTeamCredentialBindingIntents } from '@/components/sessions/new/modules/connectedServicesNewSessionBindings';
 import type { NewSessionTranscriptStorage } from '@/components/sessions/new/modules/newSessionTranscriptStorage';
 import type { AgentInputChipPickerOption } from '@/components/sessions/agentInput/components/AgentInputChipPickerTypes';
 import type { AgentInputStatusBadge } from '@/components/sessions/agentInput/agentInputContracts';
@@ -96,7 +97,6 @@ import { useServerScopedMachineOptions } from '@/components/sessions/new/hooks/m
 import { useNewSessionRepoScmSnapshot } from '@/components/sessions/new/hooks/screenModel/useNewSessionRepoScmSnapshot';
 import {
     buildAcpConfigOptionOverridesV1,
-    buildQualifiedPluginContributionKey,
     MachinePoolSelectionOriginV1Schema,
     readBackendTargetRefV2,
     SessionAuthoringValueV1Schema,
@@ -269,6 +269,7 @@ import {
     getOrCreateRunnerMaterializationRequest,
     readAcceptedRunnerCreatorActivationBinding,
     readPreparedRunnerCreatorLaunchCustody,
+    readSubmittedRunnerCreatorTeamCredentialModel,
     readReviewedRunnerCreatorLaunchCustody,
     recordRunnerCreatorStagingCustodyHandle,
     recordRunnerCreatorStagedAttachmentCustody,
@@ -386,6 +387,8 @@ export type TemporaryComputerCreatorDependencies = Readonly<{
     resolveCredentialSelectionBinding: (params: Readonly<{
         projection: RunnerActivationProjectionV1;
         preparedAuthoring: Awaited<ReturnType<typeof readPreparedRunnerCreatorLaunchCustody>>;
+        /** The Team model frozen with the submitted package; never the composer's current choice. */
+        submittedTeamCredentialModel: TeamCredentialProviderModelSelectionV1 | null;
         client: RunnerActivationClient;
         signal: AbortSignal;
     }>) => Promise<Readonly<{
@@ -1631,6 +1634,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         targetServerId,
         selectedBackendTargetKey,
         connectedAccounts: selectedBackendEntry?.agentCatalogEntry.connectedAccounts,
+        agentIdentity: selectedBackendEntry?.agentCatalogEntry.identity ?? null,
         teamCredentialResources: currentTeamCredentialConnectedServiceResources,
         teamNameById: teamCredentialCatalog.teamNameById,
         setBackendNewSessionOptionStateByTargetKey,
@@ -1640,39 +1644,17 @@ export function useNewSessionScreenModel(input?: Readonly<{
         applyTeamCredentialPolicy: applyConnectedServiceTeamCredentialPolicy,
     });
     const teamCredentialBindings = React.useMemo(() => {
-        const bindings: SessionTeamCredentialBindingIntentListV1 = teamCredentialProviderBinding
-            ? [teamCredentialProviderBinding]
-            : [];
-        if (!connectedServicesBindingsPayload || !canonicalAgentTarget) return bindings;
-        for (const declaration of selectedBackendEntry?.agentCatalogEntry.connectedAccounts ?? []) {
-            const serviceId = buildQualifiedPluginContributionKey(declaration.service);
-            const selection = connectedServicesBindingsPayload.bindingsByServiceId[serviceId];
-            if (selection?.source !== 'team_resource') continue;
-            const resource = teamCredentialCatalog.resources.find((candidate) => (
-                candidate.id === selection.resourceId
-                && candidate.readiness.kind === 'available'
-                && candidate.connectedServiceSelections.some((candidateSelection) => (
-                    candidateSelection.resourceId === selection.resourceId
-                    && candidateSelection.deliveryMode === selection.deliveryMode
-                    && JSON.stringify(candidateSelection.disclosedMember ?? null)
-                        === JSON.stringify(selection.disclosedMember ?? null)
-                ))
-            ));
-            if (!resource) continue;
-            bindings.push({
-                v: 1,
-                slot: {
-                    kind: 'connected_service_purpose',
-                    purpose: {
-                        consumer: canonicalAgentTarget.identity,
-                        purpose: declaration.purpose,
-                    },
-                },
-                resourceId: resource.id,
-                expectedResourceRevision: resource.resourceRevision,
-                deliveryMode: selection.deliveryMode,
-            });
-        }
+        const bindings: SessionTeamCredentialBindingIntentListV1 = [
+            ...(teamCredentialProviderBinding ? [teamCredentialProviderBinding] : []),
+            ...(connectedServicesBindingsPayload && canonicalAgentTarget
+                ? composeConnectedServiceTeamCredentialBindingIntents({
+                    consumer: canonicalAgentTarget.identity,
+                    declarations: selectedBackendEntry?.agentCatalogEntry.connectedAccounts ?? [],
+                    bindings: connectedServicesBindingsPayload,
+                    resources: teamCredentialCatalog.resources,
+                })
+                : []),
+        ];
         return bindings.length > 0 ? bindings : undefined;
     }, [
         canonicalAgentTarget,
@@ -2684,6 +2666,9 @@ export function useNewSessionScreenModel(input?: Readonly<{
         })) {
             throw new Error('team_credential_model_unselected');
         }
+        // The exact Team model this readiness check just admitted is part of
+        // the immutable submission (lane 13.04 §8 step 2).
+        const submittedTeamCredentialModel = selectedTeamCredentialModel;
         const settlement = temporaryCreatorSettlementRef.current;
         if (!settlement) throw new Error('runner_creator_attachment_custody_unavailable');
         signal.throwIfAborted();
@@ -2818,6 +2803,8 @@ export function useNewSessionScreenModel(input?: Readonly<{
                 scope: temporaryComputerTargetScope,
                 activationId: prepared.custody.activationId,
                 preparedAuthoring: prepared.preparedAuthoring,
+                // Frozen with the package: review binds exactly this choice.
+                submittedTeamCredentialModel: submittedTeamCredentialModel,
                 attachmentUpload: {
                     attachmentMessageLocalId: settlement.attachmentMessageLocalId,
                     firstTurnLocalId: settlement.firstTurnLocalId,
@@ -2868,6 +2855,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         selectedAgentProviderOwnedEnvironmentKeys,
         selectedProfile,
         selectedSecretIdByProfileIdByEnvVarName,
+        selectedTeamCredentialModel,
         selectedTemporaryArtifact,
         sessionOnlySecretValueByProfileIdByEnvVarName,
         targetServerProfile,
@@ -2991,11 +2979,13 @@ export function useNewSessionScreenModel(input?: Readonly<{
                 throw new TemporaryComputerLaunchDependencyUnavailableError('review');
             }
             const preparedAuthoring = await readPreparedRunnerCreatorLaunchCustody(temporaryComputerTargetScope, projection.activationId);
+            const submittedTeamCredentialModel = await readSubmittedRunnerCreatorTeamCredentialModel(temporaryComputerTargetScope, projection.activationId);
             const expectedBinding = await readAcceptedRunnerCreatorActivationBinding(temporaryComputerTargetScope, projection.activationId, projection);
             const credentialSelection = await temporaryComputerCreator
                 .resolveCredentialSelectionBinding({
                     projection,
                     preparedAuthoring,
+                    submittedTeamCredentialModel,
                     client: temporaryComputerActivationTransport,
                     signal,
                 });

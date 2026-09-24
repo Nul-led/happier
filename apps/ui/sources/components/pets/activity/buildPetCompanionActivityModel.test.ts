@@ -389,6 +389,50 @@ describe('buildPetCompanionActivityModel', () => {
         })).toMatchObject({ state: 'idle', reason: 'idle', trayItems: [] });
     });
 
+    it('renders authorized structural context for a status-only candidate on each Home', () => {
+        const nowMs = 50_000;
+        const homeAAddress = { serverId: 'home-a', sessionId: 'status-only-session' } as const;
+        const homeBAddress = { serverId: 'home-b', sessionId: 'status-only-session' } as const;
+        const createStatusOnlySession = (serverId: string) => createSessionFixture({
+            id: 'status-only-session',
+            serverId,
+            active: true,
+            presence: 'online',
+            thinking: true,
+            thinkingAt: nowMs,
+            latestTurnStatus: 'in_progress',
+            latestTurnStatusObservedAt: nowMs,
+            metadata: { path: '/private/path', host: 'private-host', name: 'Private title' },
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 1 },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'none' },
+                notification: { level: 'none', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'status_only' },
+            },
+        });
+
+        const model = buildPetCompanionActivityModel({
+            sessions: [createStatusOnlySession('home-a'), createStatusOnlySession('home-b')],
+            contextsByAddressKey: {
+                [sessionAddressKey(homeAAddress)]: projectSessionContextPresentation(
+                    buildSessionContextFacts({ address: homeAAddress, homeName: 'Home A' }),
+                ),
+                [sessionAddressKey(homeBAddress)]: projectSessionContextPresentation(
+                    buildSessionContextFacts({ address: homeBAddress, homeName: 'Home B' }),
+                ),
+            },
+            nowMs: nowMs + 1,
+        });
+
+        // Home/audience/responsibility/freshness is authorized structural context and must
+        // distinguish the two rows visually and for assistive technology, while the private
+        // title and message stay withheld.
+        expect(model.trayItems.map((item) => item.subtitle)).toEqual(['Home A', 'Home B']);
+        expect(model.trayItems.map((item) => item.accessibilityContext)).toEqual(['Home A', 'Home B']);
+        expect(JSON.stringify(model)).not.toContain('Private title');
+    });
+
     it('keeps duplicate Session ids on different Homes distinct', () => {
         const nowMs = 50_000;
         const homeAAddress = { serverId: 'home-a', sessionId: 'same-session' } as const;

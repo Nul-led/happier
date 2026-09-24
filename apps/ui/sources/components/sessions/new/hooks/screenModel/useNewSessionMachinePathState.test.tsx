@@ -205,6 +205,103 @@ describe('useNewSessionMachinePathState', () => {
         await hook.unmount();
     });
 
+    it('keeps the authored working directory through a redundant or provenance-only reselection', async () => {
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const initial = {
+            machines: toMachines({ id: 'machine-a', metadata: { homeDir: '/home/a' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: null,
+            routeSelectionOrigin: undefined,
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+
+        await act(async () => hook.getCurrent().setSelectedPath('/home/a/uncommitted-project'));
+        expect(hook.getCurrent().selectedPath).toBe('/home/a/uncommitted-project');
+
+        // Re-selecting the Machine already authored is not a target change.
+        await act(async () => hook.getCurrent().setSelectedMachineTarget({
+            machineId: 'machine-a',
+            selectionOrigin: null,
+        }));
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-a',
+            selectedPath: '/home/a/uncommitted-project',
+        });
+
+        // Resolving the same Machine through a Pool only adds provenance.
+        await act(async () => hook.getCurrent().setSelectedMachineTarget({
+            machineId: 'machine-a',
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        }));
+        expect(hook.getCurrent().executionTarget).toMatchObject({
+            kind: 'machine',
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        });
+        expect(hook.getCurrent().selectedPath).toBe('/home/a/uncommitted-project');
+
+        // Returning through the route with that Pool origin is the same answer.
+        await hook.rerender({
+            ...initial,
+            routeSelectionOrigin: { kind: 'machine_pool' as const, poolId },
+        });
+        expect(hook.getCurrent().selectedPath).toBe('/home/a/uncommitted-project');
+
+        // Control: a genuinely different Machine still reconciles the folder.
+        await act(async () => hook.getCurrent().setSelectedMachineTarget({
+            machineId: 'machine-b',
+            selectionOrigin: null,
+        }));
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-b',
+            selectedPath: '',
+        });
+        await hook.unmount();
+    });
+
+    it('keeps the authored working directory when a Pool resolves the same Machine before its row hydrates', async () => {
+        const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
+        const initial = {
+            // The exact target is committed, but its local Machine row is absent/partial.
+            machines: toMachines({ id: 'machine-other', metadata: { homeDir: '/home/other' } }),
+            recentMachinePaths: [],
+            machineIdParam: 'machine-a',
+            pathParam: null,
+            routeSelectionOrigin: undefined,
+        } satisfies HookParams;
+        const hook = await renderMachinePathState(initial);
+        expect(hook.getCurrent().selectedMachineId).toBe('machine-a');
+
+        await act(async () => hook.getCurrent().setSelectedPath('/work/authored-project'));
+
+        // The route picker resolves a Pool to the same Home+Machine: provenance only.
+        await hook.rerender({
+            ...initial,
+            routeSelectionOrigin: { kind: 'machine_pool' as const, poolId },
+        });
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-a',
+            selectedPath: '/work/authored-project',
+        });
+        expect(hook.getCurrent().executionTarget).toMatchObject({
+            kind: 'machine',
+            target: { serverId: 'server-a', machineId: 'machine-a' },
+            selectionOrigin: { kind: 'machine_pool', poolId },
+        });
+
+        // Control: a different unhydrated Machine from the route is a real target change.
+        await hook.rerender({
+            ...initial,
+            machineIdParam: 'machine-b',
+            routeSelectionOrigin: { kind: 'machine_pool' as const, poolId },
+        });
+        expect(getSelection(hook.getCurrent())).toEqual({
+            selectedMachineId: 'machine-b',
+            selectedPath: '',
+        });
+        await hook.unmount();
+    });
+
     it('can attach a resolved Pool origin without waiting for route parameter hydration', async () => {
         const poolId = '3a948f0c-bc30-491c-b764-37f0e6744d1f';
         const hook = await renderMachinePathState({
@@ -965,9 +1062,12 @@ describe('useNewSessionMachinePathState', () => {
             pathParam: null,
         });
 
+        // The unchanged route machine is not reapplied, so neither is its folder:
+        // pairing the machine the user chose with the other machine's home
+        // directory would launch the Agent in a directory of a different Machine.
         expect(getSelection(hook.getCurrent())).toEqual({
             selectedMachineId: 'machine-online',
-            selectedPath: '/offline',
+            selectedPath: '/online',
         });
 
         await hook.unmount();

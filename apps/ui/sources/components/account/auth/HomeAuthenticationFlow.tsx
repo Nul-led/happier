@@ -125,6 +125,7 @@ export function HomeAuthenticationFlow(props: Readonly<{
                 recoveryTarget={resolvedTarget.serverIdentityId}
                 action={execution.action}
                 mode={execution.mode}
+                {...(execution.recommendedProvisionMode ? { recommendedProvisionMode: execution.recommendedProvisionMode } : {})}
                 {...(props.homeLabel ? { homeLabel: props.homeLabel } : {})}
                 {...(props.nativeAdmission ? { admission: props.nativeAdmission } : {})}
                 {...(props.initialEmail ? { initialEmail: props.initialEmail } : {})}
@@ -176,7 +177,7 @@ export function HomeAuthenticationFlow(props: Readonly<{
             const testID = `home-auth-${method.id}-${action.id}-${action.mode}`;
             const presentation = describeHomeAuthenticationAction({ execution, providerName });
             return <WelcomeActionCard key={testID} testID={testID} title={presentation.title}
-                iconName={presentation.iconName}
+                iconName={presentation.iconName} accentColor={method.presentation?.connectButtonColor}
                 onPress={async () => {
                     if (execution.kind === 'key_entry') {
                         setKeyRequest(request);

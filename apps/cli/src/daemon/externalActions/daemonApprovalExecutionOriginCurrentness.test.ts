@@ -239,7 +239,7 @@ describe('daemon approval execution-origin currentness', () => {
         kind: 'plugin',
         pluginId: 'acme.external',
         contributionLocalId: 'archive-member',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'external-root' },
       },
       serverId: 'home-1',
       serverIdentityId: 'home-1',
@@ -279,7 +279,10 @@ describe('daemon approval execution-origin currentness', () => {
       summary: 'approval',
       decision: { kind: 'approve', decidedAtMs: 2 },
     };
-    const resolveCurrentPluginImmutableGenerationId = vi.fn(async () => 'generation-1');
+    const resolveCurrentPluginSourceCustody = vi.fn(async () => ({
+      kind: 'development' as const,
+      registeredRootId: 'external-root',
+    }));
     const verifyExternalExecutionAuthorization = vi.fn(async () => true);
     const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
       accountId: 'account-1',
@@ -301,14 +304,17 @@ describe('daemon approval execution-origin currentness', () => {
       }] }),
       externalActionMachinePublicKey: keyPair.publicKey,
       verifyExternalExecutionAuthorization,
-      resolveCurrentPluginImmutableGenerationId,
+      resolveCurrentPluginSourceCustody,
     });
 
     await expect(isCurrent({ origin: externalPluginOrigin, request })).resolves.toBe(true);
     expect(verifyExternalExecutionAuthorization).toHaveBeenCalledOnce();
-    expect(resolveCurrentPluginImmutableGenerationId).toHaveBeenCalledWith('acme.external');
+    expect(resolveCurrentPluginSourceCustody).toHaveBeenCalledWith('acme.external');
 
-    resolveCurrentPluginImmutableGenerationId.mockResolvedValueOnce('generation-2');
+    resolveCurrentPluginSourceCustody.mockResolvedValueOnce({
+      kind: 'development',
+      registeredRootId: 'replacement-root',
+    });
     await expect(isCurrent({ origin: externalPluginOrigin, request })).resolves.toBe(false);
     expect(verifyExternalExecutionAuthorization).toHaveBeenCalledTimes(2);
 
@@ -411,8 +417,11 @@ describe('daemon approval execution-origin currentness', () => {
     await expect(isCurrent({ origin: hostMachineOrigin })).resolves.toBe(false);
   });
 
-  it('requires a plugin caller to remain installed at its admitted generation', async () => {
-    const resolveCurrentPluginImmutableGenerationId = vi.fn(async (): Promise<string | null> => 'generation-1');
+  it('requires a plugin caller to retain its admitted source custody', async () => {
+    const resolveCurrentPluginSourceCustody = vi.fn(async () => ({
+      kind: 'development' as const,
+      registeredRootId: 'notes-root',
+    }) as { kind: 'development'; registeredRootId: string } | null);
     const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
       accountId: 'account-1',
       machineId: 'machine-1',
@@ -422,7 +431,7 @@ describe('daemon approval execution-origin currentness', () => {
       }),
       resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
       listAccountApiTokens: async () => ({ tokens: [] }),
-      resolveCurrentPluginImmutableGenerationId,
+      resolveCurrentPluginSourceCustody,
     });
     const pluginOrigin: ApprovalExecutionOriginV1 = {
       v: 1,
@@ -432,7 +441,7 @@ describe('daemon approval execution-origin currentness', () => {
         kind: 'plugin',
         pluginId: 'acme.notes',
         contributionLocalId: 'save-note',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'notes-root' },
       },
       serverId: 'home-1',
       accountId: 'account-1',
@@ -443,49 +452,13 @@ describe('daemon approval execution-origin currentness', () => {
     };
 
     await expect(isCurrent({ origin: pluginOrigin })).resolves.toBe(true);
-    resolveCurrentPluginImmutableGenerationId.mockResolvedValueOnce(null);
+    resolveCurrentPluginSourceCustody.mockResolvedValueOnce(null);
     await expect(isCurrent({ origin: pluginOrigin })).resolves.toBe(false);
-    resolveCurrentPluginImmutableGenerationId.mockResolvedValueOnce('generation-2');
-    await expect(isCurrent({ origin: pluginOrigin })).resolves.toBe(false);
-  });
-
-  it('rejects a generationless legacy plugin origin even while the plugin remains installed', async () => {
-    const resolveCurrentPluginImmutableGenerationId = vi.fn(async (): Promise<string | null> => null);
-    const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
-      accountId: 'account-1',
-      machineId: 'machine-1',
-      serverId: 'home-1',
-      resolveCurrentMachineExecutionOriginContext: async () => ({
-        serverIdentityId: 'home-1', machineId: 'machine-1',
-      }),
-      resolveTarget: async () => ({ kind: 'machine', machineId: 'machine-1' }),
-      listAccountApiTokens: async () => ({ tokens: [] }),
-      resolveCurrentPluginImmutableGenerationId,
+    resolveCurrentPluginSourceCustody.mockResolvedValueOnce({
+      kind: 'development',
+      registeredRootId: 'replacement-root',
     });
-
-    const generationlessOrigin: ApprovalExecutionOriginV1 = {
-      v: 1,
-      authority: 'account_automation',
-      surface: 'plugin',
-      caller: {
-        kind: 'plugin',
-        pluginId: 'acme.notes',
-        contributionLocalId: 'save-note',
-      },
-      serverId: 'home-1',
-      accountId: 'account-1',
-      machineId: 'machine-1',
-      target: { kind: 'machine', machineId: 'machine-1' },
-      actionId: 'session.message.send',
-      requestId: 'request-plugin-without-generation',
-    };
-    await expect(isCurrent({ origin: generationlessOrigin })).resolves.toBe(false);
-    resolveCurrentPluginImmutableGenerationId.mockResolvedValueOnce('current-generation');
-    await expect(isCurrent({
-      origin: {
-        ...generationlessOrigin,
-      },
-    })).resolves.toBe(false);
+    await expect(isCurrent({ origin: pluginOrigin })).resolves.toBe(false);
   });
 
   it('rejects an Automation approval after its canonical worker occurrence is no longer current', async () => {
@@ -530,6 +503,60 @@ describe('daemon approval execution-origin currentness', () => {
     });
     isAutomationRunCurrent.mockResolvedValueOnce(false);
     await expect(isCurrent({ origin: automationOrigin })).resolves.toBe(false);
+  });
+
+  it('rechecks a Workflow approval principal through the live admission owner and fails closed without it', async () => {
+    const authorization = {
+      admittedPermissionCeiling: 'safe-yolo' as const,
+      principal: {
+        kind: 'api' as const,
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+      },
+    };
+    const workflowOrigin: ApprovalExecutionOriginV1 = {
+      v: 1,
+      authority: 'account_automation',
+      surface: 'agent',
+      caller: { kind: 'workflowRun', runId: 'workflow-run-1', authorization },
+      serverId: 'home-1',
+      accountId: 'account-1',
+      machineId: 'machine-1',
+      runId: 'workflow-run-1',
+      // Every Workflow step stamps its admitted ceiling as caller permission
+      // (`daemonRuntime.ts` `buildActionContext`); a Run has no Session mode.
+      callerPermissionMode: authorization.admittedPermissionCeiling,
+      target: { kind: 'machine', machineId: 'machine-1' },
+      actionId: 'session.message.send',
+      requestId: 'request-workflow-1',
+    };
+    const baseOwners = {
+      accountId: 'account-1',
+      machineId: 'machine-1',
+      serverId: 'home-1',
+      resolveCurrentMachineExecutionOriginContext: async () => ({
+        serverIdentityId: 'home-1', machineId: 'machine-1',
+      }),
+      resolveTarget: async () => ({ kind: 'machine' as const, machineId: 'machine-1' }),
+      listAccountApiTokens: async () => ({ tokens: [] }),
+    };
+
+    // No admission owner means the principal cannot be rechecked at all.
+    await expect(createDaemonApprovalExecutionOriginCurrentness(baseOwners)({ origin: workflowOrigin }))
+      .resolves.toBe(false);
+
+    const isWorkflowRunAuthorizationCurrent = vi.fn(async () => true);
+    const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
+      ...baseOwners,
+      isWorkflowRunAuthorizationCurrent,
+    });
+    await expect(isCurrent({ origin: workflowOrigin })).resolves.toBe(true);
+    // The exact accepted authorization the durable origin carries reaches the
+    // live owner unchanged; the Run identity is never used as the principal.
+    expect(isWorkflowRunAuthorizationCurrent).toHaveBeenCalledWith({ authorization });
+    isWorkflowRunAuthorizationCurrent.mockResolvedValueOnce(false);
+    await expect(isCurrent({ origin: workflowOrigin })).resolves.toBe(false);
   });
 
   it('rejects replay when current Session or Run permission no longer admits the captured effective mode', async () => {

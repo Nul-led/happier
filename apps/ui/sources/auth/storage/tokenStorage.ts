@@ -2,9 +2,10 @@ import { Platform } from 'react-native';
 import type { AccountContinuationIntent } from '@happier-dev/cli-common/accountService';
 import {
     AccountEncryptionMigrateRequestBindingDigestV1Schema,
+    AuthEntryProviderPresentationV1Schema,
     TeamInvitationPostAuthContinuationV1Schema,
 } from '@happier-dev/protocol';
-import type { TeamInvitationPostAuthContinuationV1 } from '@happier-dev/protocol';
+import type { AuthEntryProviderPresentationV1, TeamInvitationPostAuthContinuationV1 } from '@happier-dev/protocol';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import {
@@ -70,6 +71,17 @@ type PendingPersonalHomeBootstrapSeedRecord = Readonly<{
 
 export type ServerCredentialLookupOptions = Readonly<{
     serverId?: string | null;
+}>;
+
+/**
+ * How a credential read reports a device secure-storage read failure.
+ * `absent` (default) keeps the tolerant contract boot, request and migration
+ * paths rely on: an unreadable store reads as no credential. `surface` rethrows
+ * the storage error so a caller that can present "unavailable" never turns a
+ * transient keychain/storage failure into a sign-out claim.
+ */
+export type ServerCredentialReadOptions = ServerCredentialLookupOptions & Readonly<{
+    storageReadFailure?: 'absent' | 'surface';
 }>;
 
 /**
@@ -880,6 +892,12 @@ export function isTokenOnlyAuthCredentials(
 
 export interface PendingExternalAuth {
     provider: string;
+    /**
+     * The Home's projected presentation of `provider` at start (teams-lane-03/01
+     * §10.2), so the return route names a dynamic provider as its Home does.
+     * Optional: continuations written before it existed still read.
+     */
+    presentation?: AuthEntryProviderPresentationV1;
     proof?: string;
     secret?: string;
     intent?: 'signup' | 'reset';
@@ -944,6 +962,8 @@ function matchesPendingExternalAuthExact(current: PendingExternalAuth, expected:
 
 export interface PendingExternalConnect {
     provider: string;
+    /** As on `PendingExternalAuth`: the start-time Home presentation, when one was projected. */
+    presentation?: AuthEntryProviderPresentationV1;
     returnTo: string;
     serverId?: string;
     serverUrl?: string;
@@ -1203,6 +1223,10 @@ function pendingAccountDirectoryAuthMatchesExact(
         && current.nonce === expected.nonce;
 }
 
+function isOptionalPendingProviderPresentation(value: unknown): boolean {
+    return value === undefined || AuthEntryProviderPresentationV1Schema.safeParse(value).success;
+}
+
 function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAuth {
     if (!value || typeof value !== 'object') return false;
     const maybe = value as Record<string, unknown>;
@@ -1220,6 +1244,7 @@ function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAu
         && !hasSecret;
     if (!hasProof && !hasSecret && !isNativeMtlsContinuation) return false;
     if (mode !== undefined && mode !== 'keyed' && mode !== 'keyless') return false;
+    if (!isOptionalPendingProviderPresentation(maybe.presentation)) return false;
     if (maybe.serverId !== undefined && !isNonEmptyString(maybe.serverId)) return false;
     if (maybe.serverUrl !== undefined && !isNonEmptyString(maybe.serverUrl)) return false;
     if (maybe.returnTo !== undefined && !isInternalReturnTo(maybe.returnTo)) return false;
@@ -1426,9 +1451,19 @@ function isPendingExternalConnectRecord(value: unknown): value is PendingExterna
     if (!value || typeof value !== 'object') return false;
     const maybe = value as Record<string, unknown>;
     if (!isNonEmptyString(maybe.provider) || !isNonEmptyString(maybe.returnTo)) return false;
+    if (!isOptionalPendingProviderPresentation(maybe.presentation)) return false;
     if (maybe.serverId !== undefined && !isNonEmptyString(maybe.serverId)) return false;
     if (maybe.serverUrl !== undefined && !isNonEmptyString(maybe.serverUrl)) return false;
     return true;
+}
+
+function hasExactPendingExternalServerTarget(
+    value: PendingExternalServerContext,
+): value is PendingExternalServerContext & Readonly<{ serverId: string; serverUrl: string }> {
+    return Boolean(
+        normalizeServerId(typeof value.serverId === 'string' ? value.serverId : null)
+        && normalizeUrl(typeof value.serverUrl === 'string' ? value.serverUrl : ''),
+    );
 }
 
 function resolveExactActiveServerIdForPendingServerUrl(serverUrl: string): string | null {
@@ -1722,7 +1757,10 @@ function parseRecoveryKeyReminderDismissedRaw(raw: string | null): boolean {
     return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
-async function readCredentialRawByKey(key: string): Promise<string | null> {
+async function readCredentialRawByKey(
+    key: string,
+    storageReadFailure: 'absent' | 'surface' = 'absent',
+): Promise<string | null> {
     if (Platform.OS !== 'web') {
         const cached = credentialsCacheByKey.get(key);
         if (cached) return cached;
@@ -1733,6 +1771,7 @@ async function readCredentialRawByKey(key: string): Promise<string | null> {
         if (stored && Platform.OS !== 'web') credentialsCacheByKey.set(key, stored);
         return stored;
     } catch (error) {
+        if (storageReadFailure === 'surface') throw error;
         console.error('Error getting credentials:', error);
         return null;
     }
@@ -1808,14 +1847,25 @@ async function serializeCredentialScopeOperations<T>(
 async function readCredentialsForScopedKeys(
     keys: ScopedStorageKeys,
     authority?: HomeMutationAuthority,
+    storageReadFailure: 'absent' | 'surface' = 'absent',
 ): Promise<AuthCredentials | null> {
     return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
-    const primaryRaw = await readCredentialRawByKey(keys.primary);
+    // Only the presence probes may surface a storage failure; the migration
+    // re-reads below stay tolerant so a failed probe never half-migrates.
+    const primaryRaw = await readCredentialRawByKey(keys.primary, storageReadFailure);
     const primaryParsed = parseCredentialsRaw(primaryRaw);
     if (primaryParsed) return primaryParsed;
 
     if (keys.legacy.length === 0) return null;
-    const legacyRaws = await Promise.all(keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)));
+    // One unreadable legacy scope must not hide a credential a sibling scope
+    // still holds; the failure surfaces only when no probe produced one.
+    const legacyProbes = await Promise.allSettled(
+        keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey, storageReadFailure)),
+    );
+    const legacyRaws = legacyProbes.map((probe) => (probe.status === 'fulfilled' ? probe.value : null));
+    const legacyReadFailure = legacyProbes.find(
+        (probe): probe is PromiseRejectedResult => probe.status === 'rejected',
+    );
 
     for (let index = 0; index < keys.legacy.length; index += 1) {
         const legacyKey = keys.legacy[index]!;
@@ -1840,6 +1890,7 @@ async function readCredentialsForScopedKeys(
         }
         return legacyParsed;
     }
+        if (legacyReadFailure) throw legacyReadFailure.reason;
         return null;
     }, authority);
 }
@@ -2600,10 +2651,11 @@ async function writeHomeCredentialsForServerScope(
 export async function getHomeCredentialsUnderMutationAuthority(
     authority: HomeMutationAuthority,
     serverUrl: string,
-    options: ServerCredentialLookupOptions = {},
+    options: ServerCredentialReadOptions = {},
 ): Promise<AuthCredentials | null> {
-    const keys = await getAuthKeys(serverUrl, options);
-    return keys ? await readCredentialsForScopedKeys(keys, authority) : null;
+    const { storageReadFailure, ...lookup } = options;
+    const keys = await getAuthKeys(serverUrl, lookup);
+    return keys ? await readCredentialsForScopedKeys(keys, authority, storageReadFailure) : null;
 }
 
 /** Internal composition seam for profile adoption while it owns the Home lock. */
@@ -2793,7 +2845,7 @@ export const TokenStorage = {
 
     async getCredentialsForServerUrl(
         serverUrl: string,
-        options: ServerCredentialLookupOptions = {},
+        options: ServerCredentialReadOptions = {},
     ): Promise<AuthCredentials | null> {
         return await withHomeMutationAuthority(
             undefined,
@@ -3173,13 +3225,9 @@ export const TokenStorage = {
             );
             return { value: null, serverMismatch: false };
         }
-        const hasExactTarget = Boolean(
-            normalizeServerId(global.serverId)
-            && normalizeUrl(global.serverUrl ?? ''),
-        );
         return {
             value: global,
-            serverMismatch: hasExactTarget
+            serverMismatch: hasExactPendingExternalServerTarget(global)
                 ? false
                 : !doesPendingExternalStateMatchActiveServer(
                     global,
@@ -3792,20 +3840,38 @@ export const TokenStorage = {
         );
     },
 
+    /**
+     * The pending connect continuation. A record carrying its exact Home
+     * (`serverId` + `serverUrl`) belongs to the Home whose credential started it
+     * and is returned whichever Home is focused now; the return consumer then
+     * finalizes against that exact Home (teams-lane-03/02 TA-R14/TA-R16). Only a
+     * record without an exact target falls back to active-server matching.
+     */
     async getPendingExternalConnect(): Promise<PendingExternalConnect | null> {
         const key = await getPendingExternalConnectKey();
         const scoped = await readStoredJson(key, 'pending external connect', isPendingExternalConnectRecord);
         if (scoped) {
-            return doesPendingExternalStateMatchActiveServer(scoped, { requireExplicitServerContext: false }) ? scoped : null;
+            return hasExactPendingExternalServerTarget(scoped)
+                || doesPendingExternalStateMatchActiveServer(scoped, { requireExplicitServerContext: false })
+                ? scoped
+                : null;
         }
         const globalKey = getPendingExternalConnectGlobalKey();
         const global = await readStoredJson(globalKey, 'pending external connect', isPendingExternalConnectRecord);
         if (!global) return null;
-        return doesPendingExternalStateMatchActiveServer(global, { requireExplicitServerContext: true }) ? global : null;
+        return hasExactPendingExternalServerTarget(global)
+            || doesPendingExternalStateMatchActiveServer(global, { requireExplicitServerContext: true })
+            ? global
+            : null;
     },
 
     async setPendingExternalConnect(value: PendingExternalConnect): Promise<boolean> {
-        const key = await getPendingExternalConnectKey();
+        // An explicitly targeted continuation is stored under that exact Home's
+        // scope, never under whichever Home happens to be focused.
+        const explicitTarget = hasExactPendingExternalServerTarget(value)
+            ? await getServerScopedKeys(PENDING_EXTERNAL_CONNECT_KEY, value.serverUrl, { serverId: value.serverId })
+            : null;
+        const key = explicitTarget?.primary ?? await getPendingExternalConnectKey();
         const storedValue = enrichPendingExternalServerContext(value, { populateMissingServerUrl: true });
         const ok = await writeStoredJson(key, 'pending external connect', storedValue);
         if (ok) {

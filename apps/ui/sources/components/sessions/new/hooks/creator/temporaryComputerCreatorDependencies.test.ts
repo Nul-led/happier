@@ -30,13 +30,15 @@ const BROKER_BINDING = {
 const DISPLAY_FACTS = { v: 1, homeId: 'srv-runner', homeName: 'Acme Home', requesterId: 'account-a', requesterName: 'Alice', teamId: 'team-1', teamName: 'Platform' } as const;
 
 function catalogEntry(overrides: Readonly<{
+    id?: string;
     mayBroker?: boolean;
     availability?: 'available' | 'policy_denied';
     resourceRevision?: number;
     deliveryMode?: 'brokered' | 'direct';
 }> = {}): TeamCredentialResourceCatalogEntryV1 {
+    const id = overrides.id ?? 'resource-1';
     return TeamCredentialResourceCatalogEntryV1Schema.parse({
-        id: 'resource-1',
+        id,
         teamId: 'team-1',
         displayName: 'Shared Codex',
         resourceRevision: overrides.resourceRevision ?? 7,
@@ -49,7 +51,7 @@ function catalogEntry(overrides: Readonly<{
         providerModels: [{
             selection: {
                 kind: 'team_credential_provider_model',
-                resourceId: 'resource-1',
+                resourceId: id,
                 teamId: 'team-1',
                 expectedResourceRevision: overrides.resourceRevision ?? 7,
                 agentTargetKey: AGENT_TARGET_KEY,
@@ -73,10 +75,10 @@ function catalogEntry(overrides: Readonly<{
     });
 }
 
-function selection(revision = 7, deliveryMode: 'brokered' | 'direct' = 'brokered') {
+function selection(revision = 7, deliveryMode: 'brokered' | 'direct' = 'brokered', resourceId = 'resource-1') {
     return TeamCredentialProviderModelSelectionV1Schema.parse({
         kind: 'team_credential_provider_model',
-        resourceId: 'resource-1',
+        resourceId,
         teamId: 'team-1',
         expectedResourceRevision: revision,
         agentTargetKey: AGENT_TARGET_KEY,
@@ -232,6 +234,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: directSelection,
             client,
             signal: new AbortController().signal,
         })).resolves.toBeNull();
@@ -274,6 +277,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: selection(),
             client,
             signal: new AbortController().signal,
         })).resolves.toBeNull();
@@ -322,6 +326,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: selection(),
             client,
             signal: new AbortController().signal,
         })).resolves.toEqual({
@@ -333,6 +338,59 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         expect(composed.readGaps()).not.toContain('broker_selection_unavailable');
     });
 
+    it('reviews the frozen submitted Team model, never the composer\'s current choice', async () => {
+        // Package prepared with resource A; the composer now shows resource B for
+        // the same Agent and model. Review must bind A, exactly as submitted.
+        const submittedA = selection(7, 'brokered', 'resource-1');
+        const composed = compose({
+            resources: [catalogEntry({ id: 'resource-1' }), catalogEntry({ id: 'resource-2' })],
+            currentKeys: new Set(['team-1:resource-1', 'team-1:resource-2']),
+            selected: selection(7, 'brokered', 'resource-2'),
+        });
+        const { client, resolveCredentialSelection } = resolutionClient({
+            status: 'resolved',
+            credentialSelectionBinding: BROKER_BINDING,
+            displayFacts: DISPLAY_FACTS,
+        });
+
+        await expect(composed.dependencies.resolveCredentialSelectionBinding({
+            projection,
+            preparedAuthoring,
+            submittedTeamCredentialModel: submittedA,
+            client,
+            signal: new AbortController().signal,
+        })).resolves.toMatchObject({ reviewedProviderModel: { selection: { resourceId: 'resource-1' } } });
+        expect(resolveCredentialSelection).toHaveBeenCalledWith(
+            'activation-1',
+            expect.objectContaining({ selection: expect.objectContaining({ resourceId: 'resource-1' }) }),
+            expect.any(AbortSignal),
+        );
+    });
+
+    it('reports the submitted Team model unavailable instead of substituting the current one', async () => {
+        // A was revoked from the catalog after Send; B is current and selected.
+        const composed = compose({
+            resources: [catalogEntry({ id: 'resource-2' })],
+            currentKeys: new Set(['team-1:resource-2']),
+            selected: selection(7, 'brokered', 'resource-2'),
+        });
+        const { client, resolveCredentialSelection } = resolutionClient({
+            status: 'resolved',
+            credentialSelectionBinding: BROKER_BINDING,
+            displayFacts: DISPLAY_FACTS,
+        });
+
+        await expect(composed.dependencies.resolveCredentialSelectionBinding({
+            projection,
+            preparedAuthoring,
+            submittedTeamCredentialModel: selection(7, 'brokered', 'resource-1'),
+            client,
+            signal: new AbortController().signal,
+        })).resolves.toBeNull();
+        expect(resolveCredentialSelection).not.toHaveBeenCalled();
+        expect(composed.readGaps()).toContain('team_credential_resource_unavailable');
+    });
+
     it('reports an unresolvable broker instead of falling back to a guessed binding', async () => {
         const composed = compose({ selected: selection() });
         const { client } = resolutionClient({ status: 'unavailable', reason: 'broker_unavailable' });
@@ -340,6 +398,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: selection(),
             client,
             signal: new AbortController().signal,
         })).resolves.toBeNull();
@@ -357,6 +416,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: null,
             client,
             signal: new AbortController().signal,
         })).resolves.toBeNull();
@@ -375,6 +435,7 @@ describe('createTemporaryComputerCreatorDependencies', () => {
         await expect(composed.dependencies.resolveCredentialSelectionBinding({
             projection,
             preparedAuthoring,
+            submittedTeamCredentialModel: selection(7),
             client,
             signal: new AbortController().signal,
         })).resolves.toBeNull();

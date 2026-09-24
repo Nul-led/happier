@@ -3,16 +3,16 @@ import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
-    ConnectedServiceBindingsV1Schema,
-    ConnectedServicesDefaultAuthBindingsV2Schema,
-    ConnectedServicesDefaultAuthTeamResourceBindingV2Schema,
     parseQualifiedPluginContributionKey,
-    type ConnectedServiceBindingSelectionV1,
+    projectAgentConnectedAccountPurposeDefaultsToSessionBindings,
+    resolveAgentConnectedAccountPurposeDefaults,
+    writeAgentConnectedServiceDefault,
     type ConnectedServiceId,
     type ConnectedServicesDefaultAuthByAgentIdV1,
-    type ConnectedServicesDefaultAuthTeamResourceBindingV2,
     type AccountProfile,
+    type PluginContributionIdentityV1,
     type PluginProjectedAgentConnectedAccountPurposeV2,
+    type QualifiedConnectedAccountPurposeBindingsV1,
 } from '@happier-dev/protocol';
 import type { TeamCredentialResourceCatalogEntryV1 } from '@happier-dev/protocol/teams';
 import type { ConnectedServicesAccountGroupOption } from '@happier-dev/agents';
@@ -52,9 +52,17 @@ import {
     resolveConnectedServicesAuthWarningTranslationKey,
 } from './model/resolveConnectedServicesAuthLabel';
 
+/** One Agent default-authentication write: the purpose-binding store plus the folded released entry. */
+export type ConnectedServicesAgentDefaultAuthWrite = Readonly<{
+    connectedAccountPurposeBindingsV1: QualifiedConnectedAccountPurposeBindingsV1;
+    connectedServicesDefaultAuthByAgentIdV1: ConnectedServicesDefaultAuthByAgentIdV1;
+}>;
+
 export type ConnectedServicesDefaultAuthRowProps = Readonly<{
-    /** Canonical Agent routing id used by the persisted default-auth map. */
+    /** Canonical Agent routing id; it keys only the released service-keyed defaults. */
     agentId: string;
+    /** The Agent's contribution identity: the consumer that keys its purpose defaults. */
+    agentIdentity: PluginContributionIdentityV1 | null;
     agentTitle: string;
     connectedAccountPurposes: readonly PluginProjectedAgentConnectedAccountPurposeV2[];
     connectedAccountServiceKeys?: readonly string[];
@@ -67,8 +75,6 @@ export type ConnectedServicesDefaultAuthRowProps = Readonly<{
     connectedAccountsV4?: ReadonlyArray<AccountProfile['connectedAccountsV4'][number]>;
     connectedAccountGroupsV4?: ReadonlyArray<AccountProfile['connectedAccountGroupsV4'][number]>;
     accountGroupsEnabled: boolean;
-    serverId?: string;
-    accountId?: string;
     teamCredentialResources?: readonly TeamCredentialResourceCatalogEntryV1[];
     teamNameById?: Readonly<Record<string, string>>;
     currentTeamCredentialResourceKeys?: ReadonlySet<string>;
@@ -76,9 +82,10 @@ export type ConnectedServicesDefaultAuthRowProps = Readonly<{
     settings: {
         connectedServicesProfileLabelByKey: Record<string, string | undefined>;
         connectedServicesDefaultProfileByServiceId: Record<string, string | undefined>;
+        connectedAccountPurposeBindingsV1?: QualifiedConnectedAccountPurposeBindingsV1;
         connectedServicesDefaultAuthByAgentIdV1?: ConnectedServicesDefaultAuthByAgentIdV1;
     };
-    setDefaultAuthSettings: (next: ConnectedServicesDefaultAuthByAgentIdV1) => void;
+    setDefaultAuthSettings: (next: ConnectedServicesAgentDefaultAuthWrite) => void;
     onOpenConnectedServicesSettings: (serviceId: string) => void;
     /**
      * Persisted dismissals of the one-time "adopt this autoSwitch pool" suggestion,
@@ -89,124 +96,8 @@ export type ConnectedServicesDefaultAuthRowProps = Readonly<{
     onDismissPoolAdoptionSuggestion?: (key: string) => void;
 }>;
 
-const EMPTY_DEFAULT_AUTH_SETTINGS: ConnectedServicesDefaultAuthByAgentIdV1 = {
-    v: 1,
-    bindingsByAgentId: {},
-};
 const EMPTY_SERVICE_BINDINGS: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>> = {};
 const DEFAULT_AUTH_PICKER_MAX_HEIGHT = 520;
-
-function buildNextDefaultAuthSettings(params: Readonly<{
-    agentId: string;
-    current: ConnectedServicesDefaultAuthByAgentIdV1;
-    bindingsByServiceId: Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>;
-    changedServiceId: string;
-    serverId?: string;
-    accountId?: string;
-    teamCredentialResources: readonly TeamCredentialResourceCatalogEntryV1[];
-}>): ConnectedServicesDefaultAuthByAgentIdV1 {
-    const normalizedBindingsByServiceId: Record<
-        string,
-        ConnectedServiceBindingSelectionV1 | ConnectedServicesDefaultAuthTeamResourceBindingV2
-    > = {};
-    let hasTeamResourceBinding = false;
-    for (const [serviceId, binding] of Object.entries(params.bindingsByServiceId)) {
-        const parsedBinding = parseConnectedServicesServiceBinding(binding);
-        if (!parsedBinding) continue;
-        if (parsedBinding.source === 'team_resource') {
-            const existing = params.current.bindingsByAgentId[params.agentId]?.bindingsByServiceId[serviceId];
-            const retained = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(existing);
-            if (serviceId !== params.changedServiceId
-                && retained.success
-                && areTeamResourceConnectedServiceSelectionsEqual(retained.data, parsedBinding)) {
-                normalizedBindingsByServiceId[serviceId] = retained.data;
-                hasTeamResourceBinding = true;
-                continue;
-            }
-            const resource = params.teamCredentialResources.find((candidate) => (
-                candidate.id === parsedBinding.resourceId
-                && candidate.connectedServiceSelections.some((selection) => (
-                    areTeamResourceConnectedServiceSelectionsEqual(selection, parsedBinding)
-                ))
-            ));
-            if (resource && params.serverId && params.accountId) {
-                normalizedBindingsByServiceId[serviceId] = {
-                    ...parsedBinding,
-                    serverId: params.serverId,
-                    accountId: params.accountId,
-                    teamId: resource.teamId,
-                    expectedResourceRevision: resource.resourceRevision,
-                };
-                hasTeamResourceBinding = true;
-            } else if (retained.success
-                && retained.data.resourceId === parsedBinding.resourceId
-                && retained.data.deliveryMode === parsedBinding.deliveryMode) {
-                normalizedBindingsByServiceId[serviceId] = retained.data;
-                hasTeamResourceBinding = true;
-            }
-            continue;
-        }
-        if (parsedBinding.source === 'native') {
-            normalizedBindingsByServiceId[serviceId] = { source: 'native' };
-            continue;
-        }
-        if (parsedBinding.selection === 'group') {
-            const groupId = typeof parsedBinding.groupId === 'string' ? parsedBinding.groupId.trim() : '';
-            if (!groupId) continue;
-            normalizedBindingsByServiceId[serviceId] = {
-                source: 'connected',
-                selection: 'group',
-                groupId,
-            };
-            continue;
-        }
-        const profileId = typeof parsedBinding.profileId === 'string' ? parsedBinding.profileId.trim() : '';
-        if (!profileId) continue;
-        normalizedBindingsByServiceId[serviceId] = {
-            source: 'connected',
-            selection: 'profile',
-            profileId,
-        };
-    }
-    const hasNonNativeBinding = Object.values(normalizedBindingsByServiceId).some((binding) => binding.source !== 'native');
-    const bindingsByAgentId: ConnectedServicesDefaultAuthByAgentIdV1['bindingsByAgentId'] = {
-        ...params.current.bindingsByAgentId,
-    };
-
-    if (hasNonNativeBinding) {
-        bindingsByAgentId[params.agentId] = hasTeamResourceBinding
-          ? ConnectedServicesDefaultAuthBindingsV2Schema.parse({
-            v: 2,
-            bindingsByServiceId: normalizedBindingsByServiceId,
-          })
-          : ConnectedServiceBindingsV1Schema.parse({
-            v: 1,
-            bindingsByServiceId: normalizedBindingsByServiceId,
-          });
-    } else {
-        delete bindingsByAgentId[params.agentId];
-    }
-
-    return {
-        v: 1,
-        bindingsByAgentId,
-    };
-}
-
-function pickerBindingFromPersisted(value: unknown): ConnectedServicesServiceBinding | undefined {
-    const qualifiedTeamResource = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(value);
-    if (qualifiedTeamResource.success) {
-        const {
-            serverId: _serverId,
-            accountId: _accountId,
-            teamId: _teamId,
-            expectedResourceRevision: _revision,
-            ...selection
-        } = qualifiedTeamResource.data;
-        return selection;
-    }
-    return parseConnectedServicesServiceBinding(value) ?? undefined;
-}
 
 function resolveDefaultAuthWarningLabel(warningCode: ConnectedServicesAuthWarningCode | undefined): string | undefined {
     const key = resolveConnectedServicesAuthWarningTranslationKey(warningCode);
@@ -280,11 +171,29 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         supportedServiceIds,
     ]);
 
-    const defaultAuthSettings = props.settings.connectedServicesDefaultAuthByAgentIdV1 ?? EMPTY_DEFAULT_AUTH_SETTINGS;
-    const persistedBindings = defaultAuthSettings.bindingsByAgentId[props.agentId]?.bindingsByServiceId ?? EMPTY_SERVICE_BINDINGS;
-    const persistedBindingsByServiceId = React.useMemo(() => Object.fromEntries(
-        Object.entries(persistedBindings).map(([serviceId, binding]) => [serviceId, pickerBindingFromPersisted(binding)]),
-    ), [persistedBindings]);
+    const defaultAuthSettings = React.useMemo(() => ({
+        connectedAccountPurposeBindingsV1: props.settings.connectedAccountPurposeBindingsV1,
+        connectedServicesDefaultAuthByAgentIdV1: props.settings.connectedServicesDefaultAuthByAgentIdV1,
+    }), [
+        props.settings.connectedAccountPurposeBindingsV1,
+        props.settings.connectedServicesDefaultAuthByAgentIdV1,
+    ]);
+    // The Agent default-authentication owner is the one reader; this row only
+    // presents its purpose defaults in the Session's service-keyed shape.
+    const persistedBindingsByServiceId = React.useMemo<
+        Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>
+    >(() => (
+        props.agentIdentity
+            ? projectAgentConnectedAccountPurposeDefaultsToSessionBindings(
+                resolveAgentConnectedAccountPurposeDefaults({
+                    settings: defaultAuthSettings,
+                    agentId: props.agentId,
+                    consumer: props.agentIdentity,
+                    declarations: props.connectedAccountPurposes,
+                }),
+            )?.bindingsByServiceId ?? EMPTY_SERVICE_BINDINGS
+            : EMPTY_SERVICE_BINDINGS
+    ), [defaultAuthSettings, props.agentId, props.agentIdentity, props.connectedAccountPurposes]);
     const [bindingsByServiceId, setBindingsByServiceId] = React.useState<
         Readonly<Record<string, ConnectedServicesServiceBinding | undefined>>
     >(persistedBindingsByServiceId);
@@ -317,23 +226,45 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
             ...bindingsByServiceId,
             [serviceId]: binding,
         };
-        setBindingsByServiceId(nextBindingsByServiceId);
-        props.setDefaultAuthSettings(buildNextDefaultAuthSettings({
+        if (!props.agentIdentity) return;
+        const selection = parseConnectedServicesServiceBinding(binding);
+        if (!selection) return;
+        const teamId = selection.source === 'team_resource'
+            ? (props.teamCredentialResources ?? []).find((candidate) => (
+                candidate.id === selection.resourceId
+                && candidate.connectedServiceSelections.some((offered) => (
+                    areTeamResourceConnectedServiceSelectionsEqual(offered, selection)
+                ))
+            ))?.teamId
+            : undefined;
+        const groupId = selection.source === 'connected' ? selection.groupId?.trim() ?? '' : '';
+        const profileId = selection.source === 'connected' ? selection.profileId?.trim() ?? '' : '';
+        const written = writeAgentConnectedServiceDefault({
+            settings: defaultAuthSettings,
             agentId: props.agentId,
-            current: defaultAuthSettings,
-            bindingsByServiceId: nextBindingsByServiceId,
-            changedServiceId: serviceId,
-            serverId: props.serverId,
-            accountId: props.accountId,
-            teamCredentialResources: props.teamCredentialResources ?? [],
-        }));
+            consumer: props.agentIdentity,
+            declarations: props.connectedAccountPurposes,
+            serviceKey: serviceId,
+            selection: selection.source !== 'connected'
+                ? selection
+                : selection.selection === 'group' && groupId
+                    ? { source: 'connected', selection: 'group', groupId }
+                    : selection.selection !== 'group' && profileId
+                        ? { source: 'connected', selection: 'profile', profileId }
+                        // A connected pick without an exact Account/Pool stores no default.
+                        : { source: 'native' },
+            ...(teamId ? { teamId } : {}),
+        });
+        if (!written) return;
+        setBindingsByServiceId(nextBindingsByServiceId);
+        props.setDefaultAuthSettings(written);
     }, [
         bindingsByServiceId,
         defaultAuthSettings,
         props.agentId,
-        props.accountId,
+        props.agentIdentity,
+        props.connectedAccountPurposes,
         props.setDefaultAuthSettings,
-        props.serverId,
         props.teamCredentialResources,
     ]);
 
@@ -345,9 +276,6 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         const state = authLabelModel.serviceStatesById[availabilityParams.serviceId];
         const requestedBinding = availabilityParams.binding;
         if (requestedBinding.source === 'team_resource') {
-            const persistedQualified = ConnectedServicesDefaultAuthTeamResourceBindingV2Schema.safeParse(
-                persistedBindings[availabilityParams.serviceId],
-            );
             const resource = (props.teamCredentialResources ?? []).find((candidate) => (
                 candidate.id === requestedBinding.resourceId
                 && candidate.connectedServiceSelections.some((selection) => (
@@ -357,15 +285,12 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
             if (resource && resource.readiness.kind !== 'available') {
                 return { subtitle: t('common.unavailable') };
             }
+            // A default is a reference, not an entitlement (lane 10 child 02
+            // §11.6): it is current while this Home still offers the exact
+            // selection; it never pins a resource revision.
             const current = resource !== undefined
                 && props.currentTeamCredentialResourceKeys?.has(`${resource.teamId}:${resource.id}`) === true
-                && resource.id === requestedBinding.resourceId
-                && (!persistedQualified.success
-                    || !areTeamResourceConnectedServiceSelectionsEqual(persistedQualified.data, requestedBinding)
-                    || (persistedQualified.data.serverId === props.serverId
-                        && persistedQualified.data.accountId === props.accountId
-                        && persistedQualified.data.teamId === resource.teamId
-                        && persistedQualified.data.expectedResourceRevision === resource.resourceRevision));
+                && resource.id === requestedBinding.resourceId;
             if (!current) return { disabled: true, subtitle: t('common.unavailable') };
         }
         if (
@@ -379,10 +304,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         return {};
     }, [
         authLabelModel.serviceStatesById,
-        persistedBindings,
-        props.accountId,
         props.currentTeamCredentialResourceKeys,
-        props.serverId,
         props.teamCredentialResources,
     ]);
 

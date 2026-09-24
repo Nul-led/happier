@@ -50,6 +50,8 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   initialAccessFilePath?: string;
   trackedSpawnOptions: SpawnSessionOptions;
   normalizedExistingSessionId: string;
+  /** Creation outcome of a Session the daemon committed before launch; its attaching runner reports none. */
+  sessionCreationOutcome?: TrackedSession['sessionCreationOutcome'];
   effectiveResume: string;
   effectiveBackendTargetV2: BackendTargetRefV2;
   reservedSessionId?: string;
@@ -159,6 +161,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     options: params.options,
     trackedSpawnOptions: params.trackedSpawnOptions,
     normalizedExistingSessionId: params.normalizedExistingSessionId,
+    ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
     effectiveResume: params.effectiveResume,
     effectiveBackendTargetV2: params.effectiveBackendTargetV2,
     sessionControlArgs,
@@ -235,6 +238,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
       options: params.options,
       trackedSpawnOptions: params.trackedSpawnOptions,
       normalizedExistingSessionId: params.normalizedExistingSessionId,
+      ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
       effectiveResume: params.effectiveResume,
       reservedSessionId: params.reservedSessionId,
       directoryCreated: params.directoryCreated,
@@ -267,6 +271,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     options: params.options,
     trackedSpawnOptions: params.trackedSpawnOptions,
     normalizedExistingSessionId: params.normalizedExistingSessionId,
+    ...(params.sessionCreationOutcome ? { sessionCreationOutcome: params.sessionCreationOutcome } : {}),
     effectiveResume: params.effectiveResume,
     directoryCreated: params.directoryCreated,
     extraEnvForChildWithMessage: params.extraEnvForChildWithMessage,

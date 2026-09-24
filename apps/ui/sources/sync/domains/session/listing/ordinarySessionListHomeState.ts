@@ -85,5 +85,6 @@ export function buildOrdinarySessionListHomeState(input: Readonly<{
         // Never `query`: a released GET cannot answer the strict query's structural
         // selection, so coverage owners must keep treating this corpus as ordinary.
         appliedSourceKind: 'ordinary',
+        metadataUpgradeRequiredCount: input.lifecycle.frontier.metadataUpgradeRequiredCount ?? 0,
     };
 }

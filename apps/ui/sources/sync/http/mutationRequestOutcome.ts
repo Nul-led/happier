@@ -1,35 +1,21 @@
-const PROVEN_NO_SERVER_DISPATCH_CODES = new Set([
-    'ECONNREFUSED',
-    'ENOTFOUND',
-    'EAI_AGAIN',
-]);
-
-function readErrorCode(error: unknown, depth = 0): string | null {
-    if (!error || typeof error !== 'object' || depth > 3) return null;
-    const record = error as Readonly<{ code?: unknown; cause?: unknown }>;
-    if (typeof record.code === 'string' && record.code.trim().length > 0) {
-        return record.code.trim().toUpperCase();
-    }
-    return readErrorCode(record.cause, depth + 1);
-}
+import { classifyHomeDomainHttpMutationFailureV1 } from '@happier-dev/protocol';
 
 /**
- * Classify a failed HTTP mutation from the canonical transport witness.
+ * Classify a failed HTTP mutation from this carrier's transport witness.
  *
  * `issued` means every local authority/setup guard passed and the request was
- * handed to the transport. It deliberately does not claim that the server
- * received bytes. A small set of connection-establishment failures can still
- * prove that it did not; every other post-issue loss remains ambiguous.
+ * handed to the transport. The decision itself belongs to the Protocol seam
+ * owner, so the browser carrier and the CLI/daemon carrier cannot disagree
+ * about whether one sealed mutation may have committed.
  */
 export function classifyHttpMutationRequestFailure(input: Readonly<{
     error: unknown;
     issued: boolean;
     signal?: AbortSignal;
 }>): 'cancelled' | 'not_dispatched' | 'outcome_unknown' {
-    const aborted = input.signal?.aborted === true
-        || (input.error instanceof Error && input.error.name === 'AbortError');
-    if (!input.issued) return aborted ? 'cancelled' : 'not_dispatched';
-    return PROVEN_NO_SERVER_DISPATCH_CODES.has(readErrorCode(input.error) ?? '')
-        ? 'not_dispatched'
-        : 'outcome_unknown';
+    return classifyHomeDomainHttpMutationFailureV1({
+        error: input.error,
+        issued: input.issued,
+        aborted: input.signal?.aborted === true,
+    });
 }

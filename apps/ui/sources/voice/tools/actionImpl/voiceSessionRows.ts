@@ -1,4 +1,5 @@
 import {
+  findSessionListLookupSession,
   listSessionListLookupActiveSessions,
   listSessionListLookupServerSessions,
 } from '@/sync/domains/session/listing/sessionListLookupState';
@@ -261,18 +262,32 @@ export function collectVoiceSessionCorpus(
     }
   }
 
-  for (const entry of listSessionListLookupServerSessions(stateRecord)) {
-    pushRow(entry.session, 1, {
-      serverId: entry.serverId,
-      serverName: entry.serverName,
-    });
-  }
+  if (options?.addresses) {
+    // An authoritative admitted membership is enumerated address by address through
+    // the exact lookup: a row-only/query acquisition hydrates rows without publishing
+    // ordinary membership, so the ordinary enumerators below would never reach them.
+    for (const address of options.addresses) {
+      const entry = findSessionListLookupSession(stateRecord, address, { activeServerId });
+      if (!entry) continue;
+      pushRow(entry.session, 1, {
+        serverId: entry.serverId,
+        serverName: entry.serverName,
+      });
+    }
+  } else {
+    for (const entry of listSessionListLookupServerSessions(stateRecord)) {
+      pushRow(entry.session, 1, {
+        serverId: entry.serverId,
+        serverName: entry.serverName,
+      });
+    }
 
-  for (const entry of listSessionListLookupActiveSessions(stateRecord, { activeServerId })) {
-    pushRow(entry.session, 2, {
-      serverId: entry.serverId,
-      serverName: entry.serverName,
-    });
+    for (const entry of listSessionListLookupActiveSessions(stateRecord, { activeServerId })) {
+      pushRow(entry.session, 2, {
+        serverId: entry.serverId,
+        serverName: entry.serverName,
+      });
+    }
   }
 
   const uncoveredServerIds = (options?.knownServerIds ?? [])

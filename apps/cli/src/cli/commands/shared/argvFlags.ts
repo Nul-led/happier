@@ -143,7 +143,7 @@ export type CommandArgumentPolicy = Readonly<{
   maxPositionals?: number;
 }>;
 
-function invalidCommandArguments(usage: string, reason: string): Error & { code: 'invalid_arguments' } {
+export function invalidCommandArguments(usage: string, reason: string): Error & { code: 'invalid_arguments' } {
   return Object.assign(new Error(`${reason}\n${usage}`), { code: 'invalid_arguments' as const });
 }
 

@@ -792,3 +792,35 @@ it('shows the reset submission as working until the Home answers', async () => {
     await act(async () => { finishReset(); });
     await vi.waitFor(() => expect(screen?.findByTestId('native-auth-reset-done')).not.toBeNull());
 });
+
+it('retries the verification preview in place once the exact Home is already acquired', async () => {
+    boundary.preview.mockReset();
+    boundary.preview.mockRejectedValueOnce(new HappyError('Home unreachable', true, { kind: 'network' }));
+    boundary.preview.mockResolvedValue({
+        v: 1, valid: true, maskedDestination: 'p***@example.test', continuation: 'account_admission',
+    });
+
+    screen = await renderScreen(<NativeAuthEmailVerifyScreen token="verification-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-invalid')).not.toBeNull());
+
+    // The Home resolved; only the read failed, so the Home-acquisition retry is
+    // not the affordance this state needs — the preview owns its own.
+    expect(screen.findByTestId('native-auth-verify-retry-home')).toBeNull();
+    await screen.pressByTestIdAsync('native-auth-verify-retry');
+
+    expect(boundary.preview).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-create-account')).not.toBeNull());
+});
+
+it('offers no preview retry when the verification link itself is expired', async () => {
+    boundary.preview.mockReset();
+    boundary.preview.mockResolvedValue({ v: 1, valid: false });
+
+    screen = await renderScreen(<NativeAuthEmailVerifyScreen token="verification-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-invalid')).not.toBeNull());
+
+    // An expired or revoked bearer is terminal: re-reading it cannot change it.
+    expect(screen.findByTestId('native-auth-verify-retry')).toBeNull();
+    expect(screen.findByTestId('native-auth-verify-retry-home')).toBeNull();
+    expect(boundary.preview).toHaveBeenCalledTimes(1);
+});

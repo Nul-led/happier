@@ -52,35 +52,20 @@ describe('features/serverFeatureRegistry', () => {
         expect(failures).toEqual([]);
     });
 
-    it('publishes collaboration by default and enforces its sharing dependency', () => {
-        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        const operatorDisabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
-        }, serverFeatureRegistry);
-        const sharingDisabled = resolveServerFeaturePayload({
-            HAPPIER_BUILD_FEATURES_DENY: 'sharing.session',
-        }, serverFeatureRegistry);
-        const teamsDisabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_TEAMS__ENABLED: '0',
-        }, serverFeatureRegistry);
-        expect(readServerEnabledBit(teamsDisabled, 'sessions.collaboration')).toBe(true);
-        expect(readServerEnabledBit(byDefault, 'sessions.collaboration')).toBe(true);
-        expect(readServerEnabledBit(operatorDisabled, 'sessions.collaboration')).toBe(false);
-        expect(readServerEnabledBit(sharingDisabled, 'sessions.collaboration')).toBe(false);
-    });
-
-    it('publishes conversations by default and enforces the collaboration dependency', () => {
+    it('publishes conversations by default and enforces its sharing dependency', () => {
         const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
         const operatorDisabled = resolveServerFeaturePayload({
             HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '0',
         }, serverFeatureRegistry);
-        const dependencyDisabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
+        const sharingDisabled = resolveServerFeaturePayload({
+            HAPPIER_BUILD_FEATURES_DENY: 'sharing.session',
         }, serverFeatureRegistry);
 
         expect(readServerEnabledBit(byDefault, 'sessions.conversations')).toBe(true);
         expect(readServerEnabledBit(operatorDisabled, 'sessions.conversations')).toBe(false);
-        expect(readServerEnabledBit(dependencyDisabled, 'sessions.conversations')).toBe(false);
+        expect(readServerEnabledBit(sharingDisabled, 'sessions.conversations')).toBe(false);
+        // The retired server-only collaboration bit is no longer published.
+        expect((byDefault.features.sessions as Record<string, unknown>).collaboration).toBeUndefined();
     });
 
     it('publishes Following by default, independently of its diagnostic protocol capability', () => {

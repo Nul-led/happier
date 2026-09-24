@@ -48,8 +48,8 @@ import { resolveCliFeatureDecision, resolveCliFeatureDecisionForServer } from '@
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
 import {
-  resolveSessionEncryptionContextFromCredentials,
-  resolveSessionStoredContentEncryptionMode,
+  resolveExactSessionOrCredentialCryptoContext,
+  type SessionTransportEncryptionMaterial,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   openSessionStoredContent,
@@ -194,6 +194,13 @@ export function createSessionDiscussionActionDeps(options: Readonly<{
     request: SessionDiscussionAgentPostRequestV1,
     options?: Readonly<{ signal?: AbortSignal }>,
   ) => Promise<SessionDiscussionAgentPostResponseV1>;
+  /**
+   * Stored-content material this composition already holds for one exact
+   * Session. See `createSessionBoardActionDeps`: a Session-scoped runtime
+   * principal has no Account encryption material, and this is the only material
+   * that can open its own discussions. Bound to one Session id, fail-closed.
+   */
+  resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
 }> & ExternalActionHomeBinding & SessionDiscussionActionFixedHome): Pick<ActionExecutorDeps, 'sessionDiscussionAction'> {
   if (
     (options.serverId === undefined) !== (options.serverHttpBaseUrl === undefined)
@@ -338,11 +345,15 @@ export function createSessionDiscussionActionDeps(options: Readonly<{
       });
       if (!rawSession || rawSession.id !== sessionId) return failure('session_discussion_not_found');
 
-      const mode = resolveSessionStoredContentEncryptionMode(rawSession);
-      const ctx = mode === 'e2ee' ? resolveSessionEncryptionContextFromCredentials(options.credentials, rawSession) : null;
       // Missing E2EE material fails closed; it never falls back to plaintext.
-      if (mode === 'e2ee' && !ctx) return failure('encryption_material_unavailable');
-      const crypto: SessionStoredContentCryptoContext = ctx ? { mode: 'e2ee', ctx } : { mode: 'plain', ctx: null };
+      const crypto = resolveExactSessionOrCredentialCryptoContext({
+        credentials: options.credentials,
+        ...(options.resolveExactSessionEncryptionMaterial
+          ? { resolveExactSessionEncryptionMaterial: options.resolveExactSessionEncryptionMaterial }
+          : {}),
+      }, sessionId, rawSession);
+      if (!crypto) return failure('encryption_material_unavailable');
+      const ctx = crypto.mode === 'e2ee' ? crypto.ctx : null;
 
       /**
        * Only an E2EE client can derive the tag. A Plain request deliberately

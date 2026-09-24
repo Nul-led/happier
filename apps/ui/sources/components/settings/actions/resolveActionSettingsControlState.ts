@@ -7,6 +7,7 @@ import {
 import { getActionSettingsTargetPreferenceSelected, setActionTargetSelected } from './actionSettingsTargetSelection';
 import {
     getActionTargetApprovalOverride,
+    getActionTargetApprovalRequired,
     isActionSettingsApprovalAction,
     resolveActionSettingsApprovalSurface,
     setActionTargetApprovalRequired,
@@ -20,8 +21,17 @@ export type ActionSettingsTargetControlKind = 'approval' | 'switch' | 'unavailab
 export type ActionSettingsTargetControlState =
     | Readonly<{
         kind: 'approval';
+        /** The persisted choice: `default` means this target inherits the policy. */
         value: ActionSettingsApprovalControlValue;
         approvalSurface: keyof ActionSurfaces;
+        /**
+         * What the canonical Actions approval policy answers for this target with
+         * these settings. `value` alone cannot say whether the inherited `default`
+         * confirms, and readers must not re-derive that answer: an in-app target is
+         * admitted with a present user and inherits no prompt, while the same
+         * dangerous Action still confirms on Agent, MCP and CLI.
+         */
+        approvalRequiredByPolicy: boolean;
     }>
     | Readonly<{
         kind: 'switch';
@@ -88,11 +98,19 @@ export function resolveActionSettingsTargetControlState(
         };
     }
 
+    const approvalRequiredByPolicy = getActionTargetApprovalRequired({
+        settings: params.settings,
+        actionId: params.actionId,
+        targetId: params.targetId,
+        ...(params.target ? { target: params.target } : {}),
+    });
+
     if (!selected) {
         return {
             kind: 'approval',
             value: 'off',
             approvalSurface,
+            approvalRequiredByPolicy,
         };
     }
 
@@ -107,6 +125,7 @@ export function resolveActionSettingsTargetControlState(
         kind: 'approval',
         value: approvalOverride === null ? 'default' : approvalOverride ? 'ask_first' : 'allowed',
         approvalSurface,
+        approvalRequiredByPolicy,
     };
 }
 

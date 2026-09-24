@@ -54,6 +54,7 @@ import {
     type PluginMarketplaceNonInstallableListing,
 } from '../readPluginMarketplaceCatalog';
 import { showPluginInstallationReviewDialog } from '../PluginInstallationReviewDialog';
+import { showPluginRegistryProfileSelectionDialog } from '../PluginRegistryProfileSelectionDialog';
 import {
     useMarketplaceSourceRegistryAdministration,
     type MarketplaceSourceRegistryAdministrationV1,
@@ -67,6 +68,7 @@ import {
     isPluginMutationVisibleAfterRefresh,
     readPluginChangeKind,
     readPluginCreateResult,
+    readPluginEditTargetResult,
     readPendingPluginChangeDecision,
     readPendingPluginChangeDecisionId,
     readPendingPluginChangeListingId,
@@ -76,6 +78,7 @@ import {
     readPendingPluginChangeStatus,
     readPluginDevelopChange,
     readPluginInstallationReviewChange,
+    readPluginRegistryProfileRequirement,
     resolvePluginReadOnlySnapshotNotice,
     type DevelopmentPluginEntry,
     projectInstalledPluginLifecycleCapabilities,
@@ -83,7 +86,7 @@ import {
     type PendingPluginChangeDecision,
     type PendingPluginChangeListing,
     type PendingPluginChangeReview,
-    type PendingPluginDevelopmentSourceRootReview,
+    type PendingPluginDevelopmentProjectTrustReview,
     type PluginMarketplaceActionRequest,
     type PluginReadOnlySnapshotNoticeState,
     type PluginSettingsViewId,
@@ -126,6 +129,32 @@ type DiscoverQueryIntent = Readonly<{
     sourceId: string | null;
 }>;
 
+export type PluginRoutineOperationSettlement = Readonly<{
+    scope: 'installed' | 'discover' | 'pending' | 'development';
+    message: string;
+    detail?: string;
+}>;
+
+export type DevelopmentCreateSettlement =
+    | Readonly<{
+        status: 'success';
+        created: Readonly<{ pluginId: string; sourceRootPath: string }>;
+    }>
+    | Readonly<{
+        status: 'unavailable';
+        reason: 'operationUnavailable' | 'authorityChanged' | 'requestFailed' | 'invalidResult';
+    }>;
+
+export type DevelopmentEditTargetSettlement =
+    | Readonly<{
+        status: 'success';
+        target: Readonly<{ pluginId: string; sourceRootPath: string; sessionDirectory: string }>;
+    }>
+    | Readonly<{
+        status: 'unavailable';
+        reason: 'operationUnavailable' | 'authorityChanged' | 'requestFailed' | 'invalidResult';
+    }>;
+
 function resolvePluginChangeActionLabel(action: CommitIntendedPluginChangeAction): string {
     if (action === 'install') return t('common.install');
     if (action === 'update') return t('common.update');
@@ -144,6 +173,12 @@ export type PluginSettingsScreenState = Readonly<{
     executionServerIdentityId: string | null;
     executionServerId: string | null;
     executionMachineId: string | null;
+    /**
+     * The selected machine's reported home directory, so a canonical
+     * development root can be shown `~`-relative exactly as an ordinary Session
+     * working directory is. Absent home simply shows the absolute root.
+     */
+    executionMachineHomeDir: string | null;
     /** Rejects renderer-originated writes once this exact daemon target retires. */
     isDaemonSettingsTargetCurrent: (target: Extract<ScopedPluginSettingsTarget, { kind: 'daemon' }>) => boolean;
     discoverError: string | null;
@@ -177,6 +212,7 @@ export type PluginSettingsScreenState = Readonly<{
     loadingMoreDiscover: boolean;
     /** Daemon-held changes — including ones an Agent prepared — awaiting this user. */
     pendingPluginChanges: readonly PendingPluginChangeListing[];
+    routineOperationSettlement: PluginRoutineOperationSettlement | null;
     decidePendingPluginChange: (pendingChangeId: string, decision: 'approve' | 'reject') => void;
     readOnlySnapshotNotice: PluginReadOnlySnapshotNoticeState | null;
     refreshPluginTruth: () => void;
@@ -212,11 +248,10 @@ export type PluginSettingsScreenState = Readonly<{
         displayName: string;
         pluginId: string;
         ui?: PluginScaffoldUiMode;
-        /** Called with the scaffold result after the canonical create commits. */
-        onCreated?: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => void;
-    }>) => void;
+    }>) => Promise<DevelopmentCreateSettlement>;
+    resolveDevelopmentEditTarget: (pluginId: string) => Promise<DevelopmentEditTargetSettlement>;
     runDevelopmentSourceInstall: (sourceRootPath: string) => void;
-    runDevelopmentAction: (action: 'test' | 'pack', pluginId: string) => void;
+    runDevelopmentAction: (action: 'test' | 'pack' | 'unregister', pluginId: string) => void;
     runInstalledPluginAction: (action: InstalledPluginActionId, pluginId: string) => void;
     setInstalledPluginUpdatePolicy: (pluginId: string, policy: PluginUpdatePolicyV1) => void;
     setActiveView: (view: PluginSettingsViewId) => void;
@@ -243,6 +278,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const executionTarget = administration.executionTarget;
     const selectedServerIdentityId = administration.selectedServerIdentityId;
     const executionMachineId = executionTarget?.machine.id ?? null;
+    const executionMachineHomeDir = executionTarget?.machine.metadata?.homeDir ?? null;
     const executionServerId = executionTarget?.serverId ?? null;
     const executionServerIdentityId = executionTarget?.target.serverIdentityId ?? null;
     const { invokeWithAlerts } = useMachineCapabilityInvokeWithAlerts();
@@ -320,6 +356,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const [hasLoadedDiscoverForScope, setHasLoadedDiscoverForScope] = React.useState<string | null>(null);
     const [projectionRefreshKey, setProjectionRefreshKey] = React.useState(0);
     const [pluginActionCountByAuthority, setPluginActionCountByAuthority] = React.useState<PluginActionCountsByAuthority>({});
+    const [routineOperationSettlement, setRoutineOperationSettlement] = React.useState<PluginRoutineOperationSettlement | null>(null);
     const pluginActionCountByAuthorityRef = React.useRef<PluginActionCountsByAuthority>(
         pluginActionCountByAuthority,
     );
@@ -330,6 +367,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const runDiscoverQueryRef = React.useRef<(intent: DiscoverQueryIntent) => void>(() => {});
     const lastSelectedMachineScopeKeyRef = React.useRef<string | null>(selectedMachineScopeKey);
     const lastDiscoverMutationAuthorityKeyRef = React.useRef<string | null>(null);
+
+    React.useEffect(() => {
+        setRoutineOperationSettlement(null);
+    }, [selectedMachineScopeKey]);
 
     const capabilityRequest = React.useMemo(() => ({
         requests: [{ id: MARKETPLACE_CAPABILITY_ID }],
@@ -469,7 +510,8 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
      * The machine's configured marketplace sources, read through the one
      * registry owner this screen shares with the Sources & registries
      * administration screen. Discover only reads it; every write to it is
-     * issued from that screen through the same owner.
+     * issued through the same owner — from that screen, or from the registry
+     * selection an install owes, which binds the listing's source there.
      */
     const marketplaceSourceRegistryAdministration = useMarketplaceSourceRegistryAdministration({
         scopeKey: selectedMachineScopeKey,
@@ -554,12 +596,13 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
      * unresolved copy naming the exact machine and server, never a false
      * failure and never an invitation to retry a change that may have
      * committed. `probe` is null when no caller-known installed identity
-     * exists (a source-root trust), so the refresh itself is all the
+     * exists (a project-source trust), so the refresh itself is all the
      * reconciliation that can be offered.
      */
     const reconcileCommitIntendedMutation = React.useCallback(async (params: Readonly<{
         target: FreshMachineAdministrationExecutionTargetV1;
         isAuthorityCurrent: () => boolean;
+        settlementScope: PluginRoutineOperationSettlement['scope'];
         successMessage: string;
         actionLabel: string;
         name: string;
@@ -625,7 +668,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
             after: installedAfter,
             targetVersion: probe.targetVersion,
         })) {
-            Modal.alert(t('common.success'), params.successMessage);
+            setRoutineOperationSettlement({
+                scope: params.settlementScope,
+                message: params.successMessage,
+            });
         } else {
             showUnresolvedOutcome();
         }
@@ -696,6 +742,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     }, [selectedMachineScopeKey]);
 
     const markPluginActionStarted = React.useCallback((authorityKey: string, pluginId: string) => {
+        setRoutineOperationSettlement(null);
         const authorityCounts = pluginActionCountByAuthorityRef.current[authorityKey] ?? {};
         const next = {
             ...pluginActionCountByAuthorityRef.current,
@@ -770,6 +817,9 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         version: params.installationReview.review.version,
                     }),
                     review: params.installationReview.review,
+                    reason: params.installationReview.reason,
+                    currentVersion: params.installationReview.currentVersion,
+                    authorityExpansion: params.installationReview.authorityExpansion,
                     target: resolveMachineAdministrationTargetLabel({
                         target: params.target.target,
                         candidates: administrationCandidatesRef.current,
@@ -784,7 +834,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     }), []);
 
     /**
-     * Asks the present user to trust a development source root.
+     * Asks the present user to trust a development project source.
      *
      * The locator is the entire security payload of this decision — the daemon
      * has not been allowed to read that folder yet, so there is no package
@@ -793,65 +843,53 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
      * the target the same Administration owner supplies to every other
      * machine-scoped confirmation on this screen.
      */
-    const decidePluginSourceRootTrustAsPresentUser = React.useCallback(async (params: Readonly<{
+    const decidePluginProjectTrustAsPresentUser = React.useCallback(async (params: Readonly<{
         target: FreshMachineAdministrationExecutionTargetV1;
         isAuthorityCurrent: () => boolean;
-        sourceRootReview: PendingPluginDevelopmentSourceRootReview;
+        projectTrustReview: PendingPluginDevelopmentProjectTrustReview;
     }>): Promise<MachinePluginInstallDecisionResult> => await machinePluginInstallDecision(params.target.machine.id, {
         serverId: params.target.serverId,
         timeoutMs: 10 * 60_000,
         isAuthorityCurrent: params.isAuthorityCurrent,
         decision: {
-            pendingChangeId: params.sourceRootReview.pendingChangeId,
-            decision: 'trustSourceRoot',
+            pendingChangeId: params.projectTrustReview.pendingChangeId,
+            decision: 'installAndTrust',
             confirmPresentUser: async () => await Modal.confirm(
-                t('settingsPlugins.developmentTrustSourceRootTitle'),
-                t('settingsPlugins.developmentTrustSourceRootBody', {
-                    path: params.sourceRootReview.review.source.locator,
-                    ...(resolveMachineAdministrationTargetLabel({
-                        target: params.target.target,
-                        candidates: administrationCandidatesRef.current,
-                    }) ?? {
-                        machine: params.target.machine.id,
-                        server: params.target.serverId,
+                    t('settingsPlugins.developmentTrustProjectSourceTitle'),
+                    t('settingsPlugins.developmentTrustProjectSourceBody', {
+                        path: params.projectTrustReview.review.source.locator,
+                        ...(resolveMachineAdministrationTargetLabel({
+                            target: params.target.target,
+                            candidates: administrationCandidatesRef.current,
+                        }) ?? {
+                            machine: params.target.machine.id,
+                            server: params.target.serverId,
+                        }),
                     }),
-                }),
-                {
-                    confirmText: t('settingsPlugins.developmentTrustSourceRootConfirm'),
-                    cancelText: t('common.cancel'),
-                },
-            ),
+                    {
+                        confirmText: t('settingsPlugins.developmentTrustProjectSourceConfirm'),
+                        cancelText: t('common.cancel'),
+                    },
+                ) ? [] : null,
         },
     }), []);
 
-    /**
-     * Carries one pending change from wherever it currently is to a terminal
-     * outcome, asking the present user each question the daemon still has.
-     *
-     * The daemon may answer a source-root trust with the ordinary
-     * install-and-trust review, so this follows that continuation instead of
-     * treating the second review as an unrelated change. Both halves of the
-     * agent-authored loop end here: a change this screen started, and a change
-     * an Agent prepared that only a present user can decide.
-     */
+    /** Answers one daemon review with one present-user decision. */
     const decidePendingPluginChangeAsPresentUser = React.useCallback(async (params: Readonly<{
         target: FreshMachineAdministrationExecutionTargetV1;
         isAuthorityCurrent: () => boolean;
         decision: PendingPluginChangeDecision;
+        settlementScope: PluginRoutineOperationSettlement['scope'];
         successMessage: string;
         formatFailure: (outcome: string) => string;
     }>): Promise<void> => {
-        let stage: PendingPluginChangeDecision | null = params.decision;
-        while (stage !== null) {
-            // Both bindings are annotated: the loop reassigns `stage` from a
-            // value derived from `stage` itself, and inference alone would make
-            // that circular.
-            const current: PendingPluginChangeDecision = stage;
-            const response: MachinePluginInstallDecisionResult = current.kind === 'sourceRootReviewRequired'
-                ? await decidePluginSourceRootTrustAsPresentUser({
+        let current = params.decision;
+        while (true) {
+            const response: MachinePluginInstallDecisionResult = current.kind === 'projectTrust'
+                ? await decidePluginProjectTrustAsPresentUser({
                     target: params.target,
                     isAuthorityCurrent: params.isAuthorityCurrent,
-                    sourceRootReview: current.sourceRootReview,
+                    projectTrustReview: current.projectTrustReview,
                 })
                 : await decidePluginInstallationReviewAsPresentUser({
                     target: params.target,
@@ -865,69 +903,74 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
             }
             const outcome: MachinePluginInstallDecisionOutcome = response.outcome;
             if (outcome.kind === 'cancelled') return;
-            if (outcome.kind === 'committed') {
-                Modal.alert(t('common.success'), params.successMessage);
+            if (outcome.kind === 'committed' || outcome.kind === 'projectTrustAccepted') {
+                setRoutineOperationSettlement({
+                    scope: params.settlementScope,
+                    message: params.successMessage,
+                });
                 machineCapabilities.refresh({ bypassCache: true });
                 refreshPluginTruth();
                 return;
             }
-            const continuation: PendingPluginChangeDecision | null = outcome.kind === 'reviewRequired'
-                ? readPendingPluginChangeDecision(outcome.change)
-                : null;
-            if (!continuation) {
-                if (outcome.kind === 'outcomeUnknown') {
-                    // Approving is commit-intended: the daemon may have applied
-                    // the change after the decision left this device. The
-                    // answer is reconciled against the exact original target —
-                    // the same path an ordinary install or update already uses
-                    // — instead of being presented as a failure. Proven
-                    // landings are success; unproven ones stay the truthful
-                    // unresolved copy, never a retry invitation.
-                    if (current.kind === 'reviewRequired') {
-                        const review = current.installationReview.review;
-                        const before = installedPluginByIdRef.current.get(review.pluginId) ?? null;
-                        await reconcileCommitIntendedMutation({
-                            target: params.target,
-                            isAuthorityCurrent: params.isAuthorityCurrent,
-                            successMessage: params.successMessage,
-                            actionLabel: t('settingsPlugins.installAndTrust'),
-                            name: review.displayName,
-                            probe: {
-                                method: before === null ? 'install' : 'update',
-                                pluginId: review.pluginId,
-                                before,
-                                targetVersion: review.version,
-                            },
-                        });
-                    } else {
-                        // A source-root trust has no caller-known plugin
-                        // identity yet, so the refresh itself is the
-                        // reconciliation and the copy stays the unresolved
-                        // truth about the folder the user trusted.
-                        await reconcileCommitIntendedMutation({
-                            target: params.target,
-                            isAuthorityCurrent: params.isAuthorityCurrent,
-                            successMessage: params.successMessage,
-                            actionLabel: t('settingsPlugins.developmentTrustSourceRootConfirm'),
-                            name: current.sourceRootReview.review.source.locator,
-                            probe: null,
-                        });
-                    }
-                    return;
+            if (outcome.kind === 'reviewRequired') {
+                const continuation = readPendingPluginChangeDecision(outcome.change);
+                if (
+                    current.kind === 'projectTrust'
+                    && continuation?.kind === 'installation'
+                    && continuation.installationReview.reason === 'authorityExpansion'
+                    && continuation.installationReview.authorityExpansion.length > 0
+                ) {
+                    current = continuation;
+                    continue;
                 }
-                Modal.alert(
-                    t('common.error'),
-                    params.formatFailure(outcome.detail ?? outcome.kind),
-                );
-                machineCapabilities.refresh({ bypassCache: true });
-                refreshPluginTruth();
+            }
+            if (outcome.kind === 'outcomeUnknown') {
+                // Approving is commit-intended: the daemon may have applied the
+                // change after the decision left this device. Reconcile against
+                // the exact original target instead of presenting a false failure.
+                if (current.kind === 'installation') {
+                    const review = current.installationReview.review;
+                    const before = installedPluginByIdRef.current.get(review.pluginId) ?? null;
+                    await reconcileCommitIntendedMutation({
+                        target: params.target,
+                        isAuthorityCurrent: params.isAuthorityCurrent,
+                        settlementScope: params.settlementScope,
+                        successMessage: params.successMessage,
+                        actionLabel: t('settingsPlugins.installAndTrust'),
+                        name: review.displayName,
+                        probe: {
+                            method: before === null ? 'install' : 'update',
+                            pluginId: review.pluginId,
+                            before,
+                            targetVersion: review.version,
+                        },
+                    });
+                } else {
+                    // Project trust has no caller-known plugin identity yet, so
+                    // refresh is the only available reconciliation.
+                    await reconcileCommitIntendedMutation({
+                        target: params.target,
+                        isAuthorityCurrent: params.isAuthorityCurrent,
+                        settlementScope: params.settlementScope,
+                        successMessage: params.successMessage,
+                        actionLabel: t('settingsPlugins.developmentTrustProjectSourceConfirm'),
+                        name: current.projectTrustReview.review.source.locator,
+                        probe: null,
+                    });
+                }
                 return;
             }
-            stage = continuation;
+            Modal.alert(
+                t('common.error'),
+                params.formatFailure(outcome.kind === 'reviewRequired' ? outcome.kind : outcome.detail ?? outcome.kind),
+            );
+            machineCapabilities.refresh({ bypassCache: true });
+            refreshPluginTruth();
+            return;
         }
     }, [
         decidePluginInstallationReviewAsPresentUser,
-        decidePluginSourceRootTrustAsPresentUser,
+        decidePluginProjectTrustAsPresentUser,
         machineCapabilities,
         reconcileCommitIntendedMutation,
         refreshPluginTruth,
@@ -1020,6 +1063,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     await reconcileCommitIntendedMutation({
                         target: initialTarget,
                         isAuthorityCurrent,
+                        settlementScope: params.method === 'install' ? 'discover' : 'installed',
                         successMessage: t('common.done'),
                         actionLabel: resolvePluginChangeActionLabel(commitAction),
                         name: installedBefore?.title ?? exactInstallEntry?.title ?? params.pluginId,
@@ -1031,7 +1075,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         },
                     });
                 };
-                const response = await invokeWithAlerts({
+                const requestChange = () => invokeWithAlerts({
                     machineId: initialTarget.machine.id,
                     serverId: initialTarget.serverId,
                     request: {
@@ -1056,12 +1100,53 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         successTitle: t('common.success'),
                         deferAmbiguousOutcomeToCaller: commitAction !== null,
                         unsupportedMessage: (reason) => reason === 'not-supported' ? t('common.unavailable') : t('common.requestFailed'),
-                        successMessage: commitAction
-                            ? null
-                            : t('common.done'),
+                        successMessage: null,
                     },
                 });
+                let response = await requestChange();
                 if (!isAuthorityCurrent()) return;
+                // A registry selection the daemon names is answered by the
+                // present user through the existing profile administration,
+                // then the same change is requested again: the daemon either
+                // prepares the Install and Trust review or names what is still
+                // missing. Cancel ends the action with nothing fetched.
+                while (
+                    (params.method === 'install' || params.method === 'update')
+                    && 'response' in response
+                    && response.response.ok
+                ) {
+                    const registryRequirement = readPluginRegistryProfileRequirement(
+                        response.response.result,
+                        params.method,
+                        params.pluginId,
+                    );
+                    if (!registryRequirement) break;
+                    const proceed = await showPluginRegistryProfileSelectionDialog({
+                        requirement: registryRequirement,
+                        pluginName: installedBefore?.title ?? exactInstallEntry?.title ?? params.pluginId,
+                        sourceId: params.sourceId ?? null,
+                        target: resolveMachineAdministrationTargetLabel({
+                            target: initialTarget.target,
+                            candidates: administrationCandidatesRef.current,
+                        }) ?? {
+                            machine: initialTarget.machine.id,
+                            server: initialTarget.serverId,
+                        },
+                        daemonOperationsAvailable: daemonAdministrationAvailable,
+                        targetSelection: administrationTargetSelection,
+                        sourceRegistry: {
+                            scopeKey: selectedMachineScopeKey,
+                            executionTarget: initialTarget,
+                            resolveCurrentExecutionTarget,
+                        },
+                    });
+                    // The selection may have rebound this machine's source; the
+                    // screen's own registry read is refreshed either way.
+                    marketplaceSourceRegistryAdministration.refresh();
+                    if (!proceed || !isAuthorityCurrent()) return;
+                    response = await requestChange();
+                    if (!isAuthorityCurrent()) return;
+                }
 
                 if (!('response' in response)) {
                     if (commitAction && response.reason === 'error') {
@@ -1096,7 +1181,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     }
                     const outcome = decisionResponse.outcome;
                     if (outcome.kind === 'committed') {
-                        Modal.alert(t('common.success'), t('common.done'));
+                        setRoutineOperationSettlement({
+                            scope: params.method === 'install' ? 'discover' : 'installed',
+                            message: t('common.done'),
+                        });
                         machineCapabilities.refresh({ bypassCache: true });
                         refreshPluginTruth();
                         return;
@@ -1122,7 +1210,15 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         }
                         return;
                     }
-                    Modal.alert(t('common.success'), t('common.done'));
+                    setRoutineOperationSettlement({
+                        scope: params.method === 'install' ? 'discover' : 'installed',
+                        message: t('common.done'),
+                    });
+                } else {
+                    setRoutineOperationSettlement({
+                        scope: params.method === 'install' ? 'discover' : 'installed',
+                        message: t('common.done'),
+                    });
                 }
                 machineCapabilities.refresh({ bypassCache: true });
                 refreshPluginTruth();
@@ -1130,7 +1226,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                 markPluginActionFinished(mutationAuthorityKey, params.pluginId);
             }
         })();
-    }, [capabilityRequest, decidePluginInstallationReviewAsPresentUser, discoverAuthorityKey, discoverEntries, executionTarget, invokeWithAlerts, isPluginActionInFlight, machineCapabilities, markPluginActionFinished, markPluginActionStarted, mutationAuthorityKey, reconcileCommitIntendedMutation, refreshPluginTruth, resolveCurrentExecutionTarget]);
+    }, [administrationTargetSelection, capabilityRequest, daemonAdministrationAvailable, decidePluginInstallationReviewAsPresentUser, discoverAuthorityKey, discoverEntries, executionTarget, invokeWithAlerts, isPluginActionInFlight, machineCapabilities, markPluginActionFinished, markPluginActionStarted, marketplaceSourceRegistryAdministration.refresh, mutationAuthorityKey, reconcileCommitIntendedMutation, refreshPluginTruth, resolveCurrentExecutionTarget, selectedMachineScopeKey]);
 
     const runInstalledPluginAction = React.useCallback((
         action: InstalledPluginActionId,
@@ -1203,7 +1299,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         runCatalogAction({ method: 'setUpdatePolicy', pluginId, policy });
     }, [runCatalogAction]);
 
-    const runDevelopmentAction = React.useCallback((action: 'test' | 'pack', pluginId: string) => {
+    const runDevelopmentAction = React.useCallback((action: 'test' | 'pack' | 'unregister', pluginId: string) => {
         const development = developmentPlugins.find((entry) => entry.installed.pluginId === pluginId) ?? null;
         const initialTarget = resolveCurrentExecutionTarget(executionTarget);
         if (
@@ -1220,13 +1316,15 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         void (async () => {
             markPluginActionStarted(mutationAuthorityKey, pluginId);
             try {
-                await invokeWithAlerts({
+                const response = await invokeWithAlerts({
                     machineId: initialTarget.machine.id,
                     serverId: initialTarget.serverId,
                     request: {
                         id: MARKETPLACE_CAPABILITY_ID,
-                        method: action,
-                        params: { pluginId },
+                        method: action === 'unregister' ? 'unregisterDevelopment' : action,
+                        params: action === 'unregister'
+                            ? { sourceRootPath: development.sourceRootPath }
+                            : { pluginId },
                     },
                     timeoutMs: 5 * 60_000,
                     isAuthorityCurrent: () => (
@@ -1237,24 +1335,97 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         errorTitle: t('common.error'),
                         successTitle: t('common.success'),
                         unsupportedMessage: (reason) => reason === 'not-supported' ? t('common.unavailable') : t('common.requestFailed'),
-                        successMessage: action === 'test'
-                            ? t('settingsPlugins.developmentTestSucceeded')
-                            : t('settingsPlugins.developmentPackSucceeded'),
+                        successMessage: null,
                     },
                 });
+                if (
+                    response.supported
+                    && 'response' in response
+                    && response.response.ok
+                    && mutationAuthorityKeyRef.current === mutationAuthorityKey
+                    && resolveCurrentExecutionTarget(initialTarget) !== null
+                ) {
+                    setRoutineOperationSettlement({
+                        scope: 'development',
+                        message: action === 'test'
+                            ? t('settingsPlugins.developmentTestSucceeded')
+                            : action === 'pack'
+                                ? t('settingsPlugins.developmentPackSucceeded')
+                                : t('common.done'),
+                    });
+                }
+                if (
+                    action === 'unregister'
+                    && response.supported
+                    && 'response' in response
+                    && response.response.ok
+                ) {
+                    machineCapabilities.refresh({ bypassCache: true });
+                    refreshPluginTruth();
+                }
             } finally {
                 markPluginActionFinished(mutationAuthorityKey, pluginId);
             }
         })();
-    }, [developmentPlugins, executionTarget, invokeWithAlerts, isPluginActionInFlight, markPluginActionFinished, markPluginActionStarted, mutationAuthorityKey, resolveCurrentExecutionTarget]);
+    }, [developmentPlugins, executionTarget, invokeWithAlerts, isPluginActionInFlight, machineCapabilities, markPluginActionFinished, markPluginActionStarted, mutationAuthorityKey, refreshPluginTruth, resolveCurrentExecutionTarget]);
+
+    const resolveDevelopmentEditTarget = React.useCallback((
+        pluginId: string,
+    ): Promise<DevelopmentEditTargetSettlement> => {
+        const initialTarget = resolveCurrentExecutionTarget(executionTarget);
+        if (
+            !mutationAuthorityKey
+            || mutationAuthorityKeyRef.current !== mutationAuthorityKey
+            || !initialTarget
+            || !developmentPlugins.some((entry) => entry.installed.pluginId === pluginId)
+        ) {
+            return Promise.resolve({ status: 'unavailable', reason: 'operationUnavailable' });
+        }
+
+        return (async (): Promise<DevelopmentEditTargetSettlement> => {
+            const isAuthorityCurrent = () => (
+                mutationAuthorityKeyRef.current === mutationAuthorityKey
+                && resolveCurrentExecutionTarget(initialTarget) !== null
+            );
+            const response = await invokeWithAlerts({
+                machineId: initialTarget.machine.id,
+                serverId: initialTarget.serverId,
+                request: {
+                    id: MARKETPLACE_CAPABILITY_ID,
+                    method: 'edit',
+                    params: { pluginId },
+                },
+                isAuthorityCurrent,
+                alerts: {
+                    errorTitle: t('common.error'),
+                    successTitle: t('common.success'),
+                    unsupportedMessage: (reason) => reason === 'not-supported'
+                        ? t('common.unavailable')
+                        : t('common.requestFailed'),
+                    successMessage: null,
+                },
+            });
+            if (!isAuthorityCurrent()) {
+                return { status: 'unavailable', reason: 'authorityChanged' };
+            }
+            if (!('response' in response) || !response.response.ok) {
+                return { status: 'unavailable', reason: 'requestFailed' };
+            }
+            const target = readPluginEditTargetResult(response.response.result, pluginId);
+            if (!target) {
+                Modal.alert(t('common.error'), t('common.requestFailed'));
+                return { status: 'unavailable', reason: 'invalidResult' };
+            }
+            return { status: 'success', target };
+        })();
+    }, [developmentPlugins, executionTarget, invokeWithAlerts, mutationAuthorityKey, resolveCurrentExecutionTarget]);
 
     const runDevelopmentCreate = React.useCallback((params: Readonly<{
         targetDir: string;
         displayName: string;
         pluginId: string;
         ui?: PluginScaffoldUiMode;
-        onCreated?: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => void;
-    }>) => {
+    }>): Promise<DevelopmentCreateSettlement> => {
         const initialTarget = resolveCurrentExecutionTarget(executionTarget);
         if (
             !mutationAuthorityKey
@@ -1263,12 +1434,16 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
             || !initialTarget
             || isPluginActionInFlight(params.pluginId)
         ) {
-            return;
+            return Promise.resolve({ status: 'unavailable', reason: 'operationUnavailable' });
         }
 
-        void (async () => {
+        return (async (): Promise<DevelopmentCreateSettlement> => {
             markPluginActionStarted(mutationAuthorityKey, params.pluginId);
             try {
+                const isAuthorityCurrent = () => (
+                    mutationAuthorityKeyRef.current === mutationAuthorityKey
+                    && resolveCurrentExecutionTarget(initialTarget) !== null
+                );
                 const response = await invokeWithAlerts({
                     machineId: initialTarget.machine.id,
                     serverId: initialTarget.serverId,
@@ -1283,23 +1458,29 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         },
                     },
                     timeoutMs: 5 * 60_000,
-                    isAuthorityCurrent: () => (
-                        mutationAuthorityKeyRef.current === mutationAuthorityKey
-                        && resolveCurrentExecutionTarget(initialTarget) !== null
-                    ),
+                    isAuthorityCurrent,
                     alerts: {
                         errorTitle: t('common.error'),
                         successTitle: t('common.success'),
                         unsupportedMessage: (reason) => reason === 'not-supported' ? t('common.unavailable') : t('common.requestFailed'),
-                        successMessage: t('settingsPlugins.developmentCreateSucceeded'),
+                        successMessage: null,
                     },
                 });
-                if (!('response' in response) || !response.response.ok) return;
+                if (!isAuthorityCurrent()) {
+                    return { status: 'unavailable', reason: 'authorityChanged' };
+                }
+                if (!('response' in response) || !response.response.ok) {
+                    return { status: 'unavailable', reason: 'requestFailed' };
+                }
                 const created = readPluginCreateResult(response.response.result);
                 // Only the daemon's returned source root seeds a follow-on
                 // flow; an unparseable result never falls back to the folder
                 // the prompt collected.
-                if (created) params.onCreated?.(created);
+                if (!created) {
+                    Modal.alert(t('common.error'), t('common.requestFailed'));
+                    return { status: 'unavailable', reason: 'invalidResult' };
+                }
+                return { status: 'success', created };
             } finally {
                 markPluginActionFinished(mutationAuthorityKey, params.pluginId);
             }
@@ -1362,7 +1543,11 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                 if (developChange.kind === 'committed') {
                     // The daemon commits without a review only when both the root
                     // and the derived plugin were already trusted.
-                    Modal.alert(t('common.success'), t('settingsPlugins.developmentSourceInstallSucceeded'));
+                    setRoutineOperationSettlement({
+                        scope: 'development',
+                        message: t('settingsPlugins.developmentSourceInstallSucceeded'),
+                        detail: trimmedSourceRootPath,
+                    });
                     machineCapabilities.refresh({ bypassCache: true });
                     refreshPluginTruth();
                     return;
@@ -1371,6 +1556,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     target: initialTarget,
                     isAuthorityCurrent,
                     decision: developChange,
+                    settlementScope: 'development',
                     successMessage: t('settingsPlugins.developmentSourceInstallSucceeded'),
                     formatFailure: (outcome) => t('settingsPlugins.developmentSourceInstallFailed', { outcome }),
                 });
@@ -1384,7 +1570,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
      * Answers a change the daemon is holding that this screen did not start.
      *
      * An Agent may prepare a plugin change, but approving one is not delegable:
-     * source-root trust and package trust are the present user's decisions. The
+     * project-source trust and any authority expansion are the present user's decisions. The
      * Agent's issued id therefore has to be findable and answerable here, or the
      * change it prepared simply expires unseen.
      *
@@ -1447,7 +1633,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     return;
                 }
                 if (status.kind === 'applying') {
-                    Modal.alert(t('common.success'), t('settingsPlugins.pendingChangeApplying'));
+                    setRoutineOperationSettlement({
+                        scope: 'pending',
+                        message: t('settingsPlugins.pendingChangeApplying'),
+                    });
                     machineCapabilities.refresh({ bypassCache: true });
                     refreshPluginTruth();
                     return;
@@ -1466,7 +1655,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         // decision another client already made. The applied
                         // state is the success answer; re-presenting it as a
                         // failure would be untrue.
-                        Modal.alert(t('common.success'), t('settingsPlugins.pendingChangeCommitted'));
+                        setRoutineOperationSettlement({
+                            scope: 'pending',
+                            message: t('settingsPlugins.pendingChangeCommitted'),
+                        });
                         machineCapabilities.refresh({ bypassCache: true });
                         refreshPluginTruth();
                         return;
@@ -1481,6 +1673,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         await reconcileCommitIntendedMutation({
                             target: initialTarget,
                             isAuthorityCurrent,
+                            settlementScope: 'pending',
                             successMessage: t('settingsPlugins.pendingChangeCommitted'),
                             actionLabel: t('settingsPlugins.installAndTrust'),
                             name: probePluginId ?? trimmedPendingChangeId,
@@ -1531,7 +1724,10 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         return;
                     }
                     if (rejection.outcome.kind === 'cancelled' || rejection.outcome.kind === 'expired') {
-                        Modal.alert(t('common.success'), t('settingsPlugins.pendingChangeRejected'));
+                        setRoutineOperationSettlement({
+                            scope: 'pending',
+                            message: t('settingsPlugins.pendingChangeRejected'),
+                        });
                     } else {
                         Modal.alert(
                             t('common.error'),
@@ -1549,6 +1745,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     target: initialTarget,
                     isAuthorityCurrent,
                     decision: status,
+                    settlementScope: 'pending',
                     successMessage: t('common.done'),
                     formatFailure: (outcome) => t('settingsPlugins.pendingChangeFailed', { outcome }),
                 });
@@ -1746,6 +1943,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         executionServerIdentityId,
         executionServerId,
         executionMachineId,
+        executionMachineHomeDir,
         isDaemonSettingsTargetCurrent,
         discoverEntries,
         discoverNextCursor,
@@ -1769,6 +1967,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         installedPluginById,
         installedPlugins,
         pendingPluginChanges,
+        routineOperationSettlement,
         decidePendingPluginChange,
         readOnlySnapshotNotice,
         refreshPluginTruth,
@@ -1787,6 +1986,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         registryDiagnostics,
         runCatalogAction,
         runDevelopmentCreate,
+        resolveDevelopmentEditTarget,
         runDevelopmentSourceInstall,
         runDevelopmentAction,
         runInstalledPluginAction,

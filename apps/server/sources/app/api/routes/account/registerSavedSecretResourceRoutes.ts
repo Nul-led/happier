@@ -310,6 +310,8 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         const parsed = SharedSavedSecretUpdateInputV1Schema.safeParse(request.body);
         if (!parsed.success) return reply.code(400).send({ error: "invalid_resource" });
         const body = parsed.data;
+        const keyEnvelopes = decodeEnvelopes(body.keyEnvelopes);
+        if (!keyEnvelopes) return reply.code(400).send({ error: "invalid_resource" });
         const result = await inTx((tx) => updateSavedSecretResourceInTx(tx, {
             accountId: request.userId,
             resourceId: body.resourceId,
@@ -317,9 +319,11 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
             displayName: body.displayName,
             kind: body.kind,
             storedContent: body.storedContent,
+            ...(body.toMode ? { toMode: body.toMode } : {}),
+            keyEnvelopes,
         }));
         if (!result.ok) {
-            const status = result.error === "forbidden" ? 403
+            const status = result.error === "forbidden" || result.error === "recipient_mode_unsupported" ? 403
                 : result.error === "resource_not_found" ? 404
                     : result.error === "resource_changed" ? 409 : 400;
             return reply.code(status).send({ error: result.error });

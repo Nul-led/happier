@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { Stack, useLocalSearchParams, useNavigation, useRouter, type Href } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
@@ -23,6 +24,7 @@ import { SessionInvalidLinkFallback } from '@/components/sessions/shell/SessionI
 import { buildSessionCollaborationRouteHref } from '@/components/sessions/collaboration/useOpenSessionCollaboration';
 import { SessionDiscussionDetailsView } from './SessionDiscussionDetailsView';
 import { buildSessionDiscussionRouteHref } from './useOpenSessionDiscussion';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
@@ -65,6 +67,9 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
     const missing = isSessionRouteHydrationMissing(hydration);
     const exactSessionServerId = hydration.serverId ?? routeScope.serverId;
     const address = normalizeSessionAddress(exactSessionServerId, sessionId);
+    // A pushed Run or another route keeps this screen mounted underneath; only the
+    // focused route is the visible Discussion surface for read and presence.
+    const routeFocused = useIsFocused();
     const { cockpitEnabled } = useMobileWorkspaceExperienceState();
     const sourceSurface = normalizeSessionMobileSurface(readParam(params.sourceSurface)) ?? 'collaboration';
     const fallbackHref = buildSessionCollaborationRouteHref({
@@ -84,7 +89,7 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
             accessibilityLabel={t('common.back')}
             testID="session-discussion-back"
             onPress={onBack}
-            style={({ pressed }) => [styles.headerButton, pressed ? { opacity: 0.65 } : null]}
+            style={({ pressed }) => [styles.headerButton, pressed ? { opacity: motionTokens.press.opacity } : null]}
         >
             <Icon name="arrow-left" size={20} color={theme.colors.chrome.header.foreground} />
         </Pressable>
@@ -110,7 +115,8 @@ export function SessionDiscussionRouteScreen(props: Readonly<{
                     target={props.kind === 'new'
                         ? { kind: 'new', address }
                         : { kind: 'discussion', address, discussionId: discussionId! }}
-                    active
+                    active={routeFocused}
+                    standaloneSurface
                     onCreated={(discussion) => {
                         router.replace(buildSessionDiscussionRouteHref({
                             target: {

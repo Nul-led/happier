@@ -114,6 +114,7 @@ function controller(items: readonly SessionCompanionItemRefV1[]): SessionCompani
         moveItem,
         openFullSurface: () => {},
         applyLocalInverse,
+        realmKey: 'account-a:home-1:session-1',
     };
 }
 
@@ -212,6 +213,54 @@ describe('SessionCompanionContent (mounted)', () => {
         expect(openBoard).not.toHaveBeenCalled();
         expect(managePlugin).not.toHaveBeenCalled();
         expect(removeFromBoard).not.toHaveBeenCalled();
+    });
+
+    it('measures the same compact Summary card the live rail shows, with inert destinations', async () => {
+        // Approvals, activity, work, workspace and usage are all live: more rows than
+        // the compact card budget, exactly the cold-open case that overflowed.
+        const mutableModel = summaryModel as unknown as { rows: readonly unknown[] };
+        mutableModel.rows = [
+            { kind: 'approvals', count: 2, destination: 'approvals' },
+            { kind: 'activity', liveCount: 1, totalCount: 1, title: null, statusLabel: null, destination: 'workflow' },
+            { kind: 'work', label: 'Ship', status: null, destination: 'work' },
+            { kind: 'workspace', label: 'repo', branch: 'main', changedFiles: 3, destination: 'git' },
+            { kind: 'usage', tokens: 1200, contextPercent: 40, stale: false, destination: 'usage' },
+        ];
+        const openFullSurface = vi.fn();
+        const openApprovals = vi.fn();
+        const renderMeasured = (measurementOnly: boolean) => renderScreen(
+            <SessionCompanionContent
+                session={session}
+                serverId="server-a"
+                controller={controller([SESSION_SUMMARY_COMPANION_ITEM])}
+                boardBinding={binding()}
+                resolvePrimaryHost={() => null}
+                summaryDestinations={{ approvals: openApprovals }}
+                onOpenFullSurface={openFullSurface}
+                presentation="rail"
+                measurementOnly={measurementOnly}
+                testID={measurementOnly ? 'measured' : 'live'}
+            />,
+        );
+        try {
+            const live = await renderMeasured(false);
+            const measured = await renderMeasured(true);
+            for (const [renderer, prefix] of [[live, 'live'], [measured, 'measured']] as const) {
+                // Two compact rows plus the overflow, never the uncapped full list.
+                expect(renderer.findByTestId(`${prefix}-summary-row-approvals`)).not.toBeNull();
+                expect(renderer.findByTestId(`${prefix}-summary-row-activity`)).not.toBeNull();
+                expect(renderer.findByTestId(`${prefix}-summary-row-work`)).toBeNull();
+                expect(renderer.findByTestId(`${prefix}-summary-row-usage`)).toBeNull();
+                expect(renderer.findByTestId(`${prefix}-summary-more`)).not.toBeNull();
+            }
+            // The measured card keeps its shape but nothing in it can navigate.
+            (measured.findByTestId('measured-summary-more')?.props as { onPress?: () => void }).onPress?.();
+            (measured.findByTestId('measured-summary-row-approvals')?.props as { onPress?: () => void }).onPress?.();
+            expect(openFullSurface).not.toHaveBeenCalled();
+            expect(openApprovals).not.toHaveBeenCalled();
+        } finally {
+            mutableModel.rows = [];
+        }
     });
 
     it('names the Board destination on an inert preview instead of promising the item runs here', async () => {
@@ -428,7 +477,7 @@ describe('SessionCompanionContent (mounted)', () => {
             undo: { label: 'sessionBoard.companion.actions.undo' },
         });
         readPresentationNotice()?.undo?.run();
-        expect(applyLocalInverse).toHaveBeenCalledWith(outcome);
+        expect(applyLocalInverse).toHaveBeenCalledWith(outcome, 'account-a:home-1:session-1');
     });
 
     it('publishes one safe inverse after an exact item reorder and none for a no-op', async () => {
@@ -462,7 +511,7 @@ describe('SessionCompanionContent (mounted)', () => {
             undo: { label: 'sessionBoard.companion.actions.undo' },
         });
         readPresentationNotice()?.undo?.run();
-        expect(applyLocalInverse).toHaveBeenCalledWith(outcome);
+        expect(applyLocalInverse).toHaveBeenCalledWith(outcome, 'account-a:home-1:session-1');
 
         retirePresentationNotice();
         actions.find((action) => action.id === 'move-down')?.onPress?.();
@@ -522,7 +571,7 @@ describe('SessionCompanionContent (mounted)', () => {
             undo: { label: 'sessionBoard.companion.actions.undo' },
         });
         readPresentationNotice()?.undo?.run();
-        expect(applyLocalInverse).toHaveBeenCalledWith(outcome);
+        expect(applyLocalInverse).toHaveBeenCalledWith(outcome, 'account-a:home-1:session-1');
     });
 
     it('uses the translation owner for every visible string', async () => {

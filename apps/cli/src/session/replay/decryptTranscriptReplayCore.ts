@@ -1,12 +1,13 @@
 import {
+  SessionStoredMessageContentSchema,
   SessionSynopsisV1Schema,
   isAgentThreadTextConversationTurnMeta,
 } from '@happier-dev/protocol';
 
-import { decodeBase64, decrypt } from '@/api/encryption';
 import { collectReferencedSessionMediaWorkspacePaths } from '@/session/media/referencedPaths';
 import { decodeTranscriptBody } from '@/session/services/transcript/transcriptBodyDecoder';
-import type { SessionEncryptionContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
+import { openSessionStoredContent } from '@/session/transport/encryption/sessionEncryptionContext';
 
 import type { HappierReplayDialogItem } from './types';
 
@@ -56,14 +57,18 @@ function truncateText(text: string, maxChars: number): string {
 
 export function decryptTranscriptReplayCore(params: Readonly<{
   rows: readonly RawTranscriptRow[];
-  encryptionKey?: Uint8Array;
   /**
-   * Which scheme opens these rows, as the canonical session-crypto owner
-   * resolves it. Hardcoding `dataKey` here silently made a legacy-secret
-   * Account's e2ee transcript unreadable, which the Agent transition then
-   * reported as `context_unavailable` — after it had stopped the source.
+   * The Session's established content mode together with the material that opens
+   * it, exactly as the canonical session-crypto owner resolves both.
+   *
+   * Which scheme opens these rows is not this reader's decision — hardcoding
+   * `dataKey` once made a legacy-secret Account's e2ee transcript unreadable,
+   * which the Agent transition reported as `context_unavailable` after it had
+   * stopped the source. Neither is *whether* a row may be opened at all: the mode
+   * travels with the key so `openSessionStoredContent` can refuse a plaintext row
+   * under an E2EE Session instead of replaying it as authentic content.
    */
-  encryptionVariant?: SessionEncryptionContext['encryptionVariant'];
+  crypto: SessionStoredContentCryptoContext;
   maxTextChars?: number;
   maxDialogItems?: number;
 }>): Readonly<{
@@ -102,26 +107,16 @@ export function decryptTranscriptReplayCore(params: Readonly<{
       const seq =
         typeof (row as any)?.seq === 'number' && Number.isFinite((row as any).seq) ? Number((row as any).seq) : null;
       const createdAt = typeof row?.createdAt === 'number' && Number.isFinite(row.createdAt) ? row.createdAt : 0;
-      const content = (row as any)?.content;
-      if (!content || typeof content !== 'object') {
+      const content = SessionStoredMessageContentSchema.safeParse((row as any)?.content);
+      if (!content.success) {
         unreadableRowCount += 1;
         continue;
       }
 
-      let decryptedValue: any = null;
-      if (content.t === 'plain') {
-        decryptedValue = content.v;
-      } else {
-        if (content.t !== 'encrypted' || typeof content.c !== 'string') {
-          unreadableRowCount += 1;
-          continue;
-        }
-        if (!params.encryptionKey || !params.encryptionVariant) {
-          unreadableRowCount += 1;
-          continue;
-        }
-        decryptedValue = decrypt(params.encryptionKey, params.encryptionVariant, decodeBase64(content.c));
-      }
+      // A refusal here — wrong envelope kind for the established mode, or
+      // ciphertext this reader cannot authenticate — is a hole in the replay, not
+      // an ineligible row, so the outer catch counts it.
+      const decryptedValue: any = openSessionStoredContent({ ...params.crypto, content: content.data });
       if (!decryptedValue || typeof decryptedValue !== 'object') {
         unreadableRowCount += 1;
         continue;

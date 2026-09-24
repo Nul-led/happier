@@ -1,3 +1,4 @@
+import { RateLimitExceededException } from "@workos-inc/node";
 import { describe, expect, it, vi } from "vitest";
 import type { ClaimedDirectorySource } from "./directorySourceService";
 import {
@@ -499,7 +500,7 @@ describe("WorkOS directory reader", () => {
         })).resolves.toEqual({ ok: false, code: "directory_snapshot_incomplete" });
     });
 
-    it("preserves WorkOS Retry-After on rate limiting", async () => {
+    it("preserves a raw transport Retry-After response header on rate limiting", async () => {
         const context: WorkosDirectoryReadContext = {
             organizationId: "org_1",
             directoryId: "directory_1",
@@ -522,6 +523,62 @@ describe("WorkOS directory reader", () => {
             ok: false,
             code: "directory_sync_rate_limited",
             retryAfterMs: 45_000,
+        });
+    });
+
+    it("honours the WorkOS SDK's own parsed Retry-After on rate limiting", async () => {
+        // The SDK parses `Retry-After` itself into `retryAfter` (seconds) and
+        // builds no `response` object, so a reconstructed header-bearing error
+        // proves nothing about the real rate-limit path.
+        const context: WorkosDirectoryReadContext = {
+            organizationId: "org_1",
+            directoryId: "directory_1",
+            listUsers: vi.fn(async () => {
+                throw new RateLimitExceededException("rate limited", "req_1", 600);
+            }),
+            listGroups: vi.fn(),
+            listEvents: vi.fn(),
+        };
+
+        await expect(scanWorkosDirectorySnapshot({
+            context,
+            writePeoplePage: vi.fn(async () => true),
+            writeGroupsPage: vi.fn(async () => true),
+            writeGroupMembersPage: vi.fn(async () => true),
+        })).resolves.toEqual({
+            ok: false,
+            code: "directory_sync_rate_limited",
+            retryAfterMs: 600_000,
+        });
+    });
+
+    it("keeps the provider's Retry-After when a Group-membership event's roster read is rate limited", async () => {
+        const context: WorkosDirectoryReadContext = {
+            organizationId: "org_1",
+            directoryId: "directory_1",
+            listUsers: vi.fn(async () => {
+                throw new RateLimitExceededException("rate limited", "req_2", 120);
+            }),
+            listGroups: vi.fn(),
+            listEvents: vi.fn(async () => page([{
+                id: "event_roster_rate_limited",
+                event: "dsync.group.user_removed",
+                data: { directoryId: "directory_1", user: user("user_1"), group: group() },
+            }])),
+        };
+
+        // child 05 §9: transient retries honour provider Retry-After before the
+        // local fallback cadence, including on the nested roster read.
+        await expect(consumeWorkosDirectoryEvents({
+            source: { ...source(), eventCursor: "event_before", eventRangeStart: null },
+            context,
+            writeWorkosEvent: vi.fn(async () => true),
+            stageWorkosGroupMembersEventPage: vi.fn(async () => true),
+        })).resolves.toEqual({
+            ok: false,
+            code: "directory_sync_rate_limited",
+            retryAfterMs: 120_000,
+            reconcileRunId: expect.any(String),
         });
     });
 });

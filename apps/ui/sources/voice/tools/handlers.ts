@@ -34,7 +34,7 @@ import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestrati
 import { resolveAskUserQuestionDecisionAnswers } from '@/voice/requests/resolveAskUserQuestionDecisionAnswers';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { resolveVoiceActionSessionReference } from './actionImpl/resolveVoiceActionSessionReference';
-import { readAdmittedSessionReferenceCorpusOptions } from './actionImpl/admittedSessionReferenceCorpus';
+import { acquireAdmittedSessionReferenceCorpusOptions } from './actionImpl/admittedSessionReferenceCorpus';
 import type { VoiceCurrentUiToolPort } from './currentUiContextToolPort';
 import {
   isCurrentUiContextVoiceAction,
@@ -259,15 +259,20 @@ export function resolveVoiceToolEffectClass(toolName: string): VoiceToolEffectCl
 
 export function createVoiceToolHandlers(
   deps: Readonly<{
-    resolveSessionId: (explicitSessionId?: string | null) => string | null;
+    /**
+     * The host's Session resolver. It may acquire the authorized corpus, so the
+     * result is awaited here; a host that already holds the answer may return it
+     * directly rather than being forced to wrap it.
+     */
+    resolveSessionId: (explicitSessionId?: string | null) => string | null | Promise<string | null>;
     currentSessionAddress?: SessionAddress | null;
     currentUiContext?: VoiceCurrentUiToolPort;
   }>,
 ): Readonly<Record<string, VoiceToolHandler>> {
-  const resolveSessionIdOrError = (
+  const resolveSessionIdOrError = async (
     explicitSessionId?: string | null,
-  ): { ok: true; sessionId: string } | { ok: false; error: string } => {
-    const sessionId = deps.resolveSessionId(explicitSessionId);
+  ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> => {
+    const sessionId = await deps.resolveSessionId(explicitSessionId);
     if (!sessionId) return { ok: false, error: 'error (no active session)' };
     return { ok: true, sessionId };
   };
@@ -402,18 +407,27 @@ export function createVoiceToolHandlers(
     resolveSessionReference: async ({ sessionId, sessionTitle, context, signal }) => {
       const currentState = storage.getState();
       const exactAddress = normalizeSessionAddress(context.serverId, sessionId);
-      const options = exactAddress ? null : readAdmittedSessionReferenceCorpusOptions(currentState);
+      // An exact tuple needs no corpus. Anything else is resolved against the
+      // authorized `session.list` corpus, acquired when no pane owns one, so a
+      // spoken Session resolves from every screen and not only the list.
+      const options = exactAddress
+        ? null
+        : await acquireAdmittedSessionReferenceCorpusOptions(currentState, signal ? { signal } : undefined);
       return await resolveVoiceActionSessionReference({
         ...(sessionId ? { sessionId } : {}),
         ...(sessionTitle ? { sessionTitle } : {}),
         ...(context.serverId ? { serverId: context.serverId } : {}),
         ...(signal ? { signal } : {}),
-      }, options ? { state: currentState, options } : null);
+        // The acquisition hydrated the admitted rows; resolve on the store after it.
+      }, options ? { state: storage.getState(), options } : null);
     },
     resolveServerIdForSessionId: (sessionId: string) => resolvePreferredServerIdForSessionId(sessionId) ?? null,
     resolveServerNameForSessionId: (sessionId: string) => resolveSessionListLookupSessionServerScopeFromState(storage.getState(), sessionId)?.serverName ?? null,
     listContributedActionDefinitions: () => (
       deps.currentUiContext?.listCurrentContributedActionDefinitions?.() ?? []
+    ),
+    readContributedActionSchemas: async (id, signal) => (
+      await deps.currentUiContext?.readCurrentContributedActionSchemas?.(id, signal) ?? null
     ),
     isActionEnabled: (actionId) => isVoiceActionAvailableInState(storage.getState(), actionId),
     sessionSendMessage: async ({ sessionId, message, serverId, recipient, requestedAction, signal }) => {
@@ -460,7 +474,7 @@ export function createVoiceToolHandlers(
     try {
       res = await executor.execute(actionId, actionInput, {
         surface: 'voice',
-        defaultSessionId: deps.resolveSessionId(null),
+        defaultSessionId: await deps.resolveSessionId(null),
         ...(serverId ? { serverId } : {}),
         ...(resolveVoiceActionRequestId(ctx)
           ? { actionRequestId: resolveVoiceActionRequestId(ctx)! }
@@ -506,7 +520,7 @@ export function createVoiceToolHandlers(
 
     const sessionIdParam = typeof data.sessionId === 'string' ? data.sessionId : null;
     const explicitSessionIdProvided = Boolean(normalizeId(sessionIdParam));
-    const resolved = resolveSessionIdOrError(sessionIdParam);
+    const resolved = await resolveSessionIdOrError(sessionIdParam);
     if (!resolved.ok) return jsonError('session_not_selected', resolved.error);
     const selected = await resolvePendingRequestSession(resolved.sessionId, 'user_action', data.requestId, {
       explicitSessionIdProvided,
@@ -568,7 +582,7 @@ export function createVoiceToolHandlers(
       {
         surface: 'voice',
         serverId: targetServerId,
-        defaultSessionId: deps.resolveSessionId(null),
+        defaultSessionId: await deps.resolveSessionId(null),
         ...(resolveVoiceActionRequestId(context)
           ? { actionRequestId: resolveVoiceActionRequestId(context)! }
           : {}),

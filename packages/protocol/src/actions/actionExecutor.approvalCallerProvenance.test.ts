@@ -151,7 +151,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
           kind: 'plugin' as const,
           pluginId: 'example.plugin',
           contributionLocalId: 'review',
-          immutableGenerationId: 'generation-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'root-1' },
         },
         serverId: 'home-1',
         actionId: 'review.start' as const,
@@ -443,7 +443,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
         kind: 'plugin',
         pluginId: 'acme.external',
         contributionLocalId: 'archive-member',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'root-1' },
       },
       serverId: 'server-1',
       serverIdentityId: 'server-1',
@@ -480,7 +480,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
           kind: 'plugin',
           pluginId: 'acme.external',
           contributionLocalId: 'archive-member',
-          immutableGenerationId: 'generation-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'root-1' },
         },
         externalActionExecutionAuthorization: authorization,
       },
@@ -700,7 +700,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
         kind: 'plugin',
         pluginId: 'plugin.example',
         contributionLocalId: 'session-spawn',
-        immutableGenerationId: 'plugin-generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root-1' },
       },
     })).resolves.toMatchObject({
       ok: true,
@@ -719,7 +719,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
           kind: 'plugin',
           pluginId: 'plugin.example',
           contributionLocalId: 'session-spawn',
-          immutableGenerationId: 'plugin-generation-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'plugin-root-1' },
         },
       },
       createdBy: {
@@ -753,12 +753,12 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
         kind: 'plugin',
         pluginId: 'plugin.example',
         contributionLocalId: 'session-spawn',
-        immutableGenerationId: 'plugin-generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root-1' },
       },
     }));
   });
 
-  it('refuses to create a durable plugin approval without an immutable generation', async () => {
+  it('refuses to create a durable plugin approval without source custody', async () => {
     const approvalsCreate = vi.fn();
     const executor = createActionExecutor({
       approvalsCreate,
@@ -921,7 +921,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
         kind: 'plugin',
         pluginId: 'plugin.example',
         contributionLocalId: 'approval-requester',
-        immutableGenerationId: 'plugin-generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root-1' },
       },
     })).resolves.toMatchObject({ ok: true });
     expect(approvalsCreate).toHaveBeenCalledTimes(1);
@@ -1265,5 +1265,58 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
       execution: { ok: false, errorCode: 'approval_stale' },
     });
     expect(sessionTitleSet).not.toHaveBeenCalled();
+  });
+  it('persists the exact Workflow Run caller in a durable approval origin', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'workflow-approval-1' }));
+    const executor = createActionExecutor({
+      approvalsCreate,
+      isActionApprovalRequired: () => true,
+    } as unknown as ActionExecutorDeps);
+    const authorization = {
+      admittedPermissionCeiling: 'default' as const,
+      principal: {
+        kind: 'api' as const,
+        accountId: 'account-1',
+        principalId: 'principal-1',
+        credentialId: 'credential-1',
+      },
+    };
+
+    await expect(executor.execute('agents.backends.list', {}, {
+      surface: 'cli',
+      authority: 'account_automation',
+      serverId: 'server-1',
+      actionRequestId: 'request-workflow-1',
+      actionCaller: { kind: 'workflowRun', runId: 'run-1', authorization },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'approvals_not_supported' });
+
+    expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        executionOriginV1: expect.objectContaining({
+          caller: { kind: 'workflowRun', runId: 'run-1', authorization },
+        }),
+      }),
+    }));
+  });
+
+  it('refuses to create a durable Workflow approval without its accepted authorization', async () => {
+    const approvalsCreate = vi.fn();
+    const executor = createActionExecutor({
+      approvalsCreate,
+      isActionApprovalRequired: () => true,
+    } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute('agents.backends.list', {}, {
+      surface: 'cli',
+      authority: 'account_automation',
+      serverId: 'server-1',
+      actionRequestId: 'request-workflow-2',
+      actionCaller: {
+        kind: 'workflowRun',
+        runId: 'run-2',
+        authorization: { admittedPermissionCeiling: 'default' } as never,
+      },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'approval_origin_unavailable' });
+    expect(approvalsCreate).not.toHaveBeenCalled();
   });
 });

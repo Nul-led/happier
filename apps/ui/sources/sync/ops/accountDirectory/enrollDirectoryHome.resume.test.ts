@@ -78,7 +78,7 @@ describe('exact Directory approval continuation', () => {
         fixture.state.mode = 'e2ee';
         expect(await resumePendingDirectoryHomeEnrollment()).toEqual({
             kind: 'home_material_required', homeServerIdentityId: fixture.home.homeServerIdentityId,
-            intent: attempt.intent, reason: 'missing_material',
+            homeAccountId: 'account-home', intent: attempt.intent, reason: 'missing_material',
         });
         expect(await TokenStorage.getCredentialsForServerUrl(fixture.home.canonicalServerUrl, { serverId: fixture.home.homeServerIdentityId })).toEqual({ token: fixture.token });
     });

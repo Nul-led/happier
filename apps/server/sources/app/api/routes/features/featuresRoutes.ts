@@ -22,7 +22,7 @@ import {
 } from '@/app/features/homeConnectionDescriptorPublication';
 import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
 import { resolveEffectiveHomeAuthMethods } from '@/app/auth/methods/effectiveHomeAuthMethods';
-import { toOldClientSafeAuthMethods } from '@/app/auth/methods/effectiveAuthMethods';
+import { toPublishedAuthMethods } from '@/app/auth/methods/effectiveAuthMethods';
 import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFeature';
 import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
 import { isRestrictedAuthTokenKind } from '@/app/api/utils/apiTokenRouteAdmission';
@@ -62,7 +62,7 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             : undefined;
         const payload = (() => {
                 const methods = effectiveHomeMethods.status === 'ready'
-                    ? toOldClientSafeAuthMethods(effectiveDecisions)
+                    ? toPublishedAuthMethods(effectiveDecisions)
                     : undefined;
                 const isEnabled = (methodId: string, actionId: 'login' | 'provision'): boolean =>
                     effectiveDecisions.some((decision) =>

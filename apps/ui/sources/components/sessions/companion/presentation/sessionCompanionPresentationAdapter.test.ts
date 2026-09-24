@@ -40,6 +40,9 @@ function controllerStub(overrides: Partial<SessionCompanionController> = {}): Se
         moveItem: () => null,
         openFullSurface: () => {},
         applyLocalInverse: () => true,
+        // The realm-qualified key the canonical preference owner resolves; a published Undo
+        // carries it so it cannot write the next Account's preference.
+        realmKey: 'account-a:home-1:session-1',
         ...overrides,
     } as SessionCompanionController;
 }
@@ -141,7 +144,7 @@ describe('applySessionPresentationIntent', () => {
 
         const notice = publishNotice.mock.calls[0]?.[0] as PresentationNotice;
         notice.undo?.run();
-        expect(applyLocalInverse).toHaveBeenCalledWith(applied);
+        expect(applyLocalInverse).toHaveBeenCalledWith(applied, 'account-a:home-1:session-1');
     });
 
     it('publishes nothing when a mounted human mutation is unavailable or unchanged', () => {

@@ -25,7 +25,7 @@ import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope
 import { homeDomainFailureCode } from '@/sync/api/home/homeDomainActions';
 import { scopedHomeActionExecutor } from '@/sync/ops/actions/scopedHomeActionExecutor';
 import { classifyHomeActionOutcome } from '@/sync/ops/home/homeActionOutcome';
-import { isIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
+import { resolveIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
 import {
     createHomeActionApprovalContinuation,
     type ActionApprovalContinuation,
@@ -105,7 +105,7 @@ export function createManagedIdentityProviderClient(scope: ServerAccountScope): 
                     kind: 'failed',
                     failure: {
                         code,
-                        retryable: outcome.failure.retryable || isIdentityAdministrationFailureRetryable(code),
+                        retryable: resolveIdentityAdministrationFailureRetryable(outcome.failure, code),
                     },
                 };
             }

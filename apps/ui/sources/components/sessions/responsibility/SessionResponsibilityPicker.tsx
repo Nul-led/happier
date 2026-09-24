@@ -180,6 +180,10 @@ function SessionResponsibilityPickerContent(
     const failureMessage = controller.failure === 'session_access_authentication_required'
         || controller.failure === 'session_access_authentication_unavailable'
         ? presentSessionAccessReason(controller.failure).message
+        // A deferred approval is not a failure: nothing was refused and nothing
+        // committed, so the row says what is waiting rather than "try again".
+        : controller.failure === 'approval-pending'
+            ? t('session.responsibilityApprovalPending')
         : capabilityLost || controller.failure === 'assignee-unavailable' || controller.failure === 'forbidden'
             ? t('session.responsibilityAccessChanged')
             : controller.failure

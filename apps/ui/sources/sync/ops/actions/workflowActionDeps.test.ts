@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { createFrontDoorActionExecute } from './frontDoorRuntimeActionExecutor';
 import { createUiWorkflowAction } from './workflowActionDeps';
+import type { WorkflowActionTransport } from './workflowActionTransport';
 
 const scope = { serverId: 'server-a', accountId: 'account-a' } as const;
 
-function createHarness() {
+function createHarness(account: Readonly<{ serverId: string; accountId: string }> = scope) {
     let current = true;
-    const transport = vi.fn(async ({ method }: { method: string }) => method === 'workflow.definition.list'
+    const transport = vi.fn<WorkflowActionTransport>(async ({ method }) => method === 'workflow.definition.list'
         ? { definitions: [] }
         : {
             run: createWorkflowRunSummaryFixture({
@@ -19,7 +20,7 @@ function createHarness() {
         });
     const workflowAction = createUiWorkflowAction({
         account: {
-            ...scope,
+            ...account,
             assertCurrent: () => {
                 if (!current) throw Object.assign(new Error('action_account_scope_changed'), { code: 'action_account_scope_changed' });
             },
@@ -36,8 +37,8 @@ function createHarness() {
     const execute = createFrontDoorActionExecute(createActionExecutor(deps));
     const context = {
         surface: 'ui' as const,
-        ...scope,
-        runtimeAccountId: scope.accountId,
+        ...account,
+        runtimeAccountId: account.accountId,
         externalActionTarget: {
             kind: 'machine' as const,
             machineId: 'machine-a',
@@ -63,6 +64,44 @@ describe('UI Workflow Action front door', () => {
             expect.objectContaining({ serverId: 'server-a', accountId: 'account-a', machineId: 'machine-a', method: 'workflow.definition.list' }),
             expect.objectContaining({ serverId: 'server-a', accountId: 'account-a', machineId: 'machine-a', method: 'workflow.run.start' }),
         ]);
+        expect(harness.transport.mock.calls[1]?.[0].payload).toEqual({
+            v: 1,
+            kind: 'targeted_action_rpc',
+            input: {
+                runId: '00000000-0000-4000-8000-000000000001',
+                source: { kind: 'inline', definition: { blocks: ['Do the thing'] } },
+            },
+            target: {
+                kind: 'machine',
+                machineId: 'machine-a',
+                project: { machineId: 'machine-a', directory: '/repo' },
+            },
+        });
+    });
+
+    it('admits an invocation that names an identity-bearing Home by its device-local profile id', async () => {
+        // A replayed or surface-addressed invocation may carry the Home's local
+        // profile id while the captured Account names it by its published identity.
+        const { adoptHomeProfile, removeServerProfile, resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+        const home = await adoptHomeProfile({
+            descriptor: {
+                serverUrl: 'https://workflow-identity-home.example',
+                homeServerIdentityId: 'srv_workflow-home',
+                displayName: 'Workflow Home',
+            },
+            source: 'manual',
+            suggestedName: 'Workflow Home',
+        });
+        try {
+            const scopeId = resolveServerProfileScopeIdForIdentifier(home.id);
+            expect(scopeId).not.toBe(home.id);
+            const harness = createHarness({ serverId: scopeId, accountId: scope.accountId });
+            await expect(harness.execute('workflow.definition.list', {}, { ...harness.context, serverId: home.id }))
+                .resolves.toEqual({ ok: true, result: { definitions: [] } });
+            expect(harness.transport).toHaveBeenCalledWith(expect.objectContaining({ serverId: scopeId, method: 'workflow.definition.list' }));
+        } finally {
+            await removeServerProfile(home.id);
+        }
     });
 
     it('fails closed for another Home and for a retired Account lifetime', async () => {

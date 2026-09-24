@@ -29,6 +29,7 @@ import { TeamSection } from './TeamSection';
 import { TeamLogoPicker } from './TeamLogoPicker';
 import type { TeamSectionContext } from './teamSectionContext';
 import { teamMutationFailureLabel } from './teamMutationPresentation';
+import { useEditedMetadataDraft } from './useEditedMetadataDraft';
 
 const SESSION_CREATION_OPTIONS: readonly TeamSessionCreationPolicyV1[] = Object.freeze([
     'private_default',
@@ -79,16 +80,9 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
     context: TeamSectionContext;
 }>) {
     const { context } = props;
-    const [name, setName] = React.useState(context.team.name);
-    const [description, setDescription] = React.useState(context.team.description ?? '');
     const [saving, setSaving] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [saved, setSaved] = React.useState(false);
-    const [baseline, setBaseline] = React.useState(() => Object.freeze({
-        name: context.team.name,
-        description: context.team.description ?? '',
-    }));
-    const [conflict, setConflict] = React.useState(false);
     const nameInputRef = React.useRef<{ focus(): void } | null>(null);
     const saveInFlightRef = React.useRef(false);
 
@@ -96,25 +90,13 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
         saveInFlightRef.current = false;
     }, []);
 
-    // The Home's answer is authoritative, but a refresh must not erase what the
-    // person is typing. A pristine editor follows the answer. A dirty editor
-    // keeps its draft and requires one deliberate acknowledgement before it can
-    // be resubmitted against the newly observed values.
+    // The Home's answer stays authoritative while an unfinished draft survives a
+    // refresh: the shared editor owner holds that decision for both this section
+    // and the Group metadata section.
     const publishedName = context.team.name;
     const publishedDescription = context.team.description ?? '';
-    React.useEffect(() => {
-        if (publishedName === baseline.name && publishedDescription === baseline.description) return;
-        const pristine = name === baseline.name && description === baseline.description;
-        const draftIsPublished = name === publishedName && description === publishedDescription;
-        if (pristine || draftIsPublished) {
-            setName(publishedName);
-            setDescription(publishedDescription);
-            setBaseline(Object.freeze({ name: publishedName, description: publishedDescription }));
-            setConflict(false);
-            return;
-        }
-        setConflict(true);
-    }, [baseline, description, name, publishedDescription, publishedName]);
+    const draft = useEditedMetadataDraft({ name: publishedName, description: publishedDescription });
+    const { name, description, conflict } = draft;
 
     const nameValidation = validateTeamNameV1(name);
     const descriptionValidation = validateTeamDescriptionV1(description);
@@ -140,11 +122,10 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
                 description: descriptionValidation.description,
             });
             if (outcome.kind === 'succeeded') {
-                setBaseline(Object.freeze({
+                draft.commit({
                     name: outcome.team.name,
                     description: outcome.team.description ?? '',
-                }));
-                setConflict(false);
+                });
                 setSaved(true);
                 return;
             }
@@ -156,47 +137,54 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
             saveInFlightRef.current = false;
             setSaving(false);
         }
-    }, [context, nameValidation, descriptionValidation]);
+    }, [context, draft, nameValidation, descriptionValidation]);
 
     const acceptCurrentBasis = React.useCallback(() => {
-        setBaseline(Object.freeze({ name: publishedName, description: publishedDescription }));
-        setConflict(false);
+        draft.acceptPublished();
         setSaved(false);
-    }, [publishedDescription, publishedName]);
+    }, [draft]);
 
     const cancel = React.useCallback(() => {
-        setName(publishedName);
-        setDescription(publishedDescription);
-        setBaseline(Object.freeze({ name: publishedName, description: publishedDescription }));
-        setConflict(false);
+        draft.reset();
         setError(null);
         setSaved(false);
-    }, [publishedDescription, publishedName]);
+    }, [draft]);
 
     return (
-        <ItemGroup
-            title={t('teams.settings.identitySection')}
-            footer={error ?? (saved && !changed ? t('teams.settings.saved') : undefined)}
-        >
-            <TextInput
-                ref={nameInputRef}
-                testID="team-settings-name"
-                value={name}
-                onChangeText={(next) => { setName(next); setSaved(false); }}
-                placeholder={t('teams.create.namePlaceholder')}
-                accessibilityLabel={t('teams.create.nameLabel')}
-                maxLength={TEAM_NAME_MAX_LENGTH_V1}
-                editable={context.team.capabilities.manageSettings && !context.archived}
-            />
-            <TextInput
-                testID="team-settings-description"
-                value={description}
-                onChangeText={(next) => { setDescription(next); setSaved(false); }}
-                placeholder={t('teams.create.descriptionPlaceholder')}
-                accessibilityLabel={t('teams.create.descriptionLabel')}
-                multiline
-                editable={context.team.capabilities.manageSettings && !context.archived}
-            />
+        <>
+            {/* Each field keeps its own visible label once it holds a value;
+                the placeholder is an example, not a label. */}
+            <ItemGroup title={t('teams.create.nameLabel')}>
+                <TextInput
+                    ref={nameInputRef}
+                    testID="team-settings-name"
+                    value={name}
+                    onChangeText={(next) => { draft.setName(next); setSaved(false); }}
+                    placeholder={t('teams.create.namePlaceholder')}
+                    accessibilityLabel={t('teams.create.nameLabel')}
+                    maxLength={TEAM_NAME_MAX_LENGTH_V1}
+                    editable={context.team.capabilities.manageSettings && !context.archived}
+                />
+            </ItemGroup>
+            <ItemGroup
+                title={t('teams.create.descriptionLabel')}
+                // Same contract as the Group forms: the canonical validator
+                // decides, and an overlong description says so instead of
+                // leaving a disabled Save with no explanation.
+                footer={error
+                    ?? (descriptionValidation.status !== 'ok'
+                        ? t('teams.errors.invalidDescription')
+                        : saved && !changed ? t('teams.settings.saved') : undefined)}
+            >
+                <TextInput
+                    testID="team-settings-description"
+                    value={description}
+                    onChangeText={(next) => { draft.setDescription(next); setSaved(false); }}
+                    placeholder={t('teams.create.descriptionPlaceholder')}
+                    accessibilityLabel={t('teams.create.descriptionLabel')}
+                    multiline
+                    editable={context.team.capabilities.manageSettings && !context.archived}
+                />
             {conflict ? (
                 <Item
                     testID="team-settings-identity-conflict"
@@ -234,7 +222,8 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
                     showChevron={false}
                 />
             ) : null}
-        </ItemGroup>
+            </ItemGroup>
+        </>
     );
 });
 

@@ -86,10 +86,11 @@ export function useSessionBoardPrimaryMountResolver(input: Readonly<{
         preference.items.flatMap((item) => item.kind === 'widget' ? [item.widgetId] : []),
     ), [preference.items]);
 
-    return React.useCallback((itemId, destination) => resolveSessionBoardItemPrimaryMountHost({
+    return React.useCallback((itemId, destination, boardView) => resolveSessionBoardItemPrimaryMountHost({
         visibility,
         itemVisibleInCompanion: companionWidgetIds.has(itemId),
         itemId,
         ...(destination ? { detailsDestination: destination } : {}),
+        ...(boardView ? { boardView } : {}),
     }), [companionWidgetIds, visibility]);
 }

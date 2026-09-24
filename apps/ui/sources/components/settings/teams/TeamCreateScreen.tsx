@@ -35,8 +35,6 @@ import { TeamLogoPicker } from './TeamLogoPicker';
 
 const OWNER_AVATAR_SIZE = 32;
 
-const NOOP = (): void => {};
-
 type CommittedTeam = Readonly<{
     team: TeamSummaryV1;
     scope: ServerAccountScope;
@@ -173,6 +171,13 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         : homes[0]?.scope.serverId ?? null;
     const selected = homes.find((home) => home.scope.serverId === effectiveServerId) ?? null;
 
+    const openCreatedTeam = React.useCallback((committed: CommittedTeam) => {
+        router.replace(teamDetailPath({
+            serverId: committed.scope.serverId,
+            teamId: committed.team.id,
+        }));
+    }, [router]);
+
     /**
      * This screen's own deferred-approval host.
      *
@@ -187,6 +192,14 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     const approvalScopeKey = selected
         ? `team-create:${selected.scope.serverId}:${selected.scope.accountId}`
         : 'team-create:unbound';
+    /**
+     * Which of this form's two deferrable intents the pending approval is for.
+     *
+     * Creation carries its answer on the continuation, because the new Team's id
+     * exists only there. Publishing the logo is addressed to a Team that is
+     * already committed here, so its approval finishes by landing on that Team.
+     */
+    const approvalIntentRef = React.useRef<'create' | 'logo' | null>(null);
     const {
         approvalId,
         approvalStatus,
@@ -197,9 +210,14 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     } = useActionApprovalContinuation({
         scopeKey: approvalScopeKey,
         serverId: selected?.scope.serverId ?? '',
-        // The created Team arrives on the continuation and this screen holds no
-        // Team projection of its own, so there is nothing to refresh.
-        onExecuted: NOOP,
+        // The created Team arrives on the continuation, so creation has nothing
+        // to refresh. An approved logo publication does: the Team is already
+        // committed, and the person is still waiting on this form to finish.
+        onExecuted: () => {
+            if (approvalIntentRef.current !== 'logo') return;
+            approvalIntentRef.current = null;
+            if (committedTeam) openCreatedTeam(committedTeam);
+        },
     });
 
     // One retry identity per submission attempt. A transport retry of the same
@@ -256,13 +274,6 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         // button again would ask the Home to create a second Team.
         && !approvalPending;
 
-    const openCreatedTeam = React.useCallback((committed: CommittedTeam) => {
-        router.replace(teamDetailPath({
-            serverId: committed.scope.serverId,
-            teamId: committed.team.id,
-        }));
-    }, [router]);
-
     const uploadLogo = React.useCallback(async (committed: CommittedTeam) => {
         if (!committed.logoSource) return true;
         let logoOutcome: Awaited<ReturnType<typeof setTeamLogo>>;
@@ -272,7 +283,17 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
                 address: { serverId: committed.scope.serverId, teamId: committed.team.id },
                 image: committed.logoSource,
             });
-        } catch {
+        } catch (cause) {
+            // An explicit UI-approval requirement defers the publication; it is
+            // not an upload failure. Registering this exact request through the
+            // screen's own approval host is what lets it finish on the Team that
+            // is already committed — reporting a failure here instead would
+            // offer a Retry that mints a second approval for the same upload.
+            if (isTeamActionApprovalPendingError(cause)) {
+                approvalIntentRef.current = 'logo';
+                requestApproval(cause.registration);
+                return false;
+            }
             setError(t('teams.logo.failed'));
             return false;
         }
@@ -286,7 +307,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
                 ? t('teams.errors.offline')
                 : t('teams.logo.failed'));
         return false;
-    }, [openCreatedTeam]);
+    }, [openCreatedTeam, requestApproval]);
 
     const submit = React.useCallback(async () => {
         if (submissionInFlightRef.current) return;
@@ -373,8 +394,10 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
             // Team it produces arrive here; without it the submission would end
             // as an unhandled rejection and the person would be left on a form
             // whose Team may or may not exist.
-            if (isTeamActionApprovalPendingError(cause)) requestApproval(cause.registration);
-            else setError(t('teams.errors.generic'));
+            if (isTeamActionApprovalPendingError(cause)) {
+                approvalIntentRef.current = 'create';
+                requestApproval(cause.registration);
+            } else setError(t('teams.errors.generic'));
         } finally {
             submissionInFlightRef.current = false;
             setSubmitting(false);

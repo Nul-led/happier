@@ -4,7 +4,15 @@ import {
     type SessionMetadataInactiveModelIntentOwnerPatchV1,
 } from "@happier-dev/protocol";
 
+import type { SessionTeamCredentialBindingIntentListV1 } from "@happier-dev/protocol/teams";
+
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import type { SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
+import {
+    isSessionTeamCredentialBindingError,
+    SessionTeamCredentialBindingError,
+} from "@/app/session/create/layout1SessionRowWrite";
+import { writeSessionTeamCredentialBindingsInTx } from "@/app/teams/credentials/sessionBinding";
 import type {
     SessionCurrentViewPublicationSourceV1,
 } from "@/app/session/metadata/publishSessionCurrentViewUpdates";
@@ -62,6 +70,16 @@ export type CommitSessionAgentCurrentViewParams = {
     actorUserId: string;
     sessionId: string;
     currentView: SessionAgentTransitionCurrentViewWriteV1;
+    /**
+     * The target Agent's Team slot bindings. The cutover is the transition's
+     * one Session switch mutation, so their witness is written by the canonical
+     * binding owner in this same transaction (lane 10 child 01 principle 3): a
+     * refused binding commits neither the target view nor the witness.
+     */
+    teamCredentialBindings?: Readonly<{
+        intents: SessionTeamCredentialBindingIntentListV1;
+        authentication: SessionAccessAuthentication;
+    }>;
 };
 
 export type CommitSessionAgentCurrentViewError =
@@ -285,6 +303,7 @@ export async function commitSessionAgentCurrentViewInTx(
             tx,
             sessionId: params.sessionId,
         });
+        await writeTargetTeamCredentialBindingsInTx(tx, params);
         const patchedRow = await tx.session.findUnique({
             where: { id: params.sessionId },
             select: {
@@ -336,6 +355,7 @@ export async function commitSessionAgentCurrentViewInTx(
         tx,
         sessionId: params.sessionId,
     });
+    await writeTargetTeamCredentialBindingsInTx(tx, params);
     return {
         ok: true,
         currentView: {
@@ -355,6 +375,25 @@ export async function commitSessionAgentCurrentViewInTx(
             agentState: tuple.agentState,
         },
     };
+}
+
+/**
+ * Writes the target's Team slot bindings through the canonical binding owner,
+ * which admits the whole batch before touching any row. A refusal throws so
+ * the transaction also drops the target view it committed a moment earlier.
+ */
+async function writeTargetTeamCredentialBindingsInTx(
+    tx: Tx,
+    params: CommitSessionAgentCurrentViewParams,
+): Promise<void> {
+    if (!params.teamCredentialBindings) return;
+    const written = await writeSessionTeamCredentialBindingsInTx(tx, {
+        sessionId: params.sessionId,
+        accountId: params.actorUserId,
+        intents: params.teamCredentialBindings.intents,
+        authentication: params.teamCredentialBindings.authentication,
+    });
+    if (!written.ok) throw new SessionTeamCredentialBindingError(written.reason);
 }
 
 function toCommitError(
@@ -386,7 +425,12 @@ export async function commitSessionAgentCurrentView(
 ): Promise<CommitSessionAgentCurrentViewResult> {
     try {
         return await inTx(async (tx) => await commitSessionAgentCurrentViewInTx(tx, params));
-    } catch {
+    } catch (error) {
+        // A refused Team binding is a definite no-effect answer about the input,
+        // exactly as the shared tuple owner reports it (`toCommitError`).
+        if (isSessionTeamCredentialBindingError(error)) {
+            return { ok: false, error: "invalid-params" };
+        }
         return { ok: false, error: "internal" };
     }
 }

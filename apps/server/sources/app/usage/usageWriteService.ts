@@ -7,6 +7,7 @@ import type {
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
 import { buildUsageEphemeral, eventRouter } from "@/app/events/eventRouter";
+import { publishTeamCredentialUsageChangedInTx } from "./teamCredentialUsageInvalidation";
 import { usageReportWritesCounter } from "@/app/monitoring/metrics/index";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { db } from "@/storage/db";
@@ -584,6 +585,18 @@ function emitUsageEventAfterTransaction(
     });
 }
 
+/** A Session observation attributed to a Team credential resource is also that resource's usage. */
+async function publishAttributedUsageChangedInTx(
+    tx: Tx,
+    attribution: Readonly<{ resourceId: string | null; actorAccountId: string | null }>,
+): Promise<void> {
+    if (!attribution.resourceId || !attribution.actorAccountId) return;
+    await publishTeamCredentialUsageChangedInTx(tx, {
+        resourceId: attribution.resourceId,
+        actorAccountId: attribution.actorAccountId,
+    });
+}
+
 export async function recordUsageEvent(
     accountId: string,
     request: UsageEventIngestRequest,
@@ -637,6 +650,7 @@ export async function recordUsageEvent(
                 });
             }
             emitUsageEventAfterTransaction(tx, accountId, request);
+            await publishAttributedUsageChangedInTx(tx, attribution);
             return { ok: true, event: created };
         }
 
@@ -659,6 +673,7 @@ export async function recordUsageEvent(
             });
         }
         emitUsageEventAfterTransaction(tx, accountId, request);
+        await publishAttributedUsageChangedInTx(tx, attribution);
 
         return { ok: true, event: created };
     });
@@ -811,6 +826,10 @@ export async function recordTeamCredentialAdmissionUsageEventInTx(
             throw new Error("team credential external key changed during usage admission");
         }
     }
+    await publishTeamCredentialUsageChangedInTx(tx, {
+        resourceId: params.authority.resourceId,
+        actorAccountId: params.authority.requestingAccountId,
+    });
     return { id: event.id, created: true };
 }
 
@@ -970,6 +989,10 @@ export async function recordTeamCredentialExternalTerminalUsageEventInTx(
             })),
         });
     }
+    await publishTeamCredentialUsageChangedInTx(tx, {
+        resourceId: params.authority.resourceId,
+        actorAccountId: params.authority.requestingAccountId,
+    });
     return { id: created.id, created: true };
 }
 

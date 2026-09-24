@@ -11,7 +11,13 @@ import {
     sessionExecutionRunResume,
     sessionExecutionRunStop,
 } from '@/sync/ops/sessionExecutionRuns';
-import { useMessage, useResolvedSessionMessageRouteId, useSessionMessages, useSessionPendingMessages } from '@/sync/domains/state/storage';
+import {
+    useMessage,
+    useResolvedSessionMessageRouteId,
+    useSessionMessages,
+    useSessionPendingMessages,
+    useSessionSidechainMessages,
+} from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { renderExecutionRunStructuredMeta } from '@/components/sessions/runs/renderExecutionRunStructuredMeta';
 import { SessionExecutionRunInfoCard } from '@/components/sessions/runs/details/SessionExecutionRunInfoCard';
@@ -21,6 +27,7 @@ import {
 } from '@/components/sessions/runs/details/resolveDaemonExecutionRunFallback';
 import { resolveExecutionRunGetFailureLoadedState } from '@/components/sessions/runs/details/resolveExecutionRunGetFailureLoadedState';
 import { SessionMessageDetailsView } from '@/components/sessions/transcript/details/SessionMessageDetailsView';
+import { StructuredResultView } from '@/components/tools/renderers/system/StructuredResultView';
 import { ConstrainedScreenContent } from '@/components/ui/layout/ConstrainedScreenContent';
 import {
     NO_EXECUTION_RUN_INTERACTION,
@@ -31,11 +38,18 @@ import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Text } from '@/components/ui/text/Text';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
+import type { Message, ToolCall } from '@/sync/domains/messages/messageTypes';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { findTranscriptExecutionRunState } from '@/sync/domains/session/subagents/executionRuns/deriveTranscriptExecutionRunStateIndex';
 import { buildExecutionRunPublicStateFromTranscriptState } from '@/sync/domains/session/subagents/executionRuns/executionRunPublicStateFromTranscript';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { useEnsureSidechainsLoaded } from '@/hooks/session/useEnsureSidechainsLoaded';
+import {
+    isSidechainHydrationPendingStatus,
+    useEnsureSidechainsLoaded,
+} from '@/hooks/session/useEnsureSidechainsLoaded';
+import { ChainTranscriptList } from '@/components/sessions/transcript/ChainTranscriptList';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import { subscribeExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
 import { PendingMessagesTranscriptBlock } from '@/components/sessions/pending/PendingMessagesTranscriptBlock';
 import { SessionParticipantComposer } from '@/components/sessions/participants/composer/SessionParticipantComposer';
 import { useSessionRecipientState } from '@/components/sessions/agentInput/routing/useSessionRecipientState';
@@ -49,6 +63,7 @@ import {
     deriveTranscriptInteractionFromSession,
 } from '@/utils/sessions/deriveTranscriptInteraction';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 type LoadState =
     | { status: 'loading' }
@@ -62,6 +77,9 @@ type LoadState =
     };
 
 const FAIL_CLOSED_TRANSCRIPT_INTERACTION = deriveTranscriptInteraction({ kind: 'public' });
+
+/** The Run result projection is read standalone; it carries no transcript around it. */
+const NO_TRANSCRIPT_MESSAGES: Message[] = [];
 
 function isSessionEncryptionNotFoundError(input: unknown): boolean {
     if (!input || typeof input !== 'object') return false;
@@ -117,6 +135,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     const [isStopping, setIsStopping] = React.useState(false);
     const [interactionError, setInteractionError] = React.useState<string | null>(null);
     const [pendingInteraction, setPendingInteraction] = React.useState<'cancel_turn' | 'resume' | null>(null);
+    const [rawToolResultExpanded, setRawToolResultExpanded] = React.useState(false);
     const { messages: sessionMessages, isLoaded: sessionMessagesLoaded } = useSessionMessages(
         props.sessionId,
         { enabled: hasQualifiedSession },
@@ -134,7 +153,22 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         };
     }, [props.runId, sessionMessages]);
 
+    // One Run address owns the loaded tree. A load for the address already on
+    // screen is a background refresh: it must not replace the loaded surface
+    // (and the mounted composer with its text and selection) with a spinner.
+    // Only an address that is not loaded yet, or an error, enters `loading`.
+    const runAddressKey = `${explicitServerId ?? ''}\u0000${props.sessionId}\u0000${props.runId}`;
+    const loadedRunAddressRef = React.useRef<string | null>(null);
+    // Request currentness: concurrent loads (route effect, bus notification,
+    // interaction, header Refresh) settle in arbitrary order, so only the newest
+    // request may write state. Without this an older response overwrites a newer
+    // one and the surface silently shows a superseded Run.
+    const loadGenerationRef = React.useRef(0);
+
     const load = React.useCallback(async () => {
+        const generation = loadGenerationRef.current + 1;
+        loadGenerationRef.current = generation;
+        const isCurrentRequest = () => loadGenerationRef.current === generation;
         if (!props.sessionId || !props.runId) {
             setState({ status: 'error', error: t('runs.runDetails.failedToLoad') });
             return;
@@ -152,13 +186,17 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 ? sessionExecutionRunGet(props.sessionId, request, rpcOptions)
                 : sessionExecutionRunGet(props.sessionId, request)
         );
-        setState({ status: 'loading' });
-        setDaemonProcessLine(null);
+        if (loadedRunAddressRef.current !== runAddressKey) {
+            setState({ status: 'loading' });
+            setDaemonProcessLine(null);
+        }
         const first = await getRun({ runId: props.runId, includeStructured: true });
+        if (!isCurrentRequest()) return;
         const result =
             first.ok === false && isSessionEncryptionNotFoundError(first)
                 ? await getRun({ runId: props.runId, includeStructured: true })
                 : first;
+        if (!isCurrentRequest()) return;
         if (result.ok === false) {
             if (result.errorCode === 'execution_run_not_found' && !sessionMessagesLoaded) {
                 await sync.loadOlderMessages(props.sessionId).catch(() => null);
@@ -170,30 +208,36 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 runId: props.runId,
                 transcriptFallback,
             }).catch(() => null);
+            if (!isCurrentRequest()) return;
             const fallbackState = resolveExecutionRunGetFailureLoadedState({
                 result,
                 transcriptFallback,
                 daemonFallback,
             });
             if (fallbackState) {
+                loadedRunAddressRef.current = runAddressKey;
                 setState(fallbackState);
                 if (fallbackState.source === 'daemon_fallback') {
                     setDaemonProcessLine(daemonFallback?.daemonProcessLine ?? null);
                 }
                 return;
             }
+            loadedRunAddressRef.current = null;
             setState({ status: 'error', error: String(result.error ?? t('runs.runDetails.failedToLoad')) });
             return;
         }
         if (!('run' in result)) {
+            loadedRunAddressRef.current = null;
             setState({ status: 'error', error: t('runs.runDetails.failedToLoad') });
             return;
         }
         const run = result.run;
         if (!run || typeof run.runId !== 'string') {
+            loadedRunAddressRef.current = null;
             setState({ status: 'error', error: t('runs.runDetails.failedToLoad') });
             return;
         }
+        loadedRunAddressRef.current = runAddressKey;
         setState({
             status: 'loaded',
             run,
@@ -210,10 +254,11 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 latestToolResult: result.latestToolResult,
             },
         }).catch(() => null);
+        if (!isCurrentRequest()) return;
         if (daemonFallback?.daemonProcessLine) {
             setDaemonProcessLine(daemonFallback.daemonProcessLine);
         }
-    }, [explicitServerId, hasQualifiedSession, props.runId, props.sessionId, sessionMessagesLoaded, transcriptFallback]);
+    }, [explicitServerId, hasQualifiedSession, props.runId, props.sessionId, runAddressKey, sessionMessagesLoaded, transcriptFallback]);
 
     React.useEffect(() => {
         void load();
@@ -222,6 +267,23 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
     React.useImperativeHandle(ref, () => ({
         reload: load,
     }), [load]);
+
+    // Live Run state comes from the canonical execution-Run activity signal the
+    // rest of the app already consumes (`execution-run-updated` → socket →
+    // `executionRunActivityBus`), not from a Details-local timer or a second Run
+    // store. A notification naming another Run of this Session is not this
+    // surface, so it does not refetch; an unknown Run (`runId: null`) does.
+    const runActivityServerId = explicitServerId ?? session?.serverId ?? null;
+    React.useEffect(() => {
+        if (!hasQualifiedSession || !runActivityServerId) return;
+        return subscribeExecutionRunActivity(
+            { serverId: runActivityServerId, sessionId: props.sessionId },
+            (notification) => {
+                if (notification.runId !== null && notification.runId !== props.runId) return;
+                void load();
+            },
+        );
+    }, [hasQualifiedSession, load, props.runId, props.sessionId, runActivityServerId]);
 
     const transcriptToolId = React.useMemo(() => {
         if (state.status !== 'loaded') return null;
@@ -277,11 +339,34 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         [transcriptToolId],
     );
 
-    useEnsureSidechainsLoaded({
+    const sidechainHydration = useEnsureSidechainsLoaded({
         enabled: transcriptToolId !== null,
         sessionId: props.sessionId,
         sidechainIds: transcriptSidechainIds,
     });
+    // A Run whose profile materializes nothing in the parent transcript never
+    // gets a tool marker, so `SessionMessageDetailsView` — which is keyed on that
+    // marker — can never host its transcript. The committed rows still exist under
+    // the Run's own sidechain, so this branch reads the same sync-owned sidechain
+    // projection and renders them through the same shared list, including the
+    // pending-to-committed crossover for this exact target.
+    const runSidechainMessages = useSessionSidechainMessages(props.sessionId, transcriptToolId);
+    const runTranscriptMessages = React.useMemo(() => [...runSidechainMessages], [runSidechainMessages]);
+    const runTranscriptDatasetKey = React.useMemo(() => {
+        const address = normalizeSessionAddress(pendingScopeServerId ?? null, props.sessionId);
+        return JSON.stringify([
+            address ? sessionAddressKey(address) : props.sessionId,
+            transcriptToolId ?? props.runId,
+        ]);
+    }, [pendingScopeServerId, props.runId, props.sessionId, transcriptToolId]);
+    const loadOlderRunSidechain = React.useCallback(async () => {
+        if (!transcriptToolId) return { loaded: 0, hasMore: false, status: 'not_ready' as const };
+        return sync.loadOlderSidechainMessages(props.sessionId, transcriptToolId);
+    }, [props.sessionId, transcriptToolId]);
+    const isRunSidechainHydrating = runTranscriptMessages.length === 0
+        && isSidechainHydrationPendingStatus(
+            transcriptToolId ? sidechainHydration.bySidechainId[transcriptToolId]?.status : undefined,
+        );
 
     React.useEffect(() => {
         if (!hasQualifiedSession) return;
@@ -291,6 +376,25 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
             { tag: 'SessionExecutionRunDetailsView.fetchTargetPending' },
         );
     }, [executionRunRecipient, hasQualifiedSession, pendingOutboxScope, pendingScopeServerId, props.sessionId]);
+
+    /**
+     * Presentation-only envelope so the Run's own result reaches the transcript's
+     * structured projection owner, which reads `state` and `result` and nothing
+     * else. It is not a transcript row and is never published anywhere.
+     */
+    const latestToolResultProjection = React.useMemo<ToolCall | null>(() => {
+        if (state.status !== 'loaded' || state.latestToolResult === undefined) return null;
+        return {
+            name: 'execution_run_result',
+            state: 'completed',
+            input: null,
+            createdAt: 0,
+            startedAt: null,
+            completedAt: null,
+            description: null,
+            result: state.latestToolResult,
+        };
+    }, [state]);
 
     const structuredCard = React.useMemo(() => {
         if (state.status !== 'loaded') return null;
@@ -377,7 +481,7 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                     backgroundColor: theme.colors.surface.inset,
                     borderWidth: 1,
                     borderColor: theme.colors.border.default,
-                    opacity: pressed ? 0.7 : 1,
+                    opacity: pressed ? motionTokens.press.opacity : 1,
                 })}
             >
                 <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>{t('common.retry')}</Text>
@@ -539,7 +643,10 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
             ) : null}
 
             {/* Presence, not truthiness: a valid run result may be false, 0,
-                empty string, or null; only absence (undefined) hides the card. */}
+                empty string, or null; only absence (undefined) hides the card.
+                The result is presented through the transcript's own structured
+                projection; the exact payload a plugin returned stays reachable
+                under its own disclosure rather than being the primary content. */}
             {state.latestToolResult !== undefined ? (
                 <View
                     testID="session-run-details-latest-tool-result"
@@ -553,9 +660,30 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                     }}
                 >
                     <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>{t('runs.runDetails.latestToolResultTitle')}</Text>
-                    <Text style={{ color: theme.colors.text.secondary, fontFamily: 'Menlo' }}>
-                        {JSON.stringify(state.latestToolResult, null, 2)}
-                    </Text>
+                    {latestToolResultProjection ? (
+                        <StructuredResultView
+                            tool={latestToolResultProjection}
+                            metadata={null}
+                            messages={NO_TRANSCRIPT_MESSAGES}
+                        />
+                    ) : null}
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: rawToolResultExpanded }}
+                        testID="session-run-details-latest-tool-result-raw-toggle"
+                        onPress={() => setRawToolResultExpanded((current) => !current)}
+                        style={{ ...interactiveTargetStyle, alignSelf: 'flex-start' }}
+                    >
+                        <Text style={{ color: theme.colors.text.secondary }}>{t('runs.runDetails.latestToolResultRaw')}</Text>
+                    </Pressable>
+                    {rawToolResultExpanded ? (
+                        <Text
+                            testID="session-run-details-latest-tool-result-raw"
+                            style={{ color: theme.colors.text.secondary, fontFamily: 'Menlo' }}
+                        >
+                            {JSON.stringify(state.latestToolResult, null, 2)}
+                        </Text>
+                    ) : null}
                 </View>
             ) : null}
 
@@ -577,7 +705,30 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
             ) : null}
             {session && transcriptMessage?.kind !== 'tool-call' ? (
                 <View style={{ gap: 10 }}>
-                    {(targetPending.messages.length > 0 || targetPending.discarded.length > 0) ? (
+                    {transcriptToolId !== null ? (
+                        // Same container the marker branch gives its transcript
+                        // (`SessionMessageDetailsView`'s `toolCallFullViewContainer`), so the
+                        // shared list is measured identically on both paths.
+                        <View style={{ flex: 1, minHeight: 0 }}>
+                            <ChainTranscriptList
+                                key={runTranscriptDatasetKey}
+                                sessionId={props.sessionId}
+                                serverId={pendingScopeServerId ?? null}
+                                datasetKey={runTranscriptDatasetKey}
+                                messages={runTranscriptMessages}
+                                metadata={session.metadata ?? null}
+                                interaction={interaction}
+                                isInitialLoadInFlight={isRunSidechainHydrating}
+                                loadOlder={loadOlderRunSidechain}
+                                pendingMessages={targetPending.messages}
+                                discardedMessages={targetPending.discarded}
+                                pendingRecipient={executionRunRecipient}
+                                messageWrapperTestIdPrefix="session-run-details-transcript-message"
+                            />
+                        </View>
+                    ) : (targetPending.messages.length > 0 || targetPending.discarded.length > 0) ? (
+                        // Only reachable before the Run resolves (no sidechain id yet): the queued
+                        // rows still belong on screen, and the list above owns them from then on.
                         <PendingMessagesTranscriptBlock
                             sessionId={props.sessionId}
                             serverId={pendingScopeServerId ?? null}

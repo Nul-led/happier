@@ -1,4 +1,6 @@
+import tweetnacl from 'tweetnacl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parseSerializedJsonValue, stringifySerializedJsonValue } from '@happier-dev/protocol';
 
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { storage } from '@/sync/domains/state/storage';
@@ -67,6 +69,12 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
   getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
 }));
 
+// The request-context owner reads the applied active server (as its sibling tests mock it).
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+  getAppliedActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
+  isAppliedActiveServerRuntimeAvailable: () => true,
+}));
+
 vi.mock('@/utils/system/runtimeFetch', () => ({
   runtimeFetch: (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).endsWith('/v1/auth/ping')) {
@@ -82,6 +90,36 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
 vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation((...args) => getCredentialsSpy(...args));
 
 const initialStorageState = storage.getState();
+
+const scopedAccountSecret = new Uint8Array(32).fill(21);
+const scopedSessionDataKey = new Uint8Array(32).fill(9);
+
+/**
+ * Uses the real Account encryption owner for the scoped credentials, and returns the real
+ * data-key envelope sealed to that Account plus a daemon-side codec holding the same DEK.
+ */
+async function useRealScopedEncryption() {
+  const actual = await vi.importActual<typeof import('@/auth/encryption/createEncryptionFromAuthCredentials')>(
+    '@/auth/encryption/createEncryptionFromAuthCredentials',
+  );
+  createEncryptionSpy.mockImplementation(actual.createEncryptionFromAuthCredentials);
+  const { Encryption } = await import('@/sync/encryption/encryption');
+  const { encodeBase64 } = await import('@/encryption/base64');
+  const { sealEncryptedDataKeyEnvelopeV1 } = await import('@happier-dev/protocol');
+  const account = await Encryption.create(scopedAccountSecret);
+  const envelope = encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+    dataKey: scopedSessionDataKey,
+    recipientPublicKey: account.contentDataKey,
+    randomBytes: (length) => new Uint8Array(length).fill(3),
+  }), 'base64');
+  await account.initializeSessions(new Map([['session-1', scopedSessionDataKey]]));
+  const daemon = account.getSessionEncryption('session-1')!;
+  return {
+    credentials: { token: TOKEN_B, secret: Buffer.from(scopedAccountSecret).toString('base64url') },
+    envelope,
+    daemon,
+  };
+}
 
 describe('sessionRpcWithServerScope', () => {
   afterEach(() => {
@@ -522,28 +560,22 @@ describe('sessionRpcWithServerScope', () => {
       generation: 1,
     });
     listServerProfilesSpy.mockReturnValue([{ id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' }]);
-    getCredentialsSpy.mockResolvedValue({ token: TOKEN_B, secret: 'secret-b' });
-
-    const sessionEncryption = {
-      encryptRaw: vi.fn(async () => 'encrypted-payload'),
-      decryptRaw: vi.fn(async () => ({ decoded: true })),
-    };
-    const initializeSessions = vi.fn(async () => {});
-    createEncryptionSpy.mockResolvedValue({
-      decryptEncryptionKey: vi.fn(async () => new Uint8Array([1])),
-      initializeSessions,
-      getSessionEncryption: vi.fn(() => sessionEncryption),
-    });
+    const { credentials, envelope, daemon } = await useRealScopedEncryption();
+    getCredentialsSpy.mockResolvedValue(credentials);
 
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
         ok: true,
-        json: async () => ({ session: sessionListByIdFixture }),
+        json: async () => ({ session: { ...sessionListByIdFixture, dataEncryptionKey: envelope } }),
       })),
     );
 
-    const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+    const daemonSaw: unknown[] = [];
+    const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
+      daemonSaw.push(await daemon.decryptRaw(payload.params));
+      return { ok: true, result: await daemon.encryptRaw({ decoded: true }) };
+    });
     const fakeSocket = {
       timeout: vi.fn(() => ({ emitWithAck })),
       emit: vi.fn(),
@@ -567,15 +599,13 @@ describe('sessionRpcWithServerScope', () => {
       token: TOKEN_B,
       timeoutMs: 5000,
     }));
-    expect(initializeSessions).toHaveBeenCalledWith(new Map([['session-1', expect.any(Uint8Array)]]));
-    expect(sessionEncryption.encryptRaw).toHaveBeenCalledWith({ value: 2 });
+    expect(daemonSaw).toEqual([{ value: 2 }]);
     expect(fakeSocket.timeout).toHaveBeenCalledWith(5000);
     expect(emitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CALL, {
       method: 'session-1:method-test',
-      params: 'encrypted-payload',
+      params: expect.any(String),
       timeoutMs: 5000,
     });
-    expect(sessionEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -589,28 +619,21 @@ describe('sessionRpcWithServerScope', () => {
     listServerProfilesSpy.mockReturnValue([
       { id: 'server-b', serverUrl: 'https://server-a.example.test', name: 'Server A (alt id)' },
     ]);
-    getCredentialsSpy.mockResolvedValue({ token: TOKEN_B, secret: 'secret-b' });
-
-    const initializeSessions = vi.fn(async () => {});
-    const sessionEncryption = {
-      encryptRaw: vi.fn(async () => 'encrypted-payload-alt'),
-      decryptRaw: vi.fn(async () => ({ ok: true, source: 'alternate-profile' })),
-    };
-    createEncryptionSpy.mockResolvedValue({
-      decryptEncryptionKey: vi.fn(async () => new Uint8Array([1])),
-      initializeSessions,
-      getSessionEncryption: vi.fn(() => sessionEncryption),
-    });
+    const { credentials, envelope, daemon } = await useRealScopedEncryption();
+    getCredentialsSpy.mockResolvedValue(credentials);
 
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
         ok: true,
-        json: async () => ({ session: sessionListByIdFixture }),
+        json: async () => ({ session: { ...sessionListByIdFixture, dataEncryptionKey: envelope } }),
       })),
     );
 
-    const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result-alt' }));
+    const emitWithAck = vi.fn(async () => ({
+      ok: true,
+      result: await daemon.encryptRaw({ ok: true, source: 'alternate-profile' }),
+    }));
     const fakeSocket = {
       timeout: vi.fn(() => ({ emitWithAck })),
       emit: vi.fn(),
@@ -911,6 +934,97 @@ describe('sessionRpcWithServerScope', () => {
     await expect(pending).rejects.toMatchObject({
       name: 'AbortError',
       code: 'SOCKET_RPC_ABORTED',
+    });
+  });
+
+  describe('historical 0.2 owner Session with no data-key envelope over explicit scoped RPC', () => {
+    // A 0.2 legacy-secret Account created this Session: the row carries no `share`, no
+    // current access projection and `dataEncryptionKey: null`, and the 0.2 daemon seals RPC
+    // traffic with `encryptLegacy` (tweetnacl secretbox over the Account secret of the
+    // serialized-JSON envelope, nonce||box, base64) — `../0.2`
+    // `apps/cli/src/api/encryption.ts#encryptLegacy`/`decryptLegacy` at 7fc35fe14a.
+    const accountSecret = scopedAccountSecret;
+    const released02OwnerRow = {
+      ...sessionListByIdFixture,
+      encryptionMode: 'e2ee',
+      dataEncryptionKey: null,
+    } as const;
+
+    function sealLikeReleased02Daemon(value: unknown): string {
+      const nonce = new Uint8Array(tweetnacl.secretbox.nonceLength).fill(4);
+      const box = tweetnacl.secretbox(new TextEncoder().encode(stringifySerializedJsonValue(value)), nonce, accountSecret);
+      const bundle = new Uint8Array(nonce.length + box.length);
+      bundle.set(nonce);
+      bundle.set(box, nonce.length);
+      return Buffer.from(bundle).toString('base64');
+    }
+
+    function openLikeReleased02Daemon(value: string): unknown {
+      const bundle = new Uint8Array(Buffer.from(value, 'base64'));
+      const opened = tweetnacl.secretbox.open(
+        bundle.slice(tweetnacl.secretbox.nonceLength),
+        bundle.slice(0, tweetnacl.secretbox.nonceLength),
+        accountSecret,
+      );
+      return opened ? parseSerializedJsonValue(new TextDecoder().decode(opened)) : null;
+    }
+
+    async function arrangeScopedHomeB(row: Record<string, unknown>) {
+      getActiveServerSnapshotSpy.mockReturnValue({
+        serverId: 'server-a',
+        serverUrl: 'https://server-a.example.test',
+        kind: 'custom',
+        generation: 1,
+      });
+      listServerProfilesSpy.mockReturnValue([{ id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' }]);
+      // The real Account encryption owner, built from the real stored legacy-secret credentials.
+      const { credentials } = await useRealScopedEncryption();
+      getCredentialsSpy.mockResolvedValue(credentials);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ session: row }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })));
+      const daemonSaw: unknown[] = [];
+      const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
+        daemonSaw.push(openLikeReleased02Daemon(payload.params));
+        return { ok: true, result: sealLikeReleased02Daemon({ answered: true }) };
+      });
+      const fakeSocket = { timeout: vi.fn(() => ({ emitWithAck })), emit: vi.fn(), disconnect: vi.fn() };
+      createEphemeralSocketSpy.mockResolvedValue(fakeSocket);
+      return { daemonSaw, emitWithAck };
+    }
+
+    it('reaches the Session with the historical Account-secret cipher', async () => {
+      const { daemonSaw } = await arrangeScopedHomeB(released02OwnerRow);
+
+      const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+      const result = await sessionRpcWithServerScope({
+        sessionId: 'session-1',
+        method: 'method-test',
+        payload: { value: 7 },
+        serverId: 'server-b',
+        timeoutMs: 5000,
+      });
+
+      expect(daemonSaw).toEqual([{ value: 7 }]);
+      expect(result).toEqual({ answered: true });
+    });
+
+    it.each([
+      ['a recipient with no envelope of its own', { ...released02OwnerRow, share: { accessLevel: 'edit', canApprovePermissions: false } }],
+      ['an owner whose present envelope is malformed', { ...released02OwnerRow, dataEncryptionKey: '' }],
+    ])('keeps %s unavailable instead of reaching the Account-secret reader', async (_label, row) => {
+      const { emitWithAck } = await arrangeScopedHomeB(row);
+
+      const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+      await expect(sessionRpcWithServerScope({
+        sessionId: 'session-1',
+        method: 'method-test',
+        payload: { value: 7 },
+        serverId: 'server-b',
+        timeoutMs: 5000,
+      })).rejects.toMatchObject({ rpcErrorCode: 'scoped_session_encryption_unavailable' });
+      expect(emitWithAck).not.toHaveBeenCalled();
     });
   });
 });

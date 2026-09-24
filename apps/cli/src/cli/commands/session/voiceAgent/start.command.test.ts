@@ -125,6 +125,10 @@ describe('happier session voice-agent start command', () => {
         {
           backendTargetKeys: ['agent:com.acme.agent/acme'],
           instructions: 'Voice.',
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral',
+          runClass: 'long_lived',
+          ioMode: 'streaming',
         },
         { authority: 'present_user', defaultSessionId: 'sess-voice-1' },
       );

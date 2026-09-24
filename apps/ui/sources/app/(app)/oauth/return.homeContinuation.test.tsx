@@ -102,13 +102,65 @@ it('rejects a Team callback whose admission reference does not match its pending
         t('errors.oauthStateMismatch'),
     ));
     expect(boundary.request).not.toHaveBeenCalled();
-    expect(await TokenStorage.getPendingExternalAuth({
-        serverUrl: home.serverUrl,
-        serverId: fixture.home.connectionDescriptor.homeServerIdentityId,
-    })).toBeNull();
+    expect(await TokenStorage.getPendingExternalAuth()).toBeNull();
     expect(router.replace).toHaveBeenCalledWith(
         `/teams/team-1/sign-in?target=${encodeURIComponent(fixture.home.connectionDescriptor.homeServerIdentityId)}`,
     );
+});
+
+it('names a dynamic provider on its OAuth return by the presentation its Home projected at start', async () => {
+    restore = installLocalStorageMock().restore;
+    const fixture = createDirectoryHttpFixture();
+    const home = await adoptHomeProfile({
+        descriptor: fixture.home.connectionDescriptor,
+        source: 'account-directory',
+        descriptorAuthority: 'current_connection_observation',
+    });
+    await setActiveServerId(home.id, { scope: 'device' });
+    boundary.request.mockImplementation(async (endpoint: string, path: string, init?: RequestInit) => (
+        path.startsWith('/v1/auth/external/oidc-northwind/params?')
+            ? new Response(JSON.stringify({ url: 'https://idp.northwind.example/authorize?state=northwind' }))
+            : fixture.request(endpoint, path, init)
+    ));
+    // The browser is the one boundary the start hands off to.
+    const assign = vi.fn();
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { value: { location: { assign } }, configurable: true, writable: true });
+    try {
+        const target = { kind: 'descriptor', authority: 'current_connection', descriptor: fixture.home.connectionDescriptor } as const;
+        await executeHomeAuthentication({
+            request: {
+                method: {
+                    id: 'oidc-northwind',
+                    enabledActions: [{ id: 'login', mode: 'keyless' }],
+                    presentation: { displayName: 'Northwind Workforce', providerKind: 'oidc' },
+                },
+                action: { id: 'login', mode: 'keyless' },
+                execution: { kind: 'oauth', providerId: 'oidc-northwind', mode: 'keyless' },
+                authority: { purpose: 'home', target },
+                intendedHome: target,
+            },
+            loginWithCredentials: async () => { throw new Error('An OAuth start commits no credential'); },
+            returnTo: '/setup/wizard',
+        });
+        expect(assign).toHaveBeenCalledWith('https://idp.northwind.example/authorize?state=northwind');
+    } finally {
+        if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+        else delete (globalThis as { window?: unknown }).window;
+    }
+
+    // A fresh load of the return route holds no Home projection: only the start's
+    // custody can name this provider the way its Home does.
+    boundary.params.provider = 'oidc-northwind';
+    boundary.params.flow = 'auth';
+    boundary.params.pending = '';
+    boundary.params.error = 'oauth_not_configured';
+    screen = await renderScreen(<AuthProvider initialCredentials={null}><OAuthProviderReturn /></AuthProvider>);
+
+    await vi.waitFor(() => expect(Modal.alert).toHaveBeenCalledWith(
+        t('common.error'),
+        t('friends.providerGate.notConfigured', { provider: 'Northwind Workforce' }),
+    ));
 });
 
 it.each(['oauth', 'mtls-claim', 'mtls-redirect', 'mtls-web'] as const)('presents a disabled Account on its captured Home after %s proof without committing credentials', async (flow) => {

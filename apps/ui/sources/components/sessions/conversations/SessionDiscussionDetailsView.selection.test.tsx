@@ -16,6 +16,7 @@ const repositoryCreate = vi.hoisted(() => vi.fn(async () => ({ kind: 'failed', e
 const repositoryPost = vi.hoisted(() => vi.fn(async () => ({ kind: 'failed', errorCode: 'test-stop' })));
 const repositoryDismiss = vi.hoisted(() => vi.fn(() => true));
 const launchability = vi.hoisted(() => ({ current: true }));
+const shellSession = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
 const repositoryRename = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
 const repositoryArchive = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
 const repositoryRestore = vi.hoisted(() => vi.fn(async () => ({ kind: 'succeeded', value: {} })));
@@ -38,7 +39,7 @@ const exactHomeBinding = vi.hoisted(() => ({
 const exactHomeBindings = vi.hoisted(() => ({ current: new Map<string, typeof exactHomeBinding.current>() }));
 const draftState = vi.hoisted(() => ({
     title: '', text: '', mentions: [] as readonly unknown[],
-    status: 'clean' as 'clean' | 'pending' | 'offline' | 'conflict' | 'error',
+    status: 'clean' as 'clean' | 'pending' | 'offline' | 'conflict' | 'error' | 'unsupported',
     conflict: null as null | { fields: readonly unknown[] },
     setComposer: vi.fn(), setTitle: vi.fn(), captureSubmittedCurrentness: vi.fn(() => ({
         scope: { serverId: 'server-a', accountId: 'viewer' },
@@ -83,15 +84,19 @@ const snapshot = vi.hoisted(() => ({
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: routerPush, replace: routerReplace }) }));
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({ useAppPaneScope: () => pane }));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => true }));
-vi.mock('@/hooks/session/useSessionCollaborationAvailability', () => ({ useSessionCollaborationAvailability: () => 'full_collaboration' }));
+vi.mock('@/hooks/session/useSessionCollaborationAvailability', () => ({ useSessionCollaborationAvailability: () => 'available' }));
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeBindings: () => exactHomeBindings.current,
 }));
 vi.mock('@/hooks/session/useSessionAgentActivity', () => ({ useSessionAgentActivityRoster: () => activity }));
-vi.mock('@/sync/domains/session/humanPresence/useSessionHumanPresence', () => ({ useSessionHumanPresence: () => ({ status: 'live', viewers: [
+const DEFAULT_PRESENCE_VIEW = { status: 'live', viewers: [
     { account: { kind: 'account', accountId: 'account-private-123', firstName: 'Presence Alice', lastName: null, username: null, avatarUrl: null }, typing: false },
     { account: { kind: 'account', accountId: 'mention-private-456', firstName: 'Bob', lastName: null, username: null, avatarUrl: null }, typing: false },
-] }) }));
+] };
+const presenceView = vi.hoisted(() => ({ current: null as null | { status: string; viewers: readonly unknown[] } }));
+vi.mock('@/sync/domains/session/humanPresence/useSessionHumanPresence', () => ({
+    useSessionHumanPresence: () => presenceView.current ?? DEFAULT_PRESENCE_VIEW,
+}));
 vi.mock('@/sync/ops/sessionDiscussions/useSessionDiscussionRepositorySnapshot', () => ({ useSessionDiscussionRepositorySnapshot: () => snapshot }));
 vi.mock('@/sync/ops/sessionDiscussions/sessionDiscussionRepositoryRegistry', () => ({ getSessionDiscussionRepository: (options: Record<string, unknown>) => {
     repositoryOptions.current = options;
@@ -115,7 +120,7 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
 }));
 vi.mock('./SessionDiscussionComposer', () => ({ SessionDiscussionComposer: (props: Record<string, unknown>) => { composerProps.current = props; return null; } }));
 vi.mock('./useSessionDiscussionDraft', () => ({ useSessionDiscussionDraft: () => draftState }));
-vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({ useSessionViewShellSession: () => null }));
+vi.mock('@/components/sessions/shell/sessionViewStableSession', () => ({ useSessionViewShellSession: () => shellSession.current }));
 vi.mock('@/hooks/session/useSessionExecutionRunLaunchability', () => ({ useSessionExecutionRunLaunchability: () => ({
     canLaunchExecutionRuns: launchability.current, canShowExecutionRunLauncher: launchability.current, executionRunsBackends: {}, executionRunsSupported: launchability.current, sessionServerId: 'server-a',
 }) }));
@@ -147,6 +152,7 @@ describe('SessionDiscussionDetailsView selection', () => {
         repositoryPost.mockClear();
         repositoryDismiss.mockClear();
         launchability.current = true;
+        shellSession.current = null;
         repositoryRename.mockClear();
         repositoryArchive.mockClear();
         repositoryRestore.mockClear();
@@ -199,6 +205,57 @@ describe('SessionDiscussionDetailsView selection', () => {
 
         expect(composerProps.current?.disabled).toBe(false);
         expect((composerProps.current?.value as { text: string }).text).toBe('');
+    });
+
+    it('annotates a known write refusal on the new-conversation flow without purging the private draft', async () => {
+        draftState.text = 'Private draft I am still writing';
+        const target = { kind: 'new' as const, address: { serverId: 'server-a', sessionId: 'session-a' } };
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={target} active />);
+        expect(composerProps.current?.disabled).toBe(false);
+
+        // Known refusal from the exact Session's own access projection.
+        shellSession.current = { id: 'session-a', access: { role: 'recipient', level: 'view', capabilities: { readTranscript: true, submitAgentInput: false } } };
+        await screen.update(<SessionDiscussionDetailsView target={target} active />);
+
+        expect(composerProps.current?.disabled).toBe(true);
+        expect(screen.getTextContent()).toContain('You can no longer post in this Session.');
+        // A write downgrade is not access loss: the private draft survives.
+        expect(draftState.purgePresentation).not.toHaveBeenCalled();
+        expect((composerProps.current?.value as { text: string }).text).toBe('Private draft I am still writing');
+
+        shellSession.current = { id: 'session-a', access: { role: 'recipient', level: 'edit', capabilities: { readTranscript: true, submitAgentInput: true } } };
+        await screen.update(<SessionDiscussionDetailsView target={target} active />);
+        expect(composerProps.current?.disabled).toBe(false);
+        expect((composerProps.current?.value as { text: string }).text).toBe('Private draft I am still writing');
+    });
+
+    it('keeps the new-conversation flow usable while the exact Session write capability is unknown', async () => {
+        shellSession.current = null;
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'new', address: { serverId: 'server-a', sessionId: 'session-a' } }} active />);
+
+        expect(composerProps.current?.disabled).toBe(false);
+        expect(screen.getTextContent()).not.toContain('You can no longer post in this Session.');
+    });
+
+    // A disconnected client keeps its last observation as `stale` with the
+    // viewers' typing flags intact; the header must not keep claiming live typing.
+    it('names a live typist, then keeps a stale observation\'s names without a typing claim', async () => {
+        const viewer = {
+            account: { kind: 'account', accountId: 'account-private-123', firstName: 'Presence Alice', lastName: null, username: null, avatarUrl: null },
+            typing: true,
+        };
+        const discussionTarget = { kind: 'discussion' as const, address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' };
+        try {
+            presenceView.current = { status: 'live', viewers: [viewer] };
+            const screen = await renderScreen(<SessionDiscussionDetailsView target={discussionTarget} active />);
+            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice · Typing…');
+
+            presenceView.current = { status: 'stale', viewers: [viewer] };
+            await screen.update(<SessionDiscussionDetailsView target={discussionTarget} active />);
+            expect(screen.findByTestId('session-discussion-presence')?.props.children).toBe('Presence Alice · May be out of date');
+        } finally {
+            presenceView.current = null;
+        }
     });
 
     it('exposes the conversation title as the details heading', async () => {
@@ -309,6 +366,40 @@ describe('SessionDiscussionDetailsView selection', () => {
         expect(pane.openDetailsTab).toHaveBeenCalledWith(expect.objectContaining({
             kind: 'executionRun',
             resource: { kind: 'executionRun', runId: 'run-linked' },
+        }), { intent: 'preview' });
+    });
+
+    it('selects a trusted Agent-posted row with its Account label and Via Agent attribution, and keeps Run cards ineligible', async () => {
+        activity.subagents = [{
+            id: 'execution_run:run-linked', kind: 'execution_run', status: 'running', display: { title: 'Linked run' }, transcript: {},
+            runRef: { runId: 'run-linked', launchOrigin: { kind: 'session_discussion', sessionId: 'session-a', discussionId: 'discussion-a', messageIds: ['message-a'] } },
+            recipient: null,
+            capabilities: { canOpen: true, canSend: false, canStop: false, canLaunchChild: false, canDelete: false, canOpenAdvancedRun: true }, timestamps: {},
+        }];
+        activity.readExecutionRunEntry.mockReturnValue({
+            id: 'execution_run:run-linked', kind: 'execution_run', status: 'running', title: 'Linked run', metaDetail: null,
+            startedAtMs: 1, endedAtMs: null, provenance: 'local', detailState: 'loaded', parentId: null,
+            runId: 'run-linked', sidechainId: null, subagentId: 'execution_run:run-linked', attentionKinds: [],
+        });
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+        // A Run activity card is a resource reference, never a selectable message.
+        expect(screen.tree.findAll((item) => typeof item.props?.testID === 'string'
+            && item.props.testID.startsWith('session-discussion-select-run'))).toHaveLength(0);
+
+        await press(screen, 'session-discussion-select-message-agent');
+        await press(screen, 'transcript-selection-copy');
+        expect(clipboard).toHaveBeenCalledWith('**Alice · Via Agent:**\n\nAgent result');
+        expect(clipboard.mock.calls[0]?.[0]).not.toContain('Assistant');
+        expect(clipboard.mock.calls[0]?.[0]).not.toContain('account-private-123');
+
+        await press(screen, 'session-discussion-selection-ask-agent');
+        expect(pane.openDetailsTab).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'executionRunLauncher',
+            resource: expect.objectContaining({
+                initialInstructions: '**Alice · Via Agent:**\n\nAgent result',
+                source: expect.objectContaining({ kind: 'session_discussion', sessionId: 'session-a', discussionId: 'discussion-a', messageIds: ['message-agent'] }),
+            }),
         }), { intent: 'preview' });
     });
 
@@ -546,6 +637,18 @@ describe('SessionDiscussionDetailsView selection', () => {
             expect.objectContaining({ id: 'restore', title: 'Restore conversation' }),
         ]);
         expect(composerProps.current).toBeNull();
+    });
+
+    it('names the Home that cannot sync this draft and keeps the conversation usable', async () => {
+        draftState.status = 'unsupported';
+
+        const screen = await renderScreen(<SessionDiscussionDetailsView target={{ kind: 'discussion', address: { serverId: 'server-a', sessionId: 'session-a' }, discussionId: 'discussion-a' }} active />);
+
+        // Not the generic load error, and not a dead composer: the draft is kept
+        // on this device and the conversation still accepts messages.
+        expect(screen.getTextContent()).toContain('Not synced — this Home can’t sync this draft');
+        expect(screen.getTextContent()).not.toContain('Conversations could not be loaded.');
+        expect(composerProps.current?.disabled).toBe(false);
     });
 
     it('renders the canonical V2 draft conflict resolution for a Discussion field', async () => {

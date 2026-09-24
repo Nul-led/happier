@@ -11,6 +11,10 @@ import type { DaemonState } from '@/api/types';
 import type { SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
+import {
+  createSpawnConnectedServicesTeamResourceCatalogResolver,
+  resolvePurposeTeamCredentialBindingIntentsFromHome,
+} from '@/session/services/spawnConnectedServicesDefaults';
 import { stopCaffeinate } from '@/integrations/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
@@ -76,6 +80,7 @@ import {
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
 import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native/node';
+import { readHomeApplicationCarrierEligibilityFromEnv } from '@happier-dev/cli-common/homeEnrollment';
 import { readOrCreateInstallationIdentity } from './identity/store';
 import {
   startPluginWebhookDaemonWorkerV1,
@@ -107,7 +112,7 @@ import { readRetainedConnectedServiceMaterializationKeys } from './connectedServ
 import { resolveConnectedServicesMaterializationBaseDir } from './connectedServices/materialize/resolveConnectedServicesMaterializationBaseDir';
 import { createDaemonMachineRpcRouteAttachmentCache } from './machineRpcRouteAttachments';
 import { createPersistedTakeoverAdmissionWaiter } from './spawn/persistedTakeoverAdmission';
-import { readAccountIdFromToken } from './machineIdentity/resolveMachineRegistrationIdentity';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import type { RpcActionExecutor } from '@/rpc/handlers/_actionDispatchAdapter';
 import type { SessionSpawnDirectTargetTransport } from '@/session/actions/createCliActionDeps';
 import type {
@@ -124,6 +129,7 @@ import type {
 } from '@/session/external/agentExternalSessionsInvocation';
 import type {
   ManagedServiceSessionBaseUrlResolver,
+  ManagedServiceSessionClientAccessResolver,
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
@@ -178,7 +184,6 @@ import {
 } from '@happier-dev/protocol';
 import {
   TeamCredentialResourceEntitledPageV1Schema,
-  type TeamCredentialResourceCatalogEntryV1,
   type TeamCredentialResourceSummaryV1,
 } from '@happier-dev/protocol/teams';
 import {
@@ -186,18 +191,23 @@ import {
   resolveRunnerCredentialSelectionCurrentness,
   startDaemonProviderBrokerRuntime,
 } from '@/providers/broker/daemonProviderBrokerRuntime';
-import { createConnectedServicesBrokerSourceOpen } from '@/providers/broker/connectedServicesSource';
+import {
+  createConnectedServicesBrokerSourceMemberSelect,
+  createConnectedServicesBrokerSourceOpen,
+} from '@/providers/broker/connectedServicesSource';
 import {
   createTeamCredentialBrokerSourceOwner,
   teamCredentialBrokerPlacementAcceptsMachine,
 } from '@/providers/broker/teamCredentialBrokerSourceOwner';
 import {
   createTeamCredentialExternalModelCatalog,
-  createTeamCredentialModelCatalogResolver,
   isSameTeamCredentialBrokerApplication,
   type TeamCredentialModelCatalogResolver,
 } from '@/providers/broker/teamCredentialModelCatalog';
-import { resolveTeamCredentialResourceCatalogApplications } from '@/providers/broker/resourceTestCandidate';
+import {
+  resolveTeamCredentialResourceCatalogApplications,
+  resolveTeamCredentialSourceModelCatalog,
+} from '@/providers/broker/resourceTestCandidate';
 import {
   classifyTeamCredentialRequestRouteV1,
   evaluateTeamCredentialRequestPolicyV1,
@@ -207,7 +217,7 @@ import {
   isProviderConnectionBrokerSourceCurrent,
   isProviderConnectionDirectSourceCurrent,
   materializeProviderConnectionDirectCredential,
-  resolveProviderConnectionDirectSourceSnapshot,
+  resolveAdmittedProviderConnectionDirectSourceSnapshot,
 } from '@/providers/broker/providerConnectionSource';
 import { createProviderConnectionTeamCredentialSourceSnapshot } from '@/providers/broker/teamCredentialSourceSnapshot';
 import { createProviderConnectionCpxBridge } from '@/providers/broker/providerConnectionCpxBridge';
@@ -216,7 +226,7 @@ import { resolveProviderContributionRegistryView } from '@/providers/registry';
 import { createProviderOperationLifetime } from '@/providers/operationLifetime';
 import {
   getActiveAccountSettingsSnapshot,
-  subscribeActiveAccountSettingsSnapshot,
+  subscribeActiveAccountSettingsSnapshotChanges,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { createManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
@@ -370,29 +380,33 @@ export async function startDaemon(
       initialMachineMetadata,
       startupSource,
       prepareServerTransport: async ({ persistedCredentials }) => {
+        const applicationCarrierEligibility = readHomeApplicationCarrierEligibilityFromEnv(process.env);
         // Local native-endpoint initialization is optional carrier
         // preparation. Its failure is handed to the Home transport owner as
         // native-runtime unavailability; that owner is the single owner of the
         // trusted-HTTPS-or-fail-closed decision, and it still fails closed for
         // an Iroh-only Home or a selected-Iroh identity, authentication or
         // descriptor-integrity failure. No fallback decision is made here.
-        const createdIrohRuntime = await createDaemonMachineIrohRuntime({
-          happyHomeDir: configuration.happyHomeDir,
-          relayConfig: readIrohRelayConfigFromEnv(process.env),
-        });
-        if (createdIrohRuntime.available) {
-          preparedIrohState.machine = createdIrohRuntime;
-        } else {
-          if (createdIrohRuntime.reason === 'startup_failed') {
-            preparedIrohState.failedStartupCleanup = createdIrohRuntime.shutdown;
-          }
-          logger.warn('[DAEMON RUN] Iroh carrier is unavailable; the Home transport owner evaluates independently trusted HTTPS', {
-            reason: createdIrohRuntime.reason,
+        if (applicationCarrierEligibility !== 'standard_only') {
+          const createdIrohRuntime = await createDaemonMachineIrohRuntime({
+            happyHomeDir: configuration.happyHomeDir,
+            relayConfig: readIrohRelayConfigFromEnv(process.env),
           });
+          if (createdIrohRuntime.available) {
+            preparedIrohState.machine = createdIrohRuntime;
+          } else {
+            if (createdIrohRuntime.reason === 'startup_failed') {
+              preparedIrohState.failedStartupCleanup = createdIrohRuntime.shutdown;
+            }
+            logger.warn('[DAEMON RUN] Iroh carrier is unavailable; the Home transport owner evaluates independently trusted HTTPS', {
+              reason: createdIrohRuntime.reason,
+            });
+          }
         }
         preparedIrohState.home = await prepareDaemonHomeIrohTransport({
           runtime: preparedIrohState.machine,
           profile: await getActiveServerProfile(),
+          applicationCarrierEligibility,
           ...(persistedCredentials ? { token: persistedCredentials.token } : {}),
         });
         logger.info('[DAEMON RUN] Home transport prepared', {
@@ -439,6 +453,7 @@ export async function startDaemon(
     let connectedServiceQuotasCoordinator: ConnectedServiceQuotasCoordinator | null = null;
     let connectedServiceQuotasLoopHandle: ConnectedServiceQuotasLoopHandle | null = null;
     let teamCredentialDirectMaterialChangeCleanup: (() => void) | null = null;
+    let teamCredentialDirectMaterialAccountChangeCleanup: (() => void) | null = null;
     let reconcileTeamCredentialDirectMaterialAfterSourceChange = (): void => {};
     let daemonServerWorkScheduler: DaemonServerWorkScheduler | null = null;
     let apiMachineForSessions: ApiMachineClient | null = null;
@@ -726,6 +741,8 @@ export async function startDaemon(
         }
         teamCredentialDirectMaterialChangeCleanup?.();
         teamCredentialDirectMaterialChangeCleanup = null;
+        teamCredentialDirectMaterialAccountChangeCleanup?.();
+        teamCredentialDirectMaterialAccountChangeCleanup = null;
         serverFeaturesSnapshotRefreshLoop.stop();
         await connectedServiceQuotasCoordinator?.flushInBandQuotaPersistence(2_000);
         await daemonServerWorkScheduler?.flushAll(2_000);
@@ -985,7 +1002,9 @@ export async function startDaemon(
             ?.getSessionSyncPendingInputServerContractResult()
             ?? null,
         legacyCredentialApi: api,
-        secrets: createActiveAccountSettingsConnectedAccountSecrets(),
+        secrets: createActiveAccountSettingsConnectedAccountSecrets({
+          expectedScopeKey: resolveAccountSettingsScopeKey(credentials),
+        }),
         // Attempt durability is Account-mode aware, so a plaintext Account keeps the
         // same OAuth/device restart recovery as an E2EE one. Key presence never
         // decides installation.
@@ -1101,6 +1120,8 @@ export async function startDaemon(
       AgentExternalSessionsManagedEndpointReadHost | null = null;
     let managedServiceSessionBaseUrlResolver:
       ManagedServiceSessionBaseUrlResolver | null = null;
+    let managedServiceSessionClientAccessResolver:
+      ManagedServiceSessionClientAccessResolver | null = null;
     const managedProviderOperationAuthority =
       createManagedProviderOperationAuthority({
         materializationBaseDir: join(
@@ -1214,6 +1235,13 @@ export async function startDaemon(
         const resolver = managedServiceSessionBaseUrlResolver;
         if (!resolver) {
           throw new Error('Managed server Session endpoint owner is unavailable');
+        }
+        return await resolver(input);
+      },
+      resolveManagedServiceSessionClientAccess: async (input) => {
+        const resolver = managedServiceSessionClientAccessResolver;
+        if (!resolver) {
+          throw new Error('Managed server Session client access owner is unavailable');
         }
         return await resolver(input);
       },
@@ -1338,6 +1366,7 @@ export async function startDaemon(
               const registry = resolveProviderContributionRegistryView(
                 lease.registry.contributes,
                 lease.durableRevision,
+                lease.registry.readPluginOccurrenceId,
               );
               const dnsEvidenceByEndpointUrl = await collectProviderConnectionDnsEvidence({
                 connectionId: source.connectionId,
@@ -1351,15 +1380,14 @@ export async function startDaemon(
                   wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
                 }),
               });
-              const resolved = resolveProviderConnectionDirectSourceSnapshot({
+              const resolved = await resolveAdmittedProviderConnectionDirectSourceSnapshot({
                 source,
                 machineId,
-                accountSettings: accountSnapshot.settings,
-                ...(accountSnapshot.savedSecretResources
-                  ? { savedSecretResources: accountSnapshot.savedSecretResources }
-                  : {}),
+                expectedScopeKey: resolveAccountSettingsScopeKey(credentials),
                 registry,
                 dnsEvidenceByEndpointUrl,
+                getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+                signal,
               });
               if (!resolved.ok) return null;
               const credential = await materializeProviderConnectionDirectCredential({
@@ -1385,6 +1413,7 @@ export async function startDaemon(
                     const currentRegistry = resolveProviderContributionRegistryView(
                       currentLease.registry.contributes,
                       currentLease.durableRevision,
+                      currentLease.registry.readPluginOccurrenceId,
                     );
                     const currentDnsEvidence = await collectProviderConnectionDnsEvidence({
                       connectionId: source.connectionId,
@@ -1430,7 +1459,11 @@ export async function startDaemon(
             { error: serializeAxiosErrorForLog(error) },
           ));
         reconcileTeamCredentialDirectMaterialAfterSourceChange = reconcileDirectMaterialBestEffort;
-        teamCredentialDirectMaterialChangeCleanup = subscribeActiveAccountSettingsSnapshot(
+        // Direct preparation consumes Provider settings, Saved Secrets and the
+        // Account lifetime from the snapshot, which publishes only on change;
+        // Team grant, recipient and connected-service facts arrive through the
+        // AccountChange wake attached with the machine client below.
+        teamCredentialDirectMaterialChangeCleanup = subscribeActiveAccountSettingsSnapshotChanges(
           reconcileDirectMaterialBestEffort,
         );
         reconcileDirectMaterialBestEffort();
@@ -1612,6 +1645,9 @@ export async function startDaemon(
       onManagedServiceSessionBaseUrlResolverReady: (resolver) => {
         managedServiceSessionBaseUrlResolver = resolver;
       },
+      onManagedServiceSessionClientAccessResolverReady: (resolver) => {
+        managedServiceSessionClientAccessResolver = resolver;
+      },
       onLocalServicesPreviewRoutesReady: machineRpcRouteAttachments.attachLocalServicesPreviewRoutes,
       onBrowserControlRoutesReady: machineRpcRouteAttachments.attachBrowserControlRoutes,
       onBrowserContextRoutesReady: machineRpcRouteAttachments.attachBrowserContextRoutes,
@@ -1665,6 +1701,20 @@ export async function startDaemon(
       resolveCurrentSessionPurposeBindingSnapshot:
         connectedAccountPurposeBindingRuntime
           .resolveCurrentSessionPurposeBindingSnapshot,
+      ...(externalActionAccountId && homeDomainAction
+        ? {
+            resolveSessionTeamCredentialBindingIntents: async ({ teamResourceSelections }) =>
+              await resolvePurposeTeamCredentialBindingIntentsFromHome({
+                teamResourceSelections,
+                resolveTeamCredentialResourceCatalog:
+                  createSpawnConnectedServicesTeamResourceCatalogResolver({
+                    homeDomainAction,
+                    serverId: configuration.activeServerId,
+                    accountId: externalActionAccountId,
+                  }),
+              }),
+          }
+        : {}),
       resolveCurrentRequestAuthBinding:
         connectedAccountPurposeBindingRuntime
           .resolveCurrentRequestAuthBinding,
@@ -1928,34 +1978,31 @@ export async function startDaemon(
                     return null;
                   }
                 };
+                // The broker serves its own source, so its catalog is that
+                // source's canonical current projection — not the recipient
+                // catalog, which would require the custodian to be an audience
+                // member of the resource it offers to others. The Home decides
+                // the requester's entitlement per request; request policy is
+                // intersected by the broker's request-policy owner.
                 const resolveCatalog = async (input: Readonly<{
                   resource: TeamCredentialResourceSummaryV1;
                   application: ProviderBrokerApplicationBindingV1;
                   signal: AbortSignal;
                 }>) => {
-                  let cursor: string | null = null;
-                  let row: TeamCredentialResourceCatalogEntryV1 | undefined;
-                  do {
-                    const rawPage = await homeDomainAction({
-                      actionId: 'teams.credentials.entitled.list',
-                      input: { teamId: input.resource.teamId, application: input.application, ...(cursor ? { cursor } : {}) },
-                      context: { surface: 'cli' }, signal: input.signal,
-                    });
-                    if (typeof rawPage === 'object' && rawPage !== null && 'ok' in rawPage && rawPage.ok === false) return null;
-                    const parsedPage = TeamCredentialResourceEntitledPageV1Schema.safeParse(rawPage);
-                    if (!parsedPage.success) return null;
-                    row = parsedPage.data.resources.find(candidate => candidate.id === input.resource.id
-                      && candidate.resourceRevision === input.resource.revision);
-                    cursor = readTeamCredentialCatalogNextCursor(parsedPage.data);
-                  } while (!row && cursor);
-                  return row
-                    ? createTeamCredentialModelCatalogResolver({
-                        resourceId: input.resource.id,
-                        resourceRevision: input.resource.revision,
-                        application: input.application,
-                        rows: row.providerModels,
-                      })
-                    : null;
+                  const producer = providerOperationsProducer;
+                  const source = input.resource.source;
+                  if (!producer || !source) return null;
+                  return await resolveTeamCredentialSourceModelCatalog({
+                    machineId: registeredMachineId,
+                    teamId: input.resource.teamId,
+                    resourceId: input.resource.id,
+                    resourceRevision: input.resource.revision,
+                    source,
+                    application: input.application,
+                    projectModels: async (projectionRequest) =>
+                      await producer.machineServices.projectModels(projectionRequest),
+                    signal: input.signal,
+                  });
                 };
                 const brokerManagedProviderCustody = createManagedProviderExplicitStartCustody({
                   machineId: registeredMachineId,
@@ -1964,6 +2011,10 @@ export async function startDaemon(
                 });
                 const sourceOwner = createTeamCredentialBrokerSourceOwner({
                   machineId: registeredMachineId,
+                  custody: brokerManagedProviderCustody,
+                  selectConnectedServicesSourceMember: createConnectedServicesBrokerSourceMemberSelect({
+                    resolveBindingIntentSelection: connectedAccountPurposeBindingRuntime.resolveBindingIntentSelection,
+                  }),
                   openConnectedServicesSource: createConnectedServicesBrokerSourceOpen({
                     readResource,
                     resolveBindingIntentSelection: connectedAccountPurposeBindingRuntime.resolveBindingIntentSelection,
@@ -1992,6 +2043,7 @@ export async function startDaemon(
                         return await read(resolveProviderContributionRegistryView(
                           lease.registry.contributes,
                           lease.durableRevision,
+                          lease.registry.readPluginOccurrenceId,
                         ));
                       } finally {
                         await lease.release();
@@ -2586,6 +2638,15 @@ export async function startDaemon(
               logger,
             });
           }
+          // Direct-material preparation is woken by the relevant AccountChange
+          // (grant, recipient, Team and connected-service changes) and by every
+          // reconnect, whose census reconstructs missing work (teams-lane-10 06 §11).
+          teamCredentialDirectMaterialAccountChangeCleanup?.();
+          teamCredentialDirectMaterialAccountChangeCleanup = attemptedApiMachine
+            ? attemptedApiMachine.onManagedProviderRetainedCurrentnessInvalidation(
+                () => reconcileTeamCredentialDirectMaterialAfterSourceChange(),
+              )
+            : null;
           pluginWebhookWakeCleanup?.();
           pluginWebhookWakeCleanup = attemptedApiMachine
             ? attachPluginWebhookDaemonWakeV1({

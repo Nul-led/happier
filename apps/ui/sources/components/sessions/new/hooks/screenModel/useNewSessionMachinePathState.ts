@@ -314,6 +314,19 @@ export function useNewSessionMachinePathState(params: Readonly<{
         ) {
             return;
         }
+        lastAppliedMachineParamRef.current = { machineId, scopeKey };
+        lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
+        if (
+            (!previousRouteTarget || previousRouteTarget.scopeKey === scopeKey)
+            && !isQualifiedMachineTargetChange(machineId)
+        ) {
+            // The same Home+Machine came back, possibly with new Pool provenance.
+            // Let the origin update and leave the authored folder alone; the same
+            // decision the in-place pickers make. Whether the local Machine row has
+            // hydrated does not change what the target is.
+            setSelectedMachineIdState(machineId);
+            return;
+        }
         if (!hasMachine(machineId)) {
             // A fresh route target is authoritative before its row hydrates;
             // the consumed qualified route above prevents stale reconnects.
@@ -323,22 +336,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
                 || getPersistedPathForMachine(machineId)
                 || getBestPathForMachine(machineId),
             );
-            lastAppliedMachineParamRef.current = { machineId, scopeKey };
-            lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
             hasCommittedExactTargetRef.current = true;
-            setSelectedMachineIdState(machineId);
-            return;
-        }
-
-        lastAppliedMachineParamRef.current = { machineId, scopeKey };
-        lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
-        if (
-            (!previousRouteTarget || previousRouteTarget.scopeKey === scopeKey)
-            && !isQualifiedMachineTargetChange(machineId)
-        ) {
-            // The same Home+Machine came back, possibly with new Pool provenance.
-            // Let the origin update and leave the authored folder alone; the same
-            // decision the in-place pickers make.
             setSelectedMachineIdState(machineId);
             return;
         }

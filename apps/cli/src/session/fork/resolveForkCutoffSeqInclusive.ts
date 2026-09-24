@@ -5,7 +5,11 @@ import { createAuthenticationHttpStatusError, isAuthenticationStatus } from '@/a
 import type { StoredCredentials } from '@/persistence';
 import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
+import {
+  resolveSessionEncryptionContextFromCredentials,
+  resolveSessionStoredContentEncryptionMode,
+  type SessionStoredContentCryptoContext,
+} from '@/session/transport/encryption/sessionEncryptionContext';
 import { decryptTranscriptRows } from '@/session/replay/decryptTranscriptRows';
 import { throwIfSessionTranscriptStoredContentUnavailableResponse } from '@/api/session/sessionTranscriptStoredContentUnavailable';
 
@@ -62,7 +66,16 @@ export async function resolveForkCutoffSeqInclusive(params: Readonly<{
   if (seq === null) return { cutoffSeqInclusive: targetSeqInclusive, targetRole: null };
 
   const ctx = resolveSessionEncryptionContextFromCredentials(params.credentials, params.parentRawSession);
-  const decrypted = decryptTranscriptRows({ ctx, rows: [row] })[0] ?? null;
+  // Which row the fork cuts at is decided from authenticated content only: the
+  // established mode travels with the key so the canonical opener refuses an
+  // envelope kind this Session cannot have written. An e2ee parent this caller
+  // holds no material for is unreadable, never plain.
+  const mode = resolveSessionStoredContentEncryptionMode(params.parentRawSession);
+  const crypto: SessionStoredContentCryptoContext | null = mode === 'e2ee'
+    ? (ctx ? { mode: 'e2ee', ctx } : null)
+    : { mode: 'plain', ctx: null };
+  if (!crypto) return { cutoffSeqInclusive: targetSeqInclusive, targetRole: null };
+  const decrypted = decryptTranscriptRows({ crypto, rows: [row] })[0] ?? null;
   if (!decrypted) return { cutoffSeqInclusive: targetSeqInclusive, targetRole: null };
 
   if (decrypted.role === 'user') {

@@ -35,7 +35,10 @@ const sessionSocketStubState = vi.hoisted(() => ({
   fetchSessionByIdCompatMock: vi.fn(),
   fetchSessionByIdMock: vi.fn(),
   importHistoricalSessionTranscriptMock: vi.fn(),
-  listSessionsMock: vi.fn(),
+  fetchSessionsPageMock: vi.fn(),
+  fetchSessionsQueryPageMock: vi.fn(),
+  bootstrapAccountSettingsContextMock: vi.fn(),
+  fetchAccountEncryptionCurrentnessMock: vi.fn(),
   resolveRunnerMcpServersMock: vi.fn(),
   executionRunServiceMocks: {
     startExecutionRun: vi.fn(),
@@ -108,22 +111,40 @@ vi.mock('@/session/services/executionRuns', () => ({
   waitForExecutionRun: (...args: unknown[]) => sessionSocketStubState.executionRunServiceMocks.waitForExecutionRun(...args),
 }));
 
-vi.mock('@/session/services/listSessions', () => ({
-  listSessions: (...args: unknown[]) => sessionSocketStubState.listSessionsMock(...args),
-}));
-
 vi.mock('@/mcp/runtime/resolveRunnerMcpServers', () => ({
   resolveRunnerMcpServers: (...args: unknown[]) =>
     sessionSocketStubState.resolveRunnerMcpServersMock(...args),
 }));
 
-vi.mock('@/session/transport/http/sessionsHttp', () => ({
+// Only the HTTP fetchers are substituted; the module's pure readers stay real, and
+// the Session-listing service beneath them runs its real admission so this suite
+// cannot certify an answer the product would refuse.
+vi.mock('@/session/transport/http/sessionsHttp', async (importActual) => ({
+  ...await importActual<typeof import('@/session/transport/http/sessionsHttp')>(),
   fetchSessionById: (...args: unknown[]) =>
     sessionSocketStubState.fetchSessionByIdMock(...args),
   fetchSessionByIdCompat: (...args: unknown[]) =>
     sessionSocketStubState.fetchSessionByIdCompatMock(...args),
   importHistoricalSessionTranscript: (...args: unknown[]) =>
     sessionSocketStubState.importHistoricalSessionTranscriptMock(...args),
+  fetchSessionsPage: (...args: unknown[]) =>
+    sessionSocketStubState.fetchSessionsPageMock(...args),
+  fetchSessionsQueryPage: (...args: unknown[]) =>
+    sessionSocketStubState.fetchSessionsQueryPageMock(...args),
+}));
+
+// The two remaining network reads `listSessions` composes beside the page, mocked
+// exactly as its own canonical suite mocks them (`listSessions.test.ts:20,24`).
+vi.mock('@/settings/accountSettings/bootstrapAccountSettingsContext', async (importActual) => ({
+  ...await importActual<typeof import('@/settings/accountSettings/bootstrapAccountSettingsContext')>(),
+  bootstrapAccountSettingsContext: (...args: unknown[]) =>
+    sessionSocketStubState.bootstrapAccountSettingsContextMock(...args),
+}));
+
+vi.mock('@/api/client/connectedServiceCredentialApi', async (importActual) => ({
+  ...await importActual<typeof import('@/api/client/connectedServiceCredentialApi')>(),
+  fetchAccountEncryptionCurrentness: (...args: unknown[]) =>
+    sessionSocketStubState.fetchAccountEncryptionCurrentnessMock(...args),
 }));
 
 vi.mock('@/settings/accountSettings/activeAccountSettingsSnapshot', () => ({
@@ -143,7 +164,17 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     sessionSocketStubState.fetchSessionByIdCompatMock.mockReset();
     sessionSocketStubState.fetchSessionByIdMock.mockReset();
     sessionSocketStubState.importHistoricalSessionTranscriptMock.mockReset();
-    sessionSocketStubState.listSessionsMock.mockReset();
+    sessionSocketStubState.fetchSessionsPageMock.mockReset();
+    sessionSocketStubState.fetchSessionsQueryPageMock.mockReset();
+    sessionSocketStubState.bootstrapAccountSettingsContextMock.mockReset();
+    sessionSocketStubState.bootstrapAccountSettingsContextMock.mockResolvedValue({ settings: null });
+    sessionSocketStubState.fetchAccountEncryptionCurrentnessMock.mockReset();
+    sessionSocketStubState.fetchAccountEncryptionCurrentnessMock.mockResolvedValue({
+      mode: 'plain',
+      version: 1,
+      signingKeyFingerprint: null,
+      contentKeyFingerprint: null,
+    });
     sessionSocketStubState.resolveRunnerMcpServersMock.mockReset();
     sessionSocketStubState.resolveRunnerMcpServersMock.mockResolvedValue({
       happierMcpServer: {
@@ -214,10 +245,10 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     });
 
     await expect(sessionSocketStubState.executionRunHandlerContext.sessionInteractionHost
-      .prepareRunTeamCredentialProviderBinding({ runId: 'run-1' }))
+      .prepareRunTeamCredentialProviderBinding({ runId: 'run-1', agentId: 'codex' }))
       .resolves.toMatchObject({ providerBinding: { source: { resourceId: 'resource-1' } } });
     expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledWith({
-      runId: 'run-1', resourceId: 'resource-1', modelId: 'model-1',
+      runId: 'run-1', agentId: 'codex', resourceId: 'resource-1', modelId: 'model-1',
     });
     metadata.modelSelectionIntentV2 = {
       v: 2, updatedAt: 8,
@@ -227,14 +258,16 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       },
     };
     await expect(sessionSocketStubState.executionRunHandlerContext.sessionInteractionHost
-      .prepareRunTeamCredentialProviderBinding({ runId: 'run-2' }))
+      .prepareRunTeamCredentialProviderBinding({ runId: 'run-2', agentId: 'codex' }))
       .resolves.toBeNull();
     expect(prepareRunTeamCredentialProviderBinding).toHaveBeenCalledOnce();
   });
 
   it('composes Session-owned Run Actions from restricted runtime authority and its reviewed policy', async () => {
-    const rawRuntimeSubject = ' restricted-runner-account ';
-    const runtimeToken = createJwtWithSub(rawRuntimeSubject);
+    // The token subject is read through the one canonical account-id reader, which trims it,
+    // so a whitespace-padded `sub` still admits the exact Runner principal.
+    const runtimeAccountId = 'restricted-runner-account';
+    const runtimeToken = createJwtWithSub(` ${runtimeAccountId} `);
     const actionsSettingsProvider = Object.freeze({
       getActionsSettings: () => normalizeActionsSettingsV1({
         v: 1 as const,
@@ -265,7 +298,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
     registerSessionClientRuntimeHandlers({
       ...TEST_SESSION_SERVER_BINDING,
       readOwnerAccountCredentials: async () => null,
-      runtimePrincipalAccountId: rawRuntimeSubject,
+      runtimePrincipalAccountId: runtimeAccountId,
       actionsSettingsProvider,
       rpcHandlerManager,
       token: runtimeToken,
@@ -313,7 +346,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         }),
       }),
     );
-    expect(sessionSocketStubState.executionRunHandlerContext.runtimeAccountId).toBe(rawRuntimeSubject);
+    expect(sessionSocketStubState.executionRunHandlerContext.runtimeAccountId).toBe(runtimeAccountId);
   });
 
   it('composes Session-owned Run listing from the exact Home owner credentials', async () => {
@@ -323,23 +356,14 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       encryption: null,
     };
     let observedServerUrl: string | null = null;
-    sessionSocketStubState.listSessionsMock.mockImplementation(async () => {
+    sessionSocketStubState.fetchSessionByIdMock.mockImplementation(async () => {
       observedServerUrl = resolveServerHttpBaseUrl();
-      return {
-        sessions: [{
-          id: 's1',
-          createdAt: 1,
-          updatedAt: 1,
-          active: true,
-          activeAt: 1,
-          encryption: null,
-        }],
-        nextCursor: null,
-        hasNext: false,
-        attentionNextCursor: null,
-        attentionHasNext: false,
-        queryVersion: 1,
-      };
+      return createSessionRecordFixture({
+        id: 's1',
+        active: true,
+        encryptionMode: 'plain',
+        metadata: '{}',
+      });
     });
     registerSessionClientRuntimeHandlers({
       readOwnerAccountCredentials: async () => ownerCredentials,
@@ -385,18 +409,20 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       }),
       isExecutionRunsEnabled: () => true,
     });
-    const query = {
+    // A Session-bound principal holds one admitted row, so only the arms that row
+    // proves by itself are answerable. This one is.
+    const supportedQuery = {
       v: 1,
       storage: 'active',
       includeInactive: false,
       attention: 'any',
-      scope: 'assigned_to_me',
-      audiences: [{ kind: 'team', teamId: 'team-sensitive-selector' }],
-      tagIds: ['tag-sensitive-selector'],
+      scope: 'all_accessible',
+      audiences: [],
+      tagIds: [],
       limit: 17,
     } as const;
 
-    await expect(executor.execute('session.list', { query, view: 'summary' }, {
+    await expect(executor.execute('session.list', { query: supportedQuery, view: 'summary' }, {
       surface: 'agent',
       authority: 'account_automation',
       defaultSessionId: 's1',
@@ -414,17 +440,43 @@ describe('ApiSessionClient execution-run backend wiring', () => {
         queryVersion: 1,
       },
     });
-    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledWith(expect.objectContaining({
-      credentials: { token: runtimeToken, encryption: null },
-      query,
-      view: 'summary',
-      allowedSessionIds: ['s1'],
+    // The admitted corpus is read exactly, on the exact Home's credentials and base
+    // URL — never by paging that Home's Account corpus.
+    expect(sessionSocketStubState.fetchSessionsQueryPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledWith(expect.objectContaining({
+      token: runtimeToken,
+      sessionId: 's1',
     }));
     expect(sessionSocketStubState.executionRunHandlerContext.serverId).toBe('home-qualified-a');
     expect(sessionSocketStubState.executionRunHandlerContext.resolveAccountSettingsSnapshot).toEqual(expect.any(Function));
     expect(observedServerUrl).toBe('https://home-a.example.test');
 
-    const requestsBeforeDeniedCases = sessionSocketStubState.listSessionsMock.mock.calls.length;
+    // Scope, audiences and tags are the Home's meaning. One admitted row cannot
+    // re-derive them, so the caller gets the typed unsupported-arms answer instead
+    // of a silently narrowed page.
+    await expect(executor.execute('session.list', {
+      query: {
+        ...supportedQuery,
+        scope: 'assigned_to_me',
+        audiences: [{ kind: 'team', teamId: 'team-sensitive-selector' }],
+        tagIds: ['tag-sensitive-selector'],
+      },
+      view: 'summary',
+    }, {
+      surface: 'agent',
+      authority: 'account_automation',
+      defaultSessionId: 's1',
+      sessionListAccess: 'current_session',
+      runtimeAccountId: 'runtime-owner-account',
+      bypassApprovals: true,
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'unsupported_action',
+      details: { unsupportedQueryArms: ['scope', 'audiences', 'tagIds'] },
+    });
+
+    const requestsBeforeDeniedCases = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
     for (const deniedContext of [
       {
         defaultSessionId: 's1',
@@ -458,7 +510,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       sessionListAccess: 'current_session', runtimeAccountId: 'runtime-owner-account',
       bypassApprovals: true,
     })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
-    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
 
     ownerCredentials = {
       token: createJwtWithSub('different-account'),
@@ -475,7 +527,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       ok: false,
       errorCode: 'not_authenticated',
     });
-    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
 
     ownerCredentials = null;
     await expect(executor.execute('session.list', {}, {
@@ -489,7 +541,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       ok: false,
       errorCode: 'not_authenticated',
     });
-    expect(sessionSocketStubState.listSessionsMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
+    expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(requestsBeforeDeniedCases);
   });
 
   it('uses the admitted restricted runtime principal for only its current Session list', async () => {
@@ -554,7 +606,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       sessionId: 'runner-session',
       serverUrl: 'https://runner-home-b.example.test',
     });
-    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsQueryPageMock).not.toHaveBeenCalled();
     expect(sessionSocketStubState.executionRunHandlerContext.serverId).toBe('runner-home-b');
 
     // One detail row cannot prove assignment: the restricted reader reports the
@@ -619,7 +672,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       },
     });
     expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(callsBeforeLegacyCursor);
-    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsQueryPageMock).not.toHaveBeenCalled();
 
     const callsBeforeAwarenessCursor = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
     await expect(executor.execute('session.list', {
@@ -640,7 +694,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       },
     });
     expect(sessionSocketStubState.fetchSessionByIdMock).toHaveBeenCalledTimes(callsBeforeAwarenessCursor);
-    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsQueryPageMock).not.toHaveBeenCalled();
 
     const callsAfterAllowed = sessionSocketStubState.fetchSessionByIdMock.mock.calls.length;
     await expect(executor.execute('session.list', {}, {
@@ -707,7 +762,8 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       sessionListAccess: 'current_session', runtimeAccountId: 'runtime-owner-account',
       bypassApprovals: true,
     })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
-    expect(sessionSocketStubState.listSessionsMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsPageMock).not.toHaveBeenCalled();
+    expect(sessionSocketStubState.fetchSessionsQueryPageMock).not.toHaveBeenCalled();
     expect(sessionSocketStubState.fetchSessionByIdMock).not.toHaveBeenCalled();
   });
 

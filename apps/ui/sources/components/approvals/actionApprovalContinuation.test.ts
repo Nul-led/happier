@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     buildApprovalRequestArtifactHeaderV1,
+    encodePasswordCredentialFieldV1,
     type ApprovalRequestV2,
 } from '@happier-dev/protocol';
 
@@ -35,6 +36,7 @@ function executedArtifact(overrides?: Readonly<{
     requestedSurface?: string;
     requestId?: string;
     result?: unknown;
+    preview?: unknown;
 }>): ReadableArtifact {
     const requestActionId = overrides?.actionId ?? actionId;
     const request: ApprovalRequestV2 = {
@@ -56,6 +58,7 @@ function executedArtifact(overrides?: Readonly<{
         },
         actionId: requestActionId,
         actionArgs: overrides?.actionArgs ?? actionInput,
+        ...(overrides && 'preview' in overrides ? { preview: overrides.preview } : {}),
         summary: 'Test the Team identity connection',
         decision: { kind: 'approve', decidedAtMs: 2 },
         execution: {
@@ -324,6 +327,86 @@ describe('createActionApprovalContinuation', () => {
                 details: { currentLayoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ' },
             },
         );
+    });
+
+    it('settles a live-only-custody Action whose durable record carries only the observation projection', async () => {
+        // `account.password.enroll` declares `approvalInputCustody: 'live_only'`,
+        // so the executor records the Action's own observation projection — not
+        // the credential, verification bearer or reauthentication proof the
+        // caller holds. The continuation must still recognise its own approval.
+        const enrollActionId = 'account.password.enroll' as const;
+        const enrollInput = {
+            v: 1 as const,
+            kind: 'plain' as const,
+            email: 'person@example.test',
+            targetCredential: {
+                v: 1 as const,
+                kind: 'plain_password_hash' as const,
+                hash: {
+                    v: 1 as const,
+                    algorithm: 'scrypt' as const,
+                    parameters: { n: 2 ** 14, r: 8, p: 5, keyLength: 32 },
+                    salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(3)),
+                    digest: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(5)),
+                },
+            },
+            verificationToken: 'A'.repeat(43),
+            reauthentication: { provider: 'github', pending: 'pending-1', proof: 'proof-1' },
+        };
+        const observedEnrollInput = { v: 1, kind: 'plain' } as const;
+        const enrollResult = { v: 1 as const, status: 'enrolled' as const };
+        const onSucceeded = vi.fn();
+        const onFailed = vi.fn();
+        const continuation = createActionApprovalContinuation({
+            artifactId: 'approval-1',
+            actionId: enrollActionId,
+            scope: { serverId: 'home-1', accountId: 'account-1' },
+            expectedInput: enrollInput,
+            onSucceeded,
+            onFailed,
+        });
+
+        expect(await continuation.onExecuted(executedArtifact({
+            actionId: enrollActionId,
+            actionArgs: observedEnrollInput,
+            preview: { actionId: enrollActionId, actionArgs: observedEnrollInput },
+            result: enrollResult,
+        }))).toBe('consumed');
+        expect(onFailed).not.toHaveBeenCalled();
+        expect(onSucceeded).toHaveBeenCalledWith(enrollResult);
+    });
+
+    it('still refuses a projecting Action whose observed input names another resource', async () => {
+        // Everything the projection keeps — owner, id, revision — still binds.
+        // Only the redacted secret itself stops distinguishing two approvals.
+        const replaceActionId = 'identity.providers.secret.replace' as const;
+        const onSucceeded = vi.fn();
+        const onFailed = vi.fn();
+        const continuation = createActionApprovalContinuation({
+            artifactId: 'approval-1',
+            actionId: replaceActionId,
+            scope: { serverId: 'home-1', accountId: 'account-1' },
+            expectedInput: {
+                owner: { kind: 'home' },
+                id: 'provider-1',
+                expectedRevision: 3,
+                clientSecret: 'client-secret-value',
+            },
+            onSucceeded,
+            onFailed,
+        });
+
+        expect(await continuation.onExecuted(executedArtifact({
+            actionId: replaceActionId,
+            actionArgs: { owner: { kind: 'home' }, id: 'provider-other', expectedRevision: 3 },
+            preview: {
+                actionId: replaceActionId,
+                actionArgs: { owner: { kind: 'home' }, id: 'provider-other', expectedRevision: 3 },
+            },
+            result: { outcome: 'removed' },
+        }))).toBe('consumed');
+        expect(onSucceeded).not.toHaveBeenCalled();
+        expect(onFailed).toHaveBeenCalledWith('approval_binding_mismatch');
     });
 
     it('settles an exact non-Home-domain Action through its canonical Action output schema', async () => {

@@ -1004,10 +1004,43 @@ describe('createExecutionRunRpcActionExecutor', () => {
     });
   });
 
-  it('commits an attached Team model through the Session owner before opening the Run', async () => {
+  it('starts an attached Run on its own Team selection without touching its parent Session', async () => {
+    // `PLAN.md` §2.3: an attached Run is its own independently owned binding.
+    // Starting it on B must not rewrite the parent Session's model or binding.
+    const start = vi.fn(async (_request: Parameters<ExecutionRunHostBridgeContract['start']>[0]) => (
+      { runId: 'run_team_own', callId: 'call_team_own', sidechainId: 'side_team_own' }
+    ));
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-b',
+      teamId: 'team-b',
+      expectedResourceRevision: 7,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model-b',
+      deliveryMode: 'brokered' as const,
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      modelId: selection.modelId,
+      teamCredentialModel: selection,
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_team_own' } });
+
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess_1', teamCredentialModel: selection }));
+  });
+
+  it('grants the consented Team visibility through the Session access owner before opening the Run', async () => {
     const order: string[] = [];
-    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => {
-      order.push('session-binding');
+    const grantAttachedRunTeamVisibility = vi.fn(async () => {
+      order.push('team-visibility');
       return { ok: true as const };
     });
     const start = vi.fn(async (_request: Parameters<ExecutionRunHostBridgeContract['start']>[0]) => {
@@ -1019,7 +1052,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       context: {
         sessionId: 'sess_1',
         cwd: '/workspace',
-        prepareAttachedTeamCredentialSessionBinding,
+        grantAttachedRunTeamVisibility,
       },
       policy: resolveExecutionRunPolicy({
         defaults: {
@@ -1056,29 +1089,54 @@ describe('createExecutionRunRpcActionExecutor', () => {
       },
     }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_team_1' } });
 
-    expect(order).toEqual(['session-binding', 'run-start']);
-    expect(prepareAttachedTeamCredentialSessionBinding).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      selection,
-      consent: {
-        v: 1,
-        sessionId: 'sess_1',
-        teamId: 'team-1',
-        resourceId: 'resource-1',
-        expectedResourceRevision: 7,
-      },
-    });
+    expect(order).toEqual(['team-visibility', 'run-start']);
+    expect(grantAttachedRunTeamVisibility).toHaveBeenCalledWith({ sessionId: 'sess_1', teamId: 'team-1' });
     const managerRequest = start.mock.calls[0]?.[0];
     expect(managerRequest).toBeDefined();
+    expect(managerRequest).toMatchObject({ teamCredentialModel: selection });
     expect(managerRequest).not.toHaveProperty('teamCredentialSessionBindingConsent');
   });
 
-  it('rejects stale attached Team consent without mutating the Session or opening a Run', async () => {
-    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => ({ ok: true as const }));
+  it('does not open the Run when the consented Team visibility grant is refused', async () => {
+    const grantAttachedRunTeamVisibility = vi.fn(async () => ({
+      ok: false as const, error: 'access_removed', errorCode: 'execution_run_team_session_binding_rejected',
+    }));
     const start = vi.fn(async () => ({ runId: 'unexpected', callId: 'unexpected', sidechainId: 'unexpected' }));
     const executor = createExecutionRunRpcActionExecutor({
       manager: { ...createUnusedExecutionRunBridge(), start },
-      context: { sessionId: 'sess_1', cwd: '/workspace', prepareAttachedTeamCredentialSessionBinding },
+      context: { sessionId: 'sess_1', cwd: '/workspace', grantAttachedRunTeamVisibility },
+      policy: resolveExecutionRunPolicy({
+        defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const selection = {
+      kind: 'team_credential_provider_model' as const,
+      resourceId: 'resource-1',
+      teamId: 'team-1',
+      expectedResourceRevision: 7,
+      agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }),
+      modelId: 'team-model',
+      deliveryMode: 'brokered' as const,
+    };
+
+    await expect(executor.execute('execution.run.start', {
+      ...AGENT_EXECUTION_RUN_START_REQUEST,
+      modelId: selection.modelId,
+      teamCredentialModel: selection,
+      teamCredentialSessionBindingConsent: {
+        v: 1, sessionId: 'sess_1', teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 7,
+      },
+    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_team_session_binding_rejected' });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('rejects stale attached Team consent without mutating the Session or opening a Run', async () => {
+    const grantAttachedRunTeamVisibility = vi.fn(async () => ({ ok: true as const }));
+    const start = vi.fn(async () => ({ runId: 'unexpected', callId: 'unexpected', sidechainId: 'unexpected' }));
+    const executor = createExecutionRunRpcActionExecutor({
+      manager: { ...createUnusedExecutionRunBridge(), start },
+      context: { sessionId: 'sess_1', cwd: '/workspace', grantAttachedRunTeamVisibility },
       policy: resolveExecutionRunPolicy({
         defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
       }),
@@ -1108,16 +1166,16 @@ describe('createExecutionRunRpcActionExecutor', () => {
       },
     }, { surface: 'rpc' })).resolves.toMatchObject({ ok: false });
 
-    expect(prepareAttachedTeamCredentialSessionBinding).not.toHaveBeenCalled();
+    expect(grantAttachedRunTeamVisibility).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   });
 
   it('keeps a detached Team model start independent from Session binding authority', async () => {
-    const prepareAttachedTeamCredentialSessionBinding = vi.fn(async () => ({ ok: true as const }));
+    const grantAttachedRunTeamVisibility = vi.fn(async () => ({ ok: true as const }));
     const start = vi.fn(async () => ({ runId: 'run_detached_team', callId: 'call_detached_team', sidechainId: 'side_detached_team' }));
     const executor = createExecutionRunRpcActionExecutor({
       manager: { ...createUnusedExecutionRunBridge(), start },
-      context: { sessionId: null, cwd: '/workspace', prepareAttachedTeamCredentialSessionBinding },
+      context: { sessionId: null, cwd: '/workspace', grantAttachedRunTeamVisibility },
       policy: resolveExecutionRunPolicy({
         defaults: { maxConcurrentRuns: null, boundedTimeoutMs: null, reviewBoundedTimeoutMs: null, maxTurns: null, maxDepth: 3 },
       }),
@@ -1141,7 +1199,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       teamCredentialModel: selection,
     }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true, result: { runId: 'run_detached_team' } });
 
-    expect(prepareAttachedTeamCredentialSessionBinding).not.toHaveBeenCalled();
+    expect(grantAttachedRunTeamVisibility).not.toHaveBeenCalled();
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null, teamCredentialModel: selection }));
   });
 

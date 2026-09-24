@@ -277,6 +277,7 @@ describe('exact Account post-auth continuation', () => {
         expect(await resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
             kind: 'home_material_required',
             homeServerIdentityId: descriptor.homeServerIdentityId,
+            homeAccountId: 'account-home',
             intent,
             reason: 'missing_material',
         })).toEqual({ kind: 'home_enrolled', homeServerIdentityId: descriptor.homeServerIdentityId });
@@ -323,6 +324,7 @@ describe('exact Account post-auth continuation', () => {
         expect(await resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
             kind: 'home_material_required',
             homeServerIdentityId: descriptor.homeServerIdentityId,
+            homeAccountId: 'account-home',
             intent,
             reason: 'missing_material',
         })).toMatchObject({
@@ -356,7 +358,7 @@ describe('exact Account post-auth continuation', () => {
         const intent = { kind: 'enter' as const, target: { kind: 'explicit' as const, homeServerIdentityId: descriptor.homeServerIdentityId } };
         const focus = getActiveServerSnapshot();
         expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent })).toEqual({
-            kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, intent, reason: 'invalid_material',
+            kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, homeAccountId: 'account-home', intent, reason: 'invalid_material',
         });
         expect(await TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }))
             .toEqual({ token: fixture.token, encryption });
@@ -365,6 +367,48 @@ describe('exact Account post-auth continuation', () => {
         expect(getActiveServerSnapshot()).toMatchObject({ serverId: focus.serverId, serverUrl: focus.serverUrl });
         expect(fixture.state.calls.filter((call) => call.path === '/v1/account/encryption'))
             .toEqual([expect.objectContaining({ endpoint: descriptor.canonicalServerUrl })]);
+    });
+
+    it('keeps material recovery bound to the originally enrolled Home Account across calls', async () => {
+        const fixture = createDirectoryHttpFixture();
+        fixture.state.approval = 'approved';
+        fixture.state.mode = 'e2ee';
+        const descriptor = fixture.home.connectionDescriptor;
+        request.mockImplementation((path: string, init?: RequestInit) => fixture.request(
+            path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : descriptor.canonicalServerUrl,
+            path,
+            init,
+        ));
+        const intent = { kind: 'enroll' as const, homeServerIdentityId: descriptor.homeServerIdentityId };
+        const input = { credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent };
+        // The real enrollment commits Account X's token and pauses for its key.
+        const paused = await completeAccountServicePostAuth(input);
+        expect(paused).toMatchObject({ kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId });
+        if (paused.kind !== 'home_material_required') return;
+
+        // While X's recovery card is retained, the same Home is signed in as
+        // Account Y through an unrelated Home sign-in.
+        const tokenFor = (sub: string) => `header.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub })), 'base64')}.signature`;
+        const accountY = { token: tokenFor('account-other'), secret: encodeBase64(new Uint8Array(32).fill(9), 'base64url') };
+        await TokenStorage.setCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }, accountY);
+        const callsBefore = fixture.state.calls.length;
+
+        // Neither Y's valid material nor a retry may complete X's continuation.
+        expect(await supplyAccountServiceHomeMaterial(input, paused, { homeServerIdentityId: descriptor.homeServerIdentityId,
+            credentials: accountY })).toEqual({ kind: 'stopped', reason: 'superseded' });
+        expect(await supplyAccountServiceHomeMaterial(input, paused, new Uint8Array(32).fill(9)))
+            .toEqual({ kind: 'stopped', reason: 'superseded' });
+        expect(await resumeAccountServicePostAuth(input, paused)).toEqual({ kind: 'stopped', reason: 'superseded' });
+        expect(fixture.state.calls.slice(callsBefore).map(({ path }) => path)).not.toContain('/v1/auth');
+        expect(await TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }))
+            .toEqual(accountY);
+
+        // A same-Account credential refresh is still the same continuation.
+        const refreshedX = fixture.token.replace(/\.signature$/, '.refreshed-signature');
+        await TokenStorage.setCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }, { token: refreshedX });
+        const secretX = encodeBase64(new Uint8Array(32).fill(8), 'base64url');
+        expect(await supplyAccountServiceHomeMaterial(input, paused, { homeServerIdentityId: descriptor.homeServerIdentityId,
+            credentials: { token: refreshedX, secret: secretX } })).toEqual({ kind: 'home_enrolled', homeServerIdentityId: descriptor.homeServerIdentityId });
     });
 
     it('stops material completion when the Home credential changes during its mode lookup', async () => {
@@ -379,7 +423,7 @@ describe('exact Account post-auth continuation', () => {
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId: descriptor.homeServerIdentityId };
         const result = resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
-            kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, intent, reason: 'missing_material',
+            kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, homeAccountId: 'account-home', intent, reason: 'missing_material',
         });
         await vi.waitFor(() => expect(release).toBeTypeOf('function'));
         await TokenStorage.setCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }, { token: 'replacement-home-token' });
@@ -471,7 +515,7 @@ describe('exact Account post-auth continuation', () => {
         expect(await TokenStorage.getCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId })).toEqual({ token });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
         const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
-        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
+        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, homeAccountId: 'account-bound', intent, reason: 'missing_material' as const };
         const features = createRootLayoutFeaturesResponse({ capabilities: {
             serverIdentity: { serverIdentityId: homeServerIdentityId }, auth: { keyChallenge: { v2: true } },
             accountStoredContentCompatibility: { v: 1, minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
@@ -510,7 +554,7 @@ describe('exact Account post-auth continuation', () => {
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
         const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
-        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
+        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, homeAccountId: 'retained-account', intent, reason: 'missing_material' as const };
         const secret = encodeBase64(new Uint8Array(32).fill(8), 'base64url');
         expect(await supplyAccountServiceHomeMaterial(input, previous, { homeServerIdentityId,
             credentials: { token: tokenFor('other-account'), secret } })).toMatchObject({ kind: 'home_material_required', reason: 'invalid_material' });
@@ -528,10 +572,12 @@ describe('exact Account post-auth continuation', () => {
         const profile = await adoptHomeProfile({ descriptor: { v: 1, homeServerIdentityId, canonicalServerUrl: endpoint, revision: 1,
             endpoints: [{ kind: 'https', url: endpoint }] }, source: 'account-directory', descriptorAuthority: 'current_connection_observation' });
         expect(buildHomeConnectionDescriptorForProfile(profile)?.homeServerIdentityId).toBe(homeServerIdentityId);
-        await TokenStorage.setCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId }, { token: 'plain-token' });
+        // A committed Home credential always names its Account.
+        const plainToken = `header.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'plain-account' })), 'base64')}.signature`;
+        await TokenStorage.setCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId }, { token: plainToken });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
         const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
-        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
+        const previous = { kind: 'home_material_required' as const, homeServerIdentityId, homeAccountId: 'plain-account', intent, reason: 'missing_material' as const };
         request.mockImplementation(async (path: string) => {
             expect(path).toBe('/v1/account/encryption');
             return new Response('{}', { status: 503 });
@@ -543,6 +589,6 @@ describe('exact Account post-auth continuation', () => {
             return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
         });
         expect(await resumeAccountServicePostAuth(input, unavailable)).toEqual({ kind: 'home_enrolled', homeServerIdentityId });
-        expect(await TokenStorage.getCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId })).toEqual({ token: 'plain-token' });
+        expect(await TokenStorage.getCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId })).toEqual({ token: plainToken });
     });
 });

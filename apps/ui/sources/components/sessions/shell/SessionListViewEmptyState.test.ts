@@ -64,6 +64,34 @@ describe('resolveSessionListViewEmptyState', () => {
         });
     });
 
+    it('keeps the personal-scope recovery inside Team Sessions', () => {
+        const teamDefaults = {
+            scope: 'all_accessible',
+            attention: 'any',
+            homeServerIds: ['home-a'],
+            audiences: [{ serverId: 'home-a', kind: 'team', teamId: 'team-a' }],
+            tagIds: [],
+            source: 'all',
+            searchQuery: '',
+        } as const;
+
+        // A personal scope inside a Team is not evidence that the Team is empty,
+        // so the scope answer and its Browse-all recovery must survive.
+        expect(resolveSessionListViewEmptyState({
+            presentation: { kind: 'ready', complete: true },
+            visibleSessionCount: 0,
+            filters: { ...teamDefaults, scope: 'assigned_to_me' },
+            defaults: teamDefaults,
+            viewContext: { kind: 'team', team: { serverId: 'home-a', teamId: 'team-a' } },
+            includeInactive: true,
+            hasHiddenInactiveSessions: false,
+        })).toMatchObject({
+            mode: 'empty',
+            titleKey: 'sessionsList.queryAssignedEmptyTitle',
+            action: 'browse_all_accessible',
+        });
+    });
+
     it('distinguishes Team and personal-scope authoritative zeros', () => {
         const teamDefaults = {
             scope: 'all_accessible',

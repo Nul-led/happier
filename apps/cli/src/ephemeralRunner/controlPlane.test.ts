@@ -49,7 +49,10 @@ function fixture() {
   };
 }
 
-function harness(input?: Readonly<{ allow?: boolean }>) {
+function harness(input?: Readonly<{
+  allow?: boolean;
+  optionalSelections?: readonly Readonly<{ accessId: string; selected: boolean }>[];
+}>) {
   const events: string[] = [];
   const storedEndpointFacts: RunnerEndpointFactsV1[] = [];
   let connectionListener: ((state: 'connected' | 'reconnecting') => void) | null = null;
@@ -114,7 +117,10 @@ function harness(input?: Readonly<{ allow?: boolean }>) {
   const snapshots: Array<Parameters<EphemeralRunnerEndpointUi<typeof review.manifest>['present']>[0]> = [];
   const ui: EphemeralRunnerEndpointUi<typeof review.manifest> = {
     selectDirectory: vi.fn(async () => '/workspace/project'),
-    reviewAndRequestConsent: vi.fn(async () => input?.allow ?? true),
+    requestRegistryProfile: vi.fn(async () => null),
+    reviewAndRequestConsent: vi.fn(async () => (input?.allow ?? true)
+      ? { allow: true as const, optionalSelections: input?.optionalSelections ?? [] }
+      : { allow: false as const }),
     confirmActiveClose: vi.fn(async () => 'stop' as const),
     requestFailureRecovery: vi.fn(async () => 'exit' as const),
     bindControls: vi.fn(() => () => undefined),
@@ -766,7 +772,12 @@ describe('ephemeral Runner endpoint control plane', () => {
 
   it('reviews and installs the exact committed external plugin generation before consent is signed', async () => {
     const f = fixture();
-    const h = harness();
+    // The endpoint turned on one optional access and left the other off.
+    const optionalSelections = [
+      { accessId: 'optional-clipboard', selected: true },
+      { accessId: 'optional-network', selected: false },
+    ];
+    const h = harness({ optionalSelections });
     const pluginReview = { pluginId: 'acme.reviewed-external', displayName: 'Reviewed External', version: '1.2.3' };
     const apply = vi.fn(async () => { h.events.push('plugin.apply'); });
     const release = vi.fn(async () => { h.events.push('plugin.release'); });
@@ -795,6 +806,8 @@ describe('ephemeral Runner endpoint control plane', () => {
     expect(h.ui.reviewAndRequestConsent).toHaveBeenCalledWith(
       expect.objectContaining({ pluginInstallation: pluginReview }),
     );
+    // Exactly the endpoint's own optional choices reach the canonical install.
+    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ optionalSelections }));
     expect(h.events.indexOf('plugin.apply')).toBeGreaterThan(h.events.indexOf('review'));
     expect(h.events.indexOf('plugin.apply')).toBeLessThan(h.events.indexOf('consent'));
     expect(h.events.indexOf('plugin.apply')).toBeLessThan(h.events.indexOf('prepare'));
@@ -850,5 +863,74 @@ describe('ephemeral Runner endpoint control plane', () => {
     expect(h.events).toContain('decline');
     expect(h.events).not.toContain('consent');
     expect(h.deps.prepareAgent).not.toHaveBeenCalled();
+  });
+
+  it('asks the endpoint for a private registry sign-in before the review, and prepares again with its answer', async () => {
+    const f = fixture();
+    const h = harness();
+    const requirement = { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/agent', registryProfileId: null };
+    const pluginReview = { pluginId: 'acme.reviewed-external' };
+    const acquisition = {
+      review: pluginReview as never,
+      apply: vi.fn(async () => { h.events.push('plugin.apply'); }),
+      release: vi.fn(async () => undefined),
+    };
+    const selectRegistryProfile = vi.fn(async () => { h.events.push('registry.select'); return acquisition; });
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition).mockImplementation(async () => ({
+      kind: 'registryProfileRequired' as const,
+      requirement,
+      selectRegistryProfile,
+    }));
+    vi.mocked(h.ui.requestRegistryProfile).mockImplementation(async () => {
+      h.events.push('registry.ask');
+      return { credential: 'endpoint-token' };
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.events).toContain('start'));
+    h.settleTerminal({ status: 'completed' });
+    await expect(running).resolves.toEqual({ status: 'completed' });
+
+    expect(h.ui.requestRegistryProfile).toHaveBeenCalledWith(expect.objectContaining({ requirement }));
+    expect(selectRegistryProfile).toHaveBeenCalledWith(expect.objectContaining({ credential: 'endpoint-token' }));
+    expect(h.ui.reviewAndRequestConsent).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginInstallation: pluginReview }),
+    );
+    expect(h.events.indexOf('registry.ask')).toBeLessThan(h.events.indexOf('registry.select'));
+    expect(h.events.indexOf('registry.select')).toBeLessThan(h.events.indexOf('plugin.apply'));
+    expect(h.events.indexOf('plugin.apply')).toBeLessThan(h.events.indexOf('consent'));
+  });
+
+  it('declines the activation when the endpoint declines the private registry sign-in', async () => {
+    const f = fixture();
+    const h = harness();
+    const selectRegistryProfile = vi.fn();
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition).mockImplementation(async () => ({
+      kind: 'registryProfileRequired' as const,
+      requirement: { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/agent', registryProfileId: null },
+      selectRegistryProfile,
+    }));
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+
+    await expect(controller.run()).resolves.toEqual({ status: 'declined' });
+    expect(selectRegistryProfile).not.toHaveBeenCalled();
+    expect(h.ui.reviewAndRequestConsent).not.toHaveBeenCalled();
+    expect(h.events).toContain('decline');
+    expect(h.events).not.toContain('consent');
   });
 });

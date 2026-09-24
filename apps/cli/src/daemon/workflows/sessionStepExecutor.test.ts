@@ -801,6 +801,19 @@ describe('workflow Session step executor', () => {
           },
         },
       },
+      // The defaulted Team target is admitted only through the Session's own
+      // Team slot binding, created with the Session.
+      teamCredentialBindings: [{
+        v: 1,
+        slot: {
+          kind: 'connected_service_purpose',
+          purpose: { consumer: { pluginId: 'happier.agent.codex', localId: 'codex' }, purpose: 'primary' },
+        },
+        resourceId: 'resource-1',
+        expectedResourceRevision: 4,
+        deliveryMode: 'brokered',
+        teamId: 'team-1',
+      }],
     }));
   });
 });

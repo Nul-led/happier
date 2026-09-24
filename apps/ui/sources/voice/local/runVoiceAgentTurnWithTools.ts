@@ -547,8 +547,8 @@ export async function runVoiceAgentTurnWithTools(params: Readonly<{
 
   const tools = createVoiceToolHandlers({
     currentSessionAddress: params.currentToolSessionAddress ?? null,
-    resolveSessionId: (explicitSessionId) =>
-      resolveToolSessionId({
+    resolveSessionId: async (explicitSessionId) =>
+      await resolveToolSessionId({
         explicitSessionId,
         currentSessionId: params.currentToolSessionAddress?.sessionId ?? params.currentToolSessionId ?? null,
         currentServerId: params.currentToolSessionAddress?.serverId ?? null,

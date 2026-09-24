@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { AuthTokenAuthenticationEvidenceSnapshotV1Schema } from '../auth/authToken.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
 import { IrohEndpointIdV1Schema } from '../connectivity/iroh/endpointDescriptorV1.js';
@@ -48,6 +49,17 @@ export const ProviderBrokerApplicationBindingV1Schema = z.object({
 
 /** Dedicated, recursively closed machine/1 authority. Mutable request policy is
  * deliberately absent: current Home admission owns it for every Provider call.
+ *
+ * The resource revision is intentionally absent too. It is a mutable policy
+ * fact the Home rechecks online, against the revision each request presents, on
+ * every open and every request; signing it would stale an otherwise active
+ * Session-open or Run claim after a harmless resource edit without improving
+ * revocation (`04-private-iroh-broker-transport.md:272`).
+ *
+ * The model id is absent for the same reason: it is a current request fact
+ * (`04-private-iroh-broker-transport.md:270`). One open serves every model the
+ * resource currently allows; the broker's request-policy owner evaluates each
+ * request's model against the resource's current allowlist.
  */
 export const ProviderBrokerRouteGrantPayloadV1Schema = z.object({
   v: z.literal(1),
@@ -57,14 +69,21 @@ export const ProviderBrokerRouteGrantPayloadV1Schema = z.object({
   expiresAt: z.number().int().positive(),
   teamId: IdentitySchema,
   resourceId: IdentitySchema,
-  expectedResourceRevision: z.number().int().nonnegative(),
-  modelId: z.string().trim().min(1).max(512),
   sourceRevision: z.string().trim().min(1).max(512),
   initiator: z.object({ accountId: IdentitySchema, machineId: IdentitySchema, endpointId: IrohEndpointIdV1Schema }).strict(),
   target: z.object({ custodianAccountId: IdentitySchema, machineId: IdentitySchema, endpointId: IrohEndpointIdV1Schema }).strict(),
   consumer: ProviderBrokerConsumerV1Schema,
   executionRunOccurrenceId: IdentitySchema.optional(),
   application: ProviderBrokerApplicationBindingV1Schema,
+  /** Immutable provenance: the authentication evidence of the exact credential
+   * that opened this operation, verified by the Home when it signed the open.
+   * It is not an authorization decision. Every request re-evaluates it against
+   * the Team's current policy and the evidence's current identity/connection
+   * state, so revoking or restricting ends the next request on an existing
+   * stream (`04-private-iroh-broker-transport.md` §5.6). Absent when the
+   * credential carried no evidence. Same carrier as the resource-test relay
+   * binding's `verifiedCredentialEvidence`. */
+  verifiedCredentialEvidence: AuthTokenAuthenticationEvidenceSnapshotV1Schema.optional(),
 }).strict().superRefine((payload, context) => {
   if (payload.expiresAt <= payload.issuedAt) {
     context.addIssue({ code: 'custom', path: ['expiresAt'], message: 'Expiry must follow issue time' });

@@ -4,8 +4,10 @@ import { consumeSessionInitialAccessFile } from '@/daemon/spawn/sessionInitialAc
 import { errorFrame, warn } from '@happier-dev/cli-common/output';
 import {
   isLaunchProfileV2,
+  pluginSourceCustodyV1Equal,
   readBackendTargetRefV2,
   type BackendTargetRefV2Input,
+  type PluginSourceCustodyV1,
   type ProviderErrorV1,
 } from '@happier-dev/protocol';
 import type { AgentCliSessionCommandBuildInputV1 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -60,6 +62,8 @@ import {
   stripSessionControlUnsetEnvKeys,
 } from '@/session/runtime/control/sessionControlEnvironment';
 import { resolveDirectCliConnectedServiceBindings } from '@/cli/connectedServices/resolveDirectCliConnectedServiceBindings';
+import { mergeSessionTeamCredentialBindingIntents } from '@/session/services/spawnConnectedServicesDefaults';
+import type { SessionTeamCredentialBindingIntentListV1 } from '@happier-dev/protocol/teams';
 import {
   admitDaemonForegroundAgentRuntime,
   releaseDaemonForegroundAgentRuntime,
@@ -418,13 +422,15 @@ Provider CLI Options:
     let profileSecretRequirementNamesMissingBinding: readonly string[] =
       Object.freeze([]);
     let foregroundNativeHomeSourceEnvironmentKey: string | undefined;
+    let admittedTeamCredentialBindings: SessionTeamCredentialBindingIntentListV1 | null = null;
     let foregroundAdmissionClaim: Readonly<{
       admissionFilePath: string;
       bootstrapFilePath: string;
       authorityFilePath: string;
       sessionId: string;
       attemptId: string;
-      immutableGenerationId: string;
+      occurrenceId: string;
+      sourceCustody: PluginSourceCustodyV1;
     }> | null = null;
     let admitForegroundRuntime:
       | (() => Promise<Readonly<{
@@ -432,6 +438,7 @@ Provider CLI Options:
           reservedEnvironmentVariableNames: readonly string[];
           profileSecretRequirementNamesMissingBinding: readonly string[];
           nativeHomeSourceEnvironmentKey?: string;
+          teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
         }>>)
       | null = null;
     if (parsed.secretReferenceOverlay && !selectedProfile) {
@@ -508,9 +515,8 @@ Provider CLI Options:
               admission.capability.authorityFilePath,
             sessionId: providerSessionId,
             attemptId,
-            immutableGenerationId:
-              admission.capability.descriptor.immutableGenerationId
-              ?? admission.capability.descriptor.generation,
+            occurrenceId: admission.capability.descriptor.occurrenceId,
+            sourceCustody: admission.capability.descriptor.sourceCustody,
           }),
           reservedEnvironmentVariableNames:
             admission.launchPolicy.reservedEnvironmentVariableNames,
@@ -523,9 +529,16 @@ Provider CLI Options:
                   admission.launchPolicy.nativeHomeSourceEnvironmentKey,
               }
             : {}),
+          ...(admission.sessionCreation
+            ? { teamCredentialBindings: admission.sessionCreation.teamCredentialBindings }
+            : {}),
         });
       };
       const initialAdmission = await admitForegroundRuntime();
+      // The daemon admitted durable Team purpose targets for this Agent; the
+      // Session this process creates carries their Team slot bindings so the
+      // Home admits them. An explicit binding for the same slot wins.
+      admittedTeamCredentialBindings = initialAdmission.teamCredentialBindings ?? null;
       foregroundAdmissionClaim = initialAdmission.claim;
       foregroundReservedEnvironmentVariableNames =
         initialAdmission.reservedEnvironmentVariableNames;
@@ -858,8 +871,13 @@ Provider CLI Options:
             )
             || foregroundNativeHomeSourceEnvironmentKey
               !== retryAdmission.nativeHomeSourceEnvironmentKey
-            || staleClaim?.immutableGenerationId
-              !== retryAdmission.claim.immutableGenerationId
+            || staleClaim?.occurrenceId
+              !== retryAdmission.claim.occurrenceId
+            || !staleClaim
+            || !pluginSourceCustodyV1Equal(
+              staleClaim.sourceCustody,
+              retryAdmission.claim.sourceCustody,
+            )
           ) {
             await releaseDaemonForegroundAgentRuntime({
               v: 1,
@@ -919,7 +937,13 @@ Provider CLI Options:
       ...(parsed.initialTitle ? { initialTitle: parsed.initialTitle } : {}),
       ...(initialAccess !== undefined ? { initialAccess } : {}),
       ...(parsed.primaryTeamId !== undefined ? { primaryTeamId: parsed.primaryTeamId } : {}),
-      ...(parsed.teamCredentialBindings !== undefined ? { teamCredentialBindings: parsed.teamCredentialBindings } : {}),
+      ...(() => {
+        const teamCredentialBindings = mergeSessionTeamCredentialBindingIntents({
+          explicit: parsed.teamCredentialBindings,
+          admitted: admittedTeamCredentialBindings,
+        });
+        return teamCredentialBindings !== undefined ? { teamCredentialBindings } : {};
+      })(),
       backendTarget: modelSelectionBackendTargetInput,
       ...(modelSelection ? { modelSelection } : {}),
       environmentVariables:

@@ -286,6 +286,13 @@ happier session plan start <session-id-or-prefix-or-tag> --backends <agent-id> -
 happier session voice-agent start <session-id-or-prefix-or-tag> --backends <agent-id> --instructions "Investigate the issue"
 ```
 
+Besides the Session, `--backends` (or `--agent`) and `--machine-id`, these
+commands, and `session review start`, accept every field of their Action as an
+ordinary flag with the same spelling as `happier actions invoke` (for example
+`--model-id`, `--run-class`, `--io-mode`, `--permission-mode`, and `--retention`
+for the retention policy), or the whole Action input with `--input-json`. An
+unknown option or an invalid value is refused before any credential is read.
+
 `delegate`, `session plan start`, and `session voice-agent start` select the
 credential-aware Action transport before any legacy Session bootstrap. They
 therefore also work with `--api-token` or `HAPPIER_TOKEN`, subject to the same

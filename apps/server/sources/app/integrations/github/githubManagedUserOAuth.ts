@@ -60,6 +60,9 @@ export function createManagedGitHubUserOAuthProvider(
     return Object.freeze({
         id: input.providerId,
         ...(input.callbackProviderId ? { callbackProviderId: input.callbackProviderId } : {}),
+        // The exchange below already discards refresh and expiry; the identity binder stores
+        // no token either, so the OAuth continuation row keeps none.
+        accessTokenCustody: "identity_proof_only",
         resolveStatus: () => ({ enabled: true, configured: true }),
         isConfigured: () => true,
         resolveRedirectUrl: () => input.redirectUrl,

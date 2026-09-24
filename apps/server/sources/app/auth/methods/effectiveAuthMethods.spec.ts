@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-    OLD_CLIENT_UNSAFE_AUTH_METHOD_IDS,
     findEffectiveAuthMethodDecision,
     isEffectiveAuthMethodActionEnabled,
     resolveEffectiveAuthMethodDecisions,
-    toOldClientSafeAuthMethods,
+    toPublishedAuthMethods,
     type EffectiveAuthMethodInputs,
 } from "@/app/auth/methods/effectiveAuthMethods";
-import { resolveAuthFeature } from "@/app/features/authFeature";
 
 function baseEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     return {
@@ -23,20 +21,25 @@ function emailPasswordOptedOutEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.Pro
 }
 
 describe("effective auth method decisions", () => {
-    it("requires the effective Key Challenge finalizer for E2EE password login", () => {
+    it("does not bound password login by the Key Challenge method's own policy", () => {
         const env = baseEnv({ HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1" });
         const login = (inputs: EffectiveAuthMethodInputs) => findEffectiveAuthMethodDecision(inputs, "email_password")
             ?.actions.find(({ id }) => id === "login");
-        // Without the finalizer the keyed branch of password login is withdrawn;
-        // the Plain branch does not depend on it and survives as `keyless`.
+        // Native E2EE password login completes through the Key Challenge
+        // finalizer, but that finalizer qualifies a password-stamped challenge
+        // as `email_password` and gates on this method's own decision
+        // (`registerKeyChallengeAuthRoute.ts`). Withdrawing the keyed branch here
+        // would let a Home create E2EE password Accounts and then refuse to sign
+        // them in, so neither the deployment switch nor a Home narrowing that
+        // drops `key_challenge` may narrow this action.
         expect(login({ env: { ...env, HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" } }))
-            .toMatchObject({ enabled: true, mode: "keyless" });
+            .toMatchObject({ enabled: true, mode: "either" });
         expect(login({ env, homeAuthenticationPolicy: { status: "narrowed", policy: {
             v: 1, enabledMethodIds: ["email_password"],
-        } } })).toMatchObject({ enabled: true, mode: "keyless" });
+        } } })).toMatchObject({ enabled: true, mode: "either" });
         expect(login({ env: { ...env, HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0",
             HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1", HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" } }))
-            .toMatchObject({ enabled: true, mode: "keyless" });
+            .toMatchObject({ enabled: true, mode: "either" });
         // The operator opt-out is still the one answer that removes login.
         expect(login({ env: emailPasswordOptedOutEnv() })).toMatchObject({ enabled: false, reason: "method_not_enabled" });
     });
@@ -87,11 +90,13 @@ describe("effective auth method decisions", () => {
         };
         expect(findEffectiveAuthMethodDecision(inputs, "key_challenge")?.actions.every((a) => !a.enabled)).toBe(true);
         expect(isEffectiveAuthMethodActionEnabled(inputs, "key_challenge", "login")).toBe(false);
-        // Disabling `key_challenge` withdraws the keyed branch of password login,
-        // not the method: an existing Plain password Account must still sign in.
+        // Disabling `key_challenge` does not narrow password login at all: the
+        // Key Challenge finalizer qualifies a password-stamped challenge as
+        // `email_password` and gates on that method, so an E2EE password
+        // Account must keep its keyed branch here.
         expect(findEffectiveAuthMethodDecision(inputs, "email_password")?.actions
-            .find(({ id }) => id === "login")).toMatchObject({ enabled: true, mode: "keyless" });
-        const publication = toOldClientSafeAuthMethods(resolveEffectiveAuthMethodDecisions(inputs));
+            .find(({ id }) => id === "login")).toMatchObject({ enabled: true, mode: "either" });
+        const publication = toPublishedAuthMethods(resolveEffectiveAuthMethodDecisions(inputs));
         expect(publication.find((m) => m.id === "key_challenge")?.actions.every((a) => !a.enabled)).toBe(true);
     });
 
@@ -192,36 +197,44 @@ describe("effective auth method decisions", () => {
         expect(provision({ kind: "team_invitation" })).toMatchObject({ enabled: true });
     });
 
-});
+    it("carries the deployment provider's connect-button colour and profile-badge support in its decision", () => {
+        const env = baseEnv({
+            AUTH_SIGNUP_PROVIDERS: "github",
+            GITHUB_CLIENT_ID: "client",
+            GITHUB_CLIENT_SECRET: "secret",
+            GITHUB_REDIRECT_URL: "https://home.example.test/v1/oauth/github/callback",
+        });
 
-describe("old-client-safe /v1/features projection", () => {
-    const env = {
-        HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
-        HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
-        HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: "1",
-    } satisfies NodeJS.ProcessEnv;
-
-    it("names email_password as unsafe for the supported released clients", () => {
-        expect(OLD_CLIENT_UNSAFE_AUTH_METHOD_IDS).toContain("email_password");
+        // teams-lane-03/01 §10.2: the decision the auth-entry projector reads
+        // must not discard the descriptor's colour and badge support.
+        expect(findEffectiveAuthMethodDecision({ env }, "github")?.ui).toMatchObject({
+            displayName: "GitHub",
+            connectButtonColor: "#24292F",
+            supportsProfileBadge: true,
+        });
     });
 
-    it("omits email_password from every released method list", () => {
-        const feature = resolveAuthFeature(env);
-        const auth = feature.capabilities!.auth!;
-        expect(auth.methods).toBeDefined();
-        expect(auth.login?.methods).toBeDefined();
-        expect(auth.signup?.methods).toBeDefined();
-        expect(auth.methods!.map((m) => m.id)).not.toContain("email_password");
-        expect(auth.login!.methods!.map((m) => m.id)).not.toContain("email_password");
-        expect(auth.signup!.methods!.map((m) => m.id)).not.toContain("email_password");
+    it("carries a deployment identity provider's kind in its decision", () => {
+        const env = baseEnv({
+            AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([{
+                id: "acme",
+                type: "oidc",
+                displayName: "Acme identity",
+                issuer: "https://issuer.example.test",
+                clientId: "client-id",
+                clientAuthenticationMethod: "client_secret_post",
+                clientSecret: "client-secret",
+                redirectUrl: "https://home.example.test/v1/oauth/acme/callback",
+            }]),
+        });
+
+        // teams-lane-03/01 §10.2: the row carries the provider's kind; built-in
+        // GitHub OAuth is not a catalog identity-provider kind and states none.
+        expect(findEffectiveAuthMethodDecision({ env }, "acme")?.ui).toMatchObject({
+            displayName: "Acme identity",
+            providerKind: "oidc",
+        });
+        expect(findEffectiveAuthMethodDecision({ env }, "github")?.ui?.providerKind).toBeUndefined();
     });
 
-    it("still publishes the existing methods unchanged", () => {
-        const feature = resolveAuthFeature(env);
-        const auth = feature.capabilities!.auth!;
-        expect(auth.methods).toBeDefined();
-        expect(auth.login?.methods).toBeDefined();
-        expect(auth.methods!.map((m) => m.id)).toContain("key_challenge");
-        expect(auth.login!.methods!.map((m) => m.id)).toEqual(["key_challenge", "mtls"]);
-    });
 });

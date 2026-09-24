@@ -289,13 +289,22 @@ export type CompiledActionCliFields = Readonly<{
  */
 export function compileActionCliFields(
   spec: ActionSpec,
-  options: Readonly<{ reservedFlags?: readonly string[] }> = {},
+  options: Readonly<{
+    reservedFlags?: readonly string[];
+    /**
+     * Established spellings a retained workflow keeps for its Action fields
+     * (plan §13.3 compatibility aliases). They join the Action's own declared
+     * aliases in the same descriptor, so parse, help and completion agree.
+     */
+    flagAliases?: readonly Readonly<{ path: string; aliases: readonly string[] }>[];
+  }> = {},
 ): CompiledActionCliFields {
   const projection = spec.cli;
   const callerSchema = projection?.inputSchema ?? spec.inputSchema;
-  const aliasesByPath = new Map<string, readonly string[]>(
-    (projection?.flagAliases ?? []).map((entry) => [entry.path, Object.freeze([...entry.aliases])]),
-  );
+  const aliasesByPath = new Map<string, readonly string[]>();
+  for (const entry of [...(projection?.flagAliases ?? []), ...(options.flagAliases ?? [])]) {
+    aliasesByPath.set(entry.path, Object.freeze([...(aliasesByPath.get(entry.path) ?? []), ...entry.aliases]));
+  }
   return Object.freeze({
     fields: compileActionCliFieldsFromJsonSchema({
       jsonSchema: zodSchemaToJsonSchemaObject(callerSchema),

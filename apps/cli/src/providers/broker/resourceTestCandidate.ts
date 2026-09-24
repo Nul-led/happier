@@ -10,7 +10,11 @@ import type {
   DaemonProviderModelProjectionResponseV1,
 } from '@happier-dev/protocol/rpc';
 import { pluginJsonValuesEqual, type ProviderBrokerApplicationBindingV1 } from '@happier-dev/protocol';
-import { createTeamCredentialModelCatalogResolver } from './teamCredentialModelCatalog';
+import {
+  createTeamCredentialModelCatalogResolver,
+  isSameTeamCredentialBrokerApplication,
+  type TeamCredentialModelCatalogResolver,
+} from './teamCredentialModelCatalog';
 
 type Candidate = Readonly<{
   application: ProviderBrokerApplicationBindingV1;
@@ -46,12 +50,19 @@ function applicationKey(application: ProviderBrokerApplicationBindingV1): string
   return candidateKey({ application, modelId: '' });
 }
 
-function candidatesFromProjection(input: Readonly<{
+/**
+ * The canonical source catalog: one exact resolver per current application and
+ * source revision of the resource's own source projection. It is what the
+ * source can serve, independent of who is entitled to it — Team request policy
+ * is intersected by the broker request-policy owner, and recipient entitlement
+ * by the Home, never by reading a recipient catalog.
+ */
+function sourceCatalogsFromProjection(input: Readonly<{
   projection: DaemonProviderModelProjectionResponseV1,
   teamId: string;
   resourceId: string;
   resourceRevision: number;
-}>): readonly Candidate[] {
+}>): readonly TeamCredentialModelCatalogResolver[] {
   if (input.projection.status !== 'success') return [];
   const catalogs = new Map<string, {
     application: ProviderBrokerApplicationBindingV1;
@@ -96,13 +107,16 @@ function candidatesFromProjection(input: Readonly<{
       application: catalog.application,
       rows: catalog.rows,
     });
-    if (!resolver) return [];
-    return resolver.rows.map((row) => ({
-      application: resolver.application,
-      modelId: row.descriptor.id,
-      sourceRevision: row.sourceRevision,
-    }));
+    return resolver ? [resolver] : [];
   });
+}
+
+function candidatesFromProjection(input: Parameters<typeof sourceCatalogsFromProjection>[0]): readonly Candidate[] {
+  return sourceCatalogsFromProjection(input).flatMap((resolver) => resolver.rows.map((row) => ({
+    application: resolver.application,
+    modelId: row.descriptor.id,
+    sourceRevision: row.sourceRevision,
+  })));
 }
 
 /** Canonical exact-source filter for every daemon model projection that starts
@@ -215,6 +229,40 @@ async function projectCandidates(input: Readonly<{
     resourceId: input.resourceId,
     resourceRevision: input.resourceRevision,
   });
+}
+
+/**
+ * The broker's model catalog for one exact application of a resource: the
+ * resource's own current source catalog from the canonical local projection.
+ * The broker custodian is not necessarily an audience recipient of the
+ * resource it serves, so this never consults a recipient catalog. An absent or
+ * ambiguous (several current source revisions) catalog is unavailable.
+ */
+export async function resolveTeamCredentialSourceModelCatalog(input: Readonly<{
+  machineId: string;
+  teamId: string;
+  resourceId: string;
+  resourceRevision: number;
+  source: TeamCredentialSourceBindingV1;
+  application: ProviderBrokerApplicationBindingV1;
+  projectModels(request: DaemonProviderModelProjectionRequestV1): Promise<DaemonProviderModelProjectionResponseV1>;
+  signal?: AbortSignal;
+}>): Promise<TeamCredentialModelCatalogResolver | null> {
+  input.signal?.throwIfAborted();
+  const projection = await input.projectModels({
+    machineId: input.machineId,
+    agentTargetKey: input.application.agentTargetKey,
+    ...projectTeamCredentialSourceModelFilter(input.source),
+    mode: 'picker',
+  });
+  const matching = sourceCatalogsFromProjection({
+    projection,
+    teamId: input.teamId,
+    resourceId: input.resourceId,
+    resourceRevision: input.resourceRevision,
+  }).filter((catalog) => isSameTeamCredentialBrokerApplication(catalog.application, input.application));
+  const [only, ...ambiguous] = matching;
+  return only && ambiguous.length === 0 ? only : null;
 }
 
 /** Enumerates the exact current source/application matrix for protocol-neutral

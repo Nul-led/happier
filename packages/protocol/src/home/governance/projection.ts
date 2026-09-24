@@ -5,6 +5,7 @@ import {
   HomeAdmissionModeV1Schema,
   HomeIdentityNetworkPolicyV1Schema,
   HomeTeamProviderPolicyV1Schema,
+  ManagedIdentityProviderKindV1Schema,
   TeamCreationPolicyV1Schema,
 } from './policy.js';
 import { AccountStatusV1Schema, HomeRoleV1Schema } from './roles.js';
@@ -73,6 +74,12 @@ export type HomeGovernancePolicyProjectionV1 = z.infer<typeof HomeGovernancePoli
 export const HomeIdentityDeploymentServicesV1Schema = z.object({
   workos: z.enum(['configured', 'partially_configured', 'not_configured']),
   privateIdentityNetworkAllowed: z.boolean(),
+  /**
+   * The Team identity-provider kinds this deployment can run: the ceiling an
+   * inherited Home policy resolves to and the only kinds a Home may add when it
+   * saves a narrowing. The policy editor seeds from it, never from the enum.
+   */
+  teamProviderKinds: z.array(ManagedIdentityProviderKindV1Schema),
 }).strict();
 
 export type HomeIdentityDeploymentServicesV1 = z.infer<typeof HomeIdentityDeploymentServicesV1Schema>;

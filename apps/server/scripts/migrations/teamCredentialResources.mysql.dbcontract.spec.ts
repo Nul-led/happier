@@ -90,7 +90,12 @@ describe('Team credential MySQL migration', () => {
             const insert = (key: Uint8Array) => db.$executeRawUnsafe("INSERT INTO `SessionTeamCredentialBinding` (`sessionId`,`slotKind`,`slotKey`,`resourceId`,`resourceRevision`,`updatedAt`) VALUES ('session','connected_service_purpose',?,'resource',0,CURRENT_TIMESTAMP(3))", key);
             for (const key of keys) await insert(key);
             await expect(insert(keys[0])).rejects.toThrow();
-            const rows = await db.$queryRawUnsafe<Array<{ slotKey: Uint8Array }>>("SELECT `slotKey` FROM `SessionTeamCredentialBinding`");
+            // Qualified by slot kind, exactly as the SQLite/PGlite sibling does
+            // (`teamCredentialResourcesSchema.spec.ts`): the `provider_model`
+            // binding inserted above is still present and deliberately retained,
+            // so an unqualified read counts it as a third purpose key and fails
+            // before the maximum-width, cascade and activity assertions below.
+            const rows = await db.$queryRawUnsafe<Array<{ slotKey: Uint8Array }>>("SELECT `slotKey` FROM `SessionTeamCredentialBinding` WHERE `slotKind`='connected_service_purpose'");
             expect(rows.map((row) => Buffer.from(row.slotKey).toString('hex')).sort()).toEqual(keys.map((key) => key.toString('hex')).sort());
             expect(await db.$queryRawUnsafe('SELECT sourceBindingJson FROM TeamCredentialResource')).toEqual([{ sourceBindingJson }]);
             const maximumLengthResourceId = 'r'.repeat(256);

@@ -28,7 +28,11 @@ beforeEach(() => {
 afterEach(async () => { await screen?.unmount(); screen = undefined; restore(); });
 
 async function renderEntry(
-    actions: readonly Readonly<{ action: 'login' | 'provision' | 'connect'; mode: 'keyed' | 'keyless' | 'either' }>[],
+    actions: readonly Readonly<{
+        action: 'login' | 'provision' | 'connect';
+        mode: 'keyed' | 'keyless' | 'either';
+        recommendedProvisionMode?: 'plain' | 'e2ee';
+    }>[],
     options: Readonly<{ mailboxProven?: boolean }> = {},
 ) {
     const fixture = createDirectoryHttpFixture();
@@ -36,6 +40,7 @@ async function renderEntry(
         v: 1, state: 'ready', scope: { kind: 'home' }, autoRedirect: null,
         actions: actions.map((row) => ({
             kind: 'authenticate', methodId: 'email_password', action: row.action, mode: row.mode,
+            ...(row.recommendedProvisionMode ? { recommendedProvisionMode: row.recommendedProvisionMode } : {}),
             origin: 'home', presentation: { displayName: 'Email and password' },
         })),
     });
@@ -76,6 +81,32 @@ it('offers both Account protections once the mailbox is proven and both modes ar
     expect(rendered.findByTestId('email-password-protection-plain')).not.toBeNull();
     expect(rendered.findByTestId('email-password-protection-e2ee')).not.toBeNull();
 });
+
+it.each(['e2ee', 'plain'] as const)(
+    'defaults the Account protection to the Home recommendation (%s) when both modes are permitted',
+    async (recommendedProvisionMode) => {
+        const rendered = await renderEntry(
+            [{ action: 'provision', mode: 'either', recommendedProvisionMode }],
+            { mailboxProven: true },
+        );
+
+        await rendered.pressByTestIdAsync('home-auth-email_password-provision-either');
+
+        const other = recommendedProvisionMode === 'e2ee' ? 'plain' : 'e2ee';
+        const isSelected = (mode: 'plain' | 'e2ee') => {
+            const node = rendered.findByTestId(`email-password-protection-${mode}`);
+            // The protection is announced as a radio; its checked state is the selection.
+            return node?.props.accessibilityState?.checked;
+        };
+        expect(isSelected(recommendedProvisionMode)).toBe(true);
+        expect(isSelected(other)).toBe(false);
+
+        // An explicit choice is the person's, and it survives until they change it.
+        await rendered.pressByTestIdAsync(`email-password-protection-${other}`);
+        expect(isSelected(other)).toBe(true);
+        expect(isSelected(recommendedProvisionMode)).toBe(false);
+    },
+);
 
 it('omits the protection choice and states the outcome when the Home permits one Account mode', async () => {
     const rendered = await renderEntry([{ action: 'provision', mode: 'keyed' }], { mailboxProven: true });

@@ -22,6 +22,7 @@ describe('resolveDaemonExecutionRunBrokerAuthority', () => {
     intent: 'voice_agent' as const,
     runtimeState: 'active_turn' as const,
     activeTurnId: 'voice-turn-1',
+    teamCredentialProviderModel: { resourceId: 'resource-one', deliveryMode: 'brokered' as const },
   });
 
   it('returns only the exact current Session-owned occurrence and active-turn state', async () => {
@@ -45,6 +46,8 @@ describe('resolveDaemonExecutionRunBrokerAuthority', () => {
       intent: 'voice_agent',
       runtimeState: 'active_turn',
       activeTurnId: 'voice-turn-1',
+      // The Run owner's own accepted selection travels to the Home unchanged.
+      teamCredentialProviderModel: { resourceId: 'resource-one', deliveryMode: 'brokered' },
     });
   });
 
@@ -63,6 +66,7 @@ describe('resolveDaemonExecutionRunBrokerAuthority', () => {
         parentSessionId: sessionId,
         intent: 'agent',
         runtimeState: 'idle',
+        teamCredentialProviderModel: null,
       }),
     })).resolves.toEqual({
       status: 'current',
@@ -76,6 +80,7 @@ describe('resolveDaemonExecutionRunBrokerAuthority', () => {
       intent: 'agent',
       runtimeState: 'idle',
       activeTurnId: null,
+      teamCredentialProviderModel: null,
     });
   });
 

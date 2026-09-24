@@ -15,7 +15,7 @@ import {
     DIRECTORY_FULL_RECONCILE_TARGET_MS,
     GITHUB_DIRECTORY_SYNC_TARGET_MS,
     isDirectoryErrorRetryable,
-    NON_RETRYABLE_DIRECTORY_ERRORS,
+    retryableDirectoryErrorWhere,
     WORKOS_DIRECTORY_SYNC_TARGET_MS,
 } from "./directorySourceProjection";
 import { revokeExternalSourceFactsInTx } from "../memberships/externalFacts";
@@ -285,18 +285,23 @@ export async function findNextDirectorySourceDueForSync(params: Readonly<{
                         {
                             state: { in: ["active", "needs_attention"] },
                             manualSyncRequestedAt: { not: null },
+                            // An explicit Retry of a source parked on a
+                            // non-retryable failure buys exactly one attempt:
+                            // it is due only while no claim has consumed it.
                             OR: [
-                                { lastErrorCode: null },
-                                { lastErrorCode: { notIn: [...NON_RETRYABLE_DIRECTORY_ERRORS] } },
+                                retryableDirectoryErrorWhere(),
+                                { lastAttemptAt: null },
+                                { manualSyncRequestedAt: { gt: db.teamDirectorySource.fields.lastAttemptAt } },
                             ],
                         },
                         {
                             state: "needs_attention",
-                            lastErrorCode: { notIn: [...NON_RETRYABLE_DIRECTORY_ERRORS] },
+                            ...retryableDirectoryErrorWhere(),
                         },
                         {
                             state: "active",
                             kind: "workos_directory",
+                            AND: [retryableDirectoryErrorWhere()],
                             OR: [
                                 { lastFullReconcileAt: null },
                                 { lastFullReconcileAt: { lte: fullReconcileDueBefore } },
@@ -307,6 +312,7 @@ export async function findNextDirectorySourceDueForSync(params: Readonly<{
                         {
                             state: "active",
                             kind: "github_organization",
+                            AND: [retryableDirectoryErrorWhere()],
                             OR: [
                                 { lastSuccessAt: null },
                                 { lastSuccessAt: { lte: githubFullDueBefore } },
@@ -372,6 +378,7 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
                 manualSyncRequestedAt: true,
                 consecutiveFailureCount: true,
                 retryNotBefore: true,
+                lastErrorCode: true,
             },
         });
         if (!current) return { ok: false, code: "directory_source_not_found" } as const;
@@ -404,10 +411,18 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
                     state: "needs_attention",
                     activeReconcileRunId: null,
                     activeReconcileStartedAt: null,
+                    // This claim is the attempt that consumed any outstanding
+                    // request; stamping it keeps one press to one attempt.
+                    lastAttemptAt: now,
                     lastErrorCode: "directory_source_identity_mismatch",
                     consecutiveFailureCount: 0,
                     retryNotBefore: null,
                 },
+            });
+            await publishDirectorySourceStatusTransitionInTx(tx, {
+                teamId: current.teamId,
+                before: current,
+                after: { state: "needs_attention", lastErrorCode: "directory_source_identity_mismatch" },
             });
             return { ok: false, code: "directory_sync_needs_attention" } as const;
         }
@@ -433,6 +448,13 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
         if (updated.count !== 1) {
             return { ok: false, code: "directory_sync_needs_attention" } as const;
         }
+        // The running attempt and the cleared failure are what a mounted
+        // source detail shows next; entering it is a status transition.
+        await publishDirectorySourceStatusTransitionInTx(tx, {
+            teamId: current.teamId,
+            before: current,
+            after: { state: "initializing", lastErrorCode: null },
+        });
         return {
             ok: true,
             source: {
@@ -475,6 +497,7 @@ export async function claimWorkosDirectorySourceIncremental(params: Readonly<{
                 manualSyncRequestedAt: true,
                 consecutiveFailureCount: true,
                 retryNotBefore: true,
+                lastErrorCode: true,
             },
         });
         if (!current) return { ok: false, code: "directory_source_not_found" } as const;
@@ -515,6 +538,13 @@ export async function claimWorkosDirectorySourceIncremental(params: Readonly<{
         if (claimed.count !== 1) {
             return { ok: false, code: "directory_sync_needs_attention" } as const;
         }
+        // Clearing a shown failure is a status transition; a later empty poll
+        // compares against the cleared row and would not announce it.
+        await publishDirectorySourceStatusTransitionInTx(tx, {
+            teamId: current.teamId,
+            before: current,
+            after: { state: current.state, lastErrorCode: null },
+        });
         return {
             ok: true,
             source: {
@@ -553,34 +583,79 @@ export async function markActiveWorkosDirectoryPollFailed(params: Readonly<{
     const position = params.expectedPosition.eventCursor === null
         ? { eventCursor: null, eventRangeStart: params.expectedPosition.eventRangeStart }
         : { eventCursor: params.expectedPosition.eventCursor };
-    const updated = await db.teamDirectorySource.updateMany({
-        where: {
-            id: params.sourceId,
-            state: "active",
-            kind: "workos_directory",
-            activeReconcileRunId: params.reconcileRunId ?? null,
-            manualSyncRequestedAt: null,
-            ...position,
-        },
-        data: {
-            // A paginated event observation writes projection rows before its
-            // final cursor commit. If that attempt fails, leaving the source
-            // active would make those incomplete rows authoritative as soon as
-            // the run fence is cleared. Reuse the existing needs-attention ->
-            // full-reconcile recovery path for that exact case. A one-shot
-            // incremental failure has staged no partial rows and can remain
-            // active for its ordinary retry.
-            ...(params.reconcileRunId !== undefined ? { state: "needs_attention" as const } : {}),
-            activeReconcileRunId: null,
-            activeReconcileStartedAt: null,
-            lastErrorCode: params.errorCode,
-            ...cursorLossRecovery(params.errorCode),
-            ...(isDirectoryErrorRetryable(params.errorCode)
-                ? schedule
-                : { consecutiveFailureCount: 0, retryNotBefore: null }),
-        },
+    const where = {
+        id: params.sourceId,
+        state: "active" as const,
+        kind: "workos_directory" as const,
+        activeReconcileRunId: params.reconcileRunId ?? null,
+        manualSyncRequestedAt: null,
+        ...position,
+    };
+    return await inTx(async (tx) => {
+        const before = await tx.teamDirectorySource.findFirst({
+            where,
+            select: { teamId: true, state: true, lastErrorCode: true },
+        });
+        if (!before) return { applied: false, reason: "stale_run" } as const;
+        const updated = await tx.teamDirectorySource.updateMany({
+            where,
+            data: {
+                // A paginated event observation writes projection rows before
+                // its final cursor commit. If that attempt fails, leaving the
+                // source active would make those incomplete rows authoritative
+                // as soon as the run fence is cleared. Reuse the existing
+                // needs-attention -> full-reconcile recovery path for that
+                // exact case. A one-shot incremental failure has staged no
+                // partial rows and can remain active for its ordinary retry.
+                ...(params.reconcileRunId !== undefined ? { state: "needs_attention" as const } : {}),
+                activeReconcileRunId: null,
+                activeReconcileStartedAt: null,
+                lastErrorCode: params.errorCode,
+                ...cursorLossRecovery(params.errorCode),
+                ...(isDirectoryErrorRetryable(params.errorCode)
+                    ? schedule
+                    : { consecutiveFailureCount: 0, retryNotBefore: null }),
+            },
+        });
+        if (updated.count !== 1) return { applied: false, reason: "stale_run" } as const;
+        const after = await tx.teamDirectorySource.findUniqueOrThrow({
+            where: { id: params.sourceId },
+            select: { state: true, lastErrorCode: true },
+        });
+        await publishDirectorySourceStatusTransitionInTx(tx, {
+            teamId: before.teamId,
+            before,
+            after,
+        });
+        return { applied: true } as const;
     });
-    return updated.count === 1 ? { applied: true } : { applied: false, reason: "stale_run" };
+}
+
+/**
+ * Wakes the Team's readers when a lifecycle write changes what the Directory
+ * Sync projection shows.
+ *
+ * Administrator mutations publish unconditionally: a person is waiting on the
+ * result of their own press. The worker instead runs on a timer over every
+ * source, so it publishes on a status transition only — the `state` and
+ * `lastErrorCode` the summary turns into attempt, error and allowed actions.
+ * An identical successful poll changes nothing a reader can see, and waking
+ * every Team once per sync interval for it would be pure fanout.
+ */
+export async function publishDirectorySourceStatusTransitionInTx(
+    tx: Tx,
+    params: Readonly<{
+        teamId: string;
+        before: Readonly<{ state: string; lastErrorCode: string | null }>;
+        after: Readonly<{ state: string; lastErrorCode: string | null }>;
+    }>,
+): Promise<boolean> {
+    if (
+        params.before.state === params.after.state
+        && params.before.lastErrorCode === params.after.lastErrorCode
+    ) return false;
+    await publishTeamChangedInTx(tx, { teamId: params.teamId });
+    return true;
 }
 
 /**
@@ -609,83 +684,135 @@ export async function markDirectorySourceReconcileFailed(params: Readonly<{
     now?: Date;
 }>): Promise<DirectorySourceLifecycleWriteResult> {
     const now = params.now ?? new Date();
-    const source = await db.teamDirectorySource.findFirst({
-        where: {
-            id: params.sourceId,
-            state: "initializing",
-            activeReconcileRunId: params.reconcileRunId,
-        },
-        select: { kind: true },
+    const where = {
+        id: params.sourceId,
+        state: "initializing" as const,
+        activeReconcileRunId: params.reconcileRunId,
+    };
+    return await inTx(async (tx) => {
+        const before = await tx.teamDirectorySource.findFirst({
+            where,
+            select: { teamId: true, kind: true, state: true, lastErrorCode: true },
+        });
+        if (!before) return { applied: false, reason: "stale_run" } as const;
+        const schedule = deriveDirectoryFailureSchedule({
+            kind: before.kind,
+            consecutiveFailureCount: params.consecutiveFailureCount ?? 0,
+            failedAt: now,
+            ...(params.retryAfterMs !== undefined ? { retryAfterMs: params.retryAfterMs } : {}),
+        });
+        const updated = await tx.teamDirectorySource.updateMany({
+            where,
+            data: {
+                state: "needs_attention",
+                activeReconcileRunId: null,
+                activeReconcileStartedAt: null,
+                lastErrorCode: params.errorCode,
+                ...cursorLossRecovery(params.errorCode),
+                ...(isDirectoryErrorRetryable(params.errorCode)
+                    ? schedule
+                    : { consecutiveFailureCount: 0, retryNotBefore: null }),
+            },
+        });
+        if (updated.count !== 1) return { applied: false, reason: "stale_run" } as const;
+        await publishDirectorySourceStatusTransitionInTx(tx, {
+            teamId: before.teamId,
+            before,
+            after: { state: "needs_attention", lastErrorCode: params.errorCode },
+        });
+        return { applied: true } as const;
     });
-    if (!source) return { applied: false, reason: "stale_run" };
-    const schedule = deriveDirectoryFailureSchedule({
-        kind: source.kind,
-        consecutiveFailureCount: params.consecutiveFailureCount ?? 0,
-        failedAt: now,
-        ...(params.retryAfterMs !== undefined ? { retryAfterMs: params.retryAfterMs } : {}),
-    });
-    const updated = await db.teamDirectorySource.updateMany({
-        where: {
-            id: params.sourceId,
-            state: "initializing",
-            activeReconcileRunId: params.reconcileRunId,
-        },
-        data: {
-            state: "needs_attention",
-            activeReconcileRunId: null,
-            activeReconcileStartedAt: null,
-            lastErrorCode: params.errorCode,
-            ...cursorLossRecovery(params.errorCode),
-            ...(isDirectoryErrorRetryable(params.errorCode)
-                ? schedule
-                : { consecutiveFailureCount: 0, retryNotBefore: null }),
-        },
-    });
-    return updated.count === 1 ? { applied: true } : { applied: false, reason: "stale_run" };
 }
+
+/**
+ * Why a source cannot take a complete-scan request, other than being paused.
+ *
+ * Each reason names what actually blocks the repair: the Home no longer lets
+ * Teams use the provider kind (only a Home administrator can change that), or
+ * the persisted binding document no longer describes a directory of its kind
+ * (the claim path's identity mismatch). Neither is cleared by Sync, Retry or
+ * Resume, so both are reported as themselves rather than as needs-attention.
+ * Sync/Retry and Resume both ask this one owner.
+ */
+export async function readDirectorySourceRepairRefusalInTx(
+    tx: Tx,
+    source: Readonly<{ kind: TeamDirectoryBindingConfigV1["kind"]; bindingConfig: unknown }>,
+): Promise<DirectorySourceRepairRefusal | null> {
+    if (!await isDirectorySourceKindAllowedInTx(tx, source.kind)) return "team_identity_not_allowed";
+    // A durable request must be work the claim path can serve. Both claims
+    // refuse a source whose binding document no longer parses for its kind.
+    try {
+        if (parseTeamDirectoryBindingConfigV1(source.bindingConfig).kind !== source.kind) {
+            return "directory_source_identity_mismatch";
+        }
+    } catch {
+        return "directory_source_identity_mismatch";
+    }
+    return null;
+}
+
+export type DirectorySourceRepairRefusal = "team_identity_not_allowed" | "directory_source_identity_mismatch";
+
+export type DirectorySourceSyncRequestResult =
+    | Readonly<{ ok: true; status: "requested" | "coalesced" }>
+    | Readonly<{
+        ok: false;
+        code: "directory_source_not_found" | "directory_sync_needs_attention" | DirectorySourceRepairRefusal;
+    }>;
 
 export async function requestDirectorySourceSync(params: Readonly<{
     sourceId: string;
     now?: Date;
-}>): Promise<
-    | Readonly<{ ok: true; status: "requested" | "coalesced" }>
-    | Readonly<{ ok: false; code: "directory_source_not_found" | "directory_sync_needs_attention" }>
-> {
+}>): Promise<DirectorySourceSyncRequestResult> {
     const now = params.now ?? new Date();
     return await inTx((tx) => requestDirectorySourceSyncInTx(tx, { ...params, now }));
 }
 
+/**
+ * Record the explicit Sync / Retry request: one complete scan (child 05 §11.2,
+ * §14.1; recovery "starts another complete scan", §9.6).
+ *
+ * Only a paused source answers `directory_sync_needs_attention` — its recovery
+ * is the explicit Resume (:498). A failed source, including one parked on a
+ * failure the scheduler will not repeat on its own, accepts the request: that
+ * is the administrator's Retry. The press is bounded to one attempt by facts
+ * the source already carries — the request timestamp against `lastAttemptAt`,
+ * which every claim stamps — so due selection admits a parked source only for
+ * a request no attempt has consumed yet, and a failed attempt never replays.
+ */
 export async function requestDirectorySourceSyncInTx(
     tx: Tx,
     params: Readonly<{ sourceId: string; now?: Date }>,
-): Promise<
-    | Readonly<{ ok: true; status: "requested" | "coalesced" }>
-    | Readonly<{ ok: false; code: "directory_source_not_found" | "directory_sync_needs_attention" }>
-> {
+): Promise<DirectorySourceSyncRequestResult> {
     const now = params.now ?? new Date();
     const current = await tx.teamDirectorySource.findUnique({
         where: { id: params.sourceId },
-        select: { state: true, kind: true, bindingConfig: true, manualSyncRequestedAt: true },
+        select: {
+            state: true,
+            kind: true,
+            bindingConfig: true,
+            manualSyncRequestedAt: true,
+            lastAttemptAt: true,
+            activeReconcileRunId: true,
+        },
     });
     if (!current) return { ok: false, code: "directory_source_not_found" } as const;
     if (current.state === "paused") {
         return { ok: false, code: "directory_sync_needs_attention" } as const;
     }
-    if (!await isDirectorySourceKindAllowedInTx(tx, current.kind)) {
-        return { ok: false, code: "directory_sync_needs_attention" } as const;
-    }
-    // A durable request must be work the claim path can serve. Both claims
-    // refuse a source whose binding document no longer parses for its kind, so
-    // accepting such a request here would persist unsatisfiable work and keep
-    // the source selectable forever without ever being claimable.
-    try {
-        if (parseTeamDirectoryBindingConfigV1(current.bindingConfig).kind !== current.kind) {
-            return { ok: false, code: "directory_sync_needs_attention" } as const;
-        }
-    } catch {
-        return { ok: false, code: "directory_sync_needs_attention" } as const;
-    }
-    if (current.manualSyncRequestedAt !== null) {
+    const refusal = await readDirectorySourceRepairRefusalInTx(tx, current);
+    if (refusal !== null) return { ok: false, code: refusal } as const;
+    // A request no attempt has consumed yet — or that the running attempt
+    // already observed — coalesces. One an attempt already consumed is spent:
+    // a new press is a new request, never a silent coalesce into a failure.
+    if (
+        current.manualSyncRequestedAt !== null
+        && (
+            current.activeReconcileRunId !== null
+            || current.lastAttemptAt === null
+            || current.manualSyncRequestedAt.getTime() > current.lastAttemptAt.getTime()
+        )
+    ) {
         return { ok: true, status: "coalesced" } as const;
     }
     await tx.teamDirectorySource.update({

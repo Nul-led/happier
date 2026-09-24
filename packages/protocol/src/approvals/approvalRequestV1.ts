@@ -22,6 +22,8 @@ import {
   SessionInputCausalPermissionAuthorityV1Schema,
   SessionInputSourceSessionV1Schema,
 } from '../sessions/messages/sessionInputAdmission.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
+import { WorkflowAcceptedAuthorizationV1Schema } from '../workflows/workflowDefinitionV1.js';
 
 export const ApprovalRequestStatusSchema = z.enum(['open', 'approved', 'rejected', 'executed', 'failed', 'canceled']);
 export type ApprovalRequestStatus = z.infer<typeof ApprovalRequestStatusSchema>;
@@ -119,7 +121,7 @@ export const ApprovalExecutionOriginCallerV1Schema = z.discriminatedUnion('kind'
     kind: z.literal('plugin'),
     pluginId: asProtocolZod(PluginIdSchema),
     contributionLocalId: asProtocolZod(PluginContributionLocalIdSchema),
-    immutableGenerationId: z.string().trim().min(1).optional(),
+    sourceCustody: PluginSourceCustodyV1Schema,
   }).strict(),
   z.object({
     kind: z.literal('automationRun'),
@@ -127,7 +129,18 @@ export const ApprovalExecutionOriginCallerV1Schema = z.discriminatedUnion('kind'
     automationId: z.string().trim().min(1),
     cause: AutomationRunCauseSchema,
   }).strict(),
+  /**
+   * Host-stamped provenance for an admitted Workflow Run, carrying the exact
+   * accepted authorization the live Workflow admission already owns. Replay
+   * currentness rechecks that principal; the Run identity is immutable.
+   */
+  z.object({
+    kind: z.literal('workflowRun'),
+    runId: z.string().trim().min(1),
+    authorization: WorkflowAcceptedAuthorizationV1Schema,
+  }).strict(),
 ]);
+export type ApprovalExecutionOriginCallerV1 = z.infer<typeof ApprovalExecutionOriginCallerV1Schema>;
 
 /**
  * Immutable authority and routing facts captured when a durable approval is
@@ -364,3 +377,45 @@ export const ApprovalRequestSchema = z.discriminatedUnion('v', [
   ApprovalRequestV2Schema,
 ]);
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
+
+/**
+ * Caller principals whose currentness only the exact daemon that admitted them
+ * can recheck (plugin source custody, Automation Run currentness, Workflow
+ * accepted authorization). Declared beside the caller union it keys on, so a new
+ * arm cannot be added without answering this question — the hand-maintained
+ * consumer-side list it replaced silently defaulted new arms to local replay.
+ */
+const CALLER_REQUIRES_EXACT_DAEMON_REPLAY_RECORD = {
+  host: false,
+  plugin: true,
+  automationRun: true,
+  workflowRun: true,
+} as const satisfies Record<ApprovalExecutionOriginCallerV1['kind'], boolean>;
+
+/**
+ * Surfaces whose admission facts (external authorization, agent ceilings,
+ * transport identity) the exact daemon owns. The present-human surfaces are the
+ * only ones a client may settle itself.
+ */
+const SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD = {
+  ui: false,
+  voice: false,
+  plugin: false,
+  agent: true,
+  mcp: true,
+  cli: true,
+  rpc: true,
+  api: true,
+} as const satisfies Record<ApprovalExecutionOriginV1['surface'], boolean>;
+
+/**
+ * True when this durable approval carries authority facts a client cannot
+ * verify itself, so its replay belongs to the exact daemon named by the origin.
+ * Host-caused approvals on a present-user surface remain locally replayable.
+ */
+export function requiresExactDaemonApprovalReplay(approval: ApprovalRequest): boolean {
+  if (approval.v !== 2) return false;
+  const origin = approval.executionOriginV1;
+  return SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.surface]
+    || CALLER_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.caller.kind];
+}

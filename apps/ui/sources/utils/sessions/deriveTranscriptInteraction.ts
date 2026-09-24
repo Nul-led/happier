@@ -13,6 +13,24 @@ export type TranscriptInteraction = Readonly<{
     disableToolNavigation?: boolean;
 }>;
 
+/**
+ * Known write denial for one exact Session — the opposite question from
+ * {@link deriveTranscriptInteraction}'s `canSendMessages`.
+ *
+ * `canSendMessages` fails closed, which is correct before mutating: an
+ * unloaded Session, an absent access projection or an offline Home all read as
+ * "cannot send". That answer must not decide whether an affordance is offered,
+ * because it would take composing away from a writer whose Session simply has
+ * not loaded yet. This returns `true` only when the exact Session's own access
+ * projection states the capability is denied; everything else stays enabled
+ * with the server as the authority.
+ */
+export function isSessionWriteKnownDenied(
+    session: Readonly<{ access?: Session['access'] }> | null | undefined,
+): boolean {
+    return session?.access?.capabilities.submitAgentInput === false;
+}
+
 export function deriveTranscriptInteractionFromSession(
     session: Readonly<{
         access?: Session['access'];

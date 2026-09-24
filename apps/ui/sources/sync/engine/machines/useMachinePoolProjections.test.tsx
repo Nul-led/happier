@@ -120,6 +120,40 @@ describe('useMachinePoolProjections', () => {
         await hook.unmount();
     });
 
+    it('settles a first Pool list failure into the terminal error consumers can retry', async () => {
+        setRuntimeFetch(async (url) => {
+            if (String(url).endsWith('/v1/features')) {
+                const features = buildServerFeaturesResponse();
+                return Response.json({
+                    ...features,
+                    features: {
+                        ...features.features,
+                        machines: { ...features.features.machines, pools: { enabled: true } },
+                    },
+                });
+            }
+            if (String(url).endsWith('/v1/account/encryption')) return Response.json({ mode: 'plain', updatedAt: 1 });
+            if (String(url).endsWith('/v2/account/settings')) return Response.json({ content: { t: 'plain', v: {} }, version: 0 });
+            boundary.requests.push(String(url));
+            return new Response('nope', { status: 500 });
+        });
+        const scopes: MachinePoolProjectionScope[] = [{ serverId: boundary.serverId, machines: [] }];
+        const hook = await renderHook(() => useMachinePoolProjections(scopes));
+
+        // Nothing ever hydrated, so a permanent 'loading' would be a spinner with
+        // no request owed and no way for a consumer to offer Retry.
+        await vi.waitFor(() => {
+            expect(hook.getCurrent()[0]).toMatchObject({
+                featureEnabled: true,
+                status: 'error',
+                ready: false,
+                pools: [],
+            });
+        });
+
+        await hook.unmount();
+    });
+
     it('coalesces one Home wake across every mounted Pool consumer', async () => {
         const scopes: MachinePoolProjectionScope[] = [{ serverId: boundary.serverId, machines: [] }];
         const hook = await renderHook(() => ({

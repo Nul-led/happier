@@ -47,6 +47,7 @@ describe('DaemonExecutionRunMarkerSchema', () => {
       parentSessionId: 'session-one',
       intent: 'voice_agent',
       runtimeState: 'active_turn',
+      teamCredentialProviderModel: null,
     })).toMatchObject({ status: 'current', parentSessionId: 'session-one', intent: 'voice_agent' });
     expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.parse({
       status: 'current',
@@ -59,7 +60,13 @@ describe('DaemonExecutionRunMarkerSchema', () => {
       parentSessionId: null,
       intent: 'agent',
       runtimeState: 'idle',
-    })).toMatchObject({ status: 'current', parentSessionId: null, intent: 'agent' });
+      teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
+    })).toMatchObject({
+      status: 'current',
+      parentSessionId: null,
+      intent: 'agent',
+      teamCredentialProviderModel: { resourceId: 'resource-own', deliveryMode: 'brokered' },
+    });
     expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.safeParse({
       status: 'current',
       requestNonce: request.requestNonce,
@@ -70,6 +77,7 @@ describe('DaemonExecutionRunMarkerSchema', () => {
       occurrenceId: 'occurrence-one',
       parentSessionId: 'session-one',
       runtimeState: 'active_turn',
+      teamCredentialProviderModel: null,
     }).success).toBe(false);
     expect(DaemonExecutionRunBrokerAuthorityResponseV1Schema.safeParse({
       status: 'not_current',

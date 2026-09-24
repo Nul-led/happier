@@ -202,6 +202,66 @@ describe('target Session input authoring through HTTP', () => {
     expect(http.post).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['completed', 'failed'] as const)('waits on the exact target turn after a terminal admission replay (%s)', async (state) => {
+    const originalGet = http.get.getMockImplementation()!;
+    http.get.mockImplementation(async (url: string) => {
+      if (url.includes('/messages/by-local-id/')) return { status: 200, data: { message: {
+        id: 'message-a', seq: 1, localId: 'input-a', sidechainId: 'sidechain-a',
+        createdAt: 1, updatedAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Wait for this run input' } } },
+      } } };
+      return originalGet(url);
+    });
+    // The exact Pending row is already gone: the server answers the replay as terminal.
+    http.post.mockResolvedValue({ status: 200, data: { didWrite: false, terminal: true } });
+    mockRunReads([
+      { occurrenceId: 'occurrence-a', current: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
+        last: { turnId: 'sibling-turn', inputIds: ['sibling-input'], state: 'failed' } },
+      { occurrenceId: 'occurrence-a', last: { turnId: 'turn-a', inputIds: ['input-a'], state } },
+    ]);
+
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 1_000,
+    });
+
+    if (state === 'completed') {
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, localId: 'input-a', waited: true });
+    } else {
+      expect(result, JSON.stringify(result)).toMatchObject({
+        ok: false, code: 'wait_failed',
+        settlementResult: { status: 'failed', localId: 'input-a', code: 'session_input_turn_failed' },
+      });
+    }
+    // One admission, no resend and no parent resume.
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports outcome-unknown when a terminal admission replay has no exact turn evidence', async () => {
+    http.post.mockResolvedValue({ status: 200, data: { didWrite: false, terminal: true } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
+      recipient, wait: true, timeoutMs: 1,
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: false, code: 'wait_failed',
+      admissionResult: { status: 'outcomeUnknown', localId: 'input-a' },
+    });
+    expect(http.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the terminal admission replay shortcut when the caller did not ask to wait', async () => {
+    http.post.mockResolvedValue({ status: 200, data: { didWrite: false, terminal: true } });
+    const result = await sendSessionMessage({
+      credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Private run input',
+      recipient, wait: false, timeoutMs: 1_000,
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: true, waited: false, terminal: true,
+      admissionResult: { status: 'alreadyAccepted', localId: 'input-a' },
+    });
+    expect(rpc.callSessionRpc).not.toHaveBeenCalled();
+  });
+
   it('cancels only exact-turn observation after admission and preserves the admitted local id', async () => {
     const originalGet = http.get.getMockImplementation()!;
     http.get.mockImplementation(async (url: string) => {

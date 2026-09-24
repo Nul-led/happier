@@ -15,6 +15,7 @@ import {
     SESSION_TRANSCRIPT_PUBLICATION_SELECT,
 } from "@/app/session/sessionTranscriptPublicationPolicy";
 import {
+    isSessionMetadataPrivacyUpgradeRequiredError,
     projectSessionMetadataForRecipient,
     requiresSessionMetadataOwnerAccountMode,
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
@@ -189,16 +190,43 @@ export async function listLegacyV1SessionsForAccount(params: Readonly<{
         projectedRows.map((row) => row.session),
         userId,
     );
-    const sessions = projectedRows.map((row) => {
+    const projectLegacyRow = (row: (typeof projectedRows)[number]) => {
         const v = row.session;
         const viewer = projectSessionViewer({
             row: v,
             viewerAccountId: userId,
             discussion: discussionFacts.get(v.id) ?? QUIET_SESSION_PERSONAL_DISCUSSION_FACTS,
         });
+        const publicationProjection = projectSessionListingPublicationPreview(v);
+        const hasLiveFacts = publicationProjection.hasLiveFacts;
+        // "Which runtime facts may this V1 row publish" is one rule, and the V1
+        // owner and shared recipients answer it identically — only the metadata
+        // recipient, the data key and the share fields differ below. Stating it
+        // once here is what keeps the rule in step with the selection predicate
+        // that admits the row (`createFilteredSessionListWhere`).
+        const liveFacts = {
+            pendingPermissionRequestCount: hasLiveFacts ? v.pendingPermissionRequestCount : 0,
+            pendingUserActionRequestCount: hasLiveFacts ? v.pendingUserActionRequestCount : 0,
+            latestTurnId: hasLiveFacts ? v.latestTurnId ?? null : null,
+            latestTurnStatus: hasLiveFacts ? parseStoredSessionLatestTurnStatus(v.latestTurnStatus) : null,
+            latestTurnStatusObservedAt: hasLiveFacts
+                ? readLatestTurnStatusObservedAt(v.latestTurnStatusObservedAt)
+                : null,
+            lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(v.lastRuntimeIssue) : null,
+            rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
+                readSessionTurnRollbackEligibleStarts(v),
+                v,
+            ),
+            ...readSessionTranscriptAuthorityFields(v),
+            acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
+            pendingCount: hasLiveFacts ? v.pendingCount : 0,
+            pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
+            pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
+            ...(hasLiveFacts
+                ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
+                : {}),
+        };
         if (row.recipient === "owner") {
-            const publicationProjection = projectSessionListingPublicationPreview(v);
-            const hasLiveFacts = publicationProjection.hasLiveFacts;
             return {
                 id: v.id,
                 seq: publicationProjection.seq,
@@ -228,34 +256,13 @@ export async function listLegacyV1SessionsForAccount(params: Readonly<{
                 viewer,
                 lastViewedSessionSeq: projectLegacyViewerLastViewedSessionSeqV1({ readState: viewer.readState, visibleSessionSeq: publicationProjection.seq }),
                 unreadSince: projectLegacyViewerUnreadSinceV1(viewer.readState),
-                pendingPermissionRequestCount: hasLiveFacts ? v.pendingPermissionRequestCount : 0,
-                pendingUserActionRequestCount: hasLiveFacts ? v.pendingUserActionRequestCount : 0,
-                latestTurnId: hasLiveFacts ? v.latestTurnId ?? null : null,
-                latestTurnStatus: hasLiveFacts ? parseStoredSessionLatestTurnStatus(v.latestTurnStatus) : null,
-                latestTurnStatusObservedAt: hasLiveFacts
-                    ? readLatestTurnStatusObservedAt(v.latestTurnStatusObservedAt)
-                    : null,
-                lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(v.lastRuntimeIssue) : null,
-                rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
-                    readSessionTurnRollbackEligibleStarts(v),
-                    v,
-                ),
-                ...readSessionTranscriptAuthorityFields(v),
-                acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
-                pendingCount: hasLiveFacts ? v.pendingCount : 0,
-                pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
-                pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
-                ...(hasLiveFacts
-                    ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
-                    : {}),
+                ...liveFacts,
                 dataEncryptionKey: projectViewerSessionDataKey(v),
                 lastMessage: null,
             };
         }
 
         const share = row.share;
-        const publicationProjection = projectSessionListingPublicationPreview(v);
-        const hasLiveFacts = publicationProjection.hasLiveFacts;
         return {
             id: v.id,
             seq: publicationProjection.seq,
@@ -275,28 +282,9 @@ export async function listLegacyV1SessionsForAccount(params: Readonly<{
                 },
             }),
             viewer,
-                lastViewedSessionSeq: projectLegacyViewerLastViewedSessionSeqV1({ readState: viewer.readState, visibleSessionSeq: publicationProjection.seq }),
-                unreadSince: projectLegacyViewerUnreadSinceV1(viewer.readState),
-            pendingPermissionRequestCount: hasLiveFacts ? v.pendingPermissionRequestCount : 0,
-            pendingUserActionRequestCount: hasLiveFacts ? v.pendingUserActionRequestCount : 0,
-            latestTurnId: hasLiveFacts ? v.latestTurnId ?? null : null,
-            latestTurnStatus: hasLiveFacts ? parseStoredSessionLatestTurnStatus(v.latestTurnStatus) : null,
-            latestTurnStatusObservedAt: hasLiveFacts
-                ? readLatestTurnStatusObservedAt(v.latestTurnStatusObservedAt)
-                : null,
-            lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(v.lastRuntimeIssue) : null,
-            rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
-                readSessionTurnRollbackEligibleStarts(v),
-                v,
-            ),
-            ...readSessionTranscriptAuthorityFields(v),
-            acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
-            pendingCount: hasLiveFacts ? v.pendingCount : 0,
-            pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
-            pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
-            ...(hasLiveFacts
-                ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
-                : {}),
+            lastViewedSessionSeq: projectLegacyViewerLastViewedSessionSeqV1({ readState: viewer.readState, visibleSessionSeq: publicationProjection.seq }),
+            unreadSince: projectLegacyViewerUnreadSinceV1(viewer.readState),
+            ...liveFacts,
             dataEncryptionKey:
                 v.encryptionMode === "plain"
                     ? null
@@ -307,6 +295,23 @@ export async function listLegacyV1SessionsForAccount(params: Readonly<{
             accessLevel: share.accessLevel,
             canApprovePermissions: share.canApprovePermissions,
         };
-    });
-    return { sessions };
+    };
+
+    const sessions: ReturnType<typeof projectLegacyRow>[] = [];
+    let metadataUpgradeRequiredCount = 0;
+    for (const row of projectedRows) {
+        try {
+            sessions.push(projectLegacyRow(row));
+        } catch (error) {
+            // Same per-row refusal the current list projection applies: an
+            // unmigrated historical share is omitted with the count below,
+            // never a request-wide refusal of every other readable row.
+            if (!isSessionMetadataPrivacyUpgradeRequiredError(error)) throw error;
+            metadataUpgradeRequiredCount += 1;
+        }
+    }
+    return {
+        sessions,
+        ...(metadataUpgradeRequiredCount > 0 ? { metadataUpgradeRequiredCount } : {}),
+    };
 }

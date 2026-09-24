@@ -252,6 +252,11 @@ describe('happier session run start (integration)', () => {
     const { decodeBase64, decrypt, encodeBase64, encrypt } = await import('@/api/encryption');
     const output = captureConsoleJsonOutput();
     const machineKeySeed = new Uint8Array(32).fill(8);
+    // Machine RPC content is sealed with the Machine's own content key — the
+    // key the published envelope carries — not with the Account seed that
+    // merely opens that envelope. The two were the same before the Machine
+    // content codec existed; they are not the same now.
+    const machineContentKey = new Uint8Array(32).fill(3);
     const rpcOrder: string[] = [];
     let spawnNonce = '';
     sessionActive = false;
@@ -263,7 +268,7 @@ describe('happier session run start (integration)', () => {
         rpcOrder.push(String(data.method ?? ''));
         expect(data.method).toBe(`machine-integration-1:${RPC_METHODS.SPAWN_HAPPY_SESSION}`);
         const request = decrypt(
-          machineKeySeed,
+          machineContentKey,
           'dataKey',
           decodeBase64(String(data.params ?? ''), 'base64'),
         ) as any;
@@ -277,7 +282,7 @@ describe('happier session run start (integration)', () => {
         cb?.({
           ok: true,
           result: encodeBase64(
-            encrypt(machineKeySeed, 'dataKey', {
+            encrypt(machineContentKey, 'dataKey', {
               type: 'success',
             }),
             'base64',
@@ -294,7 +299,7 @@ describe('happier session run start (integration)', () => {
           `machine-integration-1:${RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE}`,
         );
         const request = decrypt(
-          machineKeySeed,
+          machineContentKey,
           'dataKey',
           decodeBase64(String(data.params ?? ''), 'base64'),
         ) as any;
@@ -302,7 +307,7 @@ describe('happier session run start (integration)', () => {
         cb?.({
           ok: true,
           result: encodeBase64(
-            encrypt(machineKeySeed, 'dataKey', {
+            encrypt(machineContentKey, 'dataKey', {
               status: 'success',
               sessionId: 'sess_integration_run_start_123',
             }),
@@ -340,7 +345,11 @@ describe('happier session run start (integration)', () => {
         },
       );
 
-      expect(output.json()).toMatchObject({ ok: true, kind: 'session_run_start' });
+      const envelope = output.json();
+      // A bare `ok:false` cannot distinguish a stale fixture from a product
+      // defect, so the typed failure is asserted first and printed on failure.
+      expect(envelope.error ?? null).toBeNull();
+      expect(envelope).toMatchObject({ ok: true, kind: 'session_run_start' });
       expect(rpcOrder).toEqual([
         `machine-integration-1:${RPC_METHODS.SPAWN_HAPPY_SESSION}`,
         `machine-integration-1:${RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE}`,

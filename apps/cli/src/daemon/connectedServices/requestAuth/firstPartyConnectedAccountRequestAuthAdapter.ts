@@ -27,12 +27,12 @@ import type {
 import {
     parseHttpHeadersRequestAuthBearer,
 } from './parseHttpHeadersRequestAuthBearer';
+import {
+    projectTeamResourceSelectionToSessionPurposeBinding,
+    type ConnectedAccountTeamDirectMaterialOrigin,
+} from '../purposeBindings/ConnectedAccountPurposeBindingOwner';
 
-export type QualifiedPurposeTeamDirectMaterialOrigin = Readonly<{
-    purpose: QualifiedConnectedAccountPurposeV1;
-    resourceId: string;
-    disclosedMember: QualifiedConnectedAccountRef;
-}>;
+export type QualifiedPurposeTeamDirectMaterialOrigin = ConnectedAccountTeamDirectMaterialOrigin;
 
 /**
  * The sole compatibility map from the released service-keyed Connected Services namespace to the
@@ -67,7 +67,8 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot
 }>): Readonly<{
     purposes: readonly QualifiedConnectedAccountPurposeV1[];
     bindings: readonly QualifiedConnectedAccountPurposeBindingV1[];
-    directMaterialOrigins: readonly QualifiedPurposeTeamDirectMaterialOrigin[];
+    /** Present only when a direct Team selection is bound (lane 10 child 06 :506-508). */
+    directMaterialOrigins?: readonly QualifiedPurposeTeamDirectMaterialOrigin[];
 }> {
     const purposes: QualifiedConnectedAccountPurposeV1[] = [];
     const projected: QualifiedConnectedAccountPurposeBindingV1[] = [];
@@ -92,29 +93,17 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot
                 : undefined);
         if (!binding) continue;
         if (binding.source === 'team_resource') {
-            const disclosedMember = binding.disclosedMember;
-            if (
-                !disclosedMember
-                || buildQualifiedPluginContributionKey(disclosedMember.service) !== qualifiedServiceKey
-            ) continue;
-            projected.push(Object.freeze({
+            // The Session's own Team selection: a direct one binds its
+            // disclosed member and carries the materialization origin (lane 10
+            // child 06 :506-508); a brokered one is served by its broker.
+            const teamBinding = projectTeamResourceSelectionToSessionPurposeBinding({
                 purpose,
-                target: Object.freeze({
-                    kind: 'account' as const,
-                    account: Object.freeze({
-                        service: Object.freeze({ ...disclosedMember.service }),
-                        accountId: disclosedMember.accountId,
-                    }),
-                }),
-            }));
-            directMaterialOrigins.push(Object.freeze({
-                purpose,
-                resourceId: binding.resourceId,
-                disclosedMember: Object.freeze({
-                    service: Object.freeze({ ...disclosedMember.service }),
-                    accountId: disclosedMember.accountId,
-                }),
-            }));
+                service: qualifiedService,
+                selection: binding,
+            });
+            if (!teamBinding) continue;
+            projected.push(teamBinding.binding);
+            directMaterialOrigins.push(teamBinding.origin);
             continue;
         }
         if (binding.source !== 'connected') continue;
@@ -141,7 +130,7 @@ export function projectConnectedServiceBindingsToQualifiedPurposeBindingSnapshot
         bindings: Object.freeze(projected),
         ...(directMaterialOrigins.length > 0
             ? { directMaterialOrigins: Object.freeze(directMaterialOrigins) }
-            : { directMaterialOrigins: Object.freeze([]) }),
+            : {}),
     });
 }
 

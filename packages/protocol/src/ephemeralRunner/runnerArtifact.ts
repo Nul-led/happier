@@ -89,6 +89,46 @@ export const RunnerArtifactAvailabilityProjectionV1Schema = z.object({
 }).strict().readonly();
 export type RunnerArtifactAvailabilityProjectionV1 = z.infer<typeof RunnerArtifactAvailabilityProjectionV1Schema>;
 
+/**
+ * Does this signed checksums document authenticate exactly this artifact record?
+ *
+ * The Home and the creating device each verify the same signed document before
+ * they trust published bytes, and they used to restate the composite predicate
+ * separately with different vocabularies. One owner keeps them from drifting on
+ * entry ordering or an added metadata field, and returning a reason is what
+ * lets the Home distinguish a declared-but-invalid publication from a target
+ * that is positively absent.
+ */
+export type RunnerArtifactAuthenticationResultV1 =
+  | Readonly<{ ok: true; sha256: string; metadata: RunnerArtifactArchiveMetadataV1 }>
+  | Readonly<{ ok: false; reason: 'unverified_checksums' | 'digest_mismatch' | 'archive_metadata_mismatch' }>;
+
+export function authenticateRunnerArtifactAgainstSignedChecksumsV1(input: Readonly<{
+  verified: Readonly<{
+    ok: boolean;
+    sha256?: string | null;
+    archiveMetadata?: Readonly<{ sizeBytes: number; entries: readonly RunnerArtifactArchiveEntryV1[] }> | null;
+  }>;
+  expected: Readonly<{
+    sha256: string;
+    sizeBytes: number;
+    entries: readonly RunnerArtifactArchiveEntryV1[];
+  }>;
+}>): RunnerArtifactAuthenticationResultV1 {
+  const verified = input.verified;
+  if (!verified.ok || typeof verified.sha256 !== 'string' || verified.sha256.length === 0) {
+    return { ok: false, reason: 'unverified_checksums' };
+  }
+  if (verified.sha256 !== input.expected.sha256) return { ok: false, reason: 'digest_mismatch' };
+  const metadata = verified.archiveMetadata;
+  if (
+    !metadata
+    || metadata.sizeBytes !== input.expected.sizeBytes
+    || JSON.stringify(metadata.entries) !== JSON.stringify(input.expected.entries)
+  ) return { ok: false, reason: 'archive_metadata_mismatch' };
+  return { ok: true, sha256: verified.sha256, metadata: { sizeBytes: metadata.sizeBytes, entries: metadata.entries } };
+}
+
 /** Release manifest platform vocabulary (`os`/`arch` as published by the release pipeline). */
 export type RunnerArtifactPlatform = Readonly<{ os: string; arch: string }>;
 

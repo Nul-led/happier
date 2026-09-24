@@ -14,6 +14,7 @@ import type {
     TeamDirectorySourceSyncResultV1,
     TeamDirectorySourcesListInputV1,
     TeamErrorCodeV1,
+    TeamIdentityErrorCodeV1,
 } from "@happier-dev/protocol/teams";
 import { resolveStoredGitHubDirectoryReadiness } from "@/app/integrations/github/githubManagedDirectory";
 import { readHomeGovernancePolicyInTx } from "@/app/home/governance/governancePolicy";
@@ -38,6 +39,7 @@ import { publishTeamChangedInTx } from "../teamChanges";
 import { projectTeamDirectorySourceSummary } from "./directorySourceProjection";
 import {
     createDirectorySourceInTx,
+    readDirectorySourceRepairRefusalInTx,
     removeDirectorySourceInTx,
     requestDirectorySourceSyncInTx,
 } from "./directorySourceService";
@@ -389,7 +391,10 @@ export async function listDirectorySourceSetupOptionsForActor(
 
 const DEFAULT_PAGE_LIMIT = 50;
 
-type DirectoryAdministrationError = TeamErrorCodeV1 | TeamDirectorySafeErrorCodeV1;
+type DirectoryAdministrationError =
+    | TeamErrorCodeV1
+    | TeamDirectorySafeErrorCodeV1
+    | Extract<TeamIdentityErrorCodeV1, "team_identity_not_allowed">;
 type DirectoryAdministrationResult<T> =
     | Readonly<{ ok: true; value: T }>
     | Readonly<{ ok: false; error: DirectoryAdministrationError }>;
@@ -835,18 +840,40 @@ export async function setDirectorySourcePausedForActor(input: Partial<TeamOperat
                 },
             });
         } else {
+            // child 05 §10.1/:498: Resume clears the pause and ATOMICALLY
+            // records the full-scan request. A source the request owner would
+            // refuse is refused here, before anything is written, with the
+            // same typed reason — never an `ok` that advertises a repair the
+            // worker can never start.
+            const refusal = await readDirectorySourceRepairRefusalInTx(
+                tx,
+                await tx.teamDirectorySource.findUniqueOrThrow({
+                    where: { id: source.id },
+                    select: { kind: true, bindingConfig: true },
+                }),
+            );
+            if (refusal !== null) return { ok: false, error: refusal } as const;
+            // Resume owns the lifecycle reset — the parked failure, its backoff
+            // and any abandoned run token are what pausing suspended.
             await tx.teamDirectorySource.update({
                 where: { id: source.id },
                 data: {
                     state: "initializing",
                     activeReconcileRunId: null,
                     activeReconcileStartedAt: null,
-                    manualSyncRequestedAt: input.now ?? new Date(),
                     lastErrorCode: null,
                     consecutiveFailureCount: 0,
                     retryNotBefore: null,
                 },
             });
+            const requested = await requestDirectorySourceSyncInTx(tx, {
+                sourceId: source.id,
+                now: input.now,
+            });
+            // The refusal check above ran in this transaction on the same row.
+            if (!requested.ok) {
+                throw new Error(`directory Resume lost its full-scan request: ${requested.code}`);
+            }
         }
         const committed = await tx.teamDirectorySource.findUniqueOrThrow({
             where: { id: source.id },

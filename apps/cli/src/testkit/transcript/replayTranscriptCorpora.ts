@@ -97,17 +97,24 @@ export function createMalformedCiphertextRow(params: Readonly<{ seq: number; cre
  * The Agent-transition divider row: a passthrough `type: 'message'` agent event
  * carrying the `sessionAgentTransitionV1` sidecar. Single source of truth for
  * the divider payload on the CLI side.
+ *
+ * `encrypted` must match the Session the corpus models. Production writes this
+ * row through `sealSessionStoredContent`
+ * (`session/agentTransition/sessionAgentTransitionCutoverPayload.ts`), so under an
+ * E2EE Session it is `{t:'encrypted'}` — a plaintext divider is a row production
+ * cannot write, and the canonical opener now refuses it as unauthenticated.
  */
 export function createAgentTransitionDividerRow(params: Readonly<{
   seq: number;
   createdAt?: number;
+  encrypted?: boolean;
   fromAgentId?: string;
   toAgentId?: string;
   /** The recorded cutoff. Required on the wire, so the default supplies one. */
   sourceCutoffSeqInclusive?: number;
   message?: string;
 }>): TranscriptRowFixture {
-  return plainRow({
+  const row = {
     seq: params.seq,
     ...(params.createdAt === undefined ? {} : { createdAt: params.createdAt }),
     value: {
@@ -127,7 +134,8 @@ export function createAgentTransitionDividerRow(params: Readonly<{
         },
       },
     },
-  });
+  };
+  return params.encrypted === true ? encryptedRow(row) : plainRow(row);
 }
 
 export type MixedAgentReplayCorpus = Readonly<{
@@ -170,6 +178,7 @@ export function createMixedAgentReplayCorpus(options: Readonly<{
       ? [createAgentTransitionDividerRow({
         seq: 15,
         message: dividerMessage,
+        ...(options.encrypted === true ? { encrypted: true } : {}),
         ...(options.sourceAgentId ? { fromAgentId: options.sourceAgentId } : {}),
         ...(options.targetAgentId ? { toAgentId: options.targetAgentId } : {}),
       })]

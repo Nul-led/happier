@@ -10,7 +10,10 @@ import { externalSessionOperationTranslations } from './externalSessionOperation
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
 import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
 import { sessionBoardTranslations } from './sessionBoardTranslations';
@@ -708,6 +711,12 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             outcomeUnknown: 'Happier 無法確認這個機密是否已共用。請先重新整理清單再試一次。',
             inUseTitle: '仍在使用中',
             inUseBody: ({ places }: { places: string }) => `請先從以下使用它的位置移除這個共用機密：\n${places}`,
+            recipientReadinessTitle: '誰可以開啟',
+            recipientHomeManagedRequired: '此人使用由 Home 管理的儲存空間。將此機密改為由 Home 管理即可與其共用。',
+            recipientEncryptionSetupRequired: '尚未完成加密設定',
+            recipientEncryptionRepairRequired: '其加密金鑰需要修復後才能開啟',
+            recipientFinishSharing: '完成共用',
+            recipientReadinessUnavailable: '無法檢查誰可以開啟這個機密。請再試一次。',
             shareDisclosureTitle: '要共用這個機密嗎？',
             shareDisclosureBody: '取得共用的人可以在 Happier 接受已儲存機密的任何地方使用它。應用程式和本機工具可能會取得它的值。',
             shareDisclosureTargetCount: ({ count }: { count: number }) => `${count} 位接收者`,
@@ -4016,9 +4025,25 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     settingsProviders: settingsProvidersTranslations.zhHant,
 
     settingsAgents: {
+        authoring: {
+            configureAcpBackendPrompt: '幫我在 Happier 新增一個自訂 ACP 代理。問我想執行哪個代理以及它如何啟動（命令、參數、環境變數），確認該命令能在此裝置上執行，然後用 agents.acp.backends.upsert 動作儲存它（先用 action_spec_get 查看輸入）。它出現在 設定 → 代理 中時告訴我。',
+            addAgentPrompt: '我想在 Happier 新增一個新的程式設計代理。問我是哪一個。如果它支援 ACP（Agent Client Protocol）並透過命令啟動，就用 agents.acp.backends.upsert 動作把它新增為自訂 ACP 代理。否則，依照 happier-plugin-authoring 技能，從 plugins.scaffold 動作開始，建立一個新增它的 Happier 外掛。在做任何變更之前，告訴我你選擇了哪種方式以及原因。',
+            needsMachine: '需要一台裝置。將開啟裝置設定。',
+            useAgentToConfigure: '使用代理設定',
+            useAgentToConfigureDescription: '代理會詢問你要執行什麼並為你儲存。',
+        },
         collection: {
+            askAgentToAdd: '請代理新增一個',
+            askAgentToAddDescription: '代理會在新工作階段中為你設定。',
+            addAgent: '新增代理',
+            addAcpAgent: '新增 ACP 代理',
+            addAcpAgentDescription: '透過命令執行任何支援 ACP 的代理。',
+            ready: '就緒',
+            beta: '測試版',
+            install: '安裝',
+            reinstall: '重新安裝',
+            customAgents: '自訂代理',
             onMachine: ({ machine }: { machine: string }) => `在 ${machine} 上`,
-            onThisMachine: '在此裝置上',
             availableToInstall: '可安裝',
             searchPlaceholder: '搜尋代理',
             notInstalled: '未安裝',
@@ -4027,7 +4052,27 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             noMatches: '沒有符合搜尋的代理',
             overviewDescription: 'Happier 可以在你的裝置上啟動的程式設計代理。',
         },
+        offline: {
+            pickerDetail: '離線 · 顯示最後已知狀態',
+            bannerTitle: '此裝置已離線',
+            bannerDescription: '正在顯示最後已知狀態。裝置重新連線前，裝置操作無法使用。',
+        },
         detailPage: {
+            machineScopeLabel: '設定與狀態所在裝置',
+            readinessDescription: '上方裝置上的登入和 CLI。',
+            sessionDefaultsAccountDescription: ({ agent }: { agent: string }) => `儲存到你的帳戶，在任何裝置上使用 ${agent} 開始新工作階段時套用。`,
+            checkingMachine: ({ machine }: { machine: string }) => `正在檢查 ${machine}…`,
+            machineUnavailableDescription: 'Happier 無法讀取此裝置。你的代理設定仍然有效。',
+            noMachineTitle: '選擇裝置',
+            noMachineDescription: ({ agent }: { agent: string }) => `${agent} 的設定取決於它執行的裝置。請在上方選擇。`,
+            cliVersion: ({ cli, version }: { cli: string; version: string }) => `${cli} CLI ${version}`,
+            cliName: ({ cli }: { cli: string }) => `${cli} CLI`,
+            checkedAt: ({ time }: { time: string }) => `檢查於 ${time}`,
+            signInTitle: '登入',
+            signInGuide: '登入指南',
+            nothingToSetUpTitle: '此裝置上無需設定',
+            nothingToSetUpDescription: ({ agent }: { agent: string }) => `${agent} 在此沒有需要管理的 CLI 或登入。`,
+            integrationsTitle: '整合',
             onMachine: ({ machine }: { machine: string }) => `在 ${machine} 上`,
             notInstalledOnMachine: ({ machine }: { machine: string }) => `未安裝在 ${machine} 上`,
             readinessTitle: '就緒狀態',
@@ -4263,7 +4308,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
                     },
                     claudeRemoteAgentSdkEnabled: {
                         title: "使用 Agent SDK（遠端）",
-                        subtitle: "在遠端模式下使用官方 @anthropic-ai/claude-agent-sdk。"
+                        subtitle: "在遠端模式下使用 Happier 的 Claude Agent SDK 執行階段。"
                     },
                     claudeRemoteDebugEnabled: {
                         title: "除錯模式",
@@ -4507,11 +4552,21 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     },
 
     settingsAppearance: {
-      lightThemeSlot: '淺色主題',
-      lightThemeSlotDescription: '應用程式為淺色模式時使用。',
-      darkThemeSlot: '深色主題',
-      darkThemeSlotDescription: '應用程式為深色模式時使用。',
       pageDescription: '主題、文字、版面與動態效果。',
+      themesSummary: ({ light, dark }: { light: string; dark: string }) => `淺色：${light} · 深色：${dark}`,
+      themesCount: ({ builtIn, custom }: { builtIn: number; custom: number }) => `內建 ${builtIn} 個 · 自訂 ${custom} 個`,
+      textSizeGlyph: '文',
+      densityPreview: {
+          title: '預覽',
+          sessionTitle1: '修正不穩定的重新連線測試',
+          sessionTitle2: '重構設定外框',
+          sessionTitle3: '草擬版本說明',
+          sessionSubtitle1: 'happier · Claude',
+          sessionSubtitle2: 'happier · Codex',
+          sessionSubtitle3: 'docs · Claude',
+      },
+      resetConfirmTitle: '重設外觀？',
+      resetConfirmBody: '主題、文字、版面、動態效果、頭像和分頁列將恢復預設值。你的自訂主題會保留。',
       tabBarAppearance: {
         title: '標籤列',
         footer: '自訂底部標籤列。',
@@ -5833,25 +5888,11 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         saveServerGroup: '儲存群組',
         serverGroupMustHaveServer: 'Home 群組必須至少包含一個 Home。',
         relayDrift: {
-            bannerDifferentRelayTitle: '你的背景服務已連線到其他 Home',
-            bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) => `App: ${activeRelayUrl} · Background service: ${daemonRelayUrl}`,
-            bannerNeedsAuthTitle: '你的背景服務需要登入到此 Home',
-            bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `The app is using ${activeRelayUrl}, but the background service still needs approval or sign-in.`,
-            bannerNotConfiguredTitle: '你的背景服務尚未連線到此 Home',
-            bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `The app is using ${activeRelayUrl}, but this computer has not finished connecting the background service.`,
-            bannerNotInstalledTitle: '你的背景服務尚未為此 Home 安裝',
-            bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-                `The app is using ${activeRelayUrl}, but this computer still needs to install the background service for it.`,
-            bannerNotRunningTitle: '你的背景服務已安裝但未執行',
-            bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-                `The app is using ${activeRelayUrl}, but the background service is stopped and needs to be started again.`,
-            repairAction: '將背景服務連線到此 Home',
             progressTitle: '正在將背景服務連線到此 Home',
             progressStepPrepare: '準備背景服務',
             progressStepConfigureRelay: '更新 Home 連線',
             progressStepAuthenticate: '完成登入與授權',
             progressStepFinish: '完成修復',
-            statusUnknown: '未知',
         },
         retention: {
             title: '資料保留政策',
@@ -8721,9 +8762,10 @@ settingsSession: {
               presentationScreenSubtitle: '在主要內容區開啟「新工作階段」，並將輸入框固定在底部。',
               presentationModalTitle: '彈窗',
               presentationModalSubtitle: '在目前工作區上方以可關閉彈窗開啟「新工作階段」。',
-              wizardModeTitle: '精靈模式',
-              wizardModeEnabledSubtitle: '開啟包含獨立選擇器的引導式設定。',
-              wizardModeDisabledSubtitle: '使用以輸入框為中心的精簡彈窗。',
+              startWithTitle: '開始方式',
+              startWithDescription: '精靈會逐項引導選擇；輸入框會沿用你上次的設定。',
+              startWithComposer: '輸入框',
+              startWithWizard: '精靈',
               rememberLastProjectSelectionsTitle: '記住專案上次工作階段選擇',
               rememberLastProjectSelectionsEnabledSubtitle: '專案捷徑會重用最新工作階段的機器、資料夾、引擎、模型與工作階段選項。',
               rememberLastProjectSelectionsDisabledSubtitle: '專案捷徑只會預選專案機器與資料夾。',
@@ -9429,6 +9471,21 @@ settingsSession: {
 
     settingsAccount: {
         securityPageDescription: "此 Home 的登入方式、復原、工作階段與加密。",
+        hideRecoveryKey: "隱藏復原金鑰",
+        showRecoveryKey: "顯示復原金鑰",
+        accountIdCopy: "複製帳戶 ID",
+        accountIdLabel: "帳戶 ID",
+        accountServiceSignInCta: ({ accountService }: { accountService: string }) => `登入 ${accountService}`,
+        accountServiceBenefitFindHomes: "自動找到你的 Home",
+        thisHome: "此 Home",
+        thisHomeTitle: "此 Home",
+        shareUsageData: "分享匿名使用資料",
+        shareUsageDataDescription: "協助改善 Happier。不會收集任何個人資訊。",
+        shareCrashReports: "分享當機報告",
+        deleteAccountEllipsis: "刪除帳戶…",
+        signOutFootnote: "登出此 Home 後，你的其他 Home 與登入服務仍保持登入。",
+        sessionsSectionTitle: "工作階段",
+        apiAccessSectionTitle: "API 存取",
         endToEndEncrypted: "端對端加密",
         notEndToEndEncrypted: "未端對端加密",
         editUsername: "編輯使用者名稱",
@@ -9445,14 +9502,14 @@ settingsSession: {
         moreSecurity: "更多安全性選項",
         moreSecuritySummary: "API 權杖 · 加密 · 工作階段",
         allSecuritySettings: "所有登入與安全性設定",
-        accountServiceDescription: "尋找你的 Home，並讓你在任何裝置上登入。",
-        accountServiceInviteTitle: "在每部裝置上使用你的 Home",
-        accountServiceInviteBody: "登入一次即可找到你使用的 Home，並在手機、筆電或瀏覽器中開啟。你的 Home 及其資料會留在原處。",
-        accountServiceBenefitFindHomesDescription: "已連結的 Home 會自動出現。",
-        accountServiceBenefitSignIn: "登入 Home",
+        accountServiceDescription: "一個把你的裝置和 Home 連接起來的帳戶。",
+        accountServiceInviteTitle: "把你的 Home 帶到任何地方",
+        accountServiceInviteBody: "連接一次，你使用的每部裝置都能找到並開啟你的 Home。你的 Home 及其資料會留在原處。",
+        accountServiceBenefitFindHomesDescription: "與你的帳戶連結的 Home 會出現在你的每部裝置上。",
+        accountServiceBenefitSignIn: "直接開啟 Home",
         accountServiceBenefitSignInDescription: "無需再次輸入憑證即可開啟已連結的 Home。",
-        accountServiceBenefitDevices: "使用你的其他裝置",
-        accountServiceBenefitDevicesDescription: "你的其他裝置可以找到你的 Home 並要求存取。",
+        accountServiceBenefitDevices: "所有裝置都能用",
+        accountServiceBenefitDevicesDescription: "把你的手機和其他裝置連接到你的 Home。",
         accountServiceLinkedHomes: "已連結的 Home",
         accountServiceRefreshedAt: ({ time }: { time: string }) => `已於 ${time} 重新整理`,
         accountServiceSignInAgain: "重新登入",
@@ -10074,20 +10131,16 @@ settingsSession: {
 
             },
         cliFollowUpTitle: '終端備用路徑（可選）',
-        manualDisclosure: {
-            show: '顯示手動終端機步驟',
-            hide: '隱藏手動終端機步驟',
-        },
 
             subtitle: {
 
                 connectMachine: ({ targetLabel }: { targetLabel: string }) =>
 
-                    `Use the desktop setup flow to connect this computer to ${targetLabel}. Open the manual steps only if you prefer the terminal path.`,
+                    `使用桌面設定流程將這台電腦連線到 ${targetLabel}。`,
 
                 startDaemon: ({ targetLabel }: { targetLabel: string }) =>
 
-                    `Use the desktop setup flow to reconnect the background service for ${targetLabel}. Open the manual steps only if you are already on that computer.`,
+                    `使用桌面設定流程為 ${targetLabel} 重新連線背景服務。`,
 
                 createSession: '使用 + 按鈕或從終端機啟動新的工作階段。',
 
@@ -10447,6 +10500,7 @@ settingsSession: {
         },
         repairBackgroundServiceAction: '修復背景服務',
         repairBackgroundServiceProgressTitle: '正在修復背景服務',
+        thisComputer: thisComputerConnectionTranslations.zhHant,
         cliPath: cliPathExposureTranslations.zhHant,
         cliTrust: cliTrustPromptTranslations.zhHant,
         runtimeInventory: 'Happier 執行階段清單',
@@ -10984,6 +11038,7 @@ settingsSession: {
     },
   ...apiTokenSettingsTranslations['zh-Hant'],
   settingsPlugins: {
+    updateReview: pluginUpdateReviewTranslations.zhHant,
     ...pluginWebhookAdministrationTranslations['zh-Hant'],
     ...pluginAccountDataEraseTranslations['zh-Hant'],
     ...pluginAccountReleaseSelectionTranslations['zh-Hant'],
@@ -11031,23 +11086,24 @@ settingsSession: {
     developmentEditWithAgent: "使用代理編輯",
     developmentEditWithAgentSubtitle: "在此外掛程式的原始碼資料夾中開啟一般工作階段。",
     developmentCreateWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `請在此資料夾中繼續建立 Happier 外掛程式「${pluginId}」。請使用 happier-plugin-authoring 技能，並且只使用公開的「happier plugins」命令和公開的 SDK 匯入；新增權限或憑證授權仍由我決定。`,
-    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `這裡是 Happier 外掛程式「${pluginId}」的開發資料夾。對於我要求的變更，請使用 happier-plugin-authoring 技能，並且只使用公開的「happier plugins」命令和公開的 SDK 匯入；新增權限或憑證授權仍由我決定。`,
+    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `這是 Happier 外掛程式「${pluginId}」目前的開發來源。對於我要求的變更，請使用 happier-plugin-authoring 技能，並且只使用公開的「happier plugins」命令和公開的 SDK 匯入；新增權限或憑證授權仍由我決定。`,
     developmentSourcePathLabel: ({ path }: { path: string }) => `路徑：${path}`,
-    developmentSourceInstall: "開發本機外掛程式資料夾",
-    developmentSourceInstallSubtitle: "讓此機器上的常駐程式從你的資料夾建置並執行外掛程式。你必須先核准該資料夾。",
-    developmentSourceInstallTitle: "外掛程式資料夾",
-    developmentSourceInstallBody: "輸入此機器上外掛程式專案資料夾的完整路徑。",
+    developmentSourceInstall: "開發本機外掛程式",
+    developmentSourceInstallSubtitle: "讓此機器上的常駐程式從你的檔案或資料夾建置並執行外掛程式。你必須先核准確切的來源。",
+    developmentSourceInstallTitle: "外掛程式檔案或資料夾",
+    developmentSourceInstallBody: "輸入此機器上 .ts、.mts、.js 或 .mjs 外掛程式檔案，或外掛程式專案資料夾的完整路徑。",
+    developmentSourceInstallPlaceholder: "/path/to/plugin.mjs 或 /path/to/plugin-folder",
     developmentSourceInstallSucceeded: "開發來源已核准並投影。",
     developmentSourceInstallFailed: ({ outcome }: { outcome: string }) => `未能安裝開發來源（${outcome}）。`,
-    developmentTrustProjectSourceTitle: "要信任這個外掛程式資料夾嗎？",
-    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier 會在下列位置安裝相依套件、建置並執行程式碼：\n\n${path}（${machine} / ${server}）\n\n只有在你信任該資料夾中的所有內容以及它可能取得的所有內容時才繼續。`,
-    developmentTrustProjectSourceConfirm: "信任資料夾",
+    developmentTrustProjectSourceTitle: "要信任這個外掛程式來源嗎？",
+    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier 會建置並執行下列位置的程式碼：\n\n${path}（${machine} / ${server}）\n\n若為專案資料夾，Happier 可能會安裝其宣告的相依套件。只有在你信任此來源及其相依套件時才繼續。`,
+    developmentTrustProjectSourceConfirm: "信任來源",
     pendingChangesTitle: "等待你的決定",
     pendingChangesFooter: "在這台機器上準備好的外掛變更。代理可以準備變更，但只有你能核准。",
     pendingChangesReviewHint: "在信任任何內容之前先顯示完整審閱。",
     pendingChangeReviewAction: "審閱",
     pendingChangeRejectHint: "捨棄已準備的變更。不會安裝或信任任何內容。",
-    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `外掛資料夾：${path}`,
+    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `外掛來源：${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId}，來自 ${source}`,
     pendingChangeApplying: "此變更已決定，正在套用中。",
     pendingChangeExpired: "此變更在決定前已過期。請重新申請。",
@@ -11338,12 +11394,13 @@ settingsSession: {
           readyStatus: '你的 Home 已準備就緒。',
           failureBody: '無法完成此步驟。已完成的設定內容不會遺失；請再試一次或開啟詳細資料。',
           profileRecoveryBody: '你的個人 Home 已準備就緒。Happier 仍需完成與它的連接。',
-          computerRecoveryBody: '你的個人 Home 已準備就緒。Agent 設定需要處理。',
+          computerRecoveryBody: '你的個人 Home 已準備就緒。這台電腦需要處理後才能執行 Agent。',
           existingRuntimeBody: 'Happier 在此電腦上發現了現有的本地 Home。請選擇如何繼續。',
           useExisting: '使用此本地 Home',
           useExistingDetail: '驗證其存取權並保護註冊流程，同時不變更目前選取的 Home。',
           useAnother: '使用另一個 Home',
           useAnotherDetail: '保持此本地 Home 不變，並從你的 Home 中選擇。',
+          ...personalHomeDecisionTranslations.zhHant,
           ...personalHomeBootstrapBlockedTranslations['zh-Hant'],
       },
   },

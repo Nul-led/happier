@@ -59,6 +59,16 @@ export type SessionOrganizationOptimisticRecord = Readonly<{
     >>;
 }>;
 
+/**
+ * The record maps a server response can confirm one key of. Confirmation is per key, so a response
+ * never republishes a whole map over writes that happened while it was in flight.
+ */
+export type SessionOrganizationConfirmableMapName =
+    | 'sessionOrganizationPinsBySessionKey'
+    | 'sessionOrganizationAttentionStandingsBySessionKey'
+    | 'sessionOrganizationFolderAssignmentsBySessionKey'
+    | 'sessionOrganizationTagAssignmentsBySessionKey';
+
 export type SessionOrganizationDomain = {
     sessionOrganizationSchemaVersionByServerId: Record<string, number>;
     sessionOrganizationSnapshotVersionByServerId: Record<string, number>;
@@ -95,6 +105,12 @@ export type SessionOrganizationDomain = {
     reconcileSessionOrganizationTagDelete: (serverId: string, tagId: string) => void;
     rollbackSessionOrganizationOptimistic: (recordId: string) => void;
     commitSessionOrganizationOptimistic: (recordId: string) => void;
+    confirmSessionOrganizationOptimistic: <K extends SessionOrganizationConfirmableMapName>(
+        recordId: string,
+        map: K,
+        key: string,
+        value: SessionOrganizationDomain[K][string] | null,
+    ) => void;
     clearSessionOrganizationForServer: (serverId: string) => void;
     applySessionFolderAssignments: (serverId: string, assignments: readonly SessionFolderAssignment[]) => void;
     setSessionFolderAssignmentsLoading: (serverId: string, loading: boolean) => void;
@@ -545,20 +561,78 @@ function applyRecordDelta<T>(
     return next;
 }
 
+/**
+ * Undo one record's own keys, and only while it still owns them. A key a later write already
+ * replaced — a newer optimistic change, or a confirmed server response — belongs to that write,
+ * not to the failure being rolled back, so reverting it would erase newer local truth.
+ */
+function undoRecordDelta<T>(
+    current: Record<string, T>,
+    before: Record<string, T> | undefined,
+    after: Record<string, T> | undefined,
+): Record<string, T> {
+    if (!before || !after) return current;
+    let next = current;
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of keys) {
+        const hasAfter = hasOwn(after as Record<string, unknown>, key);
+        const ownedValue = hasAfter ? after[key] : undefined;
+        if (!shallowEqualValue(next[key], ownedValue)) continue;
+        const hasBefore = hasOwn(before as Record<string, unknown>, key);
+        if (hasBefore && shallowEqualValue(before[key], ownedValue)) continue;
+        next = setRecordValue(next, key, hasBefore ? before[key] : undefined);
+    }
+    return next;
+}
+
 function rebaseRemainingOptimisticRecords<S extends SessionOrganizationDomain>(
     state: S,
     rolledBackRecord: SessionOrganizationOptimisticRecord,
     remainingRecords: Record<string, SessionOrganizationOptimisticRecord>,
 ): Partial<S> {
-    let pins = rolledBackRecord.before.sessionOrganizationPinsBySessionKey ?? state.sessionOrganizationPinsBySessionKey;
-    let attentionStandings = rolledBackRecord.before.sessionOrganizationAttentionStandingsBySessionKey
-        ?? state.sessionOrganizationAttentionStandingsBySessionKey;
-    let folders = rolledBackRecord.before.sessionOrganizationFoldersByFolderKey ?? state.sessionOrganizationFoldersByFolderKey;
-    let tags = rolledBackRecord.before.sessionOrganizationTagsByTagKey ?? state.sessionOrganizationTagsByTagKey;
-    let labels = rolledBackRecord.before.sessionOrganizationLabelsByLabelKey ?? state.sessionOrganizationLabelsByLabelKey;
-    let orderEntries = rolledBackRecord.before.sessionOrganizationOrderEntriesByScopeKey ?? state.sessionOrganizationOrderEntriesByScopeKey;
-    let tagAssignments = rolledBackRecord.before.sessionOrganizationTagAssignmentsBySessionKey ?? state.sessionOrganizationTagAssignmentsBySessionKey;
-    let organizationFolderAssignments = rolledBackRecord.before.sessionOrganizationFolderAssignmentsBySessionKey ?? state.sessionOrganizationFolderAssignmentsBySessionKey;
+    // Undo only the keys this record actually changed. Restoring its whole `before` map would
+    // also erase every write that committed after it — a failed mutation on one Session would
+    // roll back an unrelated Session's confirmed pin, folder, tag, order or reminder.
+    let pins = undoRecordDelta(
+        state.sessionOrganizationPinsBySessionKey,
+        rolledBackRecord.before.sessionOrganizationPinsBySessionKey,
+        rolledBackRecord.after.sessionOrganizationPinsBySessionKey,
+    );
+    let attentionStandings = undoRecordDelta(
+        state.sessionOrganizationAttentionStandingsBySessionKey,
+        rolledBackRecord.before.sessionOrganizationAttentionStandingsBySessionKey,
+        rolledBackRecord.after.sessionOrganizationAttentionStandingsBySessionKey,
+    );
+    let folders = undoRecordDelta(
+        state.sessionOrganizationFoldersByFolderKey,
+        rolledBackRecord.before.sessionOrganizationFoldersByFolderKey,
+        rolledBackRecord.after.sessionOrganizationFoldersByFolderKey,
+    );
+    let tags = undoRecordDelta(
+        state.sessionOrganizationTagsByTagKey,
+        rolledBackRecord.before.sessionOrganizationTagsByTagKey,
+        rolledBackRecord.after.sessionOrganizationTagsByTagKey,
+    );
+    let labels = undoRecordDelta(
+        state.sessionOrganizationLabelsByLabelKey,
+        rolledBackRecord.before.sessionOrganizationLabelsByLabelKey,
+        rolledBackRecord.after.sessionOrganizationLabelsByLabelKey,
+    );
+    let orderEntries = undoRecordDelta(
+        state.sessionOrganizationOrderEntriesByScopeKey,
+        rolledBackRecord.before.sessionOrganizationOrderEntriesByScopeKey,
+        rolledBackRecord.after.sessionOrganizationOrderEntriesByScopeKey,
+    );
+    let tagAssignments = undoRecordDelta(
+        state.sessionOrganizationTagAssignmentsBySessionKey,
+        rolledBackRecord.before.sessionOrganizationTagAssignmentsBySessionKey,
+        rolledBackRecord.after.sessionOrganizationTagAssignmentsBySessionKey,
+    );
+    let organizationFolderAssignments = undoRecordDelta(
+        state.sessionOrganizationFolderAssignmentsBySessionKey,
+        rolledBackRecord.before.sessionOrganizationFolderAssignmentsBySessionKey,
+        rolledBackRecord.after.sessionOrganizationFolderAssignmentsBySessionKey,
+    );
 
     for (const record of sortOptimisticRecords(Object.values(remainingRecords))) {
         pins = applyRecordDelta(pins, record.before.sessionOrganizationPinsBySessionKey, record.after.sessionOrganizationPinsBySessionKey);
@@ -608,7 +682,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                     assignment,
                 ] as const),
             );
-            if (nextAssignments === state.sessionOrganizationFolderAssignmentsBySessionKey) return {} as Partial<S>;
+            if (nextAssignments === state.sessionOrganizationFolderAssignmentsBySessionKey) return state;
             return {
                 sessionOrganizationFolderAssignmentsBySessionKey: nextAssignments,
             } as Partial<S>;
@@ -635,7 +709,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             set((state) => {
                 const currentVersion = state.sessionOrganizationSnapshotVersionByServerId[serverId];
                 if (typeof currentVersion === 'number' && uiSnapshot.version < currentVersion) {
-                    return {} as Partial<S>;
+                    return state;
                 }
                 const pins = replaceSessionRecord(
                     state.sessionOrganizationPinsBySessionKey,
@@ -724,20 +798,18 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
             });
         },
         setSessionOrganizationLoading: (serverId, loading) => {
-            set((state) => ({
-                sessionOrganizationLoadingByServerId: {
-                    ...state.sessionOrganizationLoadingByServerId,
-                    [serverId]: loading,
-                },
-            }) as Partial<S>);
+            set((state) => {
+                const nextLoading = setRecordValue(state.sessionOrganizationLoadingByServerId, serverId, loading);
+                if (nextLoading === state.sessionOrganizationLoadingByServerId) return state;
+                return { sessionOrganizationLoadingByServerId: nextLoading } as Partial<S>;
+            });
         },
         setSessionOrganizationError: (serverId, error) => {
-            set((state) => ({
-                sessionOrganizationErrorByServerId: {
-                    ...state.sessionOrganizationErrorByServerId,
-                    [serverId]: error,
-                },
-            }) as Partial<S>);
+            set((state) => {
+                const errors = setRecordValue(state.sessionOrganizationErrorByServerId, serverId, error);
+                if (errors === state.sessionOrganizationErrorByServerId) return state;
+                return { sessionOrganizationErrorByServerId: errors } as Partial<S>;
+            });
         },
         setSessionPinOptimistic: (serverId, sessionId, pin) => {
             const key = buildSessionOrganizationSessionKey(serverId, sessionId);
@@ -937,7 +1009,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                         || !deletedFolders.has(assignment.folderId)) continue;
                     updates.push([key, { sessionId: assignment.sessionId, folderId: assignmentTargetFolderId }] as const);
                 }
-                if (updates.length === 0) return {} as Partial<S>;
+                if (updates.length === 0) return state;
                 const nextAssignments = mergeRecordEntries(state.sessionOrganizationFolderAssignmentsBySessionKey, updates);
                 return {
                     sessionOrganizationFolderAssignmentsBySessionKey: nextAssignments,
@@ -957,7 +1029,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
                         tagIds: assignment.tagIds.filter((candidate) => candidate !== deletedTagId),
                     }] as const);
                 }
-                if (updates.length === 0) return {} as Partial<S>;
+                if (updates.length === 0) return state;
                 return {
                     sessionOrganizationTagAssignmentsBySessionKey: mergeRecordEntries(
                         state.sessionOrganizationTagAssignmentsBySessionKey,
@@ -969,7 +1041,7 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
         rollbackSessionOrganizationOptimistic: (recordId) => {
             set((state) => {
                 const record = state.sessionOrganizationOptimisticRecords[recordId];
-                if (!record) return {} as Partial<S>;
+                if (!record) return state;
                 const nextRecords = { ...state.sessionOrganizationOptimisticRecords };
                 delete nextRecords[recordId];
                 return rebaseRemainingOptimisticRecords(state, record, nextRecords);
@@ -977,10 +1049,30 @@ export function createSessionOrganizationDomain<S extends SessionOrganizationDom
         },
         commitSessionOrganizationOptimistic: (recordId) => {
             set((state) => {
-                if (!state.sessionOrganizationOptimisticRecords[recordId]) return {} as Partial<S>;
+                if (!state.sessionOrganizationOptimisticRecords[recordId]) return state;
                 const nextRecords = { ...state.sessionOrganizationOptimisticRecords };
                 delete nextRecords[recordId];
                 return { sessionOrganizationOptimisticRecords: nextRecords } as Partial<S>;
+            });
+        },
+        confirmSessionOrganizationOptimistic: (recordId, map, key, value) => {
+            set((state) => {
+                const record = state.sessionOrganizationOptimisticRecords[recordId];
+                const nextRecords = { ...state.sessionOrganizationOptimisticRecords };
+                delete nextRecords[recordId];
+                // A response confirms the write it belongs to and nothing else. It is applied only
+                // while this record's own value is still the current one for that key: a newer
+                // mutation or an authoritative snapshot that already replaced it is never
+                // overwritten by an older response, whatever order the responses settle in.
+                const optimistic = record?.after[map];
+                const stillCurrent = optimistic !== undefined && shallowEqualValue(state[map][key], optimistic[key]);
+                if (!stillCurrent) return { sessionOrganizationOptimisticRecords: nextRecords } as Partial<S>;
+                return {
+                    sessionOrganizationOptimisticRecords: nextRecords,
+                    [map]: setRecordValue<SessionOrganizationDomain[SessionOrganizationConfirmableMapName][string]>(
+                        state[map], key, value ?? undefined,
+                    ),
+                } as Partial<S>;
             });
         },
         clearSessionOrganizationForServer: (serverId) => {

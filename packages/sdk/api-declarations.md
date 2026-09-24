@@ -1370,7 +1370,17 @@ type GeneratedActions = Readonly<{
     readonly workspace: Readonly<{
         readonly sync: Readonly<{
             readonly conflict: Readonly<{
+                readonly inspect: (input: PublicActionInputById["workspace.sync.conflict.inspect"], options?: ActionExecutionOptions) => Promise<PublicActionExecutionResult<"workspace.sync.conflict.inspect">>;
                 readonly resolve: (input: PublicActionInputById["workspace.sync.conflict.resolve"], options?: ActionExecutionOptions) => Promise<PublicActionExecutionResult<"workspace.sync.conflict.resolve">>;
+            }>;
+            readonly conflicts: Readonly<{
+                readonly list: (input: PublicActionInputById["workspace.sync.conflicts.list"], options?: ActionExecutionOptions) => Promise<PublicActionExecutionResult<"workspace.sync.conflicts.list">>;
+            }>;
+            readonly relationship: Readonly<{
+                readonly create: (input: PublicActionInputById["workspace.sync.relationship.create"], options?: ActionExecutionOptions) => Promise<PublicActionExecutionResult<"workspace.sync.relationship.create">>;
+            }>;
+            readonly relationships: Readonly<{
+                readonly list: (input: PublicActionInputById["workspace.sync.relationships.list"], options?: ActionExecutionOptions) => Promise<PublicActionExecutionResult<"workspace.sync.relationships.list">>;
             }>;
         }>;
     }>;
@@ -1620,6 +1630,15 @@ const SHARED_SAVED_SECRET_ACTION_INPUT_SCHEMAS_V1: {
                 c: z.ZodString;
             }, z.core.$strict>
         ], "t">;
+        toMode: z.ZodOptional<z.ZodEnum<{
+            e2ee: "e2ee";
+            plain: "plain";
+        }>>;
+        keyEnvelopes: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            recipientAccountId: z.ZodString;
+            encryptedDataKey: z.ZodString;
+            recipientContentPublicKeyFingerprint: z.ZodString;
+        }, z.core.$strict>>>;
     }, z.core.$strict>;
     readonly 'secrets.shared.delete': z.ZodObject<{
         resourceId: z.ZodString;
@@ -2336,7 +2355,11 @@ const ActionIdSchema: z.ZodEnum<{
     "workflow.run.start": "workflow.run.start";
     "workflow.run.wait": "workflow.run.wait";
     "workflow.validate": "workflow.validate";
+    "workspace.sync.conflict.inspect": "workspace.sync.conflict.inspect";
     "workspace.sync.conflict.resolve": "workspace.sync.conflict.resolve";
+    "workspace.sync.conflicts.list": "workspace.sync.conflicts.list";
+    "workspace.sync.relationship.create": "workspace.sync.relationship.create";
+    "workspace.sync.relationships.list": "workspace.sync.relationships.list";
 }>;
 ```
 
@@ -2659,6 +2682,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
         projectObservationInput?: ParsedActionSpec['projectObservationInput'];
         projectObservationOutput?: ParsedActionSpec['projectObservationOutput'];
         approvalResultCustody?: ParsedActionSpec['approvalResultCustody'];
+        approvalInputCustody?: ParsedActionSpec['approvalInputCustody'];
         projectSessionConfirmation?: ParsedActionSpec['projectSessionConfirmation'];
         execution?: ParsedActionSpec['execution'];
         sideEffectClass?: ParsedActionSpec['sideEffectClass'];
@@ -6885,6 +6909,11 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 partially_configured: "partially_configured";
             }>;
             privateIdentityNetworkAllowed: z.ZodBoolean;
+            teamProviderKinds: z.ZodArray<z.ZodEnum<{
+                github_app_identity: "github_app_identity";
+                oidc: "oidc";
+                workos_sso: "workos_sso";
+            }>>;
         }, z.core.$strict>>;
         authenticationOptions: z.ZodObject<{
             methods: z.ZodArray<z.ZodObject<{
@@ -11617,6 +11646,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             }, z.core.$strict>;
         }, z.core.$strict>;
         readonly projectObservationOutput: typeof projectAccountApiTokenCreationObservation;
+        readonly approvalResultCustody: 'live_only';
         readonly inputSchema: z.ZodObject<{
             tokenId: z.ZodString;
             label: z.ZodString;
@@ -12767,7 +12797,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             }, z.core.$strict>>;
             permissionMode: z.ZodDefault<z.ZodString>;
             profileId: z.ZodOptional<z.ZodString>;
-            profileGenerationId: z.ZodOptional<z.ZodString>;
+            profileSourceCustody: z.ZodOptional<z.ZodType<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), z.core.$ZodTypeInternals<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {})>>>;
             secretReferenceOverlay: z.ZodOptional<z.ZodObject<{
                 v: z.ZodLiteral<1>;
                 bindings: z.ZodRecord<z.ZodString, z.ZodObject<{
@@ -14270,7 +14364,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         streaming: "streaming";
                     }>;
                     profileId: z.ZodOptional<z.ZodString>;
-                    profileGenerationId: z.ZodOptional<z.ZodString>;
+                    profileSourceCustody: z.ZodOptional<z.ZodType<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), z.core.$ZodTypeInternals<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {})>>>;
                     secretReferenceOverlay: z.ZodOptional<z.ZodObject<{
                         v: z.ZodLiteral<1>;
                         bindings: z.ZodRecord<z.ZodString, z.ZodObject<{
@@ -15277,7 +15435,23 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             runClass: "bounded" | "long_lived";
             ioMode: "request_response" | "streaming";
             profileId?: string | undefined;
-            profileGenerationId?: string | undefined;
+            profileSourceCustody?: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}) | undefined;
             secretReferenceOverlay?: {
                 v: 1;
                 bindings: Record<string, {
@@ -15589,7 +15763,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 streaming: "streaming";
             }>;
             profileId: z.ZodOptional<z.ZodString>;
-            profileGenerationId: z.ZodOptional<z.ZodString>;
+            profileSourceCustody: z.ZodOptional<z.ZodType<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), z.core.$ZodTypeInternals<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {})>>>;
             secretReferenceOverlay: z.ZodOptional<z.ZodObject<{
                 v: z.ZodLiteral<1>;
                 bindings: z.ZodRecord<z.ZodString, z.ZodObject<{
@@ -17233,7 +17471,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     streaming: "streaming";
                 }>;
                 profileId: z.ZodOptional<z.ZodString>;
-                profileGenerationId: z.ZodOptional<z.ZodString>;
+                profileSourceCustody: z.ZodOptional<z.ZodType<({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {}), ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {}), z.core.$ZodTypeInternals<({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {}), ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {})>>>;
                 secretReferenceOverlay: z.ZodOptional<z.ZodObject<{
                     v: z.ZodLiteral<1>;
                     bindings: z.ZodRecord<z.ZodString, z.ZodObject<{
@@ -20617,9 +20919,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             keep_synced: "keep_synced";
                             mirror_exactly: "mirror_exactly";
                         }>;
-                        changedFiles: z.ZodNumber;
+                        endpointStates: z.ZodObject<{
+                            alpha: z.ZodNullable<z.ZodObject<{
+                                connected: z.ZodBoolean;
+                                scanned: z.ZodBoolean;
+                                scanProblemCount: z.ZodNumber;
+                                transitionProblemCount: z.ZodNumber;
+                            }, z.core.$strict>>;
+                            beta: z.ZodNullable<z.ZodObject<{
+                                connected: z.ZodBoolean;
+                                scanned: z.ZodBoolean;
+                                scanProblemCount: z.ZodNumber;
+                                transitionProblemCount: z.ZodNumber;
+                            }, z.core.$strict>>;
+                        }, z.core.$strict>;
                         conflictCount: z.ZodNumber;
-                        lastSuccessfulSyncAtMs: z.ZodNullable<z.ZodNumber>;
+                        lastCycleObservedAtMs: z.ZodNullable<z.ZodNumber>;
                         errorCode: z.ZodOptional<z.ZodString>;
                     }, z.core.$strict>>;
                     cleanupWarning: z.ZodOptional<z.ZodObject<{
@@ -20653,11 +20968,75 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             keep_synced: "keep_synced";
                             mirror_exactly: "mirror_exactly";
                         }>;
-                        changedFiles: z.ZodNumber;
+                        endpointStates: z.ZodObject<{
+                            alpha: z.ZodNullable<z.ZodObject<{
+                                connected: z.ZodBoolean;
+                                scanned: z.ZodBoolean;
+                                scanProblemCount: z.ZodNumber;
+                                transitionProblemCount: z.ZodNumber;
+                            }, z.core.$strict>>;
+                            beta: z.ZodNullable<z.ZodObject<{
+                                connected: z.ZodBoolean;
+                                scanned: z.ZodBoolean;
+                                scanProblemCount: z.ZodNumber;
+                                transitionProblemCount: z.ZodNumber;
+                            }, z.core.$strict>>;
+                        }, z.core.$strict>;
                         conflictCount: z.ZodNumber;
-                        lastSuccessfulSyncAtMs: z.ZodNullable<z.ZodNumber>;
+                        lastCycleObservedAtMs: z.ZodNullable<z.ZodNumber>;
                         errorCode: z.ZodOptional<z.ZodString>;
                     }, z.core.$strict>>;
+                    cleanupWarning: z.ZodOptional<z.ZodObject<{
+                        code: z.ZodString;
+                        message: z.ZodString;
+                    }, z.core.$strict>>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"linked_workspace">;
+                    traversed: z.ZodReadonly<z.ZodArray<z.ZodObject<{
+                        relationshipId: z.ZodString;
+                        policyDigest: z.ZodString;
+                        status: z.ZodObject<{
+                            relationshipId: z.ZodString;
+                            controllerMachineId: z.ZodString;
+                            state: z.ZodEnum<{
+                                conflicted: "conflicted";
+                                controller_unavailable: "controller_unavailable";
+                                disconnected: "disconnected";
+                                error: "error";
+                                flushing: "flushing";
+                                paused: "paused";
+                                starting: "starting";
+                                stopped: "stopped";
+                                watching: "watching";
+                            }>;
+                            alphaPath: z.ZodString;
+                            betaPath: z.ZodString;
+                            mode: z.ZodEnum<{
+                                copy_once: "copy_once";
+                                keep_both_in_sync: "keep_both_in_sync";
+                                keep_synced: "keep_synced";
+                                mirror_exactly: "mirror_exactly";
+                            }>;
+                            endpointStates: z.ZodObject<{
+                                alpha: z.ZodNullable<z.ZodObject<{
+                                    connected: z.ZodBoolean;
+                                    scanned: z.ZodBoolean;
+                                    scanProblemCount: z.ZodNumber;
+                                    transitionProblemCount: z.ZodNumber;
+                                }, z.core.$strict>>;
+                                beta: z.ZodNullable<z.ZodObject<{
+                                    connected: z.ZodBoolean;
+                                    scanned: z.ZodBoolean;
+                                    scanProblemCount: z.ZodNumber;
+                                    transitionProblemCount: z.ZodNumber;
+                                }, z.core.$strict>>;
+                            }, z.core.$strict>;
+                            conflictCount: z.ZodNumber;
+                            lastCycleObservedAtMs: z.ZodNullable<z.ZodNumber>;
+                            errorCode: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>;
+                    }, z.core.$strict>>>;
                     cleanupWarning: z.ZodOptional<z.ZodObject<{
                         code: z.ZodString;
                         message: z.ZodString;
@@ -20726,6 +21105,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     kind: z.ZodLiteral<"relationship">;
                     relationshipId: z.ZodString;
                     flushBeforeCommit: z.ZodBoolean;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"linked_workspace">;
                 }, z.core.$strict>
             ], "kind">>;
             accountServerId: z.ZodOptional<z.ZodString>;
@@ -20795,6 +21177,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             kind: z.ZodLiteral<"relationship">;
                             relationshipId: z.ZodString;
                             flushBeforeCommit: z.ZodBoolean;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"linked_workspace">;
                         }, z.core.$strict>
                     ], "kind">>;
                 }, z.core.$strict>;
@@ -20848,6 +21233,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             kind: z.ZodLiteral<"relationship">;
                             relationshipId: z.ZodString;
                             flushBeforeCommit: z.ZodBoolean;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"linked_workspace">;
                         }, z.core.$strict>
                     ], "kind">>;
                 }, z.core.$strict>;
@@ -21052,6 +21440,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     kind: z.ZodLiteral<"relationship">;
                     relationshipId: z.ZodString;
                     flushBeforeCommit: z.ZodBoolean;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"linked_workspace">;
                 }, z.core.$strict>
             ], "kind">>;
         }, z.core.$loose>;
@@ -21560,15 +21951,18 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             };
         };
         readonly title: 'Resolve workspace conflict';
-        readonly description: 'Keep the selected workspace version by deleting the unchanged losing side and flushing synchronization.';
+        readonly description: 'Apply the exact reviewed workspace entry to the explicitly approved current destinations.';
         readonly safety: 'danger';
         readonly placements: readonly [
         ];
+        readonly bindings: {
+            readonly mcpToolName: 'workspace_sync_conflict_resolve';
+        };
         readonly surfaces: {
             readonly ui: true;
             readonly voice: false;
-            readonly agent: false;
-            readonly mcp: false;
+            readonly agent: true;
+            readonly mcp: true;
             readonly cli: false;
             readonly rpc: false;
         };
@@ -21582,29 +21976,47 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     readonly required: true;
                 },
                 {
-                    readonly path: 'request.relationshipId';
-                    readonly title: 'Relationship id';
+                    readonly path: 'hubWorkspaceRefId';
+                    readonly title: 'Hub workspace ref id';
                     readonly widget: 'text';
                     readonly required: true;
                 },
                 {
-                    readonly path: 'request.path';
+                    readonly path: 'path';
                     readonly title: 'Conflict path';
                     readonly widget: 'text';
                     readonly required: true;
                 },
                 {
-                    readonly path: 'request.keep';
-                    readonly title: 'Version to keep';
+                    readonly path: 'source';
+                    readonly title: 'Reviewed source';
+                    readonly widget: 'json';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'targets';
+                    readonly title: 'Approved destinations';
+                    readonly widget: 'json';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'relationshipIds';
+                    readonly title: 'Relationship ids';
+                    readonly widget: 'json';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'strategy';
+                    readonly title: 'Resolution strategy';
                     readonly widget: 'select';
                     readonly options: readonly [
                         {
-                            readonly value: 'alpha';
-                            readonly label: 'Alpha';
+                            readonly value: 'use_source';
+                            readonly label: 'Use reviewed source';
                         },
                         {
-                            readonly value: 'beta';
-                            readonly label: 'Beta';
+                            readonly value: 'keep_both';
+                            readonly label: 'Use source and keep alternatives';
                         }
                     ];
                     readonly required: true;
@@ -21612,49 +22024,576 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             ];
         };
         readonly outputSchema: z.ZodObject<{
+            endpoints: z.ZodReadonly<z.ZodArray<z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"applied">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"applied_paused">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"changed">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"offline">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"cancelled">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"unknown">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"failed">;
+                    errorCode: z.ZodString;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    status: z.ZodLiteral<"recovery_needed">;
+                    recoveryPath: z.ZodString;
+                }, z.core.$strict>
+            ], "status">>>;
+            preserved: z.ZodOptional<z.ZodReadonly<z.ZodArray<z.ZodObject<{
+                alternativeIndex: z.ZodNumber;
+                sourceWorkspaceRefId: z.ZodString;
+                destinationWorkspaceRefId: z.ZodString;
+                path: z.ZodString;
+                propagatingToWorkspaceRefIds: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                unverifiedPropagationToWorkspaceRefIds: z.ZodOptional<z.ZodReadonly<z.ZodArray<z.ZodString>>>;
+                outcome: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"preserved">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"already_present">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"not_started">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"changed">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"offline">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"cancelled">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"unknown">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"failed">;
+                        errorCode: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"recovery_needed">;
+                        recoveryPath: z.ZodString;
+                    }, z.core.$strict>
+                ], "status">;
+            }, z.core.$strict>>>>;
+        }, z.core.$strict>;
+        readonly inputSchema: z.ZodDiscriminatedUnion<[
+            z.ZodObject<{
+                controllerMachineId: z.ZodString;
+                hubWorkspaceRefId: z.ZodString;
+                path: z.ZodString;
+                source: z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    expected: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"missing">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"file">;
+                            digest: z.ZodString;
+                            executable: z.ZodBoolean;
+                            size: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"symlink">;
+                            target: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"directory">;
+                            fingerprint: z.ZodString;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>;
+                targets: z.ZodReadonly<z.ZodArray<z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    expected: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"missing">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"file">;
+                            digest: z.ZodString;
+                            executable: z.ZodBoolean;
+                            size: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"symlink">;
+                            target: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"directory">;
+                            fingerprint: z.ZodString;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>>>;
+                relationshipIds: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                strategy: z.ZodLiteral<"use_source">;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                controllerMachineId: z.ZodString;
+                hubWorkspaceRefId: z.ZodString;
+                path: z.ZodString;
+                source: z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    expected: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"missing">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"file">;
+                            digest: z.ZodString;
+                            executable: z.ZodBoolean;
+                            size: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"symlink">;
+                            target: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"directory">;
+                            fingerprint: z.ZodString;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>;
+                targets: z.ZodReadonly<z.ZodArray<z.ZodObject<{
+                    workspaceRefId: z.ZodString;
+                    expected: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"missing">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"file">;
+                            digest: z.ZodString;
+                            executable: z.ZodBoolean;
+                            size: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"symlink">;
+                            target: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"directory">;
+                            fingerprint: z.ZodString;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>>>;
+                relationshipIds: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                strategy: z.ZodLiteral<"keep_both">;
+                alternatives: z.ZodReadonly<z.ZodArray<z.ZodObject<{
+                    source: z.ZodObject<{
+                        workspaceRefId: z.ZodString;
+                        expected: z.ZodDiscriminatedUnion<[
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"missing">;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"file">;
+                                digest: z.ZodString;
+                                executable: z.ZodBoolean;
+                                size: z.ZodNumber;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"symlink">;
+                                target: z.ZodString;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"directory">;
+                                fingerprint: z.ZodString;
+                            }, z.core.$strict>
+                        ], "kind">;
+                    }, z.core.$strict>;
+                    destination: z.ZodObject<{
+                        workspaceRefId: z.ZodString;
+                        path: z.ZodString;
+                        expected: z.ZodDiscriminatedUnion<[
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"missing">;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"file">;
+                                digest: z.ZodString;
+                                executable: z.ZodBoolean;
+                                size: z.ZodNumber;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"symlink">;
+                                target: z.ZodString;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"directory">;
+                                fingerprint: z.ZodString;
+                            }, z.core.$strict>
+                        ], "kind">;
+                    }, z.core.$strict>;
+                    consequence: z.ZodObject<{
+                        propagatingToWorkspaceRefIds: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        unverifiedPropagationToWorkspaceRefIds: z.ZodOptional<z.ZodReadonly<z.ZodArray<z.ZodString>>>;
+                    }, z.core.$strict>;
+                }, z.core.$strict>>>;
+            }, z.core.$strict>
+        ], "strategy">;
+    },
+    {
+        readonly id: 'workspace.sync.relationship.create';
+        readonly operation: {
+            readonly version: 1;
+            readonly visibility: 'activity';
+            readonly progress: 'reported';
+            readonly presentation: {
+                readonly onStart: 'current';
+            };
+        };
+        readonly title: 'Add machine to workspace';
+        readonly description: 'Link a selected Workspace to a folder on another machine. Attaching an existing folder preserves its contents; creating from this Workspace replaces them.';
+        readonly safety: 'safe';
+        readonly placements: readonly [
+        ];
+        readonly surfaces: {
+            readonly ui: true;
+            readonly voice: false;
+            readonly agent: false;
+            readonly mcp: false;
+            readonly cli: false;
+            readonly rpc: false;
+        };
+        readonly inputHints: {
+            readonly title: 'Add a machine to this workspace';
+            readonly description: 'Links the selected Workspace to a folder on another machine.';
+            readonly fields: readonly [
+                {
+                    readonly path: 'sourceWorkspaceRefId';
+                    readonly title: 'Source workspace ref id';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'targetMachineId';
+                    readonly title: 'Target machine id';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'targetPath';
+                    readonly title: 'Target folder';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'mode';
+                    readonly title: 'Sync mode';
+                    readonly widget: 'select';
+                    readonly options: readonly [
+                        {
+                            readonly value: 'keep_synced';
+                            readonly label: 'Replica';
+                        },
+                        {
+                            readonly value: 'mirror_exactly';
+                            readonly label: 'Exact replica';
+                        },
+                        {
+                            readonly value: 'keep_both_in_sync';
+                            readonly label: 'Editable copy';
+                        }
+                    ];
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'destinationIntent';
+                    readonly title: 'Destination';
+                    readonly widget: 'select';
+                    readonly options: readonly [
+                        {
+                            readonly value: 'use_existing';
+                            readonly label: 'Use existing folder';
+                        },
+                        {
+                            readonly value: 'materialize_from_source_workspace';
+                            readonly label: 'Create from this Workspace';
+                        }
+                    ];
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'contentPolicy';
+                    readonly title: 'Content policy';
+                    readonly widget: 'json';
+                    readonly required: true;
+                }
+            ];
+        };
+        readonly outputSchema: z.ZodObject<{
+            v: z.ZodLiteral<1>;
             relationshipId: z.ZodString;
+            created: z.ZodBoolean;
             controllerMachineId: z.ZodString;
-            state: z.ZodEnum<{
-                conflicted: "conflicted";
-                controller_unavailable: "controller_unavailable";
-                disconnected: "disconnected";
-                error: "error";
-                flushing: "flushing";
-                paused: "paused";
-                starting: "starting";
-                stopped: "stopped";
-                watching: "watching";
-            }>;
-            alphaPath: z.ZodString;
-            betaPath: z.ZodString;
+            sourceWorkspaceRefId: z.ZodString;
+            targetWorkspaceRefId: z.ZodString;
+            status: z.ZodObject<{
+                relationshipId: z.ZodString;
+                controllerMachineId: z.ZodString;
+                state: z.ZodEnum<{
+                    conflicted: "conflicted";
+                    controller_unavailable: "controller_unavailable";
+                    disconnected: "disconnected";
+                    error: "error";
+                    flushing: "flushing";
+                    paused: "paused";
+                    starting: "starting";
+                    stopped: "stopped";
+                    watching: "watching";
+                }>;
+                alphaPath: z.ZodString;
+                betaPath: z.ZodString;
+                mode: z.ZodEnum<{
+                    copy_once: "copy_once";
+                    keep_both_in_sync: "keep_both_in_sync";
+                    keep_synced: "keep_synced";
+                    mirror_exactly: "mirror_exactly";
+                }>;
+                endpointStates: z.ZodObject<{
+                    alpha: z.ZodNullable<z.ZodObject<{
+                        connected: z.ZodBoolean;
+                        scanned: z.ZodBoolean;
+                        scanProblemCount: z.ZodNumber;
+                        transitionProblemCount: z.ZodNumber;
+                    }, z.core.$strict>>;
+                    beta: z.ZodNullable<z.ZodObject<{
+                        connected: z.ZodBoolean;
+                        scanned: z.ZodBoolean;
+                        scanProblemCount: z.ZodNumber;
+                        transitionProblemCount: z.ZodNumber;
+                    }, z.core.$strict>>;
+                }, z.core.$strict>;
+                conflictCount: z.ZodNumber;
+                lastCycleObservedAtMs: z.ZodNullable<z.ZodNumber>;
+                errorCode: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>;
+        }, z.core.$strict>;
+        readonly inputSchema: z.ZodObject<{
+            v: z.ZodLiteral<1>;
+            sourceWorkspaceRefId: z.ZodString;
+            targetMachineId: z.ZodString;
+            targetPath: z.ZodString;
             mode: z.ZodEnum<{
-                copy_once: "copy_once";
                 keep_both_in_sync: "keep_both_in_sync";
                 keep_synced: "keep_synced";
                 mirror_exactly: "mirror_exactly";
             }>;
-            changedFiles: z.ZodNumber;
-            conflictCount: z.ZodNumber;
-            lastSuccessfulSyncAtMs: z.ZodNullable<z.ZodNumber>;
-            errorCode: z.ZodOptional<z.ZodString>;
+            contentPolicy: z.ZodObject<{
+                v: z.ZodLiteral<1>;
+                selection: z.ZodEnum<{
+                    all_files: "all_files";
+                    git_worktree: "git_worktree";
+                }>;
+                extraIgnorePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                extraIncludePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                policyDigest: z.ZodString;
+            }, z.core.$strict>;
+            destinationIntent: z.ZodEnum<{
+                materialize_from_source_workspace: "materialize_from_source_workspace";
+                use_existing: "use_existing";
+            }>;
         }, z.core.$strict>;
+    },
+    {
+        readonly id: 'workspace.sync.relationships.list';
+        readonly title: 'List linked workspace relationships';
+        readonly description: 'List linked workspace relationships and their current sync status on the exact controller. Missing status stays unknown, never zero.';
+        readonly safety: 'safe';
+        readonly placements: readonly [
+        ];
+        readonly bindings: {
+            readonly mcpToolName: 'workspace_sync_relationships_list';
+        };
+        readonly examples: {
+            readonly mcp: {
+                readonly argsExample: '{"controllerMachineId":"{{machineId}}"}';
+            };
+        };
+        readonly surfaces: {
+            readonly ui: true;
+            readonly voice: false;
+            readonly agent: true;
+            readonly mcp: true;
+            readonly cli: true;
+            readonly rpc: false;
+        };
+        readonly inputHints: {
+            readonly title: 'List linked workspace relationships';
+            readonly fields: readonly [
+                {
+                    readonly path: 'controllerMachineId';
+                    readonly title: 'Controller machine id';
+                    readonly widget: 'text';
+                },
+                {
+                    readonly path: 'workspaceRefId';
+                    readonly title: 'Workspace ref id';
+                    readonly widget: 'text';
+                }
+            ];
+        };
+        readonly outputSchema: z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+            readonly [key: string]: import("../index.js").JsonValue;
+        } | null, unknown>>;
+        readonly inputSchema: z.ZodObject<{
+            controllerMachineId: z.ZodOptional<z.ZodString>;
+            workspaceRefId: z.ZodOptional<z.ZodString>;
+        }, z.core.$strict>;
+    },
+    {
+        readonly id: 'workspace.sync.conflicts.list';
+        readonly title: 'List workspace sync conflicts';
+        readonly description: 'Read one bounded conflict page for a linked workspace relationship. Pages keep their cursor; coverage can be partial.';
+        readonly safety: 'safe';
+        readonly placements: readonly [
+        ];
+        readonly bindings: {
+            readonly mcpToolName: 'workspace_sync_conflicts_list';
+        };
+        readonly examples: {
+            readonly mcp: {
+                readonly argsExample: '{"controllerMachineId":"{{machineId}}","relationshipId":"{{relationshipId}}","limit":50}';
+            };
+        };
+        readonly surfaces: {
+            readonly ui: true;
+            readonly voice: false;
+            readonly agent: true;
+            readonly mcp: true;
+            readonly cli: true;
+            readonly rpc: false;
+        };
+        readonly inputHints: {
+            readonly title: 'List workspace sync conflicts';
+            readonly fields: readonly [
+                {
+                    readonly path: 'controllerMachineId';
+                    readonly title: 'Controller machine id';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'relationshipId';
+                    readonly title: 'Relationship id';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'limit';
+                    readonly title: 'Limit';
+                    readonly widget: 'text';
+                }
+            ];
+        };
+        readonly outputSchema: z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+            readonly [key: string]: import("../index.js").JsonValue;
+        } | null, unknown>>;
         readonly inputSchema: z.ZodObject<{
             controllerMachineId: z.ZodString;
-            request: z.ZodObject<{
-                relationshipId: z.ZodString;
-                path: z.ZodString;
-                keep: z.ZodEnum<{
-                    alpha: "alpha";
-                    beta: "beta";
-                }>;
-                expectedDigest: z.ZodOptional<z.ZodString>;
-                expectedKind: z.ZodEnum<{
-                    directory: "directory";
-                    file: "file";
-                    missing: "missing";
-                    symlink: "symlink";
-                }>;
-            }, z.core.$strict>;
+            relationshipId: z.ZodString;
+            cursor: z.ZodOptional<z.ZodString>;
+            limit: z.ZodNumber;
+        }, z.core.$strict>;
+    },
+    {
+        readonly id: 'workspace.sync.conflict.inspect';
+        readonly title: 'Inspect workspace sync conflict';
+        readonly description: 'Inspect the current endpoint versions of a linked workspace path. Reads current bytes, not history; coverage can be partial.';
+        readonly safety: 'safe';
+        readonly placements: readonly [
+        ];
+        readonly bindings: {
+            readonly mcpToolName: 'workspace_sync_conflict_inspect';
+        };
+        readonly examples: {
+            readonly mcp: {
+                readonly argsExample: '{"controllerMachineId":"{{machineId}}","workspaceRefId":"{{workspaceRefId}}","path":"src/index.ts"}';
+            };
+        };
+        readonly surfaces: {
+            readonly ui: true;
+            readonly voice: false;
+            readonly agent: true;
+            readonly mcp: true;
+            readonly cli: true;
+            readonly rpc: false;
+        };
+        readonly inputHints: {
+            readonly title: 'Inspect workspace sync conflict';
+            readonly fields: readonly [
+                {
+                    readonly path: 'controllerMachineId';
+                    readonly title: 'Controller machine id';
+                    readonly widget: 'text';
+                },
+                {
+                    readonly path: 'workspaceRefId';
+                    readonly title: 'Workspace ref id';
+                    readonly widget: 'text';
+                    readonly required: true;
+                },
+                {
+                    readonly path: 'path';
+                    readonly title: 'Conflict path';
+                    readonly widget: 'text';
+                    readonly required: true;
+                }
+            ];
+        };
+        readonly outputSchema: z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+            readonly [key: string]: import("../index.js").JsonValue;
+        } | null, unknown>>;
+        readonly inputSchema: z.ZodObject<{
+            controllerMachineId: z.ZodOptional<z.ZodString>;
+            workspaceRefId: z.ZodString;
+            path: z.ZodString;
+            preview: z.ZodOptional<z.ZodObject<{
+                workspaceRefId: z.ZodString;
+                expected: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"missing">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"file">;
+                        digest: z.ZodString;
+                        executable: z.ZodBoolean;
+                        size: z.ZodNumber;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"symlink">;
+                        target: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"directory">;
+                        fingerprint: z.ZodString;
+                    }, z.core.$strict>
+                ], "kind">;
+            }, z.core.$strict>>;
         }, z.core.$strict>;
     },
     {
@@ -22896,6 +23835,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 session_access_permission_delegation_requires_edit: "session_access_permission_delegation_requires_edit";
                                 session_access_self_grant_invalid: "session_access_self_grant_invalid";
                                 session_access_session_not_found: "session_access_session_not_found";
+                                session_access_sharing_unavailable: "session_access_sharing_unavailable";
                                 session_access_subject_ineligible: "session_access_subject_ineligible";
                                 session_access_subject_not_found: "session_access_subject_not_found";
                                 session_access_team_policy_required: "session_access_team_policy_required";
@@ -23147,6 +24087,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         session_access_permission_delegation_requires_edit: "session_access_permission_delegation_requires_edit";
                         session_access_self_grant_invalid: "session_access_self_grant_invalid";
                         session_access_session_not_found: "session_access_session_not_found";
+                        session_access_sharing_unavailable: "session_access_sharing_unavailable";
                         session_access_subject_ineligible: "session_access_subject_ineligible";
                         session_access_subject_not_found: "session_access_subject_not_found";
                         session_access_team_policy_required: "session_access_team_policy_required";
@@ -24840,6 +25781,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }, z.core.$strict>;
                     }, z.core.$strict>;
                 }, z.core.$strict>>>;
+                toolAnswerDelivery: z.ZodOptional<z.ZodObject<{
+                    toolCallId: z.ZodString;
+                }, z.core.$strict>>;
                 permissionModeOverride: z.ZodOptional<z.ZodString>;
                 modelOverride: z.ZodOptional<z.ZodUnion<readonly [
                     z.ZodString,
@@ -25121,6 +26065,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 }, z.core.$strict>;
                             }, z.core.$strict>;
                         }, z.core.$strict>>>;
+                        toolAnswerDelivery: z.ZodOptional<z.ZodObject<{
+                            toolCallId: z.ZodString;
+                        }, z.core.$strict>>;
                         sessionId: z.ZodString;
                         message: z.ZodString;
                     }, z.core.$strict>,
@@ -26254,7 +27201,11 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                                         "workflow.run.start": "workflow.run.start";
                                         "workflow.run.wait": "workflow.run.wait";
                                         "workflow.validate": "workflow.validate";
+                                        "workspace.sync.conflict.inspect": "workspace.sync.conflict.inspect";
                                         "workspace.sync.conflict.resolve": "workspace.sync.conflict.resolve";
+                                        "workspace.sync.conflicts.list": "workspace.sync.conflicts.list";
+                                        "workspace.sync.relationship.create": "workspace.sync.relationship.create";
+                                        "workspace.sync.relationships.list": "workspace.sync.relationships.list";
                                     }>,
                                     z.ZodType<{
                                         pluginId: string;
@@ -27061,7 +28012,11 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                                     "workflow.run.start": "workflow.run.start";
                                     "workflow.run.wait": "workflow.run.wait";
                                     "workflow.validate": "workflow.validate";
+                                    "workspace.sync.conflict.inspect": "workspace.sync.conflict.inspect";
                                     "workspace.sync.conflict.resolve": "workspace.sync.conflict.resolve";
+                                    "workspace.sync.conflicts.list": "workspace.sync.conflicts.list";
+                                    "workspace.sync.relationship.create": "workspace.sync.relationship.create";
+                                    "workspace.sync.relationships.list": "workspace.sync.relationships.list";
                                 }>,
                                 z.ZodType<{
                                     pluginId: string;
@@ -29940,6 +30895,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                             session_access_permission_delegation_requires_edit: "session_access_permission_delegation_requires_edit";
                             session_access_self_grant_invalid: "session_access_self_grant_invalid";
                             session_access_session_not_found: "session_access_session_not_found";
+                            session_access_sharing_unavailable: "session_access_sharing_unavailable";
                             session_access_subject_ineligible: "session_access_subject_ineligible";
                             session_access_subject_not_found: "session_access_subject_not_found";
                             session_access_team_policy_required: "session_access_team_policy_required";
@@ -36477,7 +37433,11 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                 "workflow.run.start": "workflow.run.start";
                 "workflow.run.wait": "workflow.run.wait";
                 "workflow.validate": "workflow.validate";
+                "workspace.sync.conflict.inspect": "workspace.sync.conflict.inspect";
                 "workspace.sync.conflict.resolve": "workspace.sync.conflict.resolve";
+                "workspace.sync.conflicts.list": "workspace.sync.conflicts.list";
+                "workspace.sync.relationship.create": "workspace.sync.relationship.create";
+                "workspace.sync.relationships.list": "workspace.sync.relationships.list";
             }>;
             actionArgs: z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
                 readonly [key: string]: import("../index.js").JsonValue;
@@ -42627,7 +43587,11 @@ const ActionSpecSchema: z.ZodObject<{
         "workflow.run.start": "workflow.run.start";
         "workflow.run.wait": "workflow.run.wait";
         "workflow.validate": "workflow.validate";
+        "workspace.sync.conflict.inspect": "workspace.sync.conflict.inspect";
         "workspace.sync.conflict.resolve": "workspace.sync.conflict.resolve";
+        "workspace.sync.conflicts.list": "workspace.sync.conflicts.list";
+        "workspace.sync.relationship.create": "workspace.sync.relationship.create";
+        "workspace.sync.relationships.list": "workspace.sync.relationships.list";
     }>;
     title: z.ZodString;
     description: z.ZodOptional<z.ZodString>;
@@ -42735,6 +43699,7 @@ const ActionSpecSchema: z.ZodObject<{
     projectObservationInput: z.ZodOptional<z.ZodCustom<(value: unknown) => unknown, (value: unknown) => unknown>>;
     projectObservationOutput: z.ZodOptional<z.ZodCustom<(value: unknown) => unknown, (value: unknown) => unknown>>;
     approvalResultCustody: z.ZodOptional<z.ZodLiteral<"live_only">>;
+    approvalInputCustody: z.ZodOptional<z.ZodLiteral<"live_only">>;
     projectSessionConfirmation: z.ZodOptional<z.ZodCustom<(input: unknown, context: Readonly<{
         sessionId: string;
     }>) => unknown | null, (input: unknown, context: Readonly<{
@@ -42983,6 +43948,7 @@ type ActionSpecWithoutApproval = Readonly<{
     projectObservationInput?: ParsedActionSpec['projectObservationInput'];
     projectObservationOutput?: ParsedActionSpec['projectObservationOutput'];
     approvalResultCustody?: ParsedActionSpec['approvalResultCustody'];
+    approvalInputCustody?: ParsedActionSpec['approvalInputCustody'];
     projectSessionConfirmation?: ParsedActionSpec['projectSessionConfirmation'];
     execution?: ParsedActionSpec['execution'];
     sideEffectClass?: ParsedActionSpec['sideEffectClass'];
@@ -109011,6 +109977,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 revoked: "revoked";
                 stale: "stale";
             }>;
+            directDeliveryRecorded: z.ZodOptional<z.ZodBoolean>;
             sessionUsePolicy: z.ZodNullable<z.ZodEnum<{
                 personal_allowed: "personal_allowed";
                 team_context_required: "team_context_required";
@@ -111449,11 +112416,6 @@ const WorkflowActionOutputSchemasV1: {
                                     bindingsByServiceId: Record<string, {
                                         source: "team_resource";
                                         resourceId: string;
-                                        deliveryMode: "brokered";
-                                        disclosedMember?: undefined;
-                                    } | {
-                                        source: "team_resource";
-                                        resourceId: string;
                                         deliveryMode: "direct";
                                         disclosedMember: {
                                             service: {
@@ -111463,16 +112425,21 @@ const WorkflowActionOutputSchemasV1: {
                                             accountId: string;
                                         };
                                     } | {
-                                        source: "native";
+                                        source: "team_resource";
+                                        resourceId: string;
+                                        deliveryMode: "brokered";
+                                        disclosedMember?: undefined;
                                     } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        source: "native";
                                     } | {
                                         source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -111480,13 +112447,13 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>,
                                 z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -111515,14 +112482,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        [x: string]: unknown;
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        [x: string]: unknown;
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -111530,22 +112497,17 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>, z.ZodTransform<{
                                     v: 2;
                                     bindingsByServiceId: Record<string, {
-                                        source: "team_resource";
-                                        resourceId: string;
-                                        deliveryMode: "brokered";
-                                        disclosedMember?: undefined;
-                                    } | {
                                         source: "team_resource";
                                         resourceId: string;
                                         deliveryMode: "direct";
@@ -111557,16 +112519,21 @@ const WorkflowActionOutputSchemasV1: {
                                             accountId: string;
                                         };
                                     } | {
-                                        source: "native";
+                                        source: "team_resource";
+                                        resourceId: string;
+                                        deliveryMode: "brokered";
+                                        disclosedMember?: undefined;
                                     } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        source: "native";
                                     } | {
                                         source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -111576,14 +112543,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        [x: string]: unknown;
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        [x: string]: unknown;
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>
                             ]>>>;
@@ -112661,22 +113628,6 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
         }, z.core.$strict>, z.ZodTransform<{
             v: 2;
             bindingsByServiceId: Record<string, {
-                source: "native";
-            } | {
-                source: "connected";
-                selection: "group";
-                groupId: string;
-                profileId?: string | undefined;
-            } | {
-                source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                source: "team_resource";
-                resourceId: string;
-                deliveryMode: "brokered";
-                disclosedMember?: undefined;
-            } | {
                 source: "team_resource";
                 resourceId: string;
                 deliveryMode: "direct";
@@ -112687,6 +113638,22 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                     };
                     accountId: string;
                 };
+            } | {
+                source: "team_resource";
+                resourceId: string;
+                deliveryMode: "brokered";
+                disclosedMember?: undefined;
+            } | {
+                source: "native";
+            } | {
+                source: "connected";
+                selection: "group";
+                groupId: string;
+                profileId?: string | undefined;
+            } | {
+                source: "connected";
+                selection: "profile";
+                profileId: string;
             }>;
         }, {
             v: 1;
@@ -112755,22 +113722,6 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
         }>>, z.ZodTransform<{
             v: 2;
             bindingsByServiceId: Record<string, {
-                source: "native";
-            } | {
-                source: "connected";
-                selection: "group";
-                groupId: string;
-                profileId?: string | undefined;
-            } | {
-                source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                source: "team_resource";
-                resourceId: string;
-                deliveryMode: "brokered";
-                disclosedMember?: undefined;
-            } | {
                 source: "team_resource";
                 resourceId: string;
                 deliveryMode: "direct";
@@ -112781,6 +113732,22 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                     };
                     accountId: string;
                 };
+            } | {
+                source: "team_resource";
+                resourceId: string;
+                deliveryMode: "brokered";
+                disclosedMember?: undefined;
+            } | {
+                source: "native";
+            } | {
+                source: "connected";
+                selection: "group";
+                groupId: string;
+                profileId?: string | undefined;
+            } | {
+                source: "connected";
+                selection: "profile";
+                profileId: string;
             }>;
         }, {
             v: 1;
@@ -113167,22 +114134,6 @@ const WorkflowStepSchema: z.ZodObject<{
             }, z.core.$strict>, z.ZodTransform<{
                 v: 2;
                 bindingsByServiceId: Record<string, {
-                    source: "native";
-                } | {
-                    source: "connected";
-                    selection: "group";
-                    groupId: string;
-                    profileId?: string | undefined;
-                } | {
-                    source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    source: "team_resource";
-                    resourceId: string;
-                    deliveryMode: "brokered";
-                    disclosedMember?: undefined;
-                } | {
                     source: "team_resource";
                     resourceId: string;
                     deliveryMode: "direct";
@@ -113193,6 +114144,22 @@ const WorkflowStepSchema: z.ZodObject<{
                         };
                         accountId: string;
                     };
+                } | {
+                    source: "team_resource";
+                    resourceId: string;
+                    deliveryMode: "brokered";
+                    disclosedMember?: undefined;
+                } | {
+                    source: "native";
+                } | {
+                    source: "connected";
+                    selection: "group";
+                    groupId: string;
+                    profileId?: string | undefined;
+                } | {
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
                 }>;
             }, {
                 v: 1;
@@ -113261,22 +114228,6 @@ const WorkflowStepSchema: z.ZodObject<{
             }>>, z.ZodTransform<{
                 v: 2;
                 bindingsByServiceId: Record<string, {
-                    source: "native";
-                } | {
-                    source: "connected";
-                    selection: "group";
-                    groupId: string;
-                    profileId?: string | undefined;
-                } | {
-                    source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    source: "team_resource";
-                    resourceId: string;
-                    deliveryMode: "brokered";
-                    disclosedMember?: undefined;
-                } | {
                     source: "team_resource";
                     resourceId: string;
                     deliveryMode: "direct";
@@ -113287,6 +114238,22 @@ const WorkflowStepSchema: z.ZodObject<{
                         };
                         accountId: string;
                     };
+                } | {
+                    source: "team_resource";
+                    resourceId: string;
+                    deliveryMode: "brokered";
+                    disclosedMember?: undefined;
+                } | {
+                    source: "native";
+                } | {
+                    source: "connected";
+                    selection: "group";
+                    groupId: string;
+                    profileId?: string | undefined;
+                } | {
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
                 }>;
             }, {
                 v: 1;

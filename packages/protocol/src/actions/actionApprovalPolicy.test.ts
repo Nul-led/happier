@@ -221,6 +221,33 @@ describe('isApprovalRequiredByActionsSettings', () => {
     expect(decision.required).toBe(false);
   });
 
+  // teams-lane-04/11-responsible-assignment.md:340 — assignment confirmation is
+  // required by default and waivable in the canonical Actions policy; the mounted
+  // picker has no direct confirmation host, so the present-user UI default must
+  // not be suppressed for it.
+  it('requires assignment confirmation by default on the present-user UI and honors a ui waiver', () => {
+    const actionId = 'session.responsibility.set' as const;
+    const context = { surface: 'ui', authority: 'present_user' } as const;
+    expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, context)).toBe(true);
+    expect(resolveActionApprovalRouting({
+      actionId,
+      spec: getActionSpec(actionId),
+      settings: EMPTY_SETTINGS,
+      context,
+    })).toMatchObject({ required: true, flow: 'deferred' });
+    // An unwired host applies the same default.
+    expect(resolveActionApprovalRouting({ actionId, spec: getActionSpec(actionId), context }).required).toBe(true);
+
+    const waived = normalizeActionsSettingsV1({
+      v: 1,
+      actions: {},
+      approvalWaivedSurfaces: { [actionId]: ['ui'] },
+    });
+    expect(isApprovalRequiredByActionsSettings(actionId, waived, context)).toBe(false);
+    // The waiver is surface-exact: the Agent default is untouched.
+    expect(isApprovalRequiredByActionsSettings(actionId, waived, { surface: 'agent', authority: 'account_automation' })).toBe(true);
+  });
+
   it('consumes exact completed CLI confirmation while preserving explicit require and waiver settings', () => {
     const actionId = 'account.password.change' as const;
     expect(resolveActionApprovalRouting({
@@ -570,6 +597,67 @@ describe('agent-initiated dangerous-action approval default (FINALIZATION-PLAN �
       context: { surface: 'ui' } as any,
     });
     expect(decision.required).toBe(true);
+  });
+
+  it('keeps live-only custody on the exact invocation when a user requires confirmation on a present-user surface', () => {
+    const settings: ActionsSettingsV1 = {
+      v: 1,
+      actions: {
+        'account.password.enroll': {
+          enabledPlacements: [],
+          disabledSurfaces: [],
+          disabledPlacements: [],
+          approvalRequiredSurfaces: ['ui'],
+        },
+      } as any,
+    };
+    const context = { surface: 'ui', authority: 'present_user' } as any;
+
+    // Input custody is the sibling of result custody: neither may be handed to a
+    // durable Artifact, so the admitted invocation stays the blocking waiter.
+    expect(resolveActionApprovalRouting({
+      actionId: 'account.password.enroll' as any,
+      spec: getActionSpec('account.password.enroll' as any),
+      settings,
+      context,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+    expect(resolveActionApprovalRouting({
+      actionId: 'teams.identity.workos.adminPortalLink.create' as any,
+      spec: getActionSpec('teams.identity.workos.adminPortalLink.create' as any),
+      requiredByPolicy: true,
+      context,
+    })).toEqual({ required: true, flow: 'blocking', result: 'required' });
+  });
+
+  it('keeps every show-once bearer creation on its live invocation', () => {
+    // One rule for the same concept: the Account API token and the Team
+    // external key both return a plaintext bearer exactly once, so neither may
+    // hand it to a durable Artifact continuation.
+    for (const actionId of ['account.apiTokens.create', 'teams.credentials.externalKeys.create'] as const) {
+      expect(getActionSpec(actionId).approvalResultCustody, actionId).toBe('live_only');
+      expect(resolveActionApprovalRouting({
+        actionId: actionId as any,
+        spec: getActionSpec(actionId),
+        requiredByPolicy: true,
+        context: { surface: 'ui', authority: 'present_user' } as any,
+      }), actionId).toEqual({ required: true, flow: 'blocking', result: 'required' });
+    }
+  });
+
+  it('keeps the Team identity connection test on the durable mounted continuation', () => {
+    // L03/06 §16: Team identity tests consume approved results through the
+    // mounted completion callback; only the WorkOS Portal link is live-only.
+    for (const context of [
+      { surface: 'ui', authority: 'present_user' },
+      { surface: 'api', authority: 'account_automation' },
+    ] as const) {
+      expect(resolveActionApprovalRouting({
+        actionId: 'teams.identity.connections.test.start' as any,
+        spec: getActionSpec('teams.identity.connections.test.start' as any),
+        requiredByPolicy: true,
+        context: context as any,
+      })).toEqual({ required: true, flow: 'deferred', result: 'required' });
+    }
   });
 
   it('honors an explicit requiredByPolicy=false even for the dangerous agent subset (wired host owns the decision)', () => {

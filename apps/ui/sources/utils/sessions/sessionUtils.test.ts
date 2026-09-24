@@ -1655,6 +1655,32 @@ describe('useSessionStatus', () => {
         }
     });
 
+    it('arms every later expiration, not only the first, from unchanged session facts', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000_000);
+        try {
+            const { useSessionStatus, SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS } = await import('./sessionUtils');
+            // Immutable facts: the two deadlines below are the only things that change.
+            const thinkingAt = Date.now() - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS + 5;
+            const activeAt = Date.now() - SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS + 1_005;
+            const hook = await renderHook(() => useSessionStatus(createBaseSession({
+                thinking: true,
+                thinkingAt,
+                activeAt,
+            })));
+
+            expect(hook.getCurrent().state).toBe('thinking');
+
+            await flushHookEffects({ cycles: 1, turns: 0, advanceTimersMs: 5 });
+            expect(hook.getCurrent().state).toBe('waiting');
+
+            await flushHookEffects({ cycles: 1, turns: 0, advanceTimersMs: 1_002 });
+            expect(hook.getCurrent().state).toBe('stale');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('does not expire a canonical in-progress projection without a terminal update', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_000_000);

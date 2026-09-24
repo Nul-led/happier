@@ -94,33 +94,11 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
     expect(typeof sessionId).toBe('string');
     expect(create.data?.session?.encryptionMode).toBe('e2ee');
 
-    const missing = await fetchJson<{ error: string }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${owner.token}`,
-        'Content-Type': 'application/json',
-        ...currentHeaders,
-      },
-      body: JSON.stringify({ userId: recipientId, accessLevel: 'view' }),
-      timeoutMs: 15_000,
-    });
-    expect(missing.status).toBe(400);
-    expect(missing.data?.error).toBe('encryptedDataKey required');
-
-    const invalid = await fetchJson<{ error: string }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${owner.token}`,
-        'Content-Type': 'application/json',
-        ...currentHeaders,
-      },
-      body: JSON.stringify({ userId: recipientId, accessLevel: 'view', encryptedDataKey: Buffer.from('x').toString('base64') }),
-      timeoutMs: 15_000,
-    });
-    expect(invalid.status).toBe(400);
-    expect(invalid.data?.error).toBe('Invalid encryptedDataKey');
-
-    const ok = await fetchJson<{ share: { id: string } }>(`${server.baseUrl}/v1/sessions/${sessionId}/shares`, {
+    // The canonical grant route: a ready recipient of an E2EE Session needs its envelope.
+    const setGrant = (accountEnvelopeInput?: { v: 1; encryptedDataKey: string }) => fetchJson<{
+      error?: string;
+      changed?: boolean;
+    }>(`${server!.baseUrl}/v2/sessions/access-grants/set`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${owner.token}`,
@@ -128,14 +106,25 @@ describe('core e2e: e2ee direct share requires encryptedDataKey', () => {
         ...currentHeaders,
       },
       body: JSON.stringify({
-        userId: recipientId,
+        sessionId,
+        subject: { kind: 'account', accountId: recipientId },
         accessLevel: 'view',
-        encryptedDataKey: recipientDataKey,
+        canApprovePermissions: false,
+        ...(accountEnvelopeInput ? { accountEnvelopeInput } : {}),
       }),
       timeoutMs: 15_000,
     });
+
+    const missing = await setGrant();
+    expect(missing.status).toBe(400);
+    expect(missing.data?.error).toBe('recipient_envelope_required');
+
+    const invalid = await setGrant({ v: 1, encryptedDataKey: Buffer.from('x').toString('base64') });
+    expect(invalid.status).toBe(400);
+
+    const ok = await setGrant({ v: 1, encryptedDataKey: recipientDataKey });
     expect(ok.status).toBe(200);
-    expect(typeof ok.data?.share?.id).toBe('string');
+    expect(ok.data?.changed).toBe(true);
 
     const fetched = await fetchJson<unknown>(`${server.baseUrl}/v2/sessions/${sessionId}`, {
       headers: { Authorization: `Bearer ${recipient.token}`, ...currentHeaders },

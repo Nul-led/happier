@@ -65,6 +65,8 @@ export type SessionRuntimeControls = {
   resolveComposerAttachmentForDispatch?: ComposerAttachmentDispatchResolver;
   prepareRunTeamCredentialProviderBinding?: (request: Readonly<{
     runId: string;
+    /** The Run's own Agent, which need not be its parent Session's. */
+    agentId: string;
     resourceId: string;
     modelId: string;
     /** Present only for an explicit Run selection; omission preserves parent inheritance. */

@@ -191,6 +191,11 @@ function resolveInvokeActionInput(
     if (!composed.ok) invalidInvokeArguments(composed.message);
     return composed.input;
   }
+  // A discovered definition publishes canonical top-level data fields only and
+  // has no caller binder that could rename one, so `parseActionCliInput` has
+  // already refused a field supplied by both `--input-json` and a friendly
+  // flag. Composition here is therefore a merge of two disjoint sources, and
+  // the published schema itself stays the executor's to validate.
   return Object.freeze({ ...(parsed.canonicalBase ?? {}), ...parsed.callerOverlay });
 }
 

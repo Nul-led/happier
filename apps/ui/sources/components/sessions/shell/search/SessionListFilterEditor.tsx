@@ -372,6 +372,7 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
             props.filters,
             props.includeInactive,
             optionId,
+            { fixedAudienceKeys: props.fixedAudienceKeys },
         );
         // Source has a persisted owner; every other facet is this surface's retained
         // view state. One option id only ever moves one facet, so the write goes to

@@ -43,7 +43,7 @@ function createOwner() {
       : {
           displayName: `Group ${target.groupId}`,
           account: { service: target.service, accountId: 'selected' },
-    },
+        },
     materializeAccount: async () => ({ kind: 'environment', env: {} }),
     async projectTargetAccounts() {
       throw new Error('target-scoped listing is outside Account Settings persistence tests');
@@ -354,6 +354,114 @@ describe('active Account Settings purpose-binding store', () => {
       code: 'plugin_connected_account_settings_conflict',
       retryable: true,
       details: { currentVersion: '7' },
+    });
+  });
+
+  describe('a durable Team resource default', () => {
+    // Lane 10 child 02 :271, child 06 :506: the purpose target stays
+    // `account | group`; the default persists the canonical Team selection.
+    const selection = {
+      source: 'team_resource' as const,
+      resourceId: 'resource-1',
+      deliveryMode: 'direct' as const,
+      disclosedMember: { service, accountId: 'source-member' },
+    };
+    const settingsWithTeamDefault = () => ({
+      connectedAccountPurposeBindingsV1: {
+        v: 1,
+        bindings: [],
+        teamResourceSelections: [{ purpose, teamId: 'team-acme', selection }],
+      },
+    });
+    /** Exactly what an earlier 0.3 build (W28/W29) persisted for the same default. */
+    const earlierTeamPurposeTarget = () => ({
+      connectedAccountPurposeBindingsV1: {
+        v: 1,
+        bindings: [{ purpose, target: { kind: 'team_resource', service, teamId: 'team-acme', selection } }],
+      },
+    });
+
+    it.each([
+      { label: 'the canonical Team selection', settings: settingsWithTeamDefault },
+      { label: 'an earlier 0.3 Team purpose target', settings: earlierTeamPurposeTarget },
+    ])('refuses $label outside a Session with a typed reason and keeps it', async ({ settings }) => {
+      beginWith(settings());
+      const before = accountSettingsIo.current;
+
+      await expect(createOwner().materialize({
+        purpose,
+        serviceRefs: [service],
+        request: { kind: 'environment', keys: ['TOKEN'] },
+        signal: new AbortController().signal,
+      })).rejects.toMatchObject({
+        code: 'plugin_connected_account_team_resource_unavailable',
+        details: { reason: 'session_required' },
+      });
+      await expect(createOwner().getBinding({
+        purpose,
+        serviceRefs: [service],
+        signal: new AbortController().signal,
+      })).rejects.toMatchObject({
+        code: 'plugin_connected_account_team_resource_unavailable',
+        details: { reason: 'session_required' },
+      });
+
+      expect(accountSettingsIo.update).not.toHaveBeenCalled();
+      expect(accountSettingsIo.current).toBe(before);
+    });
+
+    it('launches a Session with the Team selection, its disclosed-member binding and the materialization origin', async () => {
+      beginWith(earlierTeamPurposeTarget());
+
+      await expect(createOwner().resolveCurrentSessionPurposeBindingSnapshot({
+        authorizedPurposes: [{ purpose, serviceRefs: [service] }],
+        signal: new AbortController().signal,
+      })).resolves.toEqual({
+        purposes: [purpose],
+        bindings: [{ purpose, target: { kind: 'account', account: selection.disclosedMember } }],
+        directMaterialOrigins: [{ purpose, resourceId: 'resource-1', disclosedMember: selection.disclosedMember }],
+        teamResourceSelections: [{ purpose, teamId: 'team-acme', selection, services: [service] }],
+      });
+      expect(accountSettingsIo.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a Team resource as a purpose target of a binding intent', async () => {
+      beginWith({ connectedAccountPurposeBindingsV1: { v: 1, bindings: [] } });
+
+      await expect(createOwner().resolveBindingIntent({
+        purpose,
+        target: { kind: 'team_resource', service, teamId: 'team-acme', selection } as never,
+        serviceRefs: [service],
+        signal: new AbortController().signal,
+      })).rejects.toThrow();
+    });
+
+    it('lets an explicit personal selection replace the Team default and keeps other Team defaults', async () => {
+      const otherPurpose = { consumer: purpose.consumer, purpose: 'other-request' } as const;
+      const otherDefault = {
+        purpose: otherPurpose,
+        teamId: 'team-acme',
+        selection: { source: 'team_resource' as const, resourceId: 'resource-2', deliveryMode: 'brokered' as const },
+      };
+      beginWith({
+        connectedAccountPurposeBindingsV1: {
+          v: 1,
+          bindings: [],
+          teamResourceSelections: [{ purpose, teamId: 'team-acme', selection }, otherDefault],
+        },
+      });
+
+      await createOwner().requestSelection({
+        ...authorized,
+        reason: 'Choose account',
+        signal: new AbortController().signal,
+      });
+
+      expect(accountSettingsIo.current?.connectedAccountPurposeBindingsV1).toEqual({
+        v: 1,
+        bindings: [{ purpose, target: { kind: 'account', account: { service, accountId: 'selected' } } }],
+        teamResourceSelections: [otherDefault],
+      });
     });
   });
 

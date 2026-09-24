@@ -21,6 +21,27 @@ type SessionRequest = (path: string, init: RequestInit) => Promise<Response>;
 export type SessionListPageSource =
     | Readonly<{ kind: 'ordinary'; path: string; allowV1Fallback: boolean }>
     | Readonly<{ kind: 'query'; body: SessionListQueryV1; allowV1Fallback: false }>;
+
+export const DEFAULT_SESSION_LIST_PATH = '/v2/sessions';
+
+/**
+ * The one answer to "which ordinary list resource does this read address".
+ * The request builder and the read's abort identity must agree: `/v2/sessions`
+ * and `/v2/sessions/archived` are different corpora, so a read of one must not
+ * cancel an in-flight read of the other.
+ */
+export function resolveSessionListRequestPath(params: Readonly<{
+    source?: SessionListPageSource;
+    sessionListPath?: string;
+}>): string {
+    const source = params.source;
+    if (source?.kind === 'ordinary') {
+        return source.path.trim() || DEFAULT_SESSION_LIST_PATH;
+    }
+    return typeof params.sessionListPath === 'string' && params.sessionListPath.trim().length > 0
+        ? params.sessionListPath.trim()
+        : DEFAULT_SESSION_LIST_PATH;
+}
 type V2SessionRecord = V2SessionListResponse['sessions'][number];
 type SessionListRequestHeadersOptions = Readonly<{
     includeSessionListTiming?: boolean;
@@ -546,6 +567,10 @@ export function looksLikeCurrentV2SessionNotFound404(body: unknown): boolean {
     return V2SessionByIdNotFoundSchema.safeParse(body).success;
 }
 
+function readMetadataUpgradeRequiredCount(value: unknown): number {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 0;
+}
+
 export async function fetchSessionListPageCompat(params: Readonly<{
     request: SessionRequest;
     token: string;
@@ -562,6 +587,8 @@ export async function fetchSessionListPageCompat(params: Readonly<{
     hasNext: boolean;
     attentionNextCursor: string | null;
     attentionHasNext: boolean;
+    /** Rows the Home selected but withheld pending their owner's metadata upgrade. */
+    metadataUpgradeRequiredCount: number;
     source: 'v2' | 'v1';
 }> {
     const source = params.source;
@@ -571,11 +598,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
         : source?.kind === 'ordinary'
             ? source.allowV1Fallback
             : params.allowLegacyV1Fallback !== false;
-    const sessionListPath = source?.kind === 'ordinary'
-        ? source.path.trim() || '/v2/sessions'
-        : typeof params.sessionListPath === 'string' && params.sessionListPath.trim().length > 0
-            ? params.sessionListPath.trim()
-            : '/v2/sessions';
+    const sessionListPath = resolveSessionListRequestPath(params);
     const requestPath = (() => {
         if (isQuery) return '/v2/sessions/query';
         const url = new URL(sessionListPath, 'http://placeholder.local');
@@ -657,6 +680,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
                 hasNext: parsedQuery.data.hasNext,
                 attentionNextCursor: parsedQuery.data.attentionNextCursor,
                 attentionHasNext: parsedQuery.data.attentionHasNext,
+                metadataUpgradeRequiredCount: parsedQuery.data.metadataUpgradeRequiredCount ?? 0,
                 source: 'v2',
             };
         }
@@ -670,6 +694,9 @@ export async function fetchSessionListPageCompat(params: Readonly<{
                     ? parsed.attentionNextCursor
                     : null,
                 attentionHasNext: parsed.attentionHasNext === true,
+                metadataUpgradeRequiredCount: readMetadataUpgradeRequiredCount(
+                    parsed.metadataUpgradeRequiredCount ?? (isRecord(v2Body) ? v2Body.metadataUpgradeRequiredCount : undefined),
+                ),
                 source: 'v2',
             };
         }
@@ -721,6 +748,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
         hasNext: false,
         attentionNextCursor: null,
         attentionHasNext: false,
+        metadataUpgradeRequiredCount: 0,
         source: 'v1',
     };
 }

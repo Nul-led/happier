@@ -136,9 +136,14 @@ describe('happier session plan start command', () => {
       expect(execute).toHaveBeenNthCalledWith(
         2,
         'subagents.plan.start',
+        // The Action's own schema composed this input, so its run-shape defaults are explicit.
         {
           backendTargetKeys: ['agent:claude'],
           instructions: 'Plan.',
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
         },
         { authority: 'present_user', defaultSessionId: 'sess-plan-1' },
       );

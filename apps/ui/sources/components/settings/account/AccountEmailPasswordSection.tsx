@@ -19,13 +19,13 @@ import {
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { ACCOUNT_SECURITY_SETTINGS } from './accountSecuritySettings';
 import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { Text, TextInput } from '@/components/ui/text/Text';
-import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
-import {
-    WelcomeActionAdmissionContext,
-    type WelcomeActionAdmission,
-} from '@/components/onboarding/preAuth/WelcomeActionList';
+import type { WelcomeActionAdmission } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { Modal } from '@/modal';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
 import { createActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
@@ -57,6 +57,11 @@ import {
     createAccountSecurityActionClient,
     type AccountSecurityActionClient,
 } from './accountSecurityActionClient';
+import {
+    accountSecurityProjectionScopeKey,
+    getLastKnownAccountSecurityProjection,
+    readAccountSecurityProjection,
+} from './accountSecurityProjectionStore';
 import { presentAccountRecoveryKeyEntry } from './presentAccountRecoveryKeyEntry';
 
 type SectionState =
@@ -133,7 +138,13 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const activeServer = useActiveServerSnapshot();
     const { theme } = useUnistyles();
     const client = React.useMemo(() => props.client ?? createAccountSecurityActionClient(), [props.client]);
-    const [state, setState] = React.useState<SectionState>({ kind: 'loading' });
+    // Start from the last projection read for this Account and Home, so a page opened after the
+    // Account overview does not re-announce facts it already has.
+    const [state, setState] = React.useState<SectionState>(() => {
+        const initialScopeKey = auth.credentials ? accountSecurityProjectionScopeKey(activeServer.serverId, profile.id) : null;
+        const known = initialScopeKey ? getLastKnownAccountSecurityProjection(initialScopeKey) : null;
+        return known && initialScopeKey ? { kind: 'ready', scopeKey: initialScopeKey, projection: known } : { kind: 'loading' };
+    });
     const [openForm, setOpenForm] = React.useState<OpenForm>(
         props.verificationToken || props.connectIntent ? 'change_password' : 'none',
     );
@@ -163,7 +174,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const passwordInputRef = React.useRef<{ focus(): void } | null>(null);
     const confirmPasswordInputRef = React.useRef<{ focus(): void } | null>(null);
     const scopeKey = auth.credentials
-        ? `${activeServer.serverId}\u0000${profile.id}`
+        ? accountSecurityProjectionScopeKey(activeServer.serverId, profile.id)
         : null;
     const scopeKeyRef = React.useRef(scopeKey);
     const noopApprovalRefresh = React.useCallback(() => undefined, []);
@@ -227,7 +238,8 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         unlockedSecretRef.current = null;
         // The previous Account's facts must not survive into the new scope.
         onProjectionRef.current?.(null);
-        setState({ kind: 'loading' });
+        const known = scopeKey ? getLastKnownAccountSecurityProjection(scopeKey) : null;
+        setState(known && scopeKey ? { kind: 'ready', scopeKey, projection: known } : { kind: 'loading' });
         setOpenForm(props.verificationToken || props.connectIntent ? 'change_password' : 'none');
         setDraft(createEmailPasswordDraft());
         setProblem(null);
@@ -272,14 +284,23 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         });
     }, [activeServer.serverId, activeServer.serverUrl, openForm, profile.id]);
 
-    const reload = React.useCallback(async () => {
+    /**
+     * Reads the projection through the shared owner. The mount read joins a read already in flight
+     * for this scope (the Account overview's); every later read (retry, after a mutation) is fresh.
+     */
+    const reload = React.useCallback(async (options?: Readonly<{ joinInFlight?: boolean }>) => {
         if (!auth.credentials || !scopeKey) return;
         const requestedScopeKey = scopeKey;
         const accountLifetime = captureActiveServerAccountScopeCurrentness();
         const controller = new AbortController();
         const retirement = accountLifetime.onRetire(() => controller.abort());
         try {
-            const projection = await client.read(controller.signal);
+            const projection = await readAccountSecurityProjection(
+                requestedScopeKey,
+                () => client.read(),
+                { fresh: options?.joinInFlight !== true },
+            );
+            if (controller.signal.aborted) return;
             if (!mountedRef.current || !accountLifetime.isCurrent() || scopeKeyRef.current !== requestedScopeKey) return;
             setState({ kind: 'ready', scopeKey: requestedScopeKey, projection });
             onProjectionRef.current?.(projection);
@@ -293,7 +314,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         }
     }, [auth.credentials, client, scopeKey]);
 
-    React.useEffect(() => { void reload(); }, [reload]);
+    React.useEffect(() => { void reload({ joinInFlight: true }); }, [reload]);
 
     const closeForm = React.useCallback(() => {
         setPendingPlainPasswordOAuth(null);
@@ -301,6 +322,31 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         setDraft(createEmailPasswordDraft());
         setProblem(null);
     }, []);
+
+    /**
+     * The escape every Cancel control runs. Cancel stays pressable while the
+     * section is busy by design, so closing the form must also stop the
+     * operation it belongs to: otherwise a deferred preparation (key
+     * derivation, reauthentication, approval wait) still dispatches the
+     * mutation after the person was told it was cancelled.
+     *
+     * Once the mutation has been dispatched the Home may already have applied
+     * it. That outcome is not this control's to discard, so the operation is
+     * left to settle through its own truthful presentation.
+     */
+    const cancelForm = React.useCallback(() => {
+        const inFlight = operationAbortRef.current;
+        if (inFlight && effectMayHaveBegunRef.current) return;
+        if (inFlight) {
+            // Retiring the pre-effect operation also releases the busy state it
+            // held: its own `finally` no longer owns the section once it is
+            // retired here, so it cannot clear (or leave latched) a later one.
+            inFlight.abort();
+            operationAbortRef.current = null;
+            setBusy(false);
+        }
+        closeForm();
+    }, [closeForm]);
 
     const completePlainPasswordEnrollment = React.useCallback(async () => {
         const requestedScopeKey = scopeKey;
@@ -329,7 +375,13 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
      * mutation. Everything before it is a pre-effect refusal that keeps its own
      * typed cause.
      */
-    const dispatchMutation = React.useCallback(async <T,>(operation: () => Promise<T>): Promise<T> => {
+    const dispatchMutation = React.useCallback(async <T,>(
+        signal: AbortSignal,
+        operation: () => Promise<T>,
+    ): Promise<T> => {
+        // An escape pressed during the deferred preparation stops here, so the
+        // refusal stays a pre-effect one and nothing reaches the Home.
+        signal.throwIfAborted();
         effectMayHaveBegunRef.current = true;
         return await operation();
     }, []);
@@ -352,7 +404,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
             reauthentication: prepared.externalAuthProof,
         };
         try {
-            await dispatchMutation(() => client.enrollPlainPassword(actionInput, signal));
+            await dispatchMutation(signal, () => client.enrollPlainPassword(actionInput, signal));
         } catch (cause) {
             if (
                 cause instanceof AccountSecurityActionApprovalPendingError
@@ -595,12 +647,53 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     ]);
 
     const currentCredentials = auth.credentials;
-    if (state.kind === 'loading' || !currentCredentials || !scopeKey
-        || ('scopeKey' in state && state.scopeKey !== scopeKey)) {
-        return null;
+    // A retry keeps the unavailable row on screen; only the answer replaces it.
+    const [retrying, setRetrying] = React.useState(false);
+    /**
+     * Which surface the current problem belongs to. One `problem` serves every
+     * operation, so the pending-confirmation body and an open form in another
+     * row must not both announce it.
+     */
+    const [problemSurface, setProblemSurface] = React.useState<'form' | 'pending'>('form');
+    if (!currentCredentials || !scopeKey) return null;
+
+    if (state.kind === 'loading' || state.scopeKey !== scopeKey) {
+        // The rows exist before their values do: render them now so nothing
+        // below this section moves when the projection lands.
+        return (
+            <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
+                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signInEmail}>
+                    <Item
+                        testID="settings-account-sign-in-email-loading"
+                        title={t('settingsAccount.nativePassword.signInEmail')}
+                        detail={t('common.loading')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.password}>
+                    <Item
+                        testID="settings-account-password-loading"
+                        title={t('settingsAccount.nativePassword.password')}
+                        detail={t('common.loading')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+        );
     }
 
     if (state.kind === 'unavailable') {
+        const retry = async () => {
+            if (retrying) return;
+            setRetrying(true);
+            try {
+                await reload();
+            } finally {
+                if (mountedRef.current) setRetrying(false);
+            }
+        };
         return (
             <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
                 <Item
@@ -608,7 +701,9 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                     title={t('settingsAccount.nativePassword.securitySectionTitle')}
                     subtitle={resolveEmailPasswordProblemMessage(state.problem)}
                     icon={<Icon name="warning" size={24} color={theme.colors.status.error} />}
-                    onPress={() => { setState({ kind: 'loading' }); void reload(); }}
+                    detail={retrying ? undefined : t('common.retry')}
+                    loading={retrying}
+                    onPress={() => { void retry(); }}
                 />
             </ItemGroup>
         );
@@ -619,9 +714,18 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const revision = projection.password.revision ?? 0;
     const enrolled = projection.password.status === 'enrolled';
     const e2ee = projection.encryptionMode === 'e2ee';
+    // A first enrollment proves the mailbox before it may carry a credential,
+    // in both Account modes: this step only sends the mail, so asking for a
+    // password here would collect a secret the form discards and then ask for
+    // it again on the verified continuation. Same shape as
+    // `EmailPasswordAuthPanel`'s mailbox-proof-first creation.
+    const enrollmentProvesMailboxFirst = !enrolled && !enrollmentVerificationToken;
     const recoverySecret = isLegacyAuthCredentials(currentCredentials)
         ? currentCredentials.secret
         : null;
+    const fieldsEditable = !busy && !approvalPending && !pendingPlainPasswordOAuth;
+    const emailPending = pendingEmail !== null && !pendingEnrollment;
+    const passwordPending = pendingEmail !== null && pendingEnrollment;
 
     /**
      * The recovery secret an E2EE password mutation must wrap and prove with.
@@ -643,166 +747,396 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         return entered.slice();
     };
 
-    return (
-        <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
-            <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
-                <Item
-                    testID="settings-account-sign-in-email"
-                    title={t('settingsAccount.nativePassword.signInEmail')}
-                    subtitle={projection.nativeEmail ?? t('settingsAccount.nativePassword.signInEmailNotSet')}
-                    detail={pendingEmail ? describePendingVerification(pendingEmail) : undefined}
-                    icon={<Icon name="envelope" size={24} color={theme.colors.accent.blue} />}
-                    onPress={() => {
-                        setProblem(null);
-                        setOutcome(null);
-                        setPendingEmail(null);
-                        setDraft(createEmailPasswordDraft());
-                        setOpenForm(openForm === 'change_email' ? 'none' : 'change_email');
-                    }}
-                />
-                <Item
-                    testID="settings-account-password"
-                    title={t('settingsAccount.nativePassword.password')}
-                    subtitle={enrolled ? t('settingsAccount.nativePassword.passwordEnrolled') : t('settingsAccount.nativePassword.passwordNotEnrolled')}
-                    icon={<Icon name="key" size={24} color={theme.colors.accent.orange} />}
-                    onPress={() => {
-                        setProblem(null);
-                        setOutcome(null);
-                        setDraft(createEmailPasswordDraft());
-                        setOpenForm(openForm === 'change_password' ? 'none' : 'change_password');
-                    }}
-                />
-                {enrolled ? (
-                    <Item
-                        testID="settings-account-password-remove"
-                        title={t('settingsAccount.nativePassword.removePassword')}
-                        subtitle={t('settingsAccount.nativePassword.removePasswordSubtitle')}
-                        icon={<Icon name="trash" size={24} color={theme.colors.state.danger.foreground} />}
-                        destructive
-                        onPress={async () => {
-                            const requestedScopeKey = scopeKey;
-                            const confirmed = await Modal.confirm(
-                                t('settingsAccount.nativePassword.removePassword'),
-                                t('settingsAccount.nativePassword.removePasswordConsequence'),
-                                { cancelText: t('common.cancel'), confirmText: t('settingsAccount.nativePassword.removePassword'), destructive: true },
-                            );
-                            if (!confirmed || !mountedRef.current || scopeKeyRef.current !== requestedScopeKey) return;
-                            setProblem(null);
-                            setOutcome(null);
-                            setDraft(createEmailPasswordDraft());
-                            setOpenForm('remove_password');
-                        }}
-                    />
-                ) : null}
-            </ItemGroup>
+    /**
+     * Every primary action goes through the section's one admission owner, so a
+     * second mutation cannot start while one is in flight and the pending
+     * action shows its own progress. Escapes (Cancel) are never admitted.
+     */
+    const admit = (actionId: string, action: () => Promise<void> | void, surface: 'form' | 'pending' = 'form') => {
+        setProblemSurface(surface);
+        return actionAdmission.run(actionId, action);
+    };
+    const admissionState = (actionId: string) => {
+        const pending = actionAdmission.pendingActionId === actionId;
+        return { loading: pending, disabled: actionAdmission.pendingActionId !== null && !pending };
+    };
 
-            {outcomeMessage ? (
+    /** A problem whose field this form does not render is announced at the form, never dropped. */
+    const fieldProblem = (field: EmailPasswordProblem['field']) => (
+        problemSurface === 'form' && problem?.field === field ? problemMessage : null
+    );
+    const formProblem = (renderedFields: readonly EmailPasswordProblem['field'][]) => (
+        problemSurface === 'form' && problem && !renderedFields.includes(problem.field) ? problemMessage : null
+    );
+
+    const clearPending = () => {
+        setPendingEmail(null);
+        setPendingEnrollment(false);
+        setProblem(null);
+    };
+
+    const submitEmailChange = () => run(async (signal) => {
+        const email = draft.email.trim();
+        const normalized = normalizeVerifiedEmail(email);
+        if (!normalized) {
+            const nextProblem = {
+                field: 'email',
+                messageKey: email
+                    ? 'settingsAccount.nativePassword.emailInvalid'
+                    : 'settingsAccount.nativePassword.emailRequired',
+            } as const;
+            setProblem(nextProblem);
+            focusProblem(nextProblem);
+            return;
+        }
+        setProblem(null);
+        await client.requestEmailChange({ email: normalized.address }, signal);
+        if (!mountedRef.current || signal.aborted) return;
+        // Process-local only: the Home's one-time operation stays
+        // the authority and no unverified address is persisted.
+        setPendingEmail(normalized.address);
+        setPendingEnrollment(false);
+        closeForm();
+    });
+
+    const resendPending = () => run(async (signal) => {
+        if (!pendingEmail) return;
+        setProblem(null);
+        if (pendingEnrollment) {
+            await client.requestPasswordEnrollmentEmail({ email: pendingEmail }, signal);
+        } else {
+            await client.requestEmailChange({ email: pendingEmail }, signal);
+        }
+    });
+
+    const continuePasswordEnrollment = () => {
+        const pendingOAuth = pendingPlainPasswordOAuth;
+        if (!pendingOAuth || !enrollmentVerificationToken) return undefined;
+        return run(async (signal) => {
+            const completed = await continuePlainPasswordEnrollmentOAuth(
+                pendingOAuth,
+                enrollmentVerificationToken,
+                signal,
+            );
+            if (!completed || !mountedRef.current || signal.aborted) return;
+            await completePlainPasswordEnrollment();
+        }, 'password');
+    };
+
+    const submitPasswordForm = () => run(async (signal) => {
+        if (openForm === 'change_password') {
+            const validated = validateEmailPasswordDraft({
+                purpose: enrollmentProvesMailboxFirst
+                    ? 'verify_email'
+                    : enrolled ? 'change' : 'enroll',
+                draft,
+                requiresCurrentPassword: enrolled && !e2ee,
+            });
+            if (!validated.ok) {
+                setProblem(validated.problem);
+                focusProblem(validated.problem);
+                return;
+            }
+            setProblem(null);
+            if (!enrolled && !e2ee) {
+                if (!enrollmentVerificationToken) {
+                    await client.requestPasswordEnrollmentEmail({ email: validated.normalizedEmail }, signal);
+                    if (!mountedRef.current) return;
+                    setPendingEmail(validated.normalizedEmail);
+                    setPendingEnrollment(true);
+                    closeForm();
+                    return;
+                }
+                const target = {
+                    serverId: activeServer.serverId,
+                    serverUrl: activeServer.serverUrl,
+                };
+                let reauthentication = await readAccountPasswordEnrollmentExternalAuthProof({
+                    accountId: profile.id,
+                    currentCredentials,
+                    target,
+                });
+                if (!reauthentication) {
+                    const started = await startAccountPasswordEnrollmentExternalAuth({
+                        accountId: profile.id,
+                        currentCredentials,
+                        linkedProviderIds: (profile.linkedProviders ?? []).map((linked) => linked.id),
+                        normalizedNativeEmail: validated.normalizedEmail,
+                        newPassword: validated.password,
+                        signal,
+                        returnTo: `/settings/account/security?${new URLSearchParams({
+                            verificationToken: enrollmentVerificationToken,
+                            serverId: activeServer.serverId,
+                        }).toString()}`,
+                        target,
+                    });
+                    if (started.kind === 'oauth') {
+                        if (Platform.OS === 'web') {
+                            // Browser popup APIs require a direct user gesture. Preparation above
+                            // crosses network boundaries, so expose a second in-memory Continue
+                            // action instead of risking a blocked popup or persisting the credential.
+                            setPendingPlainPasswordOAuth({
+                                ...started,
+                                scopeKey,
+                                target,
+                            });
+                            return;
+                        }
+                        // Native completes the provider session
+                        // inline, so this gesture owns settling
+                        // the surface exactly like web's Continue.
+                        const completed = await continuePlainPasswordEnrollmentOAuth(
+                            { ...started, scopeKey, target },
+                            enrollmentVerificationToken,
+                            signal,
+                        );
+                        if (!completed || !mountedRef.current || signal.aborted) return;
+                        await completePlainPasswordEnrollment();
+                        return;
+                    } else {
+                        reauthentication = {
+                            normalizedNativeEmail:
+                                started.normalizedNativeEmail,
+                            targetCredential:
+                                started.targetCredential,
+                            externalAuthProof: started.externalAuthProof,
+                        };
+                    }
+                }
+                const submission = await submitPreparedPlainPasswordEnrollment(
+                    reauthentication,
+                    enrollmentVerificationToken,
+                    signal,
+                );
+                if (submission === 'approval_pending') return;
+                await completePlainPasswordEnrollment();
+                return;
+            } else if (e2ee) {
+                const enrollmentToken = props.verificationToken ?? null;
+                if (!enrolled && !enrollmentToken) {
+                    // Prove the mailbox before asking for any recovery secret.
+                    await client.requestPasswordEnrollmentEmail({ email: validated.normalizedEmail }, signal);
+                    if (!mountedRef.current) return;
+                    setPendingEmail(validated.normalizedEmail);
+                    setPendingEnrollment(true);
+                    closeForm();
+                    return;
+                }
+                const expectedAudience =
+                    resolveE2eePasswordExpectedAudience(
+                        activeServer.serverId,
+                    );
+                const secret = await resolveE2eeSecretBytes();
+                if (!secret) return;
+                try {
+                    if (enrolled) {
+                        const request = await prepareE2eeAccountPasswordChange(serverFetch, {
+                            expectedCredentialRevision: revision,
+                            normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
+                            secret,
+                            accountId: profile.id,
+                            expectedAudience,
+                            newPassword: validated.password,
+                            signal,
+                        });
+                        await dispatchMutation(signal, () => client.changeE2eePassword(request, signal));
+                    } else {
+                        const request = await prepareE2eeAccountPasswordEnroll(serverFetch, {
+                            email: validated.email,
+                            normalizedNativeEmail: validated.normalizedEmail,
+                            secret,
+                            accountId: profile.id,
+                            expectedAudience,
+                            newPassword: validated.password,
+                            signal,
+                            ...(enrollmentToken ? { verificationToken: enrollmentToken } : {}),
+                        });
+                        await dispatchMutation(signal, () => client.enrollE2eePassword(request, signal));
+                    }
+                } finally {
+                    secret.fill(0);
+                }
+            } else if (enrolled) {
+                await dispatchMutation(signal, () => client.changePlainPassword({
+                    expectedCredentialRevision: revision,
+                    currentPassword: draft.currentPassword,
+                    newPassword: validated.password,
+                }, signal));
+            }
+        } else {
+            if (!e2ee && !draft.currentPassword) {
+                const nextProblem = { field: 'currentPassword', messageKey: 'settingsAccount.nativePassword.currentPasswordRequired' } as const;
+                setProblem(nextProblem);
+                focusProblem(nextProblem);
+                return;
+            }
+            setProblem(null);
+            if (e2ee) {
+                const expectedAudience =
+                    resolveE2eePasswordExpectedAudience(
+                        activeServer.serverId,
+                    );
+                const secret = await resolveE2eeSecretBytes();
+                if (!secret) return;
+                try {
+                    const request = await prepareE2eeAccountPasswordRemove(serverFetch, {
+                        expectedCredentialRevision: revision,
+                        normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
+                        secret,
+                        accountId: profile.id,
+                        expectedAudience,
+                    });
+                    await dispatchMutation(signal, () => client.removeE2eePassword(request, signal));
+                } finally {
+                    secret.fill(0);
+                }
+            } else {
+                await dispatchMutation(signal, () => client.removePlainPassword({
+                    expectedCredentialRevision: revision,
+                    currentPassword: draft.currentPassword,
+                }, signal));
+            }
+        }
+        if (!mountedRef.current || signal.aborted) return;
+        closeForm();
+        setOutcome(openForm === 'remove_password'
+            ? 'removed'
+            : enrolled ? 'changed' : 'set_up');
+        await reload();
+    }, openForm === 'remove_password' || (!e2ee && enrolled) ? 'currentPassword' : 'password');
+
+    const cancelPasswordForm = () => {
+        if (!enrolled && !e2ee && props.verificationToken) {
+            clearAccountPasswordEnrollmentExternalAuthCustody({
+                accountId: profile.id,
+                includingClaimed: true,
+                target: {
+                    serverId: activeServer.serverId,
+                    serverUrl: activeServer.serverUrl,
+                },
+            });
+        }
+        cancelForm();
+    };
+
+    // --- Row disclosure: each row expands in place to its form or its result.
+    const emailExpanded = openForm === 'change_email' || emailPending;
+    const passwordExpanded = openForm === 'change_password' || passwordPending || outcomeMessage !== null;
+    const removeExpanded = openForm === 'remove_password';
+
+    const setEmailExpanded = (next: boolean) => {
+        if (next) {
+            setProblemSurface('form');
+            setProblem(null);
+            setOutcome(null);
+            setPendingEmail(null);
+            setPendingEnrollment(false);
+            setDraft(createEmailPasswordDraft());
+            setOpenForm('change_email');
+            return;
+        }
+        if (openForm === 'change_email') cancelForm();
+        else if (emailPending) clearPending();
+    };
+
+    const setPasswordExpanded = (next: boolean) => {
+        if (next) {
+            setProblemSurface('form');
+            setProblem(null);
+            setOutcome(null);
+            setDraft(createEmailPasswordDraft());
+            setOpenForm('change_password');
+            return;
+        }
+        setOutcome(null);
+        if (openForm === 'change_password') cancelPasswordForm();
+        else if (passwordPending) clearPending();
+    };
+
+    const setRemoveExpanded = async (next: boolean) => {
+        if (!next) {
+            cancelForm();
+            return;
+        }
+        const requestedScopeKey = scopeKey;
+        const confirmed = await Modal.confirm(
+            t('settingsAccount.nativePassword.removePassword'),
+            t('settingsAccount.nativePassword.removePasswordConsequence'),
+            { cancelText: t('common.cancel'), confirmText: t('settingsAccount.nativePassword.removePassword'), destructive: true },
+        );
+        if (!confirmed || !mountedRef.current || scopeKeyRef.current !== requestedScopeKey) return;
+        setProblemSurface('form');
+        setProblem(null);
+        setOutcome(null);
+        setDraft(createEmailPasswordDraft());
+        setOpenForm('remove_password');
+    };
+
+    const renderPendingBody = () => {
+        if (!pendingEmail) return null;
+        const resendState = admissionState('settings-account-change-email-resend');
+        const pendingProblem = problemSurface === 'pending' ? problemMessage : null;
+        return (
+            <View style={styles.body} testID="settings-account-pending-email-actions">
                 <View style={styles.notice}>
-                    <Text
-                        testID="settings-account-password-outcome"
-                        accessibilityRole="alert"
-                        accessibilityLiveRegion="polite"
-                        style={[styles.noticeText, { color: theme.colors.state.success.foreground }]}
-                    >{outcomeMessage}</Text>
+                    <Icon name="paper-plane" size={16} color={theme.colors.text.secondary} />
+                    <Text style={styles.noticeText} accessibilityLiveRegion="polite">
+                        {describePendingVerification(pendingEmail)}
+                    </Text>
                 </View>
-            ) : null}
-
-            {pendingEmail ? (
-                <View style={styles.form} testID="settings-account-pending-email-actions">
-                    {problemMessage ? (
-                        <Text accessibilityRole="alert" accessibilityLiveRegion="polite"
-                            style={[styles.error, { color: theme.colors.status.error }]}>{problemMessage}</Text>
-                    ) : null}
-                    <WelcomeActionCard
+                {pendingProblem ? <FormError message={pendingProblem} /> : null}
+                <View style={styles.actions}>
+                    <RoundButton
                         testID="settings-account-change-email-resend"
+                        size="small"
+                        display="secondary"
                         title={t('settingsAccount.nativePassword.resend')}
-                        iconName="paper-plane"
-                        onPress={() => run(async (signal) => {
-                            setProblem(null);
-                            if (pendingEnrollment) {
-                                await client.requestPasswordEnrollmentEmail({ email: pendingEmail }, signal);
-                            } else {
-                                await client.requestEmailChange({ email: pendingEmail }, signal);
-                            }
-                        })}
+                        loading={resendState.loading}
+                        disabled={resendState.disabled}
+                        action={() => admit('settings-account-change-email-resend', resendPending, 'pending')}
                     />
-                    <WelcomeActionCard
+                    <RoundButton
                         testID="settings-account-change-email-cancel-pending"
+                        size="small"
+                        display="inverted"
                         title={t('common.cancel')}
-                        iconName="x"
-                        escape
-                        onPress={() => {
-                            setPendingEmail(null);
-                            setPendingEnrollment(false);
-                            setProblem(null);
-                        }}
+                        onPress={clearPending}
                     />
                 </View>
-            ) : null}
+            </View>
+        );
+    };
 
-            {openForm === 'change_email' ? (
-                <View style={styles.form} testID="settings-account-change-email-form">
-                    <FieldItem label={t('settingsAccount.nativePassword.email')} supportingText={t('settingsAccount.nativePassword.changeEmailExplanation')}>
-                        <TextInput
-                            ref={emailInputRef as never}
-                            testID="settings-account-change-email-input"
-                            accessibilityLabel={t('settingsAccount.nativePassword.email')}
-                            style={[styles.input, {
-                                color: theme.colors.text.primary,
-                                backgroundColor: theme.colors.surface.base,
-                                borderColor: problem?.field === 'email' ? theme.colors.status.error : theme.colors.border.default,
-                            }]}
-                            value={draft.email}
-                            onChangeText={(email) => setDraft((current) => ({ ...current, email }))}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            keyboardType="email-address"
-                            inputMode="email"
-                            autoComplete="email"
-                            textContentType="username"
-                            editable={!busy && !approvalPending && !pendingPlainPasswordOAuth}
-                        />
-                    </FieldItem>
-                    {problemMessage ? (
-                        <Text accessibilityRole="alert" accessibilityLiveRegion="polite"
-                            style={[styles.error, { color: theme.colors.status.error }]}>{problemMessage}</Text>
-                    ) : null}
-                    <WelcomeActionCard
-                        testID="settings-account-change-email-submit"
-                        title={t('settingsAccount.nativePassword.sendVerification')}
-                        iconName="paper-plane"
-                        primary
-                        onPress={() => run(async (signal) => {
-                            const email = draft.email.trim();
-                            const normalized = normalizeVerifiedEmail(email);
-                            if (!normalized) {
-                                const nextProblem = {
-                                    field: 'email',
-                                    messageKey: email
-                                        ? 'settingsAccount.nativePassword.emailInvalid'
-                                        : 'settingsAccount.nativePassword.emailRequired',
-                                } as const;
-                                setProblem(nextProblem);
-                                focusProblem(nextProblem);
-                                return;
-                            }
-                            setProblem(null);
-                            await client.requestEmailChange({ email: normalized.address }, signal);
-                            if (!mountedRef.current || signal.aborted) return;
-                            // Process-local only: the Home's one-time operation stays
-                            // the authority and no unverified address is persisted.
-                            setPendingEmail(normalized.address);
-                            setPendingEnrollment(false);
-                            closeForm();
-                        })}
-                    />
-                    <WelcomeActionCard testID="settings-account-change-email-cancel" title={t('common.cancel')}
-                        iconName="x" escape onPress={closeForm} />
-                </View>
-            ) : null}
+    const emailFormError = formProblem(['email']);
+    const emailSubmitState = admissionState('settings-account-change-email-submit');
+    const submitEmailForm = () => admit('settings-account-change-email-submit', submitEmailChange);
 
-            {openForm === 'change_password' || openForm === 'remove_password' ? (
-                <View style={styles.form} testID={`settings-account-${openForm === 'change_password' ? 'change' : 'remove'}-password-form`}>
+    const passwordFormFields: EmailPasswordProblem['field'][] = openForm === 'remove_password'
+        ? (!e2ee ? ['currentPassword'] : [])
+        : [
+            ...(enrolled && !e2ee ? ['currentPassword' as const] : []),
+            ...(!enrolled ? ['email' as const] : []),
+            ...(!enrollmentProvesMailboxFirst ? ['password' as const, 'confirmPassword' as const] : []),
+        ];
+    const passwordFormError = formProblem(passwordFormFields);
+    const passwordSubmitId = pendingPlainPasswordOAuth
+        ? 'settings-account-password-enrollment-continue'
+        : openForm === 'change_password'
+            ? 'settings-account-change-password-submit'
+            : 'settings-account-remove-password-submit';
+    const passwordSubmitState = admissionState(passwordSubmitId);
+    const submitPassword = () => admit(
+        passwordSubmitId,
+        pendingPlainPasswordOAuth && enrollmentVerificationToken ? continuePasswordEnrollment : submitPasswordForm,
+    );
+
+    const renderPasswordForm = () => {
+        if (openForm !== 'change_password' && openForm !== 'remove_password') return null;
+        const removing = openForm === 'remove_password';
+        const collectsNewPassword = !removing && !enrollmentProvesMailboxFirst;
+        return (
+            <View style={styles.body} testID={`settings-account-${removing ? 'remove' : 'change'}-password-form`}>
+                <View style={styles.fields}>
                     {enrolled && !e2ee ? (
                         <PasswordField
                             inputRef={currentPasswordInputRef}
@@ -811,22 +1145,27 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                             value={draft.currentPassword}
                             onChangeText={(currentPassword) => setDraft((current) => ({ ...current, currentPassword }))}
                             autoComplete="current-password"
-                            error={problem?.field === 'currentPassword' ? problemMessage : null}
-                            editable={!busy && !approvalPending && !pendingPlainPasswordOAuth}
-                            returnKeyType="next"
+                            error={fieldProblem('currentPassword')}
+                            editable={fieldsEditable}
+                            returnKeyType={collectsNewPassword ? 'next' : 'go'}
+                            onSubmitEditing={collectsNewPassword
+                                ? () => passwordInputRef.current?.focus()
+                                : () => { void submitPassword(); }}
                         />
                     ) : null}
-                    {!enrolled ? (
+                    {!enrolled && !removing ? (
                         <FieldItem label={t('settingsAccount.nativePassword.email')}>
                             <TextInput
                                 ref={emailInputRef as never}
                                 testID="settings-account-password-enroll-email"
                                 accessibilityLabel={t('settingsAccount.nativePassword.email')}
+                                aria-invalid={Boolean(fieldProblem('email'))}
                                 style={[styles.input, {
                                     color: theme.colors.text.primary,
-                                    backgroundColor: theme.colors.surface.base,
-                                    borderColor: problem?.field === 'email' ? theme.colors.status.error : theme.colors.border.default,
+                                    borderColor: fieldProblem('email') ? theme.colors.status.error : theme.colors.border.default,
                                 }]}
+                                placeholder={t('settingsAccount.nativePassword.emailPlaceholder')}
+                                placeholderTextColor={theme.colors.text.secondary}
                                 value={draft.email}
                                 onChangeText={(email) => setDraft((current) => ({ ...current, email }))}
                                 autoCapitalize="none"
@@ -835,15 +1174,17 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                                 inputMode="email"
                                 autoComplete="email"
                                 textContentType="username"
-                                editable={!busy && !approvalPending && !pendingPlainPasswordOAuth}
+                                editable={fieldsEditable}
+                                returnKeyType={collectsNewPassword ? 'next' : 'go'}
+                                submitBehavior="submit"
+                                onSubmitEditing={collectsNewPassword
+                                    ? () => passwordInputRef.current?.focus()
+                                    : () => { void submitPassword(); }}
                             />
-                            {problem?.field === 'email' && problemMessage ? (
-                                <Text accessibilityRole="alert" accessibilityLiveRegion="polite"
-                                    style={[styles.error, { color: theme.colors.status.error }]}>{problemMessage}</Text>
-                            ) : null}
+                            {fieldProblem('email') ? <FieldError message={fieldProblem('email')!} /> : null}
                         </FieldItem>
                     ) : null}
-                    {openForm === 'change_password' ? (
+                    {collectsNewPassword ? (
                         <>
                             <PasswordField
                                 inputRef={passwordInputRef}
@@ -853,9 +1194,10 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                                 onChangeText={(password) => setDraft((current) => ({ ...current, password }))}
                                 autoComplete="new-password"
                                 supportingText={t('settingsAccount.nativePassword.passwordRequirements')}
-                                error={problem?.field === 'password' ? problemMessage : null}
-                                editable={!busy && !approvalPending && !pendingPlainPasswordOAuth}
+                                error={fieldProblem('password')}
+                                editable={fieldsEditable}
                                 returnKeyType="next"
+                                onSubmitEditing={() => confirmPasswordInputRef.current?.focus()}
                             />
                             <PasswordField
                                 inputRef={confirmPasswordInputRef}
@@ -864,248 +1206,208 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                                 value={draft.confirmPassword}
                                 onChangeText={(confirmPassword) => setDraft((current) => ({ ...current, confirmPassword }))}
                                 autoComplete="new-password"
-                                error={problem?.field === 'confirmPassword' ? problemMessage : null}
-                                editable={!busy && !approvalPending && !pendingPlainPasswordOAuth}
+                                error={fieldProblem('confirmPassword')}
+                                editable={fieldsEditable}
                                 returnKeyType="go"
+                                onSubmitEditing={() => { void submitPassword(); }}
                             />
                         </>
                     ) : null}
-                    {problem?.field === 'form' && problemMessage ? (
-                        <Text testID="settings-account-password-form-error"
-                            accessibilityRole="alert" accessibilityLiveRegion="polite"
-                            style={[styles.error, { color: theme.colors.status.error }]}>{problemMessage}</Text>
-                    ) : null}
-                    <WelcomeActionCard
-                        testID={pendingPlainPasswordOAuth
-                            ? 'settings-account-password-enrollment-continue'
-                            : openForm === 'change_password'
-                                ? 'settings-account-change-password-submit'
-                                : 'settings-account-remove-password-submit'}
+                </View>
+                {passwordFormError ? (
+                    <FormError testID="settings-account-password-form-error" message={passwordFormError} />
+                ) : null}
+                <View style={styles.actions}>
+                    <RoundButton
+                        testID={passwordSubmitId}
+                        size="small"
+                        display={removing && !pendingPlainPasswordOAuth ? 'destructive' : 'default'}
                         title={pendingPlainPasswordOAuth
                             ? t('common.continue')
-                            : openForm === 'change_password'
-                            ? enrolled ? t('settingsAccount.nativePassword.changePassword') : t('settingsAccount.nativePassword.setNewPassword')
-                            : t('settingsAccount.nativePassword.removePassword')}
-                        iconName={openForm === 'change_password' ? 'check' : 'trash'}
-                        primary
-                        onPress={pendingPlainPasswordOAuth && enrollmentVerificationToken
-                            ? () => run(async (signal) => {
-                                const completed = await continuePlainPasswordEnrollmentOAuth(
-                                    pendingPlainPasswordOAuth,
-                                    enrollmentVerificationToken,
-                                    signal,
-                                );
-                                if (!completed || !mountedRef.current || signal.aborted) return;
-                                await completePlainPasswordEnrollment();
-                            }, 'password')
-                            : () => run(async (signal) => {
-                            if (openForm === 'change_password') {
-                                const validated = validateEmailPasswordDraft({
-                                    purpose: enrolled ? 'change' : 'enroll',
-                                    draft,
-                                    requiresCurrentPassword: enrolled && !e2ee,
-                                });
-                                if (!validated.ok) {
-                                    setProblem(validated.problem);
-                                    focusProblem(validated.problem);
-                                    return;
-                                }
-                                setProblem(null);
-                                if (!enrolled && !e2ee) {
-                                    if (!props.verificationToken) {
-                                        await client.requestPasswordEnrollmentEmail({ email: validated.normalizedEmail }, signal);
-                                        if (!mountedRef.current) return;
-                                        setPendingEmail(validated.normalizedEmail);
-                                        setPendingEnrollment(true);
-                                        closeForm();
-                                        return;
-                                    }
-                                    const target = {
-                                        serverId: activeServer.serverId,
-                                        serverUrl: activeServer.serverUrl,
-                                    };
-                                    let reauthentication = await readAccountPasswordEnrollmentExternalAuthProof({
-                                        accountId: profile.id,
-                                        currentCredentials,
-                                        target,
-                                    });
-                                    if (!reauthentication) {
-                                        const started = await startAccountPasswordEnrollmentExternalAuth({
-                                            accountId: profile.id,
-                                            currentCredentials,
-                                            linkedProviderIds: (profile.linkedProviders ?? []).map((linked) => linked.id),
-                                            normalizedNativeEmail: validated.normalizedEmail,
-                                            newPassword: validated.password,
-                                            signal,
-                                            returnTo: `/settings/account/security?${new URLSearchParams({
-                                                verificationToken: props.verificationToken,
-                                                serverId: activeServer.serverId,
-                                            }).toString()}`,
-                                            target,
-                                        });
-                                        if (started.kind === 'oauth') {
-                                            if (Platform.OS === 'web') {
-                                                // Browser popup APIs require a direct user gesture. Preparation above
-                                                // crosses network boundaries, so expose a second in-memory Continue
-                                                // action instead of risking a blocked popup or persisting the credential.
-                                                setPendingPlainPasswordOAuth({
-                                                    ...started,
-                                                    scopeKey,
-                                                    target,
-                                                });
-                                                return;
-                                            }
-                                            // Native completes the provider session
-                                            // inline, so this gesture owns settling
-                                            // the surface exactly like web's Continue.
-                                            const completed = await continuePlainPasswordEnrollmentOAuth(
-                                                { ...started, scopeKey, target },
-                                                props.verificationToken,
-                                                signal,
-                                            );
-                                            if (!completed || !mountedRef.current || signal.aborted) return;
-                                            await completePlainPasswordEnrollment();
-                                            return;
-                                        } else {
-                                            reauthentication = {
-                                                normalizedNativeEmail:
-                                                    started.normalizedNativeEmail,
-                                                targetCredential:
-                                                    started.targetCredential,
-                                                externalAuthProof: started.externalAuthProof,
-                                            };
-                                        }
-                                    }
-                                    const submission = await submitPreparedPlainPasswordEnrollment(
-                                        reauthentication,
-                                        props.verificationToken,
-                                        signal,
-                                    );
-                                    if (submission === 'approval_pending') return;
-                                    await completePlainPasswordEnrollment();
-                                    return;
-                                } else if (e2ee) {
-                                    const enrollmentToken = props.verificationToken ?? null;
-                                    if (!enrolled && !enrollmentToken) {
-                                        // Prove the mailbox before asking for any recovery secret.
-                                        await client.requestPasswordEnrollmentEmail({ email: validated.normalizedEmail }, signal);
-                                        if (!mountedRef.current) return;
-                                        setPendingEmail(validated.normalizedEmail);
-                                        setPendingEnrollment(true);
-                                        closeForm();
-                                        return;
-                                    }
-                                    const expectedAudience =
-                                        resolveE2eePasswordExpectedAudience(
-                                            activeServer.serverId,
-                                        );
-                                    const secret = await resolveE2eeSecretBytes();
-                                    if (!secret) return;
-                                    try {
-                                        if (enrolled) {
-                                            const request = await prepareE2eeAccountPasswordChange(serverFetch, {
-                                                expectedCredentialRevision: revision,
-                                                normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
-                                                secret,
-                                                accountId: profile.id,
-                                                expectedAudience,
-                                                newPassword: validated.password,
-                                                signal,
-                                            });
-                                            await dispatchMutation(() => client.changeE2eePassword(request, signal));
-                                        } else {
-                                            const request = await prepareE2eeAccountPasswordEnroll(serverFetch, {
-                                                email: validated.email,
-                                                normalizedNativeEmail: validated.normalizedEmail,
-                                                secret,
-                                                accountId: profile.id,
-                                                expectedAudience,
-                                                newPassword: validated.password,
-                                                signal,
-                                                ...(enrollmentToken ? { verificationToken: enrollmentToken } : {}),
-                                            });
-                                            await dispatchMutation(() => client.enrollE2eePassword(request, signal));
-                                        }
-                                    } finally {
-                                        secret.fill(0);
-                                    }
-                                } else if (enrolled) {
-                                    await dispatchMutation(() => client.changePlainPassword({
-                                        expectedCredentialRevision: revision,
-                                        currentPassword: draft.currentPassword,
-                                        newPassword: validated.password,
-                                    }, signal));
-                                }
-                            } else {
-                                if (!e2ee && !draft.currentPassword) {
-                                    const nextProblem = { field: 'currentPassword', messageKey: 'settingsAccount.nativePassword.currentPasswordRequired' } as const;
-                                    setProblem(nextProblem);
-                                    focusProblem(nextProblem);
-                                    return;
-                                }
-                                setProblem(null);
-                                if (e2ee) {
-                                    const expectedAudience =
-                                        resolveE2eePasswordExpectedAudience(
-                                            activeServer.serverId,
-                                        );
-                                    const secret = await resolveE2eeSecretBytes();
-                                    if (!secret) return;
-                                    try {
-                                        const request = await prepareE2eeAccountPasswordRemove(serverFetch, {
-                                            expectedCredentialRevision: revision,
-                                            normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
-                                            secret,
-                                            accountId: profile.id,
-                                            expectedAudience,
-                                        });
-                                        await dispatchMutation(() => client.removeE2eePassword(request, signal));
-                                    } finally {
-                                        secret.fill(0);
-                                    }
-                                } else {
-                                    await dispatchMutation(() => client.removePlainPassword({
-                                        expectedCredentialRevision: revision,
-                                        currentPassword: draft.currentPassword,
-                                    }, signal));
-                                }
-                            }
-                            if (!mountedRef.current || signal.aborted) return;
-                            closeForm();
-                            setOutcome(openForm === 'remove_password'
-                                ? 'removed'
-                                : enrolled ? 'changed' : 'set_up');
-                            await reload();
-                            }, openForm === 'remove_password' || (!e2ee && enrolled) ? 'currentPassword' : 'password')}
+                            : !removing
+                                ? enrollmentProvesMailboxFirst
+                                    ? t('settingsAccount.nativePassword.sendVerification')
+                                    : enrolled ? t('settingsAccount.nativePassword.changePassword') : t('settingsAccount.nativePassword.setNewPassword')
+                                : t('settingsAccount.nativePassword.removePassword')}
+                        loading={passwordSubmitState.loading}
+                        disabled={passwordSubmitState.disabled}
+                        action={submitPassword}
                     />
-                    <WelcomeActionCard testID="settings-account-password-form-cancel" title={t('common.cancel')}
-                        iconName="x" escape onPress={async () => {
-                            if (!enrolled && !e2ee && props.verificationToken) {
-                                clearAccountPasswordEnrollmentExternalAuthCustody({
-                                    accountId: profile.id,
-                                    includingClaimed: true,
-                                    target: {
-                                        serverId: activeServer.serverId,
-                                        serverUrl: activeServer.serverUrl,
-                                    },
-                                });
-                            }
-                            closeForm();
-                        }} />
+                    <RoundButton
+                        testID="settings-account-password-form-cancel"
+                        size="small"
+                        display="inverted"
+                        title={t('common.cancel')}
+                        onPress={cancelPasswordForm}
+                    />
                 </View>
+            </View>
+        );
+    };
+
+    return (
+        <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
+            <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signInEmail}>
+                <ExpandableItem
+                    testID="settings-account-sign-in-email-row"
+                    expanded={emailExpanded}
+                    onExpandedChange={setEmailExpanded}
+                    header={({ headerProps }) => (
+                        <Item
+                            {...headerProps}
+                            testID="settings-account-sign-in-email"
+                            title={t('settingsAccount.nativePassword.signInEmail')}
+                            detail={projection.nativeEmail ?? t('settingsAccount.nativePassword.signInEmailNotSet')}
+                        />
+                    )}
+                >
+                    {emailPending ? renderPendingBody() : null}
+                    {openForm === 'change_email' ? (
+                        <View style={styles.body} testID="settings-account-change-email-form">
+                            <View style={styles.fields}>
+                                <FieldItem
+                                    label={t('settingsAccount.nativePassword.email')}
+                                    supportingText={t('settingsAccount.nativePassword.changeEmailExplanation')}
+                                >
+                                    <TextInput
+                                        ref={emailInputRef as never}
+                                        testID="settings-account-change-email-input"
+                                        accessibilityLabel={t('settingsAccount.nativePassword.email')}
+                                        aria-invalid={Boolean(fieldProblem('email'))}
+                                        style={[styles.input, {
+                                            color: theme.colors.text.primary,
+                                            borderColor: fieldProblem('email') ? theme.colors.status.error : theme.colors.border.default,
+                                        }]}
+                                        placeholder={t('settingsAccount.nativePassword.emailPlaceholder')}
+                                        placeholderTextColor={theme.colors.text.secondary}
+                                        value={draft.email}
+                                        onChangeText={(email) => setDraft((current) => ({ ...current, email }))}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        keyboardType="email-address"
+                                        inputMode="email"
+                                        autoComplete="email"
+                                        textContentType="username"
+                                        editable={fieldsEditable}
+                                        returnKeyType="go"
+                                        submitBehavior="submit"
+                                        onSubmitEditing={() => { void submitEmailForm(); }}
+                                    />
+                                    {fieldProblem('email') ? <FieldError message={fieldProblem('email')!} /> : null}
+                                </FieldItem>
+                            </View>
+                            {emailFormError ? (
+                                <FormError testID="settings-account-change-email-form-error" message={emailFormError} />
+                            ) : null}
+                            <View style={styles.actions}>
+                                <RoundButton
+                                    testID="settings-account-change-email-submit"
+                                    size="small"
+                                    title={t('settingsAccount.nativePassword.sendVerification')}
+                                    loading={emailSubmitState.loading}
+                                    disabled={emailSubmitState.disabled}
+                                    action={submitEmailForm}
+                                />
+                                <RoundButton
+                                    testID="settings-account-change-email-cancel"
+                                    size="small"
+                                    display="inverted"
+                                    title={t('common.cancel')}
+                                    onPress={cancelForm}
+                                />
+                            </View>
+                        </View>
+                    ) : null}
+                </ExpandableItem>
+            </SettingAnchor>
+            <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.password}>
+                <ExpandableItem
+                    testID="settings-account-password-row"
+                    expanded={passwordExpanded}
+                    onExpandedChange={setPasswordExpanded}
+                    header={({ headerProps }) => (
+                        <Item
+                            {...headerProps}
+                            testID="settings-account-password"
+                            title={t('settingsAccount.nativePassword.password')}
+                            detail={enrolled ? t('settingsAccount.nativePassword.passwordEnrolled') : t('settingsAccount.nativePassword.passwordNotEnrolled')}
+                        />
+                    )}
+                >
+                    {outcomeMessage ? (
+                        <View style={styles.body}>
+                            <View style={styles.notice}>
+                                <Icon name="check" size={16} color={theme.colors.state.success.foreground} />
+                                <Text
+                                    testID="settings-account-password-outcome"
+                                    accessibilityRole="alert"
+                                    accessibilityLiveRegion="polite"
+                                    style={[styles.noticeText, { color: theme.colors.state.success.foreground }]}
+                                >{outcomeMessage}</Text>
+                            </View>
+                        </View>
+                    ) : null}
+                    {passwordPending ? renderPendingBody() : null}
+                    {openForm === 'change_password' ? renderPasswordForm() : null}
+                </ExpandableItem>
+            </SettingAnchor>
+            {enrolled ? (
+                <ExpandableItem
+                    testID="settings-account-password-remove-row"
+                    expanded={removeExpanded}
+                    onExpandedChange={(next) => { void setRemoveExpanded(next); }}
+                    header={({ headerProps }) => (
+                        <Item
+                            {...headerProps}
+                            testID="settings-account-password-remove"
+                            title={t('settingsAccount.nativePassword.removePassword')}
+                            subtitle={t('settingsAccount.nativePassword.removePasswordSubtitle')}
+                            destructive
+                            showChevron={false}
+                        />
+                    )}
+                >
+                    {removeExpanded ? renderPasswordForm() : null}
+                </ExpandableItem>
             ) : null}
-        </WelcomeActionAdmissionContext.Provider>
+        </ItemGroup>
     );
 });
 
-const styles = StyleSheet.create(() => ({
-    form: { gap: 12, paddingHorizontal: 16, paddingBottom: 12 },
-    error: { fontSize: 13 },
-    notice: { paddingHorizontal: 16, paddingBottom: 12 },
-    noticeText: { fontSize: 13 },
+/** An error that belongs to one field, announced beneath it. */
+function FieldError(props: Readonly<{ message: string }>) {
+    const { theme } = useUnistyles();
+    return (
+        <Text accessibilityRole="alert" accessibilityLiveRegion="polite"
+            style={[styles.fieldError, { color: theme.colors.status.error }]}>{props.message}</Text>
+    );
+}
+
+/** An error with no field of its own in this form, announced above the actions. */
+function FormError(props: Readonly<{ message: string; testID?: string }>) {
+    const { theme } = useUnistyles();
+    return (
+        <View style={styles.notice}>
+            <Icon name="warning" size={16} color={theme.colors.status.error} />
+            <Text testID={props.testID} accessibilityRole="alert" accessibilityLiveRegion="polite"
+                style={[styles.noticeText, { color: theme.colors.status.error }]}>{props.message}</Text>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create((theme) => ({
+    // Aligned to the row's own text inset so the form reads as the row's continuation.
+    body: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 16, gap: 14 },
+    // Text fields stay a readable width on wide pages instead of spanning the sheet.
+    fields: { gap: 12, maxWidth: 480, width: '100%' },
+    actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+    notice: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, maxWidth: 560 },
+    noticeText: { flex: 1, fontSize: 14, lineHeight: 20, color: theme.colors.text.secondary },
+    fieldError: { fontSize: 12, marginTop: 5 },
     input: {
         borderWidth: 1,
         borderRadius: 12,
+        backgroundColor: theme.colors.surface.base,
         paddingHorizontal: 12,
         paddingVertical: 10,
         minHeight: Platform.OS === 'android' ? 48 : 44,

@@ -1622,6 +1622,7 @@ describe('registerMachineRpcHandlers', () => {
       parentSessionId: 'session-live-authority',
       intent: 'agent' as const,
       runtimeState: 'active_turn' as const,
+      teamCredentialProviderModel: null,
     }));
     registerMachineRpcHandlers({
       rpcHandlerManager,
@@ -1667,6 +1668,29 @@ describe('registerMachineRpcHandlers', () => {
         sessionId: 'session-live-authority',
         executionRunId: 'run-live-authority',
         expectedOccurrenceId: null,
+      });
+      // The Home's direct-material expectation reaches the attached Run's live
+      // owner, which is the only one that can check the Run's own selection.
+      const expectedDirectMaterialUse = {
+        resourceId: 'resource-direct',
+        slot: { kind: 'provider_model' as const },
+        sourceMemberKey: 'provider-member',
+      };
+      await handler?.({
+        v: 1,
+        requestNonce: '55555555-5555-4555-8555-555555555555',
+        serverIdentityId: 'server-live',
+        requestingAccountId: 'account-live',
+        workerMachineId: 'machine-live',
+        executionRunId: 'run-live-authority',
+        expectedOccurrenceId: null,
+        expectedDirectMaterialUse,
+      });
+      expect(resolveExecutionRunLiveBrokerAuthority).toHaveBeenLastCalledWith({
+        sessionId: 'session-live-authority',
+        executionRunId: 'run-live-authority',
+        expectedOccurrenceId: null,
+        expectedDirectMaterialUse,
       });
     } finally {
       await removeExecutionRunMarker('run-live-authority');

@@ -115,14 +115,19 @@ export function useMachinePoolProjections(
         const cachedAccountIsCurrent = accountScope?.kind === 'signed_out'
             ? Boolean(cachedAccountId)
             : accountScope?.kind === 'bound' && accountScope.scope.accountId === cachedAccountId;
+        // Rows this Account may render. The *status* is deliberately not conditioned on it:
+        // the first list failure never produces an array, so gating the status on hydration
+        // discarded the stored 'error' and published a permanent spinner that owed no request
+        // and gave consumers no terminal state to offer Retry from.
+        const currentRowsAvailable = hydrated && cachedAccountIsCurrent;
         const status: MachinePoolListStatus = accountScope?.kind === 'bound'
-            // A settled disabled feature has no list left to read: an unhydrated cache is not a
-            // pending request, and a status left over from when Pools were enabled is not a current
-            // failure. Reporting either would leave every Home without `machines.pools` looking
-            // permanently incomplete to the shared destination projection.
+            // A settled disabled feature has no list left to read: a status left over from when
+            // Pools were enabled is not a current failure. Reporting it would leave every Home
+            // without `machines.pools` looking permanently incomplete to the shared destination
+            // projection. A stale other-Account status is likewise not this Account's answer.
             ? featureKnownDisabled
                 ? 'idle'
-                : hydrated && cachedAccountIsCurrent ? storedStatus : 'loading'
+                : cachedAccountIsCurrent ? storedStatus : 'loading'
             : accountScope?.kind === 'signed_out' || accountScope?.kind === 'unknown_home'
                 ? 'signedOut'
                 : 'loading';
@@ -134,9 +139,9 @@ export function useMachinePoolProjections(
             // Retain this Account's last-known rows through feature discovery/error so surfaces
             // stay continuous and inert while offering recovery. Only a settled disabled decision
             // withdraws the Pool feature; transport still requires `featureEnabled === true`.
-            pools: featureStatus !== 'disabled' && hydrated && cachedAccountIsCurrent ? cached : EMPTY_POOLS,
+            pools: featureStatus !== 'disabled' && currentRowsAvailable ? cached : EMPTY_POOLS,
             status,
-            ready: featureKnownDisabled || (featureEnabled && hydrated && cachedAccountIsCurrent && status === 'idle'),
+            ready: featureKnownDisabled || (featureEnabled && currentRowsAvailable && status === 'idle'),
         };
     }), [accountScopes, features.snapshotsByServerId, poolAccountIdByServerId, poolListByServerId, poolListStatusByServerId, scopes]);
 

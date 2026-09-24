@@ -2,9 +2,14 @@ import type {
   SessionAwarenessProjectionV1,
   SessionFollowPendingObservationV1,
   SessionFollowUpdateEnvelopeV1,
+  VoiceSessionUpdatePolicyV1,
+  VoiceSourceDisclosureV1,
 } from '@happier-dev/protocol';
 import {
+  isAuthoritativeHumanSessionFollowMessageV1,
   isSessionAwarenessContentReadableV1,
+  resolveVoiceSessionUpdatePolicyV1,
+  resolveVoiceSourceDisclosureV1,
   parseSessionMessageAccountActorV1,
   readSessionMessageProvenanceV1,
   SessionStoredMessageContentSchema,
@@ -76,7 +81,40 @@ export type SessionFollowHydratedUpdate = SessionFollowUpdateEnvelopeV1 & Readon
    * renderable row without leaving earlier semantic events pending forever.
    */
   transcriptConsumedThroughByRenderedMessageCount?: readonly number[];
+  /**
+   * Host-only wake discovery evidence: protected human ingress exists somewhere in
+   * the pending range, possibly beyond the page delivered now. Present only when
+   * discovery was requested.
+   */
+  pendingHumanIngress?: boolean;
 }>;
+
+/**
+ * The Account Voice disclosure ceiling for a daemon Follow read: the content
+ * switches and the snippet controls the foreground Voice path applies, from the
+ * same Protocol owners (`resolveVoiceSourceDisclosureV1`,
+ * `resolveVoiceSessionUpdatePolicyV1`). A level of `none` discloses nothing.
+ */
+export type SessionFollowVoiceDisclosure = VoiceSourceDisclosureV1 & Pick<
+  VoiceSessionUpdatePolicyV1,
+  'includeUserMessagesInSnippets' | 'snippetsMaxMessages'
+>;
+
+/**
+ * The Account's Voice disclosure for a daemon Account Voice Follow source. The
+ * server publishes Account Voice observations only for Sessions the user opted
+ * into Voice, so each source is included by construction. Unreadable settings
+ * withhold rather than disclose.
+ */
+export function resolveAccountVoiceFollowDisclosure(accountSettings: unknown): SessionFollowVoiceDisclosure {
+  const policyInput = { accountSettings, includeInVoice: true } as const;
+  const policy = resolveVoiceSessionUpdatePolicyV1(policyInput);
+  return {
+    ...resolveVoiceSourceDisclosureV1(policyInput),
+    includeUserMessagesInSnippets: policy.includeUserMessagesInSnippets,
+    snippetsMaxMessages: policy.snippetsMaxMessages,
+  };
+}
 
 /** Selects the shared transcript read semantics before provider-context budgeting. */
 export type SessionFollowHydrationReadModeV1 =
@@ -162,6 +200,34 @@ function readAuthorLabel(accountActor: unknown): string | null {
   return label?.replace(/\s+/gu, ' ').trim().slice(0, 191) || null;
 }
 
+type SessionFollowRowSummary = SessionFollowUpdateEnvelopeV1['recentMessages'][number];
+
+/**
+ * One opened transcript row as Follow sees it: its model-visible summary, or
+ * `null` for a valid row with no useful model-visible text (consumed by
+ * traversal, never invented into prose). Shared by delivery and wake discovery
+ * so both classify rows identically.
+ */
+function projectOpenedSessionFollowRow(row: SessionFollowOpenedTranscriptRow): Readonly<{
+  summary: SessionFollowRowSummary | null;
+  userMessage: boolean;
+}> {
+  const decoded = decodeTranscriptBody({ role: row.role, content: row.content, meta: row.meta });
+  const semanticText = decoded?.text ?? decoded?.summary;
+  if (!semanticText || semanticText.trim().length === 0) return { summary: null, userMessage: false };
+  const authorLabel = readAuthorLabel(row.accountActor);
+  return {
+    summary: {
+      messageId: `seq:${row.seq}`,
+      seq: row.seq,
+      text: semanticText,
+      ...(authorLabel ? { authorLabel } : {}),
+      provenance: readSessionMessageProvenanceV1(row.meta),
+    },
+    userMessage: decoded?.semanticRole === 'user',
+  };
+}
+
 function readSourceRecencyMs(rawSession: unknown): number {
   if (!rawSession || typeof rawSession !== 'object') return 0;
   const record = rawSession as Readonly<Record<string, unknown>>;
@@ -215,19 +281,43 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
   session: Pick<ApiSessionClient, 'sessionId' | 'runSessionFollowSourceRequest'>;
   credentials: StoredCredentials;
   sourceMaterialResolver?: SessionFollowSourceMaterialResolver | null;
+  /**
+   * Account-owned Voice disclosure ceiling for this read, from the one Protocol
+   * owner the foreground Voice path also asks
+   * (`resolveVoiceSourceDisclosureV1`). Omitted for ordinary
+   * Session-to-Session Follow, which the Voice privacy settings do not govern.
+   *
+   * A withheld class is omitted from the envelope, never rendered and then
+   * trimmed: the frontier this read represents stays exact, so the observation
+   * still settles instead of being replayed forever as undisclosable.
+   */
+  disclosure?: SessionFollowVoiceDisclosure | null;
   deps?: SessionFollowHydratorDeps;
 }>): (args: Readonly<{
   observation: SessionFollowPendingObservationV1;
   signal: AbortSignal;
   /** Omitted direct callers retain ordinary oldest-contiguous Follow behavior. */
   readMode?: SessionFollowHydrationReadModeV1;
+  /** Also classify the pending range beyond the delivered page for protected human ingress. */
+  discoverHumanIngress?: boolean;
 }>) => Promise<SessionFollowHydratedUpdate | null> {
+  const mayQuoteSourceMessages = input.disclosure?.shareRecentMessages !== false;
+  const mayDescribeSourceWork = input.disclosure?.shareSessionSummary !== false;
+  /** Drops the work headline while keeping the source's identity and lifecycle. */
+  const projectDisclosedAwareness = (awareness: SessionAwarenessProjectionV1): SessionAwarenessProjectionV1 => {
+    if (mayDescribeSourceWork || awareness.currentWork === undefined) return awareness;
+    const { currentWork: _withheld, ...disclosed } = awareness;
+    return disclosed;
+  };
   const resolveTransport = input.deps?.resolveSourceTransport ?? resolveSessionTransportContext;
   const fetchPage = input.deps?.fetchTranscriptPage ?? fetchEncryptedTranscriptMessagesPage;
   const fetchRunnerProjection = input.deps?.fetchRunnerSourceProjection ?? fetchSessionFollowSourceProjection;
 
-  return async ({ observation, signal, readMode = 'incremental' }) => {
+  return async ({ observation, signal, readMode = 'incremental', discoverHumanIngress = false }) => {
     signal.throwIfAborted();
+    // The foreground Voice path returns before any source update at level `none`;
+    // the daemon read discloses nothing either, not even source awareness.
+    if (input.disclosure?.level === 'none') return null;
     const destinationSessionId = input.session.sessionId;
     if (
       observation.destinationSessionId !== destinationSessionId
@@ -247,6 +337,18 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
         observedTranscriptSeq: observation.observed.transcriptSeq,
         limit: SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1,
         signal,
+      }),
+    });
+    const fetchAccountPageAfter = async (afterSeq: number) => await input.session.runSessionFollowSourceRequest({
+      credentials: input.credentials,
+      request: async () => await fetchPage({
+        token: input.credentials.token,
+        sessionId: observation.sourceSessionId,
+        limit: SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1,
+        scope: 'all',
+        // `afterSeq` is the route's ascending catch-up arm.
+        afterSeq,
+        ...(signal ? { signal } : {}),
       }),
     });
     // The restricted Runner projection currently exposes only ascending
@@ -381,7 +483,7 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
           reason: 'source_changed',
           deliveryIntent: 'context_only',
           observed: observation.observed,
-          awareness,
+          awareness: projectDisclosedAwareness(awareness),
           recentMessages: [],
           truncated: false,
           sourceRecencyMs,
@@ -395,28 +497,23 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
         return { ...buildUnavailableEnvelope({ observation, awareness }), sourceRecencyMs };
       }
       try {
-        const page = runnerProjection ?? await input.session.runSessionFollowSourceRequest({
-          credentials: input.credentials,
-          request: async () => await fetchPage({
-            token: input.credentials.token,
-            sessionId: observation.sourceSessionId,
-            limit: SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1,
-            scope: 'all',
-            ...(readMode === 'initial_current_snapshot'
-              ? {
-                  // The route's `beforeSeq` arm returns the latest bounded window
-                  // in descending order. The exclusive cap prevents a concurrent
-                  // source advance from entering this originally observed snapshot.
-                  beforeSeq: observedSeq + 1,
-                }
-              : {
-                  // `afterSeq` is the route's ascending catch-up arm. Reading from
-                  // the delivered frontier preserves a contiguous ACK prefix.
-                  afterSeq: deliveredSeq,
-                }),
-            ...(signal ? { signal } : {}),
-          }),
-        });
+        const page = runnerProjection ?? (readMode === 'initial_current_snapshot'
+          ? await input.session.runSessionFollowSourceRequest({
+              credentials: input.credentials,
+              request: async () => await fetchPage({
+                token: input.credentials.token,
+                sessionId: observation.sourceSessionId,
+                limit: SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1,
+                scope: 'all',
+                // The route's `beforeSeq` arm returns the latest bounded window
+                // in descending order. The exclusive cap prevents a concurrent
+                // source advance from entering this originally observed snapshot.
+                beforeSeq: observedSeq + 1,
+                ...(signal ? { signal } : {}),
+              }),
+            })
+          // Reading from the delivered frontier preserves a contiguous ACK prefix.
+          : await fetchAccountPageAfter(deliveredSeq));
         rows = readMode === 'initial_current_snapshot'
           ? [...page.messages].reverse()
           : [...page.messages];
@@ -426,6 +523,7 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
       }
 
       const summaries: SessionFollowUpdateEnvelopeV1['recentMessages'] = [];
+      const summaryIsUserMessage: boolean[] = [];
       // Entry N is the exact contiguous transcript frontier after rendering N
       // summaries. Structurally valid rows without model-visible text advance
       // the current entry; malformed or unopenable rows stop traversal.
@@ -457,19 +555,10 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
           break;
         }
         const row = opened.row;
-        const decoded = decodeTranscriptBody({ role: row.role, content: row.content, meta: row.meta });
-        const semanticText = decoded?.text ?? decoded?.summary;
-        if (semanticText && semanticText.trim().length > 0) {
-          const provenance = readSessionMessageProvenanceV1(row.meta);
-          const messageId = `seq:${row.seq}`;
-          const authorLabel = readAuthorLabel(row.accountActor);
-          summaries.push({
-            messageId,
-            seq: row.seq,
-            text: semanticText,
-            ...(authorLabel ? { authorLabel } : {}),
-            provenance,
-          });
+        const projected = projectOpenedSessionFollowRow(row);
+        if (projected.summary) {
+          summaries.push(projected.summary);
+          summaryIsUserMessage.push(projected.userMessage);
           consumedThroughByRenderedMessageCount.push(row.seq);
         } else {
           // The Protocol semantic projector deliberately returns no text for
@@ -496,6 +585,79 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
         return { ...buildUnavailableEnvelope({ observation, awareness }), sourceRecencyMs };
       }
 
+      // Wake discovery (09D §6.3): the pending range, not only this page, decides
+      // whether protected human ingress exists. Later pages are classified with the
+      // same row projection but never delivered or acknowledged here; delivery stays
+      // the oldest contiguous prefix above. A gap or unopenable row stops discovery
+      // exactly as it stops delivery, so nothing is scanned around unreadable rows.
+      let pendingHumanIngress: boolean | undefined;
+      if (discoverHumanIngress) {
+        pendingHumanIngress = summaries.some(isAuthoritativeHumanSessionFollowMessageV1);
+        let cursor = consumedTranscriptSeq;
+        let hasMore = pageHasMore && !omittedObservedMessage && readMode === 'incremental';
+        while (!pendingHumanIngress && hasMore && cursor < observedSeq) {
+          signal.throwIfAborted();
+          let next: Readonly<{ messages: typeof rows; hasMore: boolean }>;
+          try {
+            if (useRunnerProjection) {
+              const projection = await fetchRunnerPage(cursor);
+              if (!projection || projection.source.id !== observation.sourceSessionId) break;
+              next = projection;
+            } else {
+              next = await fetchAccountPageAfter(cursor);
+            }
+          } catch {
+            break;
+          }
+          let advanced = false;
+          let stopped = false;
+          for (const storedRow of next.messages) {
+            const storedSeq = typeof storedRow.seq === 'number' && Number.isSafeInteger(storedRow.seq)
+              ? storedRow.seq
+              : null;
+            if (storedSeq !== null && storedSeq <= cursor) continue;
+            if (storedSeq === null || storedSeq > observedSeq || storedSeq !== cursor + 1) {
+              stopped = true;
+              break;
+            }
+            const opened = openSessionFollowTranscriptRow({ mode, ctx, row: storedRow });
+            if (!opened.ok) {
+              stopped = true;
+              break;
+            }
+            const projected = projectOpenedSessionFollowRow(opened.row);
+            cursor = storedSeq;
+            advanced = true;
+            if (projected.summary && isAuthoritativeHumanSessionFollowMessageV1(projected.summary)) {
+              pendingHumanIngress = true;
+              break;
+            }
+          }
+          hasMore = !stopped && advanced && next.hasMore;
+        }
+      }
+
+      // Account Voice snippet controls, exactly as the foreground path applies them:
+      // the user's own messages only when explicitly shared, and only the Account's
+      // newest represented messages. Withheld rows are a deliberate disclosure
+      // decision, so they are consumed by traversal and settle with the represented
+      // frontier instead of replaying every Voice turn.
+      let disclosedSummaries = summaries;
+      let disclosedCheckpoints = consumedThroughByRenderedMessageCount;
+      if (input.disclosure && mayQuoteSourceMessages) {
+        const disclosure = input.disclosure;
+        const permitted = summaries.filter((_summary, index) => (
+          disclosure.includeUserMessagesInSnippets || !summaryIsUserMessage[index]
+        ));
+        disclosedSummaries = permitted.slice(-disclosure.snippetsMaxMessages);
+        disclosedCheckpoints = disclosedSummaries.length === 0
+          ? [consumedTranscriptSeq]
+          : [
+              ...disclosedSummaries.map((summary) => summary.seq - 1),
+              consumedTranscriptSeq,
+            ];
+      }
+
       return {
         v: 1,
         kind: 'session_follow_update',
@@ -511,16 +673,21 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
               ...observation.observed,
               transcriptSeq: consumedTranscriptSeq,
             },
-        awareness,
-        recentMessages: summaries,
+        awareness: projectDisclosedAwareness(awareness),
+        recentMessages: mayQuoteSourceMessages ? disclosedSummaries : [],
         truncated: pageHasMore
           || traversalBaseline > deliveredSeq
           || consumedTranscriptSeq < observedSeq
           || omittedObservedMessage,
         sourceRecencyMs,
-        transcriptConsumedThroughByRenderedMessageCount: Object.freeze([
-          ...consumedThroughByRenderedMessageCount,
-        ]),
+        transcriptConsumedThroughByRenderedMessageCount: Object.freeze(
+          mayQuoteSourceMessages
+            ? [...disclosedCheckpoints]
+            // Nothing was quoted, so the one checkpoint is the exact contiguous
+            // frontier this read represents.
+            : [consumedTranscriptSeq],
+        ),
+        ...(pendingHumanIngress !== undefined ? { pendingHumanIngress } : {}),
       };
     } finally {
       if (preparedMaterial?.mode === 'e2ee') preparedMaterial.dataKey.fill(0);

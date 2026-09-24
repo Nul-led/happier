@@ -24,8 +24,6 @@ function authority(overrides: Partial<ProviderBrokerRouteGrantPayloadV1> = {}): 
     expiresAt: 10_000,
     teamId: 'team-1',
     resourceId: 'resource-1',
-    expectedResourceRevision: 7,
-    modelId: 'gpt-5',
     sourceRevision: 'source-revision-7',
     initiator: { accountId: 'account-worker', machineId: 'machine-worker', endpointId: initiatorEndpoint },
     target: { custodianAccountId: 'account-custodian', machineId: 'machine-broker', endpointId: targetEndpoint },
@@ -146,6 +144,52 @@ describe('createProviderBrokerMachineCarrierTunnelOpen', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(order).toEqual(['retire-ack', 'transport-close']);
+  });
+
+  it('releases its own claim on the retained authority, without a fresh Home admission and after cancellation', async () => {
+    const binding = new AbortController();
+    const close = vi.fn(async () => undefined);
+    const openHttpTunnel = vi.fn<DaemonMachineIrohRuntime['openHttpTunnel']>(async () => ({
+      localPort: 41_001,
+      localCapability: 'c'.repeat(64),
+      remoteEndpointId: targetEndpoint,
+      observedPath: 'relay' as const,
+      close,
+    }));
+    const signed = authority();
+    let retireAttempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      retireAttempt += 1;
+      // The stream the DELETE travels over is dialled by the transport, which
+      // runs the handshake provider for every accepted local connection.
+      const transport = openHttpTunnel.mock.calls[0]?.[0];
+      await expect(transport?.handshakeProvider?.()).resolves.toEqual({
+        v: 1,
+        kind: 'provider_broker',
+        authority: signed,
+      });
+      return new Response(null, { status: retireAttempt === 1 ? 502 : 204 });
+    });
+    // Home refuses a fresh inference admission precisely because the Session
+    // that ended is the reason we are releasing.
+    const refreshBrokerOpen = vi.fn(async () => ({ ok: false as const, reasonCode: 'session_not_active' as const }));
+    const open = createProviderBrokerMachineCarrierTunnelOpen({
+      accountId: 'account-worker',
+      localMachineId: 'machine-worker',
+      runtime: { endpoint: { endpointId: initiatorEndpoint }, openHttpTunnel } as never,
+      resolveTrustRoots: () => [root],
+      nowMs: () => 200,
+      fetchImpl,
+    });
+
+    const tunnel = await open({ brokerOpen: brokerOpen(signed), refreshBrokerOpen, signal: binding.signal });
+    binding.abort();
+
+    await expect(tunnel.retire()).rejects.toThrow();
+    // The transport was not discarded, so the retry reaches the exact target.
+    await expect(tunnel.retire()).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(refreshBrokerOpen).not.toHaveBeenCalled();
   });
 
   it('fails a new stream closed when Home returns a changed sealed binding', async () => {

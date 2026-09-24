@@ -59,7 +59,7 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: vi.fn(async () => null),
+        fetch: vi.fn(async () => null),
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -427,6 +427,53 @@ describe('HomeAuthenticationPolicySections', () => {
                     allowedTeamProviderKinds: ['workos_sso', 'oidc'],
                     teamJitAllowed: false,
                     approvedGitHubEnterpriseOrigins: ['https://github.company.example'],
+                },
+            },
+        });
+    });
+
+    it('lets a fresh Home save its first Team-provider narrowing seeded from the deployment ceiling', async () => {
+        // An absent policy inherits the deployment ceiling (teams-lane-01/02 :230, :234),
+        // so the editor starts from the kinds this deployment can run, not from the enum.
+        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
+        const projection = homeGovernanceProjectionFixture({
+            identityServices: {
+                workos: 'not_configured',
+                privateIdentityNetworkAllowed: false,
+                teamProviderKinds: ['oidc', 'github_app_identity'],
+            },
+        });
+        projection.policy = { ...projection.policy, revision: 0, teamProviders: { status: 'inherited' } };
+        harness.answer(serverId, '/v1/home/policy/set', { body: { ...projection.policy, revision: 1 } });
+        harness.answer(serverId, '/v1/home/governance/get', { body: projection });
+        const context: HomeAdministrationContext = {
+            scope: { serverId, accountId: 'owner' },
+            homeName: 'Home A',
+            projection,
+            mutationsAvailable: true,
+            approvalPending: false,
+            refresh: vi.fn(),
+        };
+
+        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:oidc'))).toBe(true);
+        expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:github_app_identity'))).toBe(true);
+        const workos = screen.findByTestId('home-policy-team-provider:workos_sso');
+        expect(renderedControlIsChecked(workos)).toBe(false);
+        expect(renderedControlIsDisabled(workos)).toBe(true);
+
+        await screen.pressByTestIdAsync('home-policy-team-provider:oidc');
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
+            serverId,
+            input: {
+                expectedRevision: 0,
+                teamProviderPolicy: {
+                    v: 1,
+                    allowedTeamProviderKinds: ['github_app_identity'],
+                    teamJitAllowed: false,
+                    approvedGitHubEnterpriseOrigins: [],
                 },
             },
         });
@@ -808,7 +855,7 @@ describe('HomeAuthenticationPolicySections', () => {
         const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
         const serverId = await harness.addHome({ name: 'Cloud', serverUrl: 'https://cloud.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
-            identityServices: { workos: 'partially_configured', privateIdentityNetworkAllowed: false },
+            identityServices: { workos: 'partially_configured', privateIdentityNetworkAllowed: false, teamProviderKinds: [] },
         });
         harness.answer(serverId, '/v1/home/governance/get', { body: projection });
         const context: HomeAdministrationContext = {
@@ -829,7 +876,7 @@ describe('HomeAuthenticationPolicySections', () => {
         const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
         const serverId = await harness.addHome({ name: 'Self hosted', serverUrl: 'https://self.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
-            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true },
+            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true, teamProviderKinds: [] },
         });
         projection.policy = { ...projection.policy, revision: 7 };
         harness.answer(serverId, '/v1/home/policy/set', { body: { ...projection.policy, revision: 8 } });
@@ -870,7 +917,7 @@ describe('HomeAuthenticationPolicySections', () => {
         const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
         const serverId = await harness.addHome({ name: 'Self hosted', serverUrl: 'https://self.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
-            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true },
+            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true, teamProviderKinds: [] },
         });
         projection.policy = {
             ...projection.policy,
@@ -903,7 +950,7 @@ describe('HomeAuthenticationPolicySections', () => {
         await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalledTimes(1));
 
         const refreshedProjection = homeGovernanceProjectionFixture({
-            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true },
+            identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true, teamProviderKinds: [] },
         });
         refreshedProjection.policy = {
             ...refreshedProjection.policy,

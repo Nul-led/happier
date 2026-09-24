@@ -1,3 +1,5 @@
+import { readVoiceContentDisclosureV1 } from '@happier-dev/protocol';
+
 import { voiceSettingsParse, type VoiceSettings } from '@/sync/domains/settings/voiceSettings';
 
 export function readVoicePrivacySettings(settings: unknown): VoiceSettings['privacy'] {
@@ -26,8 +28,9 @@ export function readVoicePrivacySettings(settings: unknown): VoiceSettings['priv
         currentUiContextMode,
         // These values are consumed at provider boundaries. A malformed or
         // partial payload must never inherit the account schema's UI defaults.
-        shareSessionSummary: explicitlyShares('shareSessionSummary'),
-        shareRecentMessages: explicitlyShares('shareRecentMessages'),
+        // Summary and transcript disclosure are decided by the Protocol owner
+        // the daemon Voice path also asks, so one Account switch bounds both.
+        ...readVoiceContentDisclosureV1(settings),
         shareToolNames: explicitlyShares('shareToolNames'),
         sharePermissionRequests: explicitlyShares('sharePermissionRequests'),
         shareDeviceInventory: explicitlyShares('shareDeviceInventory'),

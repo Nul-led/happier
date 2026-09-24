@@ -7,14 +7,16 @@ import {
   PROVIDER_ENDPOINT_SAFETY_LIMITS,
   ProviderBrokerOpenResponseV1Schema,
   type ProviderBrokerOpenResponseV1,
-  type SignedProviderBrokerRouteGrantV1,
 } from '@happier-dev/protocol';
 
 import {
   MACHINE_ALPN,
   MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
 } from '@happier-dev/iroh-native/node';
-import { verifyProviderBrokerRouteGrantV1 } from '../mediation/verifyProviderBrokerRouteGrantV1';
+import {
+  providerBrokerRouteGrantExpectedBindingV1 as authorityBinding,
+  verifyProviderBrokerRouteGrantV1,
+} from '../mediation/verifyProviderBrokerRouteGrantV1';
 import type { DirectRouteGrantTrustRoot } from '../mediation/verifyRouteGrantSignature';
 import type { DaemonMachineIrohRuntime } from './daemonMachineIrohRuntime';
 import {
@@ -31,20 +33,6 @@ type BrokerTunnel = Readonly<{
   retire(): Promise<void>;
   close(): Promise<void>;
 }>;
-
-function authorityBinding(authority: SignedProviderBrokerRouteGrantV1) {
-  return {
-    teamId: authority.payload.teamId,
-    resourceId: authority.payload.resourceId,
-    expectedResourceRevision: authority.payload.expectedResourceRevision,
-    modelId: authority.payload.modelId,
-    sourceRevision: authority.payload.sourceRevision,
-    initiator: authority.payload.initiator,
-    target: authority.payload.target,
-    consumer: authority.payload.consumer,
-    application: authority.payload.application,
-  } as const;
-}
 
 /**
  * Opens the existing native HTTP machine/1 carrier for one Home-signed
@@ -117,6 +105,8 @@ export function createProviderBrokerMachineCarrierTunnelOpen(input: Readonly<{
       throw new MachineCarrierError(currentAuthority.reasonCode, 'Provider broker authority is no longer current.');
     }
     const endpoint = IrohEndpointDescriptorV1Schema.parse({ endpointId: brokerOpen.target.endpointId });
+    /** True once this tunnel is only being used to release its own claim. */
+    let releasing = false;
 
     const handshake = IrohProviderBrokerHandshakeV1Schema.parse({ v: 1, kind: 'provider_broker', authority });
     const transportInput: ProviderBrokerMachineCarrierTransportOpenInput = {
@@ -125,6 +115,19 @@ export function createProviderBrokerMachineCarrierTunnelOpen(input: Readonly<{
       flow: 'provider_broker',
       handshake,
       handshakeProvider: async () => {
+        if (releasing) {
+          // Releasing a claim this operation already holds is not new request
+          // work. It presents the authority the Home already granted for this
+          // exact operation and target, so it needs no fresh inference
+          // admission — which the Home would refuse precisely when the Session
+          // or entitlement that ended is the reason we are releasing — and it
+          // is not cancelled by the signal whose end caused the release.
+          return IrohProviderBrokerHandshakeV1Schema.parse({
+            v: 1,
+            kind: 'provider_broker',
+            authority,
+          });
+        }
         signal?.throwIfAborted();
         if (!refreshBrokerOpen) {
           throw new MachineCarrierError('broker_fresh_handshake_unavailable', 'Fresh Provider broker admission is unavailable.');
@@ -178,6 +181,7 @@ export function createProviderBrokerMachineCarrierTunnelOpen(input: Readonly<{
     let retireInFlight: Promise<void> | null = null;
     const retire = (): Promise<void> => {
       if (retired) return Promise.resolve();
+      releasing = true;
       retireInFlight ??= (async () => {
         const response = await (input.fetchImpl ?? fetch)(
           `http://127.0.0.1:${tunnel.localPort}${PROVIDER_BROKER_PRIVATE_CLOSE_PATH}`,

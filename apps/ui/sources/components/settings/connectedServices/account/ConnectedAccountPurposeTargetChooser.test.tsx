@@ -241,6 +241,73 @@ describe('ConnectedAccountPurposeTargetChooser', () => {
     expect(modalSpies.hide).toHaveBeenCalledWith('purpose-target-modal');
   });
 
+  it('offers the entitled Team selections only when its surface supplies the Team catalog', async () => {
+    const { ConnectedAccountPurposeTargetChooser } = await import('./ConnectedAccountPurposeTargetChooser');
+    const { TeamCredentialResourceCatalogEntryV1Schema } = await import('@happier-dev/protocol/teams');
+    const service = { pluginId: 'acme.managed.provider', localId: 'gateway' };
+    const resource = TeamCredentialResourceCatalogEntryV1Schema.parse({
+      id: 'resource-pool',
+      teamId: 'team-acme',
+      displayName: 'Acme shared pool',
+      resourceRevision: 3,
+      readiness: { kind: 'available' },
+      recoveryAction: null,
+      mayBroker: true,
+      mayReceiveDirect: false,
+      directMaterialState: 'never_delivered',
+      sessionUsePolicy: 'personal_allowed',
+      providerModels: [],
+      connectedServiceSelections: [
+        { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'brokered' },
+      ],
+      sourcePresentation: { kind: 'connected_service', service },
+    });
+    const onChange = vi.fn();
+    const props = {
+      testID: 'agent-connected-account-purpose:subscription',
+      localizedTextPluginId: 'acme.provider.author',
+      declaration: { purpose: 'subscription', service, required: true },
+      value: null,
+      onChange,
+    };
+    const withoutCatalog = await renderScreen(<ConnectedAccountPurposeTargetChooser {...props} />);
+    await act(async () => {
+      findItemByTestId(withoutCatalog, props.testID)?.props.onPress();
+    });
+    expect(latestPurposeTargetModalConfig().props.rootStep.sections[0].options
+      .some((option) => option.label === 'Acme shared pool')).toBe(false);
+
+    const screen = await renderScreen(<ConnectedAccountPurposeTargetChooser
+      {...props}
+      teamCredentialCatalog={{
+        resources: [resource],
+        teamNameById: { 'team-acme': 'Acme' },
+        currentResourceKeys: new Set(['team-acme:resource-pool']),
+      }}
+    />);
+    await act(async () => {
+      findItemByTestId(screen, props.testID)?.props.onPress();
+    });
+    const config = modalSpies.show.mock.calls.at(-1)?.[0] as Readonly<{
+      props: Readonly<{
+        rootStep: CapturedPurposeTargetModalConfig['props']['rootStep'];
+        onSelect: (id: string) => void;
+      }>;
+    }>;
+    const teamOption = config.props.rootStep.sections[0].options
+      .find((option) => option.label === 'Acme shared pool');
+    expect(teamOption).toEqual(expect.objectContaining({ disabled: false }));
+    await act(async () => {
+      config.props.onSelect(teamOption!.id);
+    });
+    // The Team choice reaches the writer as the canonical Team selection of
+    // its Team, never as a purpose target (lane 10 child 02 :271).
+    expect(onChange).toHaveBeenCalledWith(null, {
+      teamId: 'team-acme',
+      selection: { source: 'team_resource', resourceId: 'resource-pool', deliveryMode: 'brokered' },
+    });
+  });
+
   it('labels a selected target and an indeterminate transport without raw purpose identifiers', async () => {
     const { ConnectedAccountPurposeTargetChooser } = await import('./ConnectedAccountPurposeTargetChooser');
     const props = {

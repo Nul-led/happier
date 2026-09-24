@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
     AccountSettingsSavedSecretMutationError,
     applyAccountSettingsSavedSecretMutation,
+    isSharedSavedSecretReferenceV1,
     parseSavedSecretRefV1,
     resolveAccountSettingsPluginSecretBinding,
     resolveAccountSettingsPluginSecret,
@@ -21,6 +22,7 @@ import { readStoredCredentials } from '@/persistence';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 import type { AccountSettingsMutationResult } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 import { updateActivePluginAccountSettingsOnce } from './accountSettingsStorage';
 import type {
@@ -41,6 +43,13 @@ type AccountSettingsMutationOwner = Readonly<{
         ) => Record<string, unknown>,
         assertCurrent(): void;
     }>): Promise<AccountSettingsMutationResult>;
+    /**
+     * Admits one shared Saved Secret for a new operation against the Home's
+     * current authorized catalog (plan 10.08 §5.8, SECRET-05). AccountChange is
+     * only a hint, so a hydrated row is not current authorization. An owner
+     * without it cannot admit shared material and custody fails closed.
+     */
+    admitSharedSecretForOperation?(input: Readonly<{ ref: string; expectedScopeKey: string }>): Promise<void>;
     /** Reads the authoritative Account document after a submitted write lost its response. */
     rereadAfterAmbiguousWrite?(input?: Readonly<{
         expectedLifetimeToken?: number;
@@ -159,6 +168,12 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
     const owner: AccountSettingsMutationOwner = params.owner ?? Object.freeze({
         readSnapshot: readBoundSnapshot,
         readLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken,
+        async admitSharedSecretForOperation(input: Readonly<{ ref: string; expectedScopeKey: string }>) {
+            await refreshSavedSecretCatalogForOperation({
+                expectedScopeKey: input.expectedScopeKey,
+                references: [{ ref: input.ref }],
+            });
+        },
         async updateOnce(input): Promise<AccountSettingsMutationResult> {
             return await updateActivePluginAccountSettingsOnce({
                 expectedVersion: input.expectedVersion,
@@ -417,9 +432,34 @@ export function createAccountPluginSecretCustodyRouter(params: Readonly<{
                 });
             },
             async get() {
-                const snapshot = requireBoundAccountSnapshot();
-                const current = state(snapshot, target);
+                let snapshot = requireBoundAccountSnapshot();
+                let current = state(snapshot, target);
                 if (!current.binding) return null;
+                const boundSecretId = current.binding.savedSecretId;
+                if (isSharedSavedSecretReferenceV1(boundSecretId)) {
+                    try {
+                        if (!owner.admitSharedSecretForOperation) throw new Error('saved_secret_admission_unavailable');
+                        await owner.admitSharedSecretForOperation({ ref: boundSecretId, expectedScopeKey: snapshot.scopeKey ?? '' });
+                    } catch {
+                        throw custodyError(
+                            'plugin_secret_custody_unavailable',
+                            'The Home did not admit this shared Saved Secret for a new operation',
+                            undefined,
+                            true,
+                        );
+                    }
+                    // The admission committed the Home's current catalog into
+                    // the Account snapshot; resolve against that, not the
+                    // snapshot captured before it.
+                    snapshot = requireBoundAccountSnapshot();
+                    current = state(snapshot, target);
+                    if (current.binding?.savedSecretId !== boundSecretId) {
+                        throw custodyError(
+                            'plugin_secret_custody_unavailable',
+                            'The plugin secret binding changed while it was being admitted',
+                        );
+                    }
+                }
                 assertSnapshotCurrent(snapshot);
                 const material = createSavedSecretMaterializerFromSnapshotV1(snapshot)
                     .resolve(current.binding.savedSecretId);

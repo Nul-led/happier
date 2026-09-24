@@ -95,10 +95,57 @@ describe('projectSessionAccessEncryptionSection', () => {
 
     it('keeps a failed preparation legible and retryable without blaming the grant', () => {
         const failure = { code: 'session_access_failed', message: 'boom', retryable: true };
-        const failed = project({ kind: 'failed', error: failure });
+        const failed = project({ kind: 'failed', origin: 'pass', error: failure });
         expect(failed?.error).toBe(failure);
         expect(failed?.actionLabel).toBe('Try again');
         expect(failed?.summaryLabel).not.toBe('boom');
+        // Only a pass that followed a committed mutation may claim the save happened.
+        expect(failed?.summaryLabel).toBe('Access was saved, but preparing encrypted access failed.');
+    });
+
+    it('does not claim a save happened when only the opening discovery read failed', () => {
+        const failure = { code: 'session_access_failed', message: 'boom', retryable: true };
+        const failed = project({ kind: 'failed', origin: 'discovery', error: failure });
+        expect(failed?.summaryLabel).toBe("Couldn't check encrypted access.");
+        expect(failed?.actionLabel).toBe('Try again');
+        expect(failed?.error).toBe(failure);
+    });
+
+    it('does not claim a save happened when the manager started the pass themselves', () => {
+        const failure = { code: 'session_access_failed', message: 'boom', retryable: true };
+        const failed = project({ kind: 'failed', origin: 'manual', error: failure });
+        expect(failed?.summaryLabel).toBe('Preparing encrypted access failed.');
+        expect(failed?.actionLabel).toBe('Try again');
+        expect(failed?.error).toBe(failure);
+    });
+
+    it('offers the repeat action on every row that can be re-sealed, and none on one that cannot', () => {
+        const rows = project(settled('incomplete', { prepared: 1, pending: 1, invalid: 1 }), {
+            view: 'all',
+            rows: [
+                item({ recipientAccountId: 'account-ready' }),
+                item({ recipientAccountId: 'account-pending', envelopeState: 'missing' }),
+                item({ recipientAccountId: 'account-invalid', envelopeState: 'invalid' }),
+                item({
+                    recipientAccountId: 'account-setup',
+                    contentKey: { status: 'unavailable', reason: 'encryption_setup_required' },
+                }),
+            ],
+            nextCursor: null,
+            loading: false,
+            error: null,
+        })?.recipients?.rows ?? [];
+
+        // `prepared` proves shape only — the Home cannot tell whether the recipient can
+        // still open it — so a delivered row keeps a repeat affordance for the manager to
+        // re-seal against a replaced content key. A recipient who has not finished
+        // encryption setup can only be explained, not repaired.
+        expect(rows.map((row) => [row.state, row.actionLabel])).toEqual([
+            ['prepared', 'Prepare again'],
+            ['pending', 'Prepare now'],
+            ['invalid', 'Prepare again'],
+            ['encryption_setup_required', undefined],
+        ]);
     });
 
     it('lists discovered exceptions beneath the aggregate without opening the all-people view', () => {

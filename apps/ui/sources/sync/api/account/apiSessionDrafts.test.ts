@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    createSessionDraftPrivatePayloadV2,
     SessionDraftMutateResponseV2Schema,
     SessionDraftMutateResponseV1Schema,
     SessionDraftReadResponseV1Schema,
@@ -59,7 +60,7 @@ describe('successor newSession content epoch', () => {
         expect(request.mock.calls.map(([path]) => path)).toEqual(['/v2/account/session-drafts/mutate']);
     });
 
-    it('falls back once through the supported predecessor V1 route for a lossless newSession projection', async () => {
+    it('never writes a newSession draft to the predecessor V1 route, and still reads one that was created there', async () => {
         const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
         const canonicalContent = {
             t: 'plain' as const,
@@ -102,173 +103,57 @@ describe('successor newSession content epoch', () => {
                 },
             },
         };
-        const predecessorContent = {
-            t: 'plain' as const,
-            v: {
-                ...canonicalContent.v,
-                v: 1 as const,
-                document: {
-                    ...canonicalContent.v.document,
-                    v: 1 as const,
-                    target: {
-                        ...canonicalContent.v.document.target,
-                        authoring: {
-                            ...canonicalContent.v.document.target.authoring,
-                            serverId: { mutationId: '20000000-0000-4000-8000-000000000004', value: 'home-a' },
-                            machineId: { mutationId: '20000000-0000-4000-8000-000000000004', value: 'machine-a' },
-                        },
-                    },
+        // A 0.2-written row, produced by the released projection rather than
+        // hand-written: a losslessly V1-representable document is stored in the
+        // exact V1 payload shape a 0.2 client wrote.
+        const predecessorPayload = createSessionDraftPrivatePayloadV2(newAddress, {
+            v: 1,
+            composer: canonicalContent.v.document.composer,
+            target: {
+                kind: 'newSession',
+                authoring: {
+                    serverId: { mutationId: '20000000-0000-4000-8000-000000000009', value: 'predecessor-home' },
+                    machineId: { mutationId: '20000000-0000-4000-8000-000000000010', value: 'predecessor-machine' },
                 },
             },
-        };
+            extensions: {},
+        });
+        expect(predecessorPayload.v).toBe(1);
         const predecessorRecord = {
             address: newAddress,
             revision: 4,
-            content: predecessorContent,
+            content: { t: 'plain' as const, v: predecessorPayload },
             createdAt: 10,
             updatedAt: 20,
         };
-        const predecessorEditedContent = {
-            ...predecessorContent,
-            v: {
-                ...predecessorContent.v,
-                document: {
-                    ...predecessorContent.v.document,
-                    composer: {
-                        ...predecessorContent.v.document.composer,
-                        text: { mutationId: '20000000-0000-4000-8000-000000000008', value: 'edited on predecessor' },
-                    },
-                    target: {
-                        ...predecessorContent.v.document.target,
-                        authoring: {
-                            ...predecessorContent.v.document.target.authoring,
-                            serverId: { mutationId: '20000000-0000-4000-8000-000000000009', value: 'predecessor-display-home' },
-                            machineId: { mutationId: '20000000-0000-4000-8000-000000000010', value: 'predecessor-display-machine' },
-                        },
-                    },
-                },
-            },
-        };
-        const predecessorEditedExecutionTarget = {
-            mutationId: '20000000-0000-4000-8000-000000000010',
-            value: {
-                kind: 'machine',
-                target: { serverId: 'predecessor-display-home', machineId: 'predecessor-display-machine' },
-            },
-        };
-        request.mockResolvedValueOnce(jsonResponse({}, 404)).mockResolvedValueOnce(jsonResponse({
-            status: 'updated', record: predecessorRecord,
-        })).mockResolvedValueOnce(jsonResponse({
-            status: 'present', record: { ...predecessorRecord, revision: 5, content: predecessorEditedContent },
-        })).mockResolvedValueOnce(jsonResponse({}, 404)).mockResolvedValueOnce(jsonResponse({
-            items: [{ ...predecessorRecord, revision: 5, content: predecessorEditedContent }],
-        }));
 
+        // 0.3 is a one-way upgrade, so a Home without the V2 draft epoch is not a
+        // supported peer: the write settles the local draft as unsupported and
+        // never re-posts successor authoring a released V1 reader would reject.
+        request.mockResolvedValueOnce(jsonResponse({}, 404));
         const transport = createApiSessionDraftsTransport({ request });
-        const result = await transport.mutate({
+        await expect(transport.mutate({
             address: newAddress,
             expectedRevision: 3,
             content: canonicalContent,
-        }, { supportedPredecessorV1Content: predecessorContent });
-        const reread = await transport.read(newAddress);
-        const relisted = await transport.list({});
+        })).rejects.toMatchObject({ code: 'session_draft_epoch_unavailable' });
+        expect(request.mock.calls.map(([path]) => path)).toEqual(['/v2/account/session-drafts/mutate']);
 
+        // The obligation that survives R-COMPAT: a draft a 0.2 client created is
+        // still readable. Its closed V1 payload is admitted by the V2 payload
+        // union itself, so it needs no bridge and arrives byte-faithful.
+        request.mockReset();
+        request.mockResolvedValueOnce(jsonResponse({ status: 'present', record: predecessorRecord }))
+            .mockResolvedValueOnce(jsonResponse({ items: [predecessorRecord] }));
+        await expect(transport.read(newAddress)).resolves.toEqual({ status: 'present', record: predecessorRecord });
+        await expect(transport.list({})).resolves.toEqual({ items: [predecessorRecord] });
+        // A newSession address is a released V1 address, so reading it keeps the
+        // V1 route and upgrades only on a proven V1-epoch refusal. Nothing about
+        // the removed write bridge changes that direction.
         expect(request.mock.calls.map(([path]) => path)).toEqual([
-            '/v2/account/session-drafts/mutate',
-            '/v1/account/session-drafts/mutate',
             '/v1/account/session-drafts/read',
             '/v2/account/session-drafts/list',
-            '/v1/account/session-drafts/list',
         ]);
-        expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
-            address: newAddress,
-            expectedRevision: 3,
-            content: canonicalContent,
-        });
-        expect(JSON.parse(String(request.mock.calls[1]?.[1]?.body))).toEqual({
-            address: newAddress,
-            expectedRevision: 3,
-            content: predecessorContent,
-        });
-        expect(SessionDraftMutateResponseV2Schema.parse(result)).toEqual({
-            status: 'updated',
-            record: { ...predecessorRecord, content: canonicalContent },
-        });
-        expect(reread).toMatchObject({
-            status: 'present',
-            record: {
-                revision: 5,
-                content: {
-                    t: 'plain',
-                    v: {
-                        v: 2,
-                        document: {
-                            v: 2,
-                            composer: { text: { value: 'edited on predecessor' } },
-                            target: { authoring: { executionTarget: predecessorEditedExecutionTarget } },
-                            extensions: canonicalContent.v.document.extensions,
-                        },
-                    },
-                },
-            },
-        });
-        expect(relisted).toMatchObject({
-            items: [{
-                revision: 5,
-                content: {
-                    t: 'plain',
-                    v: {
-                        v: 2,
-                        document: {
-                            v: 2,
-                            target: { authoring: { executionTarget: predecessorEditedExecutionTarget } },
-                            extensions: canonicalContent.v.document.extensions,
-                        },
-                    },
-                },
-            }],
-        });
-    });
-
-    it('does not duplicate a losslessly representable write on a V2-capable Home', async () => {
-        const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
-        const content = { t: 'encrypted' as const, c: 'canonical-v2', v: 2 as const };
-        request.mockResolvedValueOnce(jsonResponse({
-            status: 'updated',
-            record: { address: newAddress, revision: 1, content, createdAt: 1, updatedAt: 1 },
-        }));
-
-        await createApiSessionDraftsTransport({ request }).mutate({
-            address: newAddress,
-            expectedRevision: 'absent',
-            content,
-        }, { supportedPredecessorV1Content: { t: 'encrypted', c: 'predecessor-v1' } });
-
-        expect(request.mock.calls.map(([path]) => path)).toEqual(['/v2/account/session-drafts/mutate']);
-    });
-
-    it('preserves CAS conflict semantics for an encrypted predecessor fallback without exposing plaintext', async () => {
-        const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
-        request.mockResolvedValueOnce(jsonResponse({}, 404)).mockResolvedValueOnce(jsonResponse({
-            status: 'conflict', current: { status: 'absent' },
-        }));
-
-        await expect(createApiSessionDraftsTransport({ request }).mutate({
-            address: newAddress,
-            expectedRevision: 7,
-            content: { t: 'encrypted', c: 'canonical-v2', v: 2 },
-        }, {
-            supportedPredecessorV1Content: { t: 'encrypted', c: 'predecessor-v1' },
-        })).resolves.toEqual({ status: 'conflict', current: { status: 'absent' } });
-
-        expect(request.mock.calls.map(([path]) => path)).toEqual([
-            '/v2/account/session-drafts/mutate', '/v1/account/session-drafts/mutate',
-        ]);
-        expect(JSON.parse(String(request.mock.calls[1]?.[1]?.body))).toEqual({
-            address: newAddress,
-            expectedRevision: 7,
-            content: { t: 'encrypted', c: 'predecessor-v1' },
-        });
     });
 
     it('uses V2 for discovery and upgrades only a proven no-effect V1 epoch refusal', async () => {

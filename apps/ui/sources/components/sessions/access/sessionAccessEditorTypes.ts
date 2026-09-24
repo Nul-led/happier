@@ -1,5 +1,7 @@
 import type { EffectiveSessionAccessLevelV1, PrincipalRefV1, SessionAccessLevelV1 } from '@happier-dev/protocol';
 
+import type { SessionCollaborationHandoff } from '@/components/sessions/collaboration/sessionCollaborationIntent';
+
 export type SessionAccessPrincipalRef = PrincipalRefV1;
 export type SessionAccessGrantRef = PrincipalRefV1;
 export type SessionAccessLevel = SessionAccessLevelV1;
@@ -154,7 +156,22 @@ export type SessionAccessEncryptionRecipientsModel = Readonly<{
  * grant is one row and many Accounts, so a locally recomputed number would be a
  * quieter untruth than showing none.
  */
+/**
+ * The material state of this Session's encrypted access, as the one projector decides it.
+ *
+ * It exists so a surface can tell a transition from a repaint without re-deriving it from
+ * copy or counts: progress ticks and later recipient pages keep the same key, while
+ * `preparing → ready` is the change a screen reader must hear about.
+ */
+export type SessionAccessEncryptionStatusKey =
+    'preparing' | 'ready' | 'needs_attention' | 'failed' | 'unavailable';
 export type SessionAccessEncryptionModel = Readonly<{
+    statusKey: SessionAccessEncryptionStatusKey;
+    /**
+     * What to say when this state is *reached*. Absent while a state is still moving,
+     * so a live region never reads a count that is about to change.
+     */
+    announcement?: string;
     /** `42 prepared · 3 pending · 1 needs setup or repair`, or the quiet ready line. */
     summaryLabel: string;
     accessibilityLabel: string;
@@ -181,6 +198,17 @@ export type SessionAccessEditorModel = Readonly<{
     context?: SessionAccessContextModel;
     notice?: SessionAccessEditorNotice;
     encryption?: SessionAccessEncryptionModel;
+    /**
+     * The one access change the canonical Action policy routed to an approval
+     * Artifact. Nothing has committed; the editor holds further edits until the
+     * shared approval continuation settles it, exactly like the Board.
+     */
+    pendingApproval?: Readonly<{ artifactId: string; serverId: string }>;
+    /**
+     * Present only to the owner of a historical (layout-0) Session: the people and
+     * links it is shared with cannot open it until the owner updates it (PA-L2).
+     */
+    historicalLayout?: Readonly<{ updating: boolean; error?: SessionAccessUiError }>;
 }>;
 export type SessionAccessEditorActions = Readonly<{
     setQuery(query: string): void;
@@ -203,6 +231,10 @@ export type SessionAccessEditorActions = Readonly<{
     toggleAllRecipients(): void;
     /** Pages the open diagnostic through the collection's own cursor. */
     loadMoreRecipients(): void;
+    /** Opens the pending approval where it is decided; live editors only. */
+    openPendingApproval?(): void;
+    /** The owner's deliberate update of a historical Session for sharing; live editors only. */
+    updateHistoricalLayout?(): void;
 }>;
 export type SessionAccessEditorController = Readonly<{ model: SessionAccessEditorModel; actions: SessionAccessEditorActions }>;
 export type SessionAccessEditorPresentation = 'compact' | 'full';
@@ -214,8 +246,10 @@ export type SessionAccessEditorProps = Readonly<{
     /**
      * Supplied only by an anchored compact host that can hand off to the full
      * Collaboration surface with Access focused. Absent everywhere the editor is
-     * already the full surface, so it never offers to open itself.
+     * already the full surface, so it never offers to open itself. It carries
+     * the root-step query, which is the only state the destination's own
+     * controller cannot rebuild for itself.
      */
-    onOpenFullSurface?: () => void;
+    onOpenFullSurface?: (handoff: SessionCollaborationHandoff) => void;
     testID?: string;
 }>;

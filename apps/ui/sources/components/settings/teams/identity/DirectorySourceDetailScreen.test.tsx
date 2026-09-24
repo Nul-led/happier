@@ -2,7 +2,8 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { collectRenderedTestIds, renderScreen, standardCleanup } from '@/dev/testkit';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 
 const directoryBinding = vi.hoisted(() => ({
     version: 0,
@@ -16,6 +17,7 @@ const directoryBinding = vi.hoisted(() => ({
 const directoryGroupsBinding = vi.hoisted(() => ({
     rows: [] as Array<Record<string, unknown>>,
     enabled: null as boolean | null,
+    accountChange: null as Readonly<{ serverId: string; entityId: string }> | null,
 }));
 const nativeGroupsBinding = vi.hoisted(() => ({
     rows: [] as Array<Readonly<{ id: string; name: string; memberCount: number }>>,
@@ -80,11 +82,11 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -102,8 +104,12 @@ vi.mock('@/hooks/teams/useTeamGroups', () => ({
     useTeamGroup: useTeamGroupMock,
 }));
 vi.mock('@/hooks/teams/useTeamPagedList', () => ({
-    useTeamPagedList: (params: Readonly<{ enabled: boolean }>) => {
+    useTeamPagedList: (params: Readonly<{
+        enabled: boolean;
+        accountChange?: Readonly<{ serverId: string; entityId: string }>;
+    }>) => {
         directoryGroupsBinding.enabled = params.enabled;
+        directoryGroupsBinding.accountChange = params.accountChange ?? null;
         return { rows: directoryGroupsBinding.rows, hasMore: false, status: 'idle', error: null, reload: directoryGroupsReloadMock, loadMore: vi.fn() };
     },
 }));
@@ -178,6 +184,7 @@ beforeEach(() => {
     directoryBinding.state = { kind: 'loading' };
     directoryGroupsBinding.rows = [];
     directoryGroupsBinding.enabled = null;
+    directoryGroupsBinding.accountChange = null;
     nativeGroupsBinding.rows = [];
     useTeamGroupMock.mockReset();
     canMutateMock.current = true;
@@ -431,6 +438,63 @@ describe('DirectorySourceDetailScreen', () => {
         const visibleMessage = screen.findByTestId('team-directory-source-action-error')?.props.title;
         expect(visibleMessage).toBe('identityAdministration.errorRateLimited');
         expect(announceMock).toHaveBeenCalledWith(visibleMessage);
+
+        // The Home refuses Sync with needs-attention only for a paused source
+        // (child 05 :498), whose recovery is Resume.
+        runActionMock.mockResolvedValueOnce({
+            ok: false,
+            failure: { code: 'directory_sync_needs_attention', retryable: false },
+        });
+        await screen.pressByTestIdAsync('team-directory-source-sync');
+        expect(screen.findByTestId('team-directory-source-action-error')?.props.title)
+            .toBe('identityAdministration.errorSyncPaused');
+    });
+
+    it('offers the existing Sync control as Retry while the source reports a failure', async () => {
+        const sourceWith = (error: Record<string, unknown> | null) => ({
+            kind: 'ready', refreshing: false, stale: false, failure: null,
+            item: {
+                v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                state: error ? 'needs_attention' : 'active',
+                allowedActions: ['teams.directory.sources.sync', 'teams.directory.sources.pause'],
+                error,
+                sync: { mode: 'events_and_full', attempt: error ? 'failed' : 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+            },
+        });
+        directoryBinding.state = sourceWith({ code: 'directory_source_permission_lost', retryable: false });
+
+        const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+
+        // child 05 §14.1: a failed source offers Retry, and pressing it runs
+        // the one Sync Action (a complete scan), not a Pause → Resume detour.
+        expect(screen.findByTestId('team-directory-source-sync')?.props.title).toBe('common.retry');
+        await screen.pressByTestIdAsync('team-directory-source-sync');
+        expect(runActionMock).toHaveBeenCalledWith('teams.directory.sources.sync', expect.anything());
+
+        await act(async () => {
+            directoryBinding.state = sourceWith(null);
+            directoryBinding.publish();
+        });
+        expect(screen.findByTestId('team-directory-source-sync')?.props.title)
+            .toBe('teams.authentication.directory.actions.sync');
+    });
+
+    it('binds the mounted directory Group list to its exact Home Team wake', async () => {
+        directoryBinding.state = {
+            kind: 'ready', refreshing: false, stale: false, failure: null,
+            item: {
+                v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                state: 'active', allowedActions: [], error: null,
+                sync: { mode: 'events_and_full', attempt: 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+            },
+        };
+
+        await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+
+        // A projection change is published as the Team AccountChange; without
+        // this subscription a mounted Group list kept its old rows until remount.
+        expect(directoryGroupsBinding.accountChange)
+            .toEqual({ serverId: 'home-1', entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 });
     });
 
     it('opens exact source-bound WorkOS recovery for immediate and approved results', async () => {
@@ -619,6 +683,33 @@ describe('DirectorySourceDetailScreen', () => {
             'External engineering\nidentityAdministration.mappedTo: Platform Engineering\nteams.groups.memberCount(count=12)',
             expect.objectContaining({ destructive: true }),
         );
+    });
+
+    it('opens the mapping chooser beside the pressed group instead of after the whole list', async () => {
+        directoryBinding.state = {
+            kind: 'ready', refreshing: false, stale: false, failure: null,
+            item: {
+                v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                state: 'active', allowedActions: [], error: null,
+                sync: { mode: 'events_and_full', attempt: 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+            },
+        };
+        directoryGroupsBinding.rows = Array.from({ length: 30 }, (_, index) => ({
+            id: `external-group-${index}`,
+            displayName: `External Group ${index}`,
+            memberCount: index,
+            mapping: { state: 'unbound' },
+        }));
+        nativeGroupsBinding.rows = [{ id: 'team-group-1', name: 'Platform Engineering', memberCount: 4 }];
+        const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+
+        await screen.pressByTestIdAsync('directory-group:external-group-0');
+
+        const order = collectRenderedTestIds(screen.tree.toJSON());
+        expect(order.indexOf('directory-group:external-group-11'))
+            .toBeLessThan(order.indexOf('directory-group-map-create'));
+        expect(order.indexOf('directory-group-map-create'))
+            .toBeLessThan(order.indexOf('directory-group:external-group-12'));
     });
 
     it('lets the expanded existing-group chooser collapse instead of rendering an inert row', async () => {

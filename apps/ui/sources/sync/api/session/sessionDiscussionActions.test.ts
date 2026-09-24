@@ -9,7 +9,7 @@ vi.mock('@/platform/randomUUID', () => ({ randomUUID: platformRandomUUID }));
 import { createSessionDiscussionActionAdapter } from './sessionDiscussionActions';
 
 const session = { serverId: 'home-a', sessionId: 'session-a' } as const;
-const availability = 'full_collaboration' as const;
+const availability = 'available' as const;
 type DiscussionRequest = (path: string, init?: RequestInit) => Promise<Response>;
 
 function createResponse(): SessionDiscussionCreateResponseV1 {
@@ -192,6 +192,23 @@ describe('session Discussion UI Action adapter', () => {
                 requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: 'A'.repeat(43) },
             },
         });
+    });
+
+    it('refuses an invocation addressed to a different Home before any request', async () => {
+        const request = vi.fn<DiscussionRequest>();
+        const execute = createSessionDiscussionActionAdapter({
+            session,
+            availability,
+            request,
+            contentContext: { mode: 'plain' },
+        });
+
+        await expect(execute({
+            actionId: 'session.discussion.archive',
+            input: { sessionId: session.sessionId, discussionId: 'discussion-a' },
+            context: { surface: 'ui', serverId: 'home-b', defaultSessionId: session.sessionId },
+        })).resolves.toEqual({ ok: false, errorCode: 'session_discussion_not_found', error: 'session_discussion_not_found' });
+        expect(request).not.toHaveBeenCalled();
     });
 
     it('fails a malformed success response closed instead of projecting an unvalidated row', async () => {

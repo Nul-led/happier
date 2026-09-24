@@ -45,7 +45,6 @@ describe("Team credential direct material consumed boundary (SQLite integration)
             tempDirPrefix: "team-credential-direct-consumer-",
             env: {
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
             },
         });
@@ -174,6 +173,8 @@ describe("Team credential direct material consumed boundary (SQLite integration)
                 parentSessionId: request.params.executionRunId === "attached-run" ? session.id : null,
                 intent: "agent",
                 runtimeState: "idle",
+                // The Run owner's own accepted selection: this resource, direct.
+                teamCredentialProviderModel: { resourceId: resource.id, deliveryMode: "direct" },
             },
         }));
         app.addHook("onRequest", async (request: FastifyRequest) => {

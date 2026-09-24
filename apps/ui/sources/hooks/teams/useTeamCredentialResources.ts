@@ -28,6 +28,7 @@ import {
     refreshTeamCredentialResource,
     refreshTeamCredentialResourceCatalog,
 } from '@/sync/engine/teams/teamsDirectoryEngine';
+import { subscribeTeamCredentialUsageChanged } from '@/sync/engine/teams/teamCredentialUsageChanges';
 import {
     listTeamCredentialActivity,
     listTeamCredentialSourceCandidates,
@@ -467,6 +468,16 @@ export type TeamCredentialUsageProjection = Readonly<{
     status: 'loading' | 'ready' | 'error';
     /** A later page failed; the rows already shown are still authoritative. */
     partial: boolean;
+    /**
+     * Whether `result` was produced by the query currently being asked.
+     *
+     * A retained result stays visible across a range or breakdown change so the
+     * screen does not blank, but it is the previous query's answer. Anything
+     * that stamps the current query's labels on these numbers — the CSV export
+     * above all — must consume this instead of `status`, which a failed refresh
+     * flips to `error` while the old numbers are still on screen.
+     */
+    resultIsCurrentQuery: boolean;
     hasMore: boolean;
     loadingMore: boolean;
     error: HomeDomainFailure | null;
@@ -508,13 +519,15 @@ export function useTeamCredentialUsage(params: Readonly<{
     const [state, setState] = React.useState<Readonly<{
         key: string;
         continuityKey: string;
+        /** The query identity `result` actually came from. */
+        resultKey: string;
         result: TeamCredentialUsageQueryResultV1 | null;
         status: TeamCredentialUsageProjection['status'];
         partial: boolean;
         nextCursor: string | null;
         loadingMore: boolean;
         error: HomeDomainFailure | null;
-    }>>({ key: '', continuityKey: '', result: null, status: 'loading', partial: false, nextCursor: null, loadingMore: false, error: null });
+    }>>({ key: '', continuityKey: '', resultKey: '', result: null, status: 'loading', partial: false, nextCursor: null, loadingMore: false, error: null });
     const scope = params.scope;
     const inputKey = JSON.stringify(params.input);
     const input = React.useMemo(() => params.input, [inputKey]);
@@ -544,6 +557,7 @@ export function useTeamCredentialUsage(params: Readonly<{
             : {
                 key,
                 continuityKey,
+                resultKey: previous.continuityKey === continuityKey ? previous.resultKey : '',
                 result: previous.continuityKey === continuityKey ? previous.result : null,
                 status: 'loading',
                 partial: false,
@@ -560,6 +574,7 @@ export function useTeamCredentialUsage(params: Readonly<{
             setState((previous) => ({
                 key,
                 continuityKey,
+                resultKey: key,
                 result: continuing && previous.key === key && previous.result
                     ? mergeUsagePages(previous.result, outcome.value)
                     : outcome.value,
@@ -589,15 +604,54 @@ export function useTeamCredentialUsage(params: Readonly<{
     const loadMore = React.useCallback(() => load('more'), [load]);
     const current = state.key === key || state.continuityKey === continuityKey
         ? state
-        : { result: null, status: 'loading' as const, partial: false, nextCursor: null, loadingMore: false, error: null };
+        : { resultKey: '', result: null, status: 'loading' as const, partial: false, nextCursor: null, loadingMore: false, error: null };
     return React.useMemo(() => Object.freeze({
         result: current.result,
         status: current.status,
         partial: current.partial,
+        resultIsCurrentQuery: current.result !== null && current.resultKey === key,
         hasMore: current.nextCursor !== null,
         loadingMore: current.loadingMore,
         error: current.error,
         reload,
         loadMore,
-    }), [current.error, current.loadingMore, current.nextCursor, current.partial, current.result, current.status, loadMore, reload]);
+    }), [current.error, current.loadingMore, current.nextCursor, current.partial, current.result, current.resultKey, current.status, key, loadMore, reload]);
+}
+
+/**
+ * Rereads a mounted resource usage view when its Home records new usage for
+ * that resource (L10/07 L10.07-C step 5, "Mounted truth").
+ *
+ * `refresh` is the view's own explicit refresh, so a wake reads the same current
+ * range the Refresh control would. Wakes that arrive while a read is in flight
+ * collapse into one trailing read: a busy resource cannot queue a read per
+ * request, and the last read still covers every write before it.
+ */
+export function useTeamCredentialUsageWriteRefresh(params: Readonly<{
+    scope: ServerAccountScope | null;
+    resourceId: string;
+    enabled: boolean;
+    reading: boolean;
+    refresh: () => void;
+}>): void {
+    const latest = React.useRef(params);
+    latest.current = params;
+    const pending = React.useRef(false);
+    const serverId = params.enabled ? params.scope?.serverId ?? null : null;
+    React.useEffect(() => {
+        if (serverId === null) return;
+        pending.current = false;
+        return subscribeTeamCredentialUsageChanged({ serverId, resourceId: params.resourceId }, () => {
+            if (latest.current.reading) {
+                pending.current = true;
+                return;
+            }
+            latest.current.refresh();
+        });
+    }, [params.resourceId, serverId]);
+    React.useEffect(() => {
+        if (params.reading || !pending.current) return;
+        pending.current = false;
+        latest.current.refresh();
+    }, [params.reading]);
 }

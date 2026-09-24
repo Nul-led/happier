@@ -18,8 +18,26 @@ describe('happier session run wait (integration)', () => {
   let envScope = createEnvKeyScope(envKeys);
   let server: Server | null = null;
   let happyHomeDir = '';
+  let observedRpcMethods: string[] = [];
+
+  /** The one run shape both `execution.run.wait` and `execution.run.get` project. */
+  const buildRunSnapshot = (status: 'running' | 'succeeded') => ({
+    runId: 'run_1',
+    callId: 'call_1',
+    sidechainId: 'call_1',
+    intent: 'review',
+    backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+    permissionMode: 'read_only',
+    retentionPolicy: 'ephemeral',
+    runClass: 'bounded',
+    ioMode: 'request_response',
+    status,
+    startedAtMs: 1,
+    ...(status !== 'running' ? { finishedAtMs: 2 } : {}),
+  });
 
   beforeEach(async () => {
+    observedRpcMethods = [];
     happyHomeDir = await createTempDir('happier-cli-session-run-wait-');
 
     const sessionId = 'sess_integration_run_wait_123';
@@ -99,35 +117,38 @@ describe('happier session run wait (integration)', () => {
 
 
     const { decodeBase64, decrypt, encodeBase64: encodeBase64Rpc, encrypt } = await import('@/api/encryption');
-    let getCount = 0;
+    // `happier session run wait` asks the daemon to observe the run:
+    // `execution.run.wait` owns the deadline and answers with the terminal run.
+    // `execution.run.get` is reached only after that method answers unavailable
+    // or not-found, so a fixture that only answers `get` never exercises the
+    // production path at all.
     const socket = createApiSessionSocketStub({
       emit: (event: string, args: unknown[]) => {
         const [data, cb] = args as [any, ((value: unknown) => void) | undefined];
         if (event !== SOCKET_RPC_EVENTS.CALL) return;
-        if (String(data.method ?? '') !== `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_GET}`) return;
-
+        const method = String(data.method ?? '');
         const decodedParams = decodeBase64(String(data.params ?? ''), 'base64');
         const decrypted = decrypt(dek, 'dataKey', decodedParams) as any;
         expect(decrypted).toMatchObject({ runId: 'run_1' });
 
-        getCount += 1;
-        const status = getCount >= 2 ? 'succeeded' : 'running';
-        const run = {
-          runId: 'run_1',
-          callId: 'call_1',
-          sidechainId: 'call_1',
-          intent: 'review',
-          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-          permissionMode: 'read_only',
-          retentionPolicy: 'ephemeral',
-          runClass: 'bounded',
-          ioMode: 'request_response',
-          status,
-          startedAtMs: 1,
-          ...(status !== 'running' ? { finishedAtMs: 2 } : {}),
-        };
-        const resultPayload = { run };
-        cb?.({ ok: true, result: encodeBase64Rpc(encrypt(dek, 'dataKey', resultPayload), 'base64') });
+        if (method === `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_WAIT}`) {
+          observedRpcMethods.push(SESSION_RPC_METHODS.EXECUTION_RUN_WAIT);
+          cb?.({
+            ok: true,
+            result: encodeBase64Rpc(encrypt(dek, 'dataKey', {
+              ok: true,
+              status: 'succeeded',
+              result: { run: buildRunSnapshot('succeeded') },
+            }), 'base64'),
+          });
+          return;
+        }
+        if (method !== `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_GET}`) return;
+        observedRpcMethods.push(SESSION_RPC_METHODS.EXECUTION_RUN_GET);
+        cb?.({
+          ok: true,
+          result: encodeBase64Rpc(encrypt(dek, 'dataKey', { run: buildRunSnapshot('succeeded') }), 'base64'),
+        });
       },
     });
     bindApiSessionSocketMock(mockIo, socket);
@@ -149,7 +170,7 @@ describe('happier session run wait (integration)', () => {
     reloadConfiguration();
   });
 
-  it('polls run get until terminal and returns a session_run_wait JSON envelope', async () => {
+  it('settles on the daemon execution run wait result without reaching execution run get', async () => {
     const { handleSessionCommand } = await import('../index');
 
     const output = captureConsoleJsonOutput();
@@ -169,12 +190,71 @@ describe('happier session run wait (integration)', () => {
       expect(parsed.data?.sessionId).toBe('sess_integration_run_wait_123');
       expect(parsed.data?.runId).toBe('run_1');
       expect(parsed.data?.status).toBe('succeeded');
+      expect(observedRpcMethods).toEqual([SESSION_RPC_METHODS.EXECUTION_RUN_WAIT]);
     } finally {
       output.restore();
     }
   });
 
-  it('returns a JSON error envelope when execution run get reports an app-level failure', async () => {
+  it('reaches execution run get only after the wait method answers unavailable', async () => {
+    const { handleSessionCommand } = await import('../index');
+
+    const output = captureConsoleJsonOutput();
+
+    const { encodeBase64: encodeBase64Rpc, encrypt } = await import('@/api/encryption');
+    const dek = new Uint8Array(32).fill(3);
+    const sessionId = 'sess_integration_run_wait_123';
+    const socket = createApiSessionSocketStub({
+      emit: (event: string, args: unknown[]) => {
+        const [data, cb] = args as [any, ((value: unknown) => void) | undefined];
+        if (event !== SOCKET_RPC_EVENTS.CALL) return;
+        const method = String(data.method ?? '');
+        if (method === `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_WAIT}`) {
+          observedRpcMethods.push(SESSION_RPC_METHODS.EXECUTION_RUN_WAIT);
+          cb?.({
+            ok: true,
+            result: encodeBase64Rpc(encrypt(dek, 'dataKey', {
+              ok: false,
+              errorCode: 'RPC_METHOD_NOT_AVAILABLE',
+              error: 'RPC method not available',
+            }), 'base64'),
+          });
+          return;
+        }
+        if (method !== `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_GET}`) return;
+        observedRpcMethods.push(SESSION_RPC_METHODS.EXECUTION_RUN_GET);
+        cb?.({
+          ok: true,
+          result: encodeBase64Rpc(encrypt(dek, 'dataKey', { run: buildRunSnapshot('succeeded') }), 'base64'),
+        });
+      },
+    });
+    bindApiSessionSocketMock(mockIo, socket);
+
+    try {
+      const machineKeySeed = new Uint8Array(32).fill(8);
+      await handleSessionCommand(['run', 'wait', sessionId, 'run_1', '--timeout', '1', '--json'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'dataKey', publicKey: deriveBoxPublicKeyFromSeed(machineKeySeed), machineKey: machineKeySeed },
+        }),
+      });
+
+      const parsed = output.json();
+      expect(parsed.ok).toBe(true);
+      expect(parsed.data?.status).toBe('succeeded');
+      // The order is the contract: the compatibility snapshot is a consequence
+      // of the wait method being unavailable, never the first call.
+      expect(observedRpcMethods).toEqual([
+        SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
+        SESSION_RPC_METHODS.EXECUTION_RUN_GET,
+      ]);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('returns a JSON error envelope when the observed run reports an app-level failure', async () => {
     const { handleSessionCommand } = await import('../index');
 
     const output = captureConsoleJsonOutput();
@@ -217,7 +297,7 @@ describe('happier session run wait (integration)', () => {
     }
   });
 
-  it('falls back to a terminal daemon marker when execution run get reports execution_run_not_found', async () => {
+  it('falls back to a terminal daemon marker when the observed run reports execution_run_not_found', async () => {
     const { handleSessionCommand } = await import('../index');
     const { writeExecutionRunMarker } = await import('@/daemon/executionRunRegistry');
 

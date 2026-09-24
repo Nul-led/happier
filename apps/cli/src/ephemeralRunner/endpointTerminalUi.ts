@@ -4,7 +4,9 @@ import type { RunnerLaunchManifestV1 } from '@happier-dev/protocol/ephemeralRunn
 import type { RunnerArtifactIdentityV1 } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
 import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 
-import { promptInput, isInteractiveTerminal } from '@/terminal/prompts/promptInput';
+import type { PluginRegistryProfileRequirement } from '@/plugins/daemon/changeContract';
+
+import { promptInput, promptSecretInput, isInteractiveTerminal } from '@/terminal/prompts/promptInput';
 import { promptMultipleChoice } from '@/terminal/prompts/promptMultipleChoice';
 import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 
@@ -32,6 +34,16 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'action.decline': 'Decline',
   'action.keepOpen': 'Keep open',
   'consent.question': 'Allow this exact request?',
+  'consent.optionalAccessQuestion': 'Also allow the plugin optional {capability} access: {reason}?',
+  'review.optionalAccessChoices': 'Optional plugin access (off unless you turn it on)',
+  'registry.title': 'Sign in to a private registry',
+  'registry.detail': 'The reviewed Agent plugin {package} is published on the private registry {registry}. Sign in to that registry on this computer to continue. Nothing from the requester’s account is used, and the token stays on this computer.',
+  'registry.signInAgain': 'This computer’s sign-in for {registry} was refused. Sign in again to continue.',
+  'registry.tokenLabel': 'Registry token',
+  'registry.tokenPrompt': 'Registry token (input hidden): ',
+  'registry.signIn': 'Sign in',
+  'registry.withoutToken': 'Continue without a token',
+  'registry.question': 'Sign in, continue without a token, or decline?',
   'directory.title': 'Choose the Agent working folder',
   'directory.dialogTitle': 'Choose the Happier Runner working folder',
   'directory.choose': 'Choose folder',
@@ -149,6 +161,16 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'action.decline': 'Refuser',
   'action.keepOpen': 'Garder ouvert',
   'consent.question': 'Autoriser cette demande exacte ?',
+  'consent.optionalAccessQuestion': 'Autoriser aussi l’accès facultatif {capability} du plugin : {reason} ?',
+  'review.optionalAccessChoices': 'Accès facultatif du plugin (désactivé sauf si vous l’activez)',
+  'registry.title': 'Se connecter à un registre privé',
+  'registry.detail': 'Le plugin d’Agent vérifié {package} est publié sur le registre privé {registry}. Connectez-vous à ce registre sur cet ordinateur pour continuer. Rien du compte du demandeur n’est utilisé, et le jeton reste sur cet ordinateur.',
+  'registry.signInAgain': 'La connexion de cet ordinateur à {registry} a été refusée. Reconnectez-vous pour continuer.',
+  'registry.tokenLabel': 'Jeton du registre',
+  'registry.tokenPrompt': 'Jeton du registre (saisie masquée) : ',
+  'registry.signIn': 'Se connecter',
+  'registry.withoutToken': 'Continuer sans jeton',
+  'registry.question': 'Se connecter, continuer sans jeton ou refuser ?',
   'directory.title': 'Choisir le dossier de travail de l’Agent',
   'directory.dialogTitle': 'Choisir le dossier de travail de Happier Runner',
   'directory.choose': 'Choisir un dossier',
@@ -364,6 +386,42 @@ export function resolveEphemeralRunnerDirectoryChoicePresentation(input: Readonl
     dialogTitle: t('directory.dialogTitle'),
     chooseLabel: t('directory.choose'),
     cancelLabel: t('directory.cancel'),
+  });
+}
+
+/**
+ * The private-registry question the endpoint answers before the installation
+ * review exists. It names the exact registry and package, and says plainly that
+ * the requester's credentials are not used.
+ */
+export type EphemeralRunnerRegistryProfilePresentation = Readonly<{
+  documentLanguage: EphemeralRunnerEndpointLocale;
+  title: string;
+  detail: string;
+  /** Present only when this computer's existing sign-in was refused. */
+  signInAgain: string | null;
+  tokenLabel: string;
+  signInLabel: string;
+  withoutTokenLabel: string;
+  declineLabel: string;
+}>;
+
+export function resolveEphemeralRunnerRegistryProfilePresentation(input: Readonly<{
+  requirement: PluginRegistryProfileRequirement;
+  locale?: string | null;
+}>): EphemeralRunnerRegistryProfilePresentation {
+  const locale = resolveEphemeralRunnerEndpointLocale(input);
+  const t = createEndpointTranslator(locale);
+  const registry = input.requirement.registryOrigin;
+  return Object.freeze({
+    documentLanguage: locale,
+    title: t('registry.title'),
+    detail: t('registry.detail', { package: input.requirement.packageName, registry }),
+    signInAgain: input.requirement.registryProfileId === null ? null : t('registry.signInAgain', { registry }),
+    tokenLabel: t('registry.tokenLabel'),
+    signInLabel: t('registry.signIn'),
+    withoutTokenLabel: t('registry.withoutToken'),
+    declineLabel: t('action.decline'),
   });
 }
 
@@ -596,6 +654,14 @@ export type EphemeralRunnerConsentReviewPresentation = Readonly<{
   allowLabel: string;
   /** Allow is never automatic or pre-selected. */
   defaultDecision: 'decline';
+  /**
+   * The reviewed plugin's optional host access the endpoint may grant with
+   * Allow. Every choice starts off; an empty list means there is none to grant.
+   */
+  optionalAccess: Readonly<{
+    title: string;
+    choices: readonly Readonly<{ accessId: string; label: string }>[];
+  }>;
 }>;
 
 function fact(id: string, label: string, value: string): EphemeralRunnerConsentReviewFact {
@@ -631,24 +697,26 @@ function section(
  * carries. A capability name without its scope is not the same disclosure the
  * settings surface makes, and this endpoint user carries the consequence.
  */
+type HostAccessRequest = Readonly<{
+  id: string;
+  capability: string;
+  reason: string;
+  normalizedScope: Readonly<Record<string, unknown>>;
+}>;
+
+function hostAccessLine(entry: HostAccessRequest): string {
+  const scope = Object.keys(entry.normalizedScope).length > 0
+    ? ` ${JSON.stringify(entry.normalizedScope)}`
+    : '';
+  return `${entry.capability} (${entry.id}): ${entry.reason}${scope}`;
+}
+
 function hostAccessLines(
-  access: readonly Readonly<{
-    id: string;
-    capability: string;
-    reason: string;
-    normalizedScope: Readonly<Record<string, unknown>>;
-  }>[],
+  access: readonly HostAccessRequest[],
   t: EndpointTranslator,
 ): string {
   if (access.length === 0) return t('review.none');
-  return access
-    .map((entry) => {
-      const scope = Object.keys(entry.normalizedScope).length > 0
-        ? ` ${JSON.stringify(entry.normalizedScope)}`
-        : '';
-      return `${entry.capability} (${entry.id}): ${entry.reason}${scope}`;
-    })
-    .join('\n');
+  return access.map(hostAccessLine).join('\n');
 }
 
 function pluginInstallationFacts(
@@ -691,9 +759,8 @@ function pluginInstallationFacts(
       review.executableRealms.length > 0 ? review.executableRealms.join(', ') : t('review.unknown')),
     fact('plugin_required_access', t('review.pluginRequiredAccess'),
       hostAccessLines(review.requiredHostAccess, t)),
-    // Optional access is disclosed even though this endpoint grants none of it,
-    // so the person whose machine runs the code knows what the plugin asked for
-    // and what it did not receive.
+    // Optional access is disclosed in full; the endpoint grants only what it
+    // explicitly turns on among the choices offered with Allow.
     fact('plugin_optional_access', t('review.pluginOptionalAccess'),
       hostAccessLines(review.optionalHostAccess, t)),
     fact('plugin_request_interceptors', t('review.pluginRequestInterceptors'),
@@ -819,6 +886,13 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
     declineLabel: t('action.decline'),
     allowLabel: t('action.allow'),
     defaultDecision: 'decline',
+    optionalAccess: Object.freeze({
+      title: t('review.optionalAccessChoices'),
+      choices: Object.freeze((input.pluginInstallation?.optionalHostAccess ?? []).map((entry) => Object.freeze({
+        accessId: entry.id,
+        label: hostAccessLine(entry),
+      }))),
+    }),
   });
 }
 
@@ -891,12 +965,15 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
   resolveDirectory?: (value: string) => string | null;
   isDirectory?: (value: string) => Promise<boolean>;
   selectNativeDirectory?: (signal: AbortSignal) => Promise<NativeDirectoryPickerResult>;
+  /** Hidden-input prompt for a registry token; the value is never echoed or written. */
+  readSecret?: (prompt: string) => Promise<string>;
   locale?: string | null;
 }>): EphemeralRunnerEndpointUi<RunnerLaunchManifestV1> {
   const locale = resolveEphemeralRunnerEndpointLocale({ locale: input.locale });
   const t = createEndpointTranslator(locale);
   const write = input.write ?? ((value: string) => process.stdout.write(value));
   const readInput = input.readInput ?? promptInput;
+  const readSecret = input.readSecret ?? promptSecretInput;
   const interactive = input.interactive ?? isInteractiveTerminal();
   const resolveDirectory = input.resolveDirectory ?? resolveAbsolutePathFromWorkingDirectory;
   const isDirectory = input.isDirectory ?? (async (value: string) => {
@@ -987,6 +1064,30 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         throw new EphemeralRunnerNativeDirectoryPickerUnavailableError();
       }
     },
+    requestRegistryProfile: async ({ requirement, signal }) => {
+      if (!interactive) throw new Error('runner_interactive_terminal_required');
+      const registry = resolveEphemeralRunnerRegistryProfilePresentation({ requirement, locale });
+      write(`\n${registry.title}\n${registry.detail}\n${registry.signInAgain ? `${registry.signInAgain}\n` : ''}`);
+      for (;;) {
+        const answer = await readChoice({
+          message: t('registry.question'),
+          defaultId: 'decline',
+          options: [
+            { id: 'sign_in', keys: ['s', 'sign in', 'signin'], short: 's' },
+            { id: 'without_token', keys: ['w', 'without', 'without token'], short: 'w' },
+            { id: 'decline', keys: ['d', 'decline', 'no', 'n'], short: 'd' },
+          ],
+          signal,
+        });
+        if (answer === 'decline') return null;
+        if (answer === 'without_token') return { credential: null };
+        signal.throwIfAborted();
+        const token = (await readSecret(t('registry.tokenPrompt'))).trim();
+        signal.throwIfAborted();
+        // An empty token is not an answer; ask the same question again.
+        if (token) return { credential: token };
+      }
+    },
     reviewAndRequestConsent: async ({ review, pluginInstallation, signal }) => {
       if (!interactive) throw new Error('runner_interactive_terminal_required');
       reviewedRuntimeSummary = resolveEphemeralRunnerReviewedRuntimeFacts({
@@ -1004,7 +1105,23 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         ],
         signal,
       });
-      return result === 'allow';
+      if (result !== 'allow') return { allow: false };
+      // Each optional access request is its own explicit answer, off by default,
+      // exactly as the canonical terminal plugin installation asks it.
+      const optionalSelections: { accessId: string; selected: boolean }[] = [];
+      for (const request of pluginInstallation?.optionalHostAccess ?? []) {
+        const answer = await readChoice({
+          message: t('consent.optionalAccessQuestion', { capability: request.capability, reason: request.reason }),
+          defaultId: 'decline',
+          options: [
+            { id: 'allow', keys: ['a', 'allow', 'yes', 'y'], short: 'a' },
+            { id: 'decline', keys: ['d', 'decline', 'no', 'n'], short: 'd' },
+          ],
+          signal,
+        });
+        optionalSelections.push({ accessId: request.id, selected: answer === 'allow' });
+      }
+      return { allow: true, optionalSelections };
     },
     confirmActiveClose: async ({ phase, signal }) => {
       stopStopPrompt();

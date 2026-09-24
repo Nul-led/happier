@@ -1,5 +1,10 @@
 import type { SessionAwarenessProjectionV1 } from '@happier-dev/protocol';
 
+import {
+    presentSessionAwarenessV1,
+    type SessionAwarenessPresentationV1,
+} from '@/utils/sessions/sessionUtils';
+
 import type { ScmStatusSummary } from '@/components/sessions/sourceControl/status/statusSummary';
 import type { SessionCompanionDensity } from '../state/sessionCompanionPreference';
 
@@ -85,7 +90,12 @@ export type SessionSummaryCardModel = Readonly<{
     scope: 'exact' | 'realm_unavailable';
     title: string | null;
     agentLabel: string | null;
-    operational: SessionAwarenessProjectionV1['operational']['primary'] | null;
+    /**
+     * The canonical presented awareness answer from `presentSessionAwarenessV1`. Reading
+     * `operational.primary` alone here made the card label an offline Session "Online",
+     * because runtime, unservability, resuming and staleness all outrank it.
+     */
+    status: SessionAwarenessPresentationV1 | null;
     /** Lane 09A's freshness, softened once in presentation; values are never zeroed. */
     stale: boolean;
     /** Lane 09A's own admission that it could not see everything it describes. */
@@ -180,7 +190,7 @@ export function projectSessionSummaryCard(input: SessionSummaryInput): SessionSu
         scope: 'exact',
         title: input.awareness.title ?? null,
         agentLabel: input.agentLabel,
-        operational: input.awareness.operational.primary,
+        status: presentSessionAwarenessV1(input.awareness),
         stale: input.awareness.freshness !== 'live',
         availability: input.awareness.availability,
         encryption: input.awareness.encryption,

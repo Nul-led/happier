@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 
-import { pressTestInstance, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionListRenderableSessionFixture, pressTestInstance, renderScreen, standardCleanup } from '@/dev/testkit';
 import { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
@@ -16,7 +16,7 @@ import { SessionCollaborationSurface } from './SessionCollaborationSurface';
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import { publishSessionCollaborationIntent, resetSessionCollaborationIntentsForTests } from './sessionCollaborationIntent';
 
-const credentials = vi.hoisted(() => ({ serverId: '', accountId: 'collaboration-account' }));
+const credentials = vi.hoisted(() => ({ serverId: '', accountId: 'collaboration-account', unreadable: false }));
 const exactSessionSnapshot = vi.hoisted(() => ({ read: vi.fn() }));
 /** Every request this surface issues, captured at the one runtime transport boundary. */
 const transport = vi.hoisted(() => ({
@@ -132,9 +132,17 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: {
-            getCredentialsForServerUrl: async (_url, options) => options?.serverId === credentials.serverId ? {
-                token: `header.${Buffer.from(JSON.stringify({ sub: credentials.accountId })).toString('base64')}.signature`,
-            } : null,
+            getCredentialsForServerUrl: async (_url, options) => {
+                // An unreadable device store surfaces only to readers that asked to see it,
+                // exactly as the real owner does (serverCredentialAccountScope.test.ts).
+                if (credentials.unreadable && options?.serverId === credentials.serverId) {
+                    if (options.storageReadFailure === 'surface') throw new Error('secure_storage_unavailable');
+                    return null;
+                }
+                return options?.serverId === credentials.serverId ? {
+                    token: `header.${Buffer.from(JSON.stringify({ sub: credentials.accountId })).toString('base64')}.signature`,
+                } : null;
+            },
         },
     });
 });
@@ -153,6 +161,7 @@ afterEach(() => {
 beforeEach(() => {
     transport.requests.length = 0;
     transport.publicationReachable = true;
+    credentials.unreadable = false;
     route.params = {};
     // This module-level router mock outlives the whole file, and the consumed
     // `collaborationFocus` key each test writes back is an override that would
@@ -186,7 +195,7 @@ beforeEach(() => {
     });
 });
 
-type CollaborationFeatureId = 'sharing.session' | 'sharing.public' | 'sessions.collaboration' | 'sessions.conversations';
+type CollaborationFeatureId = 'sharing.session' | 'sharing.public' | 'sessions.conversations';
 
 function primeFeatures(
     serverId: string,
@@ -204,10 +213,26 @@ function primeFeatures(
 }
 
 function primeCollaboration(serverId: string): void {
-    primeFeatures(serverId, ['sharing.session', 'sharing.public', 'sessions.collaboration', 'sessions.conversations']);
+    primeFeatures(serverId, ['sharing.session', 'sharing.public', 'sessions.conversations']);
 }
 
 describe('SessionCollaborationSurface', () => {
+    it('presents an unreadable device credential store as unavailable, never as signed out', async () => {
+        const profile = await upsertServerProfile({ name: 'Unreadable Home', serverUrl: 'https://collaboration-unreadable.example.test' });
+        primeCollaboration(profile.id);
+        credentials.serverId = profile.id;
+        credentials.unreadable = true;
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCollaborationSurface target={{ serverId: profile.id, sessionId: 'unreadable-session' }} />
+            </AppPaneProvider>,
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('session-collaboration-home-unavailable')).not.toBeNull());
+        expect(screen.findByTestId('session-collaboration-signed-out')).toBeNull();
+        expect(exactSessionSnapshot.read).not.toHaveBeenCalled();
+    });
+
     it('hydrates publication from the exact inactive Home when the active Home has the same raw Session id', async () => {
         const active = await upsertServerProfile({ name: 'Active Home', serverUrl: 'https://collaboration-active-other.example.test' });
         const profile = await upsertServerProfile({ name: 'Collaboration test Home', serverUrl: 'https://collaboration-inactive.example.test' });
@@ -270,9 +295,9 @@ describe('SessionCollaborationSurface', () => {
     it('composes publication as an independently failing sibling of the one flexing access body', async () => {
         const active = await upsertServerProfile({ name: 'Collaboration active Home', serverUrl: 'https://collaboration-active.example.test' });
         credentials.serverId = active.id;
-        // Released direct access plus publication: named Team/Group collaboration
-        // stays off, so Access is the single mode and Public link is still its own sibling.
-        primeFeatures(active.id, ['sharing.session', 'sharing.public'], ['sessions.collaboration', 'sessions.conversations']);
+        // Named access plus publication with Conversations off: Access is the
+        // single mode and Public link is still its own sibling.
+        primeFeatures(active.id, ['sharing.session', 'sharing.public'], ['sessions.conversations']);
         storage.setState((state) => ({
             profileScope: { serverId: active.id, accountId: credentials.accountId },
             sessions: {
@@ -377,7 +402,7 @@ describe('SessionCollaborationSurface', () => {
         // Home is reachable. The destination must stay admitted: publication has
         // no other entry point, and the named-access body states why it is absent
         // instead of rendering an editor that cannot work.
-        primeFeatures(active.id, ['sharing.public'], ['sharing.session', 'sessions.collaboration', 'sessions.conversations']);
+        primeFeatures(active.id, ['sharing.public'], ['sharing.session', 'sessions.conversations']);
         storage.setState((state) => ({
             profileScope: { serverId: active.id, accountId: credentials.accountId },
             sessions: {
@@ -437,7 +462,7 @@ describe('SessionCollaborationSurface', () => {
         await act(async () => {
             primeFeatures(
                 active.id,
-                ['sharing.session', 'sharing.public', 'sessions.collaboration'],
+                ['sharing.session', 'sharing.public'],
                 ['sessions.conversations'],
             );
         });
@@ -695,6 +720,128 @@ describe('SessionCollaborationSurface', () => {
             .toMatchObject({ selected: true }));
         await vi.waitFor(() => expect(focused).toHaveBeenCalledWith('session-collaboration-access-body'));
         await vi.waitFor(() => expect(route.readParams().collaborationFocus).toBeUndefined());
+    });
+
+    it('refreshes the retained Access presentation when the exact Home reports the Session changed', async () => {
+        const other = await upsertServerProfile({ name: 'Collaboration other Home', serverUrl: 'https://collaboration-refresh-other.example.test' });
+        const profile = await upsertServerProfile({ name: 'Collaboration refresh Home', serverUrl: 'https://collaboration-refresh.example.test' });
+        primeCollaboration(profile.id);
+        credentials.serverId = profile.id;
+        exactSessionSnapshot.read.mockResolvedValue({
+            session: {
+                id: 'same-id', serverId: profile.id, metadata: null,
+                currentStorageState: 'hosted', transcriptShareable: true,
+                access: { capabilities: { managePublicLink: true } },
+            } as unknown as Session,
+            callerDataKeyEnvelope: null,
+        });
+        const rowAt = (updatedAt: number) => ({
+            'same-id': createSessionListRenderableSessionFixture({ id: 'same-id', updatedAt, seq: updatedAt, metadataVersion: updatedAt }),
+        });
+        storage.setState((state) => ({
+            sessionListRowsByServerId: { ...state.sessionListRowsByServerId, [profile.id]: rowAt(10) },
+        }));
+        publishSessionCollaborationIntent({ serverId: profile.id, sessionId: 'same-id' }, 'access');
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCollaborationSurface target={{ serverId: profile.id, sessionId: 'same-id' }} />
+            </AppPaneProvider>,
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull());
+        await vi.waitFor(() => expect(exactSessionSnapshot.read).toHaveBeenCalled());
+        const afterMount = exactSessionSnapshot.read.mock.calls.length;
+
+        // The same raw Session id on a different Home is a different Session.
+        await act(async () => {
+            storage.setState((state) => ({
+                sessionListRowsByServerId: { ...state.sessionListRowsByServerId, [other.id]: rowAt(99) },
+            }));
+        });
+        expect(exactSessionSnapshot.read.mock.calls.length).toBe(afterMount);
+
+        // A completed operation on THIS Home advances its canonical row, and the
+        // open panel re-reads without a remount instead of waiting for one.
+        await act(async () => {
+            storage.setState((state) => ({
+                sessionListRowsByServerId: { ...state.sessionListRowsByServerId, [profile.id]: rowAt(20) },
+            }));
+        });
+        await vi.waitFor(() => expect(exactSessionSnapshot.read.mock.calls.length).toBeGreaterThan(afterMount));
+        expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull();
+    });
+
+    it('seeds its own search field with the query the compact editor handed over', async () => {
+        const active = await upsertServerProfile({ name: 'Collaboration handoff Home', serverUrl: 'https://collaboration-handoff.example.test' });
+        credentials.serverId = active.id;
+        primeCollaboration(active.id);
+        // Only this test needs an editable roster, so it extends the shared
+        // transport boundary locally instead of changing it for the whole file:
+        // an editor with no acknowledged snapshot renders no search field at
+        // all, and there would be nothing to seed.
+        setRuntimeFetch(async (url) => {
+            const path = new URL(String(url)).pathname;
+            if (path === '/v1/auth/ping') return new Response('{}');
+            if (path === '/v2/account/settings') return new Response(JSON.stringify({ content: null, version: 0 }));
+            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 1 }));
+            if (path.endsWith('/data-key/envelopes')) return new Response(JSON.stringify({ status: 'not_required' }));
+            if (path.endsWith('/public-share')) return new Response(JSON.stringify({ publicShare: null }));
+            if (path === '/v2/sessions/access-grants/list') {
+                return new Response(JSON.stringify({
+                    visibility: 'complete',
+                    owner: { kind: 'account', accountId: credentials.accountId, firstName: null, lastName: null, username: 'owner', avatarUrl: null },
+                    primaryTeamId: null,
+                    grants: [],
+                    effectiveAccess: {
+                        v: 1, level: 'owner', sources: [{ kind: 'owner' }],
+                        capabilities: {
+                            readTranscript: true, submitAgentInput: true, editSessionRecords: true,
+                            approveRuntimePermissions: true, manageAccess: true, managePermissionDelegation: true,
+                            managePublicLink: true, archiveSession: true, renameSession: true,
+                            assignResponsibility: true, stopSession: true, deleteSession: true,
+                        },
+                    },
+                }));
+            }
+            return new Response('{}', { status: 404 });
+        });
+        storage.setState((state) => ({
+            profileScope: { serverId: active.id, accountId: credentials.accountId },
+            sessions: {
+                ...state.sessions,
+                'same-id': {
+                    id: 'same-id', metadata: null, currentStorageState: 'hosted', transcriptShareable: true,
+                    access: { capabilities: { managePublicLink: false } },
+                } as unknown as Session,
+            },
+        }));
+        exactSessionSnapshot.read.mockResolvedValue({
+            session: storage.getState().sessions['same-id'],
+            callerDataKeyEnvelope: null,
+        });
+        // The anchored composer editor closes and hands its one-shot intent over.
+        publishSessionCollaborationIntent({ serverId: active.id, sessionId: 'same-id' }, 'access', 'ada');
+
+        const screen = await renderScreen(
+            <AppPaneProvider>
+                <SessionCollaborationSurface target={{ serverId: active.id, sessionId: 'same-id' }} />
+            </AppPaneProvider>,
+        );
+        await vi.waitFor(() => expect(screen.findByTestId('session-access-editor:collaboration')).not.toBeNull());
+        // Without the carried query the destination opens on an empty field and
+        // the person retypes what they had already typed.
+        await vi.waitFor(() => expect(
+            screen.findByTestId('session-access-editor:collaboration:session-access-search')?.props.value,
+        ).toBe('ada'));
+
+        // The destination stays mounted. A later compact handoff whose field was
+        // deliberately emptied must clear it rather than leave the old search.
+        await act(async () => {
+            publishSessionCollaborationIntent({ serverId: active.id, sessionId: 'same-id' }, 'access', '');
+        });
+        await vi.waitFor(() => expect(
+            screen.findByTestId('session-access-editor:collaboration:session-access-search')?.props.value,
+        ).toBe(''));
     });
 
 });

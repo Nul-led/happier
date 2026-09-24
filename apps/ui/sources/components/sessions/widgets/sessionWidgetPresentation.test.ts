@@ -33,6 +33,8 @@ function projectionWith(input: Readonly<{
             pluginId: surface.pluginId,
             contributionKind: 'surfacePlacement',
             descriptorId: surface.localId,
+            // The daemon producer stamps every projected UI entry with its plugin-slot occurrence.
+            occurrenceId: `${surface.pluginId}#1`,
             binding,
             target: binding.target,
             renderer: { kind: 'declarative', contributionId: 'review-native' },

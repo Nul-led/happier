@@ -83,6 +83,9 @@ export function createRunnerConnectedAccountsAuthorityV1(input: Readonly<{
         sessionId: input.sessionId,
         purposes: snapshot?.purposes ?? Object.freeze([]),
         bindings: snapshot?.bindings ?? Object.freeze([]),
+        ...(snapshot?.directMaterialOrigins?.length
+          ? { directMaterialOrigins: snapshot.directMaterialOrigins }
+          : {}),
       });
     },
     resolveSessionConnectedAccounts() {

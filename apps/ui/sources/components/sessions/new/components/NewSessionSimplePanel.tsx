@@ -100,6 +100,11 @@ export type NewSessionSimplePanelProps = Readonly<{
     composerDocument?: NewSessionComposerDocument;
     setSessionPrompt: (v: string) => void;
     handleCreateSession: (opts?: HandleCreateSessionOptions) => void;
+    /**
+     * Registers this panel's Send as the one submission owner a Temporary
+     * computer replacement uses. Returns its own unregistration.
+     */
+    registerTemporaryComputerReplacementLaunch?: (send: () => void) => () => void;
     canCreate: boolean;
     isCreating: boolean;
     pendingLaunchAttempt?: NewSessionLaunchAttempt | null;
@@ -363,6 +368,10 @@ export function NewSessionSimplePanel(props: NewSessionSimplePanelProps): React.
         sourceContextPresentation: props.sourceContextPresentation ?? null,
         composerDocument: props.composerDocument,
     });
+    // A Temporary-computer replacement is a fresh submission, so it runs the
+    // same Send this panel already owns rather than restarting the controller.
+    const registerReplacementLaunch = props.registerTemporaryComputerReplacementLaunch;
+    React.useEffect(() => registerReplacementLaunch?.(handleSend), [handleSend, registerReplacementLaunch]);
     const projectedAttachmentRowItems = React.useMemo(() => (
         projectAgentInputAttachmentRowItems({
             items: [
@@ -603,6 +612,7 @@ function NewSessionSimplePanelComposer({
                         onComposerFocusChange={props.composerDocument?.onComposerFocusChange}
                         onComposerFocusRequestChange={props.composerDocument?.onComposerFocusRequestChange}
                         onComposerActionBarLayoutChange={props.composerDocument?.onComposerActionBarLayoutChange}
+                        inputPersistence={props.composerDocument?.inputPersistence}
                         composerDecorations={props.composerDocument?.composerDecorations ?? []}
                         composerInputLock={props.composerDocument?.composerInputLock ?? null}
                         onSend={attachmentsController.handleSend}

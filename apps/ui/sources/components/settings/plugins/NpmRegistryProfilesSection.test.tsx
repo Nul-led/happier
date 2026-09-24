@@ -363,7 +363,7 @@ describe('NpmRegistryProfilesSection', () => {
     });
 
     it('binds and unbinds a marketplace source by opaque profile id without handling credentials', async () => {
-        const setBinding = vi.fn(async () => undefined);
+        const setBinding = vi.fn(async () => ({ status: 'success' as const }));
         const source = {
             id: 'marketplace:private', title: 'Private catalog', sourceUrl: 'https://catalog.example.test/private.json',
             enabled: true, origin: 'curated' as const, addedAtMs: 1, updatedAtMs: 1,
@@ -412,7 +412,7 @@ describe('NpmRegistryProfilesSection', () => {
             status: 'success',
             snapshot: { protocolVersion: 1, revision: 4, profiles: [], pausedSources: [] },
         });
-        const setBinding = vi.fn(async () => undefined);
+        const setBinding = vi.fn(async () => ({ status: 'success' as const }));
         let tree!: ReturnType<typeof create>;
         await act(async () => {
             tree = create(<TestSection
@@ -508,7 +508,6 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.onPress(); });
 
         expect(mocks.show).toHaveBeenCalledTimes(1);
-        expect(mocks.mutate).toHaveBeenCalledTimes(1);
         expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
             action: 'add',
             expectedRevision: 2,
@@ -520,6 +519,51 @@ describe('NpmRegistryProfilesSection', () => {
                 allowPrivateNetwork: true,
             },
         }), { serverId: 'server-a' });
+        // The new profile is checked by its owner at once, against the revision
+        // the add produced, so its availability is known rather than "unknown".
+        const added = mocks.mutate.mock.calls[0]?.[1] as Readonly<{ profileId: string }>;
+        expect(mocks.mutate).toHaveBeenCalledTimes(2);
+        expect(mocks.mutate).toHaveBeenLastCalledWith('machine-a', expect.objectContaining({
+            action: 'test', profileId: added.profileId, expectedRevision: 3,
+        }), { serverId: 'server-a' });
+    });
+
+    it('offers the registry a caller needs as the new profile the form starts from', async () => {
+        answerProfileForm(null);
+        const subject = {
+            displayName: 'npm.acme.example',
+            origin: 'https://npm.acme.example',
+            scopes: ['@acme'],
+            useAsDefault: false,
+            allowPrivateNetwork: false,
+        };
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable createProfileSubject={subject} />); });
+        await flush();
+
+        await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.onPress(); });
+
+        expect(mocks.show).toHaveBeenCalledWith(expect.objectContaining({
+            props: expect.objectContaining({ mode: 'create', subject }),
+        }));
+    });
+
+    it('signs in with one mutation, because the daemon sign-in already checks the credential', async () => {
+        mocks.prompt.mockResolvedValueOnce('boundary-secret');
+        mocks.mutate
+            .mockResolvedValueOnce({ status: 'success', snapshot: { ...snapshot('registry_acme', 'Acme', true), revision: 3 } });
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
+        await flush();
+
+        await act(async () => { await profileAction(tree, 'registry_acme', 'login')?.onPress(); });
+
+        expect(mocks.mutate).toHaveBeenCalledTimes(1);
+        expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
+            action: 'login', profileId: 'registry_acme', expectedRevision: 2,
+        }), { serverId: 'server-a' });
+        expect(tree.root.findByProps({ testID: 'settings.plugins.registries.profile.registry_acme' }).props.loading)
+            .toBe(false);
     });
 
     it('edits profile routing and network policy through one revisioned update', async () => {

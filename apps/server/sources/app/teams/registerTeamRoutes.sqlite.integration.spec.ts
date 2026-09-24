@@ -6,6 +6,7 @@ import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { HOME_GOVERNANCE_POLICY_ID } from "@/app/home/governance/governancePolicy";
 import { createQualifiedConnectedAccountGroupDigest, createQualifiedConnectedAccountServiceDigest } from "@/app/api/routes/connect/qualifiedConnectedAccounts/identity";
 import { createServiceAccountTokenIdentityFields } from "@/app/api/routes/connect/qualifiedConnectedAccounts/identity";
+import { NO_TEAM_CAPABILITIES_V1 } from "@happier-dev/protocol";
 import { TEAM_CREDENTIAL_MANUAL_CONNECTED_ACCOUNT_DIRECT_CONTRACT_V1 } from "@happier-dev/protocol/teams";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -476,13 +477,17 @@ describe("Team routes (SQLite integration)", () => {
             },
         });
 
+        // The directory is not a direct administration route: an unqualified
+        // credential keeps the row and loses the Team-derived capabilities on
+        // it, so the viewer's other Teams and their page position survive.
         const deniedList = await post("/v1/teams/list", owner.id, {
             v: 1, scope: "member", archived: "active",
         });
-        expect({ status: deniedList.statusCode, body: deniedList.json() }).toEqual({
-            status: 403,
-            body: { error: "team_authentication_required" },
-        });
+        expect(deniedList.statusCode).toBe(200);
+        const deniedListRow = deniedList.json().items
+            .find((item: { id: string }) => item.id === teamId);
+        expect(deniedListRow.viewerRole).toBe("owner");
+        expect(deniedListRow.capabilities).toEqual(NO_TEAM_CAPABILITIES_V1);
         const allowedList = await post(
             "/v1/teams/list",
             owner.id,
@@ -490,7 +495,8 @@ describe("Team routes (SQLite integration)", () => {
             { teamAuthentication: "key_challenge" },
         );
         expect(allowedList.statusCode).toBe(200);
-        expect(allowedList.json().items.map((item: { id: string }) => item.id)).toContain(teamId);
+        expect(allowedList.json().items
+            .find((item: { id: string }) => item.id === teamId).capabilities.manageMembers).toBe(true);
 
         const deniedGet = await post("/v1/teams/get", owner.id, { v: 1, teamId });
         expect({ status: deniedGet.statusCode, body: deniedGet.json() }).toEqual({

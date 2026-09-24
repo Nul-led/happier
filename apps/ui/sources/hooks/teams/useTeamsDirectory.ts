@@ -10,6 +10,7 @@ import {
     type TeamsDirectoryViewState,
 } from '@/components/settings/teams/teamsDirectoryViewState';
 import { useServerCredentialAccountScopeResolutions } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { retryServerCredentialAccountScope } from '@/sync/domains/scope/serverCredentialAccountScope';
 import { useTeamsSettingsAdmission } from '@/hooks/teams/useTeamsSettingsAdmission';
 import {
     serverAccountScopeKeySuffix,
@@ -74,42 +75,26 @@ export function useTeamsDirectory(options?: Readonly<{
      */
     scope?: TeamsListInputV1['scope'];
     /**
-     * Restrict the read to these exact Homes. Admission still decides which
-     * Homes may contribute at all, so this narrows the set and never widens it —
-     * a Home-scoped surface asks its one Home and reports on that Home alone.
+     * The exact Homes this read is about. A Home-scoped surface asks its one
+     * Home and reports on that Home alone, so the target set is handed to the
+     * admission owner itself rather than intersected with the user's current
+     * Home view selection afterwards — an administration screen for Home A is
+     * about Home A whichever Home the person happens to be looking at.
      */
     serverIds?: readonly string[];
 }>): TeamsDirectoryBinding {
     const enabled = options?.enabled ?? true;
     const archived = options?.archived ?? 'active';
     const scope = options?.scope ?? 'member';
-    const restrictTo = options?.serverIds;
-    const restrictToKey = restrictTo ? JSON.stringify([...restrictTo].sort()) : null;
-    const restrictedServerIds = React.useMemo(
-        () => (restrictTo ? new Set(restrictTo) : null),
-        // `restrictToKey` is a collision-safe identity for the requested set.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [restrictToKey],
-    );
-    const admission = useTeamsSettingsAdmission({ enabled });
+    const admission = useTeamsSettingsAdmission({
+        enabled,
+        ...(options?.serverIds ? { serverIds: options.serverIds } : {}),
+    });
 
     // Only a Home the feature decision admitted is ever read. A Home that said
     // no is not asked for Teams it has told us it does not have.
-    const admittedHomes = React.useMemo(
-        () => (restrictToKey === null
-            ? admission.homes
-            : admission.homes.filter((home) => restrictedServerIds?.has(home.serverId))),
-        // `restrictToKey` is the identity of the requested restriction.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [admission.homes, restrictToKey],
-    );
-    const capableServerIds = React.useMemo(
-        () => (restrictToKey === null
-            ? admission.capableServerIds
-            : admission.capableServerIds.filter((serverId) => restrictedServerIds?.has(serverId))),
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [admission.capableServerIds, restrictToKey],
-    );
+    const admittedHomes = admission.homes;
+    const capableServerIds = admission.capableServerIds;
     const scopeResolutions = useServerCredentialAccountScopeResolutions(enabled ? capableServerIds : []);
 
     const scopes = React.useMemo(() => {
@@ -178,13 +163,17 @@ export function useTeamsDirectory(options?: Readonly<{
     }, [admittedHomes]);
 
     // A Home whose credential this device cannot resolve has not refused; it is
-    // reported as still resolving rather than silently dropped.
+    // reported as still resolving rather than silently dropped. A credential
+    // this device failed to read is settled on its own reason, never a spinner.
     const homes = React.useMemo<readonly TeamsHomeAdmissionEntry[]>(() => admittedHomes.map((home) => {
         if (home.state !== 'capable') return home;
         const resolution = scopeResolutions.get(home.serverId);
         if (resolution?.kind === 'bound') return home;
-        return resolution?.kind === 'signed_out' || resolution?.kind === 'unknown_home'
-            ? { serverId: home.serverId, state: 'disabled' as const }
+        if (resolution?.kind === 'signed_out' || resolution?.kind === 'unknown_home') {
+            return { serverId: home.serverId, state: 'disabled' as const };
+        }
+        return resolution?.kind === 'unavailable'
+            ? { serverId: home.serverId, state: 'unresolved' as const, reason: 'credential_unreadable' as const }
             : { serverId: home.serverId, state: 'unresolved' as const, reason: 'loading' as const };
     }), [admittedHomes, scopeResolutions]);
 
@@ -205,10 +194,16 @@ export function useTeamsDirectory(options?: Readonly<{
         [queryKey, scopesKey, snapshotsVersion],
     );
 
+    const unreadableServerIdsKey = JSON.stringify(homes
+        .filter((home) => home.state === 'unresolved' && home.reason === 'credential_unreadable')
+        .map((home) => home.serverId));
     const refresh = React.useCallback(() => {
         for (const scope of scopes) void refreshTeamsDirectory(scope, input);
+        for (const serverId of JSON.parse(unreadableServerIdsKey) as string[]) {
+            retryServerCredentialAccountScope(serverId);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [input, scopesKey]);
+    }, [input, scopesKey, unreadableServerIdsKey]);
 
     const loadMore = React.useCallback(() => {
         for (const scope of scopes) void loadMoreTeamsDirectory(scope, input);

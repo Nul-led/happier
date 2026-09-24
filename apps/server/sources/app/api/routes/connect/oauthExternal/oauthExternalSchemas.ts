@@ -116,7 +116,11 @@ export const connectPendingSchema = z.object({
     securityBinding: oauthSecurityBindingSchema.optional(),
     userId: z.string(),
     profileEnc: z.string(),
-    accessTokenEnc: z.string(),
+    /**
+     * Absent when the provider declared `accessTokenCustody: "identity_proof_only"`: the
+     * continuation carries no token because nothing after the callback reads one.
+     */
+    accessTokenEnc: z.string().optional(),
     refreshTokenEnc: z.string().optional(),
 }).strict();
 
@@ -125,7 +129,8 @@ const authPendingSharedSchema = z.object({
     provider: z.string(),
     securityBinding: oauthSecurityBindingSchema.optional(),
     profileEnc: z.string(),
-    accessTokenEnc: z.string(),
+    /** See `connectPendingSchema`: an identity-proof-only provider persists no token. */
+    accessTokenEnc: z.string().optional(),
     refreshTokenEnc: z.string().optional(),
     suggestedUsername: z.string().nullable().optional(),
     usernameRequired: z.boolean().optional(),

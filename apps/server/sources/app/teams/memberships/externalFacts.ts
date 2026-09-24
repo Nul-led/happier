@@ -292,6 +292,31 @@ export async function applyExternalTeamMembershipInTx(
     });
 }
 
+/**
+ * The projected directory people whose Group evidence may contribute a Group
+ * row — the one eligibility rule for every directory contribution path
+ * (reconciliation, sign-in materialization, mapping) and for this owner.
+ *
+ * An active person contributes. A suspended person contributes only while this
+ * source also owns the person's Team lifetime (`teamMembershipId`): that
+ * lifetime is suspended with them, so its Group row is retained dormant with
+ * its horizon and returns on reactivation (child 05 §8, Lane 01 horizon
+ * retention). When native administration or another owner keeps the lifetime
+ * active, a deactivated person's contribution from THIS source is withdrawn —
+ * otherwise their Group access stays effective after offboarding. Only this
+ * binding's contribution goes; the parent membership and every other
+ * contribution are untouched.
+ */
+export function directoryGroupContributorIdentityWhere() {
+    return {
+        boundAccountId: { not: null },
+        OR: [
+            { state: "active" as const },
+            { state: "suspended" as const, teamMembershipId: { not: null } },
+        ],
+    };
+}
+
 export type ExternalGroupContributionResult =
     | Readonly<{ status: "ok"; outcome: TeamGroupContributionOutcome }>
     | Readonly<{ status: "binding_not_found" }>
@@ -388,8 +413,8 @@ export async function applyExternalGroupContributionInTx(
                 directorySourceId: binding.directorySourceId,
                 externalGroupId: binding.externalGroupId,
                 identity: {
+                    ...directoryGroupContributorIdentityWhere(),
                     boundAccountId: input.accountId,
-                    state: { in: ["active", "suspended"] },
                 },
             },
             select: { externalUserId: true },

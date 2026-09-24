@@ -6,6 +6,7 @@ import {
 } from '../account/settings/attentionDeliveryPolicy.js';
 import type { SessionPersonalEventKindV1 } from '../sessions/personal/eventEligibility.js';
 import {
+  resolveActivityRequestEventIdentityV1,
   resolveActivitySequenceEventIdentityV1,
   resolveActivityTurnEventIdentityV1,
   resolveLegacyActivitySequenceEventIdentityV1,
@@ -44,6 +45,9 @@ export const ActivityRemoteAlertSequenceDomainV2Schema = z.enum([
 ]);
 export type ActivityRemoteAlertSequenceDomainV2 = z.infer<typeof ActivityRemoteAlertSequenceDomainV2Schema>;
 
+/** The Agent-allocated identity of one committed permission/user-action request. */
+const ActivityRequestIdSchema = z.string().trim().min(1).max(191);
+
 const SessionTranscriptSequenceV2Schema = z.object({
   sequenceDomain: z.literal('session_transcript'),
   messageSeq: z.number().int().positive().max(2_147_483_647),
@@ -74,8 +78,11 @@ export const ActivityRemoteAlertEventV2Schema = z.union([
     DiscussionSequenceV2Schema.extend({ type: z.literal('message') }).strict(),
   ]),
   DiscussionSequenceV2Schema.extend({ type: z.literal('discussion_mention') }).strict(),
-  z.object({ type: z.literal('permission_request') }).strict(),
-  z.object({ type: z.literal('user_action_request') }).strict(),
+  // The Agent-allocated request id is the cross-leg identity of one committed
+  // request. It is optional only because a producer without a committed request
+  // in hand must still be able to describe the category.
+  z.object({ type: z.literal('permission_request'), requestId: ActivityRequestIdSchema.optional() }).strict(),
+  z.object({ type: z.literal('user_action_request'), requestId: ActivityRequestIdSchema.optional() }).strict(),
   z.object({ type: z.literal('assigned') }).strict(),
   z.object({ type: z.literal('failed'), turnId: z.string().trim().min(1) }).strict(),
   z.object({ type: z.literal('cancelled'), turnId: z.string().trim().min(1) }).strict(),
@@ -137,8 +144,8 @@ export type ActivityRemoteAlert = z.infer<typeof ActivityRemoteAlertSchema>;
 export function resolveActivityRemoteAlertEventIdentity(
   alert: ActivityRemoteAlert,
 ): string | undefined {
-  const event = alert.event;
   if (alert.v === 1) {
+    const event = alert.event;
     if (
       event.type === 'ready'
       || event.type === 'human_message'
@@ -152,6 +159,7 @@ export function resolveActivityRemoteAlertEventIdentity(
     }
     return undefined;
   }
+  const event = alert.event;
   if ('sequenceDomain' in event) {
     return resolveActivitySequenceEventIdentityV1(event.sequenceDomain === 'discussion'
       ? {
@@ -166,6 +174,13 @@ export function resolveActivityRemoteAlertEventIdentity(
   }
   if (event.type === 'failed' || event.type === 'cancelled') {
     return resolveActivityTurnEventIdentityV1(event.turnId);
+  }
+  if (
+    (event.type === 'permission_request' || event.type === 'user_action_request')
+    && 'requestId' in event
+    && event.requestId !== undefined
+  ) {
+    return resolveActivityRequestEventIdentityV1(event.requestId);
   }
   return undefined;
 }
@@ -201,6 +216,7 @@ export function resolveActivityRemoteAlertEventForPersonalEventV2(
   kind: SessionPersonalEventKindV1,
   committedMessage?: ActivityRemoteAlertCommittedMessageV2,
   committedTurnId?: string,
+  committedRequestId?: string,
 ): ActivityRemoteAlertEventV2 | null {
   if (kind === 'ready' || kind === 'human_message' || kind === 'message' || kind === 'discussion_mention') {
     const sequenceDomain = committedMessage?.domain;
@@ -220,8 +236,13 @@ export function resolveActivityRemoteAlertEventForPersonalEventV2(
     const parsed = ActivityRemoteAlertEventV2Schema.safeParse({ type: kind, turnId: committedTurnId });
     return parsed.success ? parsed.data : null;
   }
-  if (kind === 'permission_required') return { type: 'permission_request' };
-  if (kind === 'user_action_required') return { type: 'user_action_request' };
+  if (kind === 'permission_required' || kind === 'user_action_required') {
+    const parsed = ActivityRemoteAlertEventV2Schema.safeParse({
+      type: kind === 'permission_required' ? 'permission_request' : 'user_action_request',
+      ...(committedRequestId === undefined ? {} : { requestId: committedRequestId }),
+    });
+    return parsed.success ? parsed.data : null;
+  }
   if (kind === 'assigned') return { type: 'assigned' };
   if (kind === 'source_unavailable') return { type: 'source_unavailable' };
   return null;

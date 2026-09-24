@@ -202,9 +202,11 @@ export function deriveMarketplaceNpmCompatibilityPlatformsV1(
 ): readonly ('darwin' | 'linux' | 'windows' | 'web' | 'ios' | 'android')[] {
   const supported = new Set<'darwin' | 'linux' | 'windows' | 'web' | 'ios' | 'android'>();
   for (const artifact of compatibility.uiArtifacts.entries) {
-    if (artifact.platform === 'web') supported.add('web');
-    if (artifact.platform === 'ios') supported.add('ios');
-    if (artifact.platform === 'android') supported.add('android');
+    supported.add('web');
+    if (artifact.tier === 'reactNative') {
+      supported.add('ios');
+      supported.add('android');
+    }
   }
   const platformOrder: readonly ('darwin' | 'linux' | 'windows' | 'web' | 'ios' | 'android')[] = [
     'darwin',
@@ -348,6 +350,104 @@ export function decideMarketplaceListingInstallV1(item: MarketplaceIndexItemV1):
     return { installable: false, block: 'artifact-unavailable' };
   }
   return { installable: true };
+}
+
+/**
+ * The npm registry a listing's artifact is served by, when the Home that
+ * installs it has no usable profile for that registry: none serves the origin,
+ * the source binding names none or a removed one, or the bound profile must
+ * sign in again. Registry authentication is always an explicit selection on
+ * the installing Home, never inferred from anyone else's credentials.
+ */
+export const MarketplaceRegistryProfileRequirementV1Schema = z.object({
+  registryOrigin: NpmRegistryOriginV1Schema,
+  packageName: MarketplaceIndexEntryV1Schema.shape.distribution.shape.packageName,
+  /**
+   * This Home's profile for that registry, when one exists — it may only need
+   * signing in again. `null` when no profile on this Home is known to serve it.
+   */
+  registryProfileId: OpaqueId.nullable(),
+}).strict();
+export type MarketplaceRegistryProfileRequirementV1 = z.infer<typeof MarketplaceRegistryProfileRequirementV1Schema>;
+
+/** The change-owner result that asks the present user for that registry selection. */
+export const MarketplaceRegistryProfileRequiredResultV1Schema = MarketplaceRegistryProfileRequirementV1Schema.extend({
+  kind: z.literal('registryProfileRequired'),
+}).strict();
+export type MarketplaceRegistryProfileRequiredResultV1 = z.infer<typeof MarketplaceRegistryProfileRequiredResultV1Schema>;
+
+/**
+ * Reads the registry selection a listing's artifact access still needs, the
+ * one rule shared by the daemon preparer, the exact-install resolver and the
+ * Discover projection. An offline profile is reachability, not a selection, so
+ * it is not a requirement. The named profile is the bound one when it only
+ * needs signing in again, and otherwise this Home's profile for that origin
+ * among `profiles`, if one exists, as the candidate the user may select.
+ */
+export function readMarketplaceRegistryProfileRequirementV1(params: Readonly<{
+  artifactAccess: MarketplaceIndexItemV1['artifactAccess'];
+  packageName: string;
+  registryOrigin: string;
+  profiles: readonly Readonly<{ profileId: string; origin: string }>[];
+}>): MarketplaceRegistryProfileRequirementV1 | null {
+  const { state, registryProfileId } = params.artifactAccess;
+  if (state !== 'auth-unavailable' && state !== 'unverified-profile' && state !== 'source-removed') return null;
+  const candidate = state === 'auth-unavailable'
+    ? registryProfileId
+    : params.profiles.find((profile) => profile.origin === params.registryOrigin)?.profileId ?? null;
+  return {
+    registryOrigin: params.registryOrigin,
+    packageName: params.packageName,
+    registryProfileId: candidate,
+  };
+}
+
+/**
+ * The profile a Home adds when it has none for the required registry: named
+ * after the registry host and serving exactly the package's scope, or unscoped
+ * packages when the package has none. It is a starting point the user may
+ * edit, never a credential and never another Home's profile.
+ */
+export function draftMarketplaceRegistryProfileV1(requirement: Pick<
+  MarketplaceRegistryProfileRequirementV1,
+  'registryOrigin' | 'packageName'
+>): Readonly<{
+  displayName: string;
+  origin: string;
+  scopes: readonly string[];
+  useAsDefault: boolean;
+  allowPrivateNetwork: boolean;
+}> {
+  const scope = requirement.packageName.startsWith('@')
+    ? requirement.packageName.slice(0, requirement.packageName.indexOf('/'))
+    : null;
+  return {
+    displayName: new URL(requirement.registryOrigin).hostname,
+    origin: requirement.registryOrigin,
+    scopes: scope ? [scope] : [],
+    useAsDefault: scope === null,
+    allowPrivateNetwork: false,
+  };
+}
+
+/**
+ * The registry selection that would make an exact listing installable, or
+ * `null`. Only when artifact access is the one remaining block does a
+ * registry selection help; a durable review or freshness block stays a plain
+ * refusal.
+ */
+export function readMarketplaceListingRegistryProfileRequirementV1(
+  item: MarketplaceIndexItemV1,
+  profiles: readonly Readonly<{ profileId: string; origin: string }>[],
+): MarketplaceRegistryProfileRequirementV1 | null {
+  const decision = decideMarketplaceListingInstallV1(item);
+  if (decision.installable || decision.block !== 'artifact-unavailable') return null;
+  return readMarketplaceRegistryProfileRequirementV1({
+    artifactAccess: item.artifactAccess,
+    packageName: item.distribution.packageName,
+    registryOrigin: item.distribution.registryOrigin,
+    profiles,
+  });
 }
 
 export const MarketplaceIndexQueryResultV1Schema = z.object({

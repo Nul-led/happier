@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { t } from '@/text';
+
 import type { SessionAwarenessProjectionV1 } from '@happier-dev/protocol';
 
 import {
@@ -55,8 +57,39 @@ describe('projectSessionSummaryCard', () => {
         expect(model.title).toBe('Teams lane 08');
         expect(model.scope).toBe('exact');
         expect(model.agentLabel).toBe('Claude');
-        expect(model.operational).toBe('working');
+        expect(model.status).toMatchObject({ state: 'thinking', quiet: false });
         expect(model.stale).toBe(false);
+    });
+
+    it('never labels a Session by operational state its runtime does not support', () => {
+        // The real projector answers `{runtime:'offline', operational:{primary:'none'}}` for an
+        // offline idle Session; reading `primary` alone rendered that as the "Online" pill.
+        const offline = projectSessionSummaryCard(input({
+            awareness: awareness({
+                runtime: 'offline',
+                freshness: 'offline',
+                operational: { primary: 'none', reasons: ['runtime_offline'] },
+            }),
+        }));
+        expect(offline.status?.state).toBe('disconnected');
+        expect(offline.status?.statusText).not.toBe(t('status.online'));
+
+        const unknownRuntime = projectSessionSummaryCard(input({
+            awareness: awareness({ runtime: 'unknown', freshness: 'offline', operational: { primary: 'ready', reasons: [] } }),
+        }));
+        expect(unknownRuntime.status?.state).toBe('unknown');
+
+        // An unservable runtime outranks a `ready` operational answer, exactly as the row does.
+        const unservable = projectSessionSummaryCard(input({
+            awareness: awareness({ operational: { primary: 'ready', reasons: ['runtime_unservable'] } }),
+        }));
+        expect(unservable.status?.state).toBe('recoverable_unservable');
+
+        // An idle, reachable Session stays quiet rather than being badged "Online".
+        const idle = projectSessionSummaryCard(input({
+            awareness: awareness({ operational: { primary: 'none', reasons: [] } }),
+        }));
+        expect(idle.status).toMatchObject({ state: 'waiting', quiet: true });
     });
 
     it('puts an open approval ahead of ordinary work', () => {

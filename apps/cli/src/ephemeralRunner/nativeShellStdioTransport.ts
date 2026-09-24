@@ -13,8 +13,34 @@ function parseResponse(value: unknown): EphemeralRunnerNativeShellResponse | nul
   if (value.type === 'directory_selected' && 'directory' in value && (typeof value.directory === 'string' || value.directory === null)) {
     return { v: 1, type: 'directory_selected', directory: value.directory };
   }
+  if (value.type === 'registry_profile_decision' && 'decision' in value) {
+    if (value.decision === 'without_token' || value.decision === 'decline') {
+      return { v: 1, type: 'registry_profile_decision', decision: value.decision };
+    }
+    if (value.decision === 'sign_in' && 'token' in value && typeof value.token === 'string' && value.token.trim()) {
+      return { v: 1, type: 'registry_profile_decision', decision: 'sign_in', token: value.token.trim() };
+    }
+    return null;
+  }
   if (value.type === 'consent_decision' && 'decision' in value && (value.decision === 'allow' || value.decision === 'decline')) {
-    return { v: 1, type: 'consent_decision', decision: value.decision };
+    if (!('optionalSelections' in value) || value.optionalSelections === undefined) {
+      return { v: 1, type: 'consent_decision', decision: value.decision };
+    }
+    const selections = value.optionalSelections;
+    if (!Array.isArray(selections) || !selections.every((entry: unknown) => (
+      !!entry && typeof entry === 'object'
+      && typeof (entry as { accessId?: unknown }).accessId === 'string'
+      && typeof (entry as { selected?: unknown }).selected === 'boolean'
+    ))) return null;
+    return {
+      v: 1,
+      type: 'consent_decision',
+      decision: value.decision,
+      optionalSelections: selections.map((entry: { accessId: string; selected: boolean }) => ({
+        accessId: entry.accessId,
+        selected: entry.selected,
+      })),
+    };
   }
   if (value.type === 'active_close_decision' && 'decision' in value && (value.decision === 'stop' || value.decision === 'keep_open')) {
     return { v: 1, type: 'active_close_decision', decision: value.decision };
@@ -98,5 +124,15 @@ export function createEphemeralRunnerNativeShellStdioTransport(input: Readonly<{
     // Writing to the dead shell's pipe raises EPIPE, which would abort the very
     // shutdown this disconnect started.
     publish(message) { if (!disconnected) write(JSON.stringify({ v: 1, publication: message })); },
+    /**
+     * Released by the lifecycle that created this carrier, on every terminal
+     * outcome and before a retry replaces the application. An open readline
+     * interface holds the shell-owned stdin, and that keeps the runtime alive
+     * after the entry point returns — the process the user can no longer close.
+     * Closing the interface runs the same `close` disconnect a dead shell does,
+     * so the terminal state is the one already specified, and repeating it is a
+     * no-op.
+     */
+    dispose() { lines.close(); },
   });
 }

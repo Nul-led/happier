@@ -15,8 +15,6 @@ const key = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(11));
 const payload: ProviderBrokerRouteGrantPayloadV1 = {
     v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
     teamId: 'team', resourceId: 'resource',
-    expectedResourceRevision: 7,
-    modelId: 'gpt-5',
     sourceRevision: 'source-revision-7',
     initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
@@ -63,7 +61,7 @@ function resourceTestRelayAuthorization(
         signature: { alg: 'Ed25519', keyId: 'home', valueBase64Url: 'AA' },
     };
 }
-const expected = { teamId: payload.teamId, resourceId: payload.resourceId, expectedResourceRevision: payload.expectedResourceRevision, modelId: payload.modelId, sourceRevision: payload.sourceRevision, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application };
+const expected = { teamId: payload.teamId, resourceId: payload.resourceId, sourceRevision: payload.sourceRevision, initiator: payload.initiator, target: payload.target, consumer: payload.consumer, application: payload.application };
 const context = { authenticatedRemoteEndpointId: payload.initiator.endpointId, authority: authority(), expected };
 const modelCatalog = (
     resolveCanonicalModelId: (modelId: string) => string | null = (modelId) => modelId,
@@ -415,8 +413,6 @@ describe('createProviderBrokerRequestHandler', () => {
         const secondExpected = {
             teamId: secondPayload.teamId,
             resourceId: secondPayload.resourceId,
-            expectedResourceRevision: secondPayload.expectedResourceRevision,
-            modelId: secondPayload.modelId,
             sourceRevision: secondPayload.sourceRevision,
             initiator: secondPayload.initiator,
             target: secondPayload.target,

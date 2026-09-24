@@ -31,6 +31,7 @@ import {
     listRunnerCreatorCustodyActivationIds,
     readRunnerCreatorAttachmentUploadCustody,
     readPreparedRunnerCreatorLaunchCustody,
+    readSubmittedRunnerCreatorTeamCredentialModel,
     recordRunnerCreatorStagingCustodyHandle,
     recordRunnerCreatorStagedAttachmentCustody,
     recordRunnerCreatorAttachmentUploadCheckpoint,
@@ -251,6 +252,25 @@ describe('Runner creator attachment launch custody', () => {
         await removeRunnerCreatorLaunchCustody(scope, activationId);
         await expect(readPreparedRunnerCreatorLaunchCustody(scope, activationId))
             .rejects.toMatchObject({ code: 'runner_creator_launch_custody_unavailable' });
+    });
+
+    it('keeps the Team model frozen at Send, and reports none when the package froze none', async () => {
+        const submitted = {
+            kind: 'team_credential_provider_model',
+            resourceId: 'resource-a',
+            teamId: 'team-1',
+            expectedResourceRevision: 3,
+            agentTargetKey: 'agent:happier.agent.codex/codex',
+            modelId: 'gpt-5',
+            deliveryMode: 'brokered',
+        } as const;
+        const withoutFiles = { ...preparedAuthoring, files: [] };
+        await writePreparedRunnerCreatorLaunchCustody({ scope, activationId, preparedAuthoring: withoutFiles, submittedTeamCredentialModel: submitted });
+        await expect(readSubmittedRunnerCreatorTeamCredentialModel(scope, activationId)).resolves.toEqual(submitted);
+
+        await removeRunnerCreatorLaunchCustody(scope, activationId);
+        await writePreparedRunnerCreatorLaunchCustody({ scope, activationId, preparedAuthoring: withoutFiles });
+        await expect(readSubmittedRunnerCreatorTeamCredentialModel(scope, activationId)).resolves.toBeNull();
     });
 
     it('reopens exact staged sources and upload identities after a React owner remount', async () => {

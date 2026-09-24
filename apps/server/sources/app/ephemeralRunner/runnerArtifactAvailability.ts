@@ -1,5 +1,6 @@
 import {
     RunnerArtifactIdentityV1Schema,
+    authenticateRunnerArtifactAgainstSignedChecksumsV1,
     runnerArtifactTargetForPlatform,
     type RunnerArtifactIdentityV1,
     type RunnerArtifactTarget,
@@ -14,7 +15,18 @@ import { parseReleaseManifestV1 } from '@happier-dev/release-runtime/releaseMani
 import { DEFAULT_MINISIGN_PUBLIC_KEY, resolveVerifiedReleaseArtifactDigest } from '@happier-dev/release-runtime/releaseArtifactVerification';
 import { z } from 'zod';
 
-export type RunnerArtifactUnavailableReasonV1 = 'publication_unavailable' | 'not_published' | 'target_not_published' | 'artifact_identity_mismatch';
+export type RunnerArtifactUnavailableReasonV1 =
+    | 'publication_unavailable'
+    | 'not_published'
+    | 'target_not_published'
+    /**
+     * The release declared eligible records for the requested target and they
+     * failed verification. That is neither "temporarily unavailable metadata"
+     * nor "positively absent", and reporting either would send the creator into
+     * the wrong recovery.
+     */
+    | 'publication_invalid'
+    | 'artifact_identity_mismatch';
 export type RunnerArtifactAvailabilityResultV1 =
     | Readonly<{ ok: true; artifact: VerifiedRunnerArtifactV1 }>
     | Readonly<{ ok: false; reason: RunnerArtifactUnavailableReasonV1 }>;
@@ -58,22 +70,28 @@ const ReleaseSchema = z.object({
 });
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
-/**
- * The existing GitHub publication carries latest.json as an untrusted index.
- * Only its same-release signed checksums can establish an artifact digest.
- * Native Runner targets remain unavailable until their release owner supplies
- * authenticated stapled-app / Authenticode evidence; manifest flags prove neither.
- */
-export async function readPublishedRunnerArtifacts(options: RunnerArtifactSourceOptions = {}): Promise<readonly VerifiedRunnerArtifactV1[]> {
+type RunnerArtifactPublicationRead = Readonly<{
+    artifacts: readonly VerifiedRunnerArtifactV1[];
+    /**
+     * Targets the release declared as eligible records and whose bytes did not
+     * authenticate. A retained snapshot is by definition an already verified
+     * publication, so reusing one reports none.
+     */
+    invalidTargets: ReadonlySet<RunnerArtifactTarget>;
+}>;
+
+const NO_INVALID_TARGETS: ReadonlySet<RunnerArtifactTarget> = new Set();
+
+async function readRunnerArtifactPublication(options: RunnerArtifactSourceOptions = {}): Promise<RunnerArtifactPublicationRead> {
     const fetchImpl = options.fetchImpl ?? fetch;
     const repo = (process.env.HAPPIER_GITHUB_REPO ?? 'happier-dev/happier').trim();
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return [];
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return { artifacts: [], invalidTargets: NO_INVALID_TARGETS };
     const ring = getReleaseRingCatalogEntry(options.channel ?? 'stable');
-    if (options.version !== undefined && !RELEASE_VERSION.test(options.version)) return [];
+    if (options.version !== undefined && !RELEASE_VERSION.test(options.version)) return { artifacts: [], invalidTargets: NO_INVALID_TARGETS };
     const retained = options.version === undefined
         ? undefined
         : options.publicationSnapshots?.read(`${repo}\u0000${ring.id}\u0000${options.version}`);
-    if (retained) return retained;
+    if (retained) return { artifacts: retained, invalidTargets: NO_INVALID_TARGETS };
     const requestedTag = options.version
         ? `${publication.versionTagPrefix}${options.version}`
         : `${publication.rollingTagPrefix}-${ring.rollingReleaseSuffix}`;
@@ -117,20 +135,22 @@ export async function readPublishedRunnerArtifacts(options: RunnerArtifactSource
     }
     try {
         let loaded = await load(requestedTag);
-        if (loaded === null) return [];
+        if (loaded === null) return { artifacts: [], invalidTargets: NO_INVALID_TARGETS };
         const version = options.version ?? loaded.manifest.version;
         const immutableTag = `${publication.versionTagPrefix}${version}`;
         const immutableSnapshotKey = `${repo}\u0000${ring.id}\u0000${version}`;
         if (requestedTag !== immutableTag) {
             const retainedImmutable = options.publicationSnapshots?.read(immutableSnapshotKey);
-            if (retainedImmutable) return retainedImmutable;
+            if (retainedImmutable) return { artifacts: retainedImmutable, invalidTargets: NO_INVALID_TARGETS };
             const immutable = await load(immutableTag);
-            if (immutable === null) return [];
+            if (immutable === null) return { artifacts: [], invalidTargets: NO_INVALID_TARGETS };
             loaded = immutable;
         }
         const { release, manifest } = loaded;
-        if (manifest.version !== version) return [];
+        if (manifest.version !== version) return { artifacts: [], invalidTargets: NO_INVALID_TARGETS };
         const result: VerifiedRunnerArtifactV1[] = [];
+        // Eligible records that exist but fail verification are not absence.
+        const invalidTargets = new Set<RunnerArtifactTarget>();
         for (const record of manifest.records) {
             if (record.version !== version || record.channel !== manifest.channel) continue;
             const target = runnerArtifactTargetForPlatform(record);
@@ -139,37 +159,62 @@ export async function readPublishedRunnerArtifacts(options: RunnerArtifactSource
             // verified immutable publication. Eligibility alone advertises
             // nothing, and the route remains behind the default-off product gate.
             if (target === null || !isRunnerArtifactTargetEligibleForPublication(target)) continue;
+            if (record.sizeBytes === undefined || record.entries === undefined) {
+                invalidTargets.add(target);
+                continue;
+            }
             let bundle;
             try {
                 bundle = resolveReleaseAssetBundle({ assets: release.assets, product: 'happier-runner', os: record.os, arch: record.arch, preferZipOnWindows: false });
             } catch {
+                invalidTargets.add(target);
                 continue;
             }
-            if (bundle.version !== version || record.url !== bundle.archive.url || record.signature !== bundle.checksumsSig.url) continue;
+            if (bundle.version !== version || record.url !== bundle.archive.url || record.signature !== bundle.checksumsSig.url) {
+                invalidTargets.add(target);
+                continue;
+            }
             const [checksumsText, checksumsSignatureFile] = await Promise.all([read(bundle.checksums.url), read(bundle.checksumsSig.url)]);
-            const verified = resolveVerifiedReleaseArtifactDigest({
-                artifactName: bundle.archive.name, checksumsText, checksumsSignatureFile,
-                minisignPublicKeyFile: options.minisignPublicKeyFile ?? DEFAULT_MINISIGN_PUBLIC_KEY,
+            const authenticated = authenticateRunnerArtifactAgainstSignedChecksumsV1({
+                verified: resolveVerifiedReleaseArtifactDigest({
+                    artifactName: bundle.archive.name, checksumsText, checksumsSignatureFile,
+                    minisignPublicKeyFile: options.minisignPublicKeyFile ?? DEFAULT_MINISIGN_PUBLIC_KEY,
+                }),
+                expected: { sha256: record.sha256, sizeBytes: record.sizeBytes, entries: record.entries },
             });
-            if (!verified.ok || verified.sha256 !== record.sha256 || !verified.archiveMetadata
-                || record.sizeBytes !== verified.archiveMetadata.sizeBytes
-                || JSON.stringify(record.entries) !== JSON.stringify(verified.archiveMetadata.entries)) continue;
-            const identity = RunnerArtifactIdentityV1Schema.safeParse({ product: 'happier-runner', version, target, sha256: verified.sha256 });
-            if (!identity.success) continue;
+            if (!authenticated.ok) {
+                invalidTargets.add(target);
+                continue;
+            }
+            const identity = RunnerArtifactIdentityV1Schema.safeParse({ product: 'happier-runner', version, target, sha256: authenticated.sha256 });
+            if (!identity.success) {
+                invalidTargets.add(target);
+                continue;
+            }
             result.push({ identity: identity.data, channel: manifest.channel, url: bundle.archive.url,
                 checksumsUrl: bundle.checksums.url, checksumsSignatureUrl: bundle.checksumsSig.url,
-                sizeBytes: verified.archiveMetadata.sizeBytes, entries: verified.archiveMetadata.entries });
+                sizeBytes: authenticated.metadata.sizeBytes, entries: authenticated.metadata.entries });
         }
         // An exact verified artifact identity is immutable. An empty projection can
         // still mean publication is in progress, so leave that retryable.
         if (result.length > 0) {
             options.publicationSnapshots?.write(immutableSnapshotKey, result);
         }
-        return result;
+        return { artifacts: result, invalidTargets };
     } catch (error) {
         if (options.signal?.aborted) throw error;
         throw new Error('runner_artifact_publication_unavailable');
     }
+}
+
+/**
+ * The existing GitHub publication carries latest.json as an untrusted index.
+ * Only its same-release signed checksums can establish an artifact digest.
+ * Native Runner targets remain unavailable until their release owner supplies
+ * authenticated stapled-app / Authenticode evidence; manifest flags prove neither.
+ */
+export async function readPublishedRunnerArtifacts(options: RunnerArtifactSourceOptions = {}): Promise<readonly VerifiedRunnerArtifactV1[]> {
+    return (await readRunnerArtifactPublication(options)).artifacts;
 }
 
 export async function listAvailableRunnerArtifactTargets(options: RunnerArtifactSourceOptions = {}): Promise<readonly RunnerArtifactTarget[]> {
@@ -180,12 +225,19 @@ export async function resolveRunnerArtifactAvailability(
     identity: RunnerArtifactIdentityV1,
     options: Omit<RunnerArtifactSourceOptions, 'version'> = {},
 ): Promise<RunnerArtifactAvailabilityResultV1> {
-    let available: readonly VerifiedRunnerArtifactV1[];
+    let publicationRead: RunnerArtifactPublicationRead;
     try {
-        available = await readPublishedRunnerArtifacts({ ...options, version: identity.version });
+        publicationRead = await readRunnerArtifactPublication({ ...options, version: identity.version });
     } catch {
         return { ok: false, reason: 'publication_unavailable' };
     }
+    const available = publicationRead.artifacts;
+    // A record the release declared for this target and whose bytes did not
+    // authenticate is neither absent nor temporarily unavailable. Verification
+    // still failed closed above; only the reported cause changes, so the creator
+    // is told the publication is broken instead of being sent to retry or to
+    // wait for a target that is in fact published.
+    if (publicationRead.invalidTargets.has(identity.target)) return { ok: false, reason: 'publication_invalid' };
     if (!available.length) return { ok: false, reason: 'not_published' };
     const target = available.filter((artifact) => artifact.identity.target === identity.target);
     if (!target.length) return { ok: false, reason: 'target_not_published' };

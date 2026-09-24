@@ -483,9 +483,16 @@ export class Encryption {
     }
 
     /**
-     * Remove session encryption from memory when session is deleted
+     * Remove session encryption from memory when a Session is deleted or its key
+     * stops opening.
+     *
+     * Symmetric with `initializeSessions`: clearing a live reader intentionally
+     * advances the owning generation, and the post-commit scope is returned so the
+     * caller that *caused* the advance can adopt it instead of reading its own
+     * clear as another writer's Account switch. `null` means nothing was removed
+     * and no generation moved.
      */
-    removeSessionEncryption(sessionId: string): void {
+    removeSessionEncryption(sessionId: string): EncryptionGenerationScope | null {
         const existing = this.sessionEncryptions.get(sessionId);
         const scope = this.sessionEncryptionScopes.get(sessionId);
         if (existing && scope) {
@@ -496,6 +503,7 @@ export class Encryption {
         this.sessionEncryptionScopes.delete(sessionId);
         // Also clear any cached data for this session
         this.cache.clearSessionCache(sessionId);
+        return existing && scope ? this.getCurrentEncryptionGenerationScope(scope) : null;
     }
 
     //

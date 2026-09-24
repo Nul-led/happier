@@ -120,6 +120,48 @@ describe('describeApprovalActionFields', () => {
         }));
     });
 
+    it('admits a required field whose schema declares null, and still withholds one that is absent or not nullable', () => {
+        const item = {
+            v: 1,
+            title: 'Release checklist',
+            frame: 'card',
+            height: { mode: 'auto', fallback: 'regular' },
+            source: { kind: 'declarative', document: { version: 1, root: { kind: 'markdown', text: '# Release checklist' } } },
+        };
+        const creation = {
+            actionId: 'session.board.item.upsert',
+            actionArgs: {
+                sessionId: 'session-1',
+                itemId: 'release-checklist',
+                expectedItemRevision: null,
+                item,
+                placement: { tabId: 'overview', width: 'wide' },
+            },
+        } as const;
+        const createPresentation = describeApprovalActionFields(creation);
+        expect(createPresentation.unrepresentable).toBeNull();
+        expect(createPresentation.rows).toContainEqual(
+            { kind: 'value', path: 'itemId', title: 'Item id', value: 'release-checklist' },
+        );
+
+        // The same field, absent: the observation-safe context really is missing.
+        const { expectedItemRevision: _omitted, ...withoutRevision } = creation.actionArgs;
+        expect(describeApprovalActionFields({ actionId: 'session.board.item.upsert', actionArgs: withoutRevision }).unrepresentable)
+            .toEqual({ path: 'expectedItemRevision', reason: 'missing_required_context' });
+
+        // A layout edit against a Board that has no layout yet also declares null.
+        expect(describeApprovalActionFields({
+            actionId: 'session.board.layout.update',
+            actionArgs: { sessionId: 'session-1', expectedLayoutRevision: null, operation: { op: 'tab.create', tabId: 'overview', title: 'Overview' } },
+        }).unrepresentable).toBeNull();
+
+        // Removal's revisions are not nullable, so a null there is not admitted context.
+        expect(describeApprovalActionFields({
+            actionId: 'session.board.item.remove',
+            actionArgs: { sessionId: 'session-1', itemId: 'release-checklist', expectedItemRevision: null, expectedLayoutRevision: 'ssr1.AAAACHN5c3JlY18xAAAAAQ' },
+        }).unrepresentable).toEqual({ path: 'expectedItemRevision', reason: 'missing_required_context' });
+    });
+
     it('shows the exact Team and member targets for deferred governance approvals', () => {
         expect(describeApprovalActionFields({
             actionId: 'teams.members.remove',

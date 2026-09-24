@@ -86,5 +86,10 @@ export async function runEphemeralRunner<Manifest, Materialized, Preparation>(in
     restoreProcessLogger = null;
     if (ownsLocalState) await localState?.dispose().catch(() => undefined);
     activation.dispose();
+    // The surface outlives the controller by design — it presents the terminal
+    // outcome — so this run owns releasing it. A native shell's stdin reader
+    // otherwise keeps the process alive after the entry point returns, and a
+    // retry would add a second reader on the same stdin.
+    input.ui.dispose?.();
   }
 }

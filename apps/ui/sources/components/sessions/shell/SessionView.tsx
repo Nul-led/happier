@@ -1,3 +1,6 @@
+import { useAppPaneActionRailVisible } from '@/components/appShell/panes/hooks/useAppPaneActionRailVisible';
+import { PANE_ACTION_RAIL_WIDTH } from '@/components/appShell/panes/PaneActionRailContext';
+import { useSessionCockpitChromeRegistration } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import {
     SessionCollaborationHeaderEntry,
 } from '@/components/sessions/collaboration/SessionCollaborationHeaderEntry';
@@ -540,9 +543,8 @@ import { combineSessionViewExtraActionChips } from './view/combineSessionViewExt
 import { resolveSessionViewModeOptionIds } from './view/resolveSessionViewModeOptionIds';
 import { resolveSessionViewHeaderProps, shouldFoldSessionHeaderIconActions } from './view/resolveSessionViewHeaderProps';
 import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
-import { resolveWorkspaceSyncConflictCountForWorkspaceRef } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { resolveWorkspaceSyncSetAttention } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
-import { resolveWorkspaceSyncConflictOpenTarget } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import {
     readExternalAgentObservationPresentationInput,
@@ -1800,6 +1802,11 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         props.resolveBoardPrimaryHost,
         props.sessionPluginRuntime,
     );
+    const actionRailVisible = useAppPaneActionRailVisible(paneScopeId);
+    const cockpitChrome = useSessionCockpitChromeRegistration();
+    const mobileTerminalTabAvailable = deviceType === 'phone'
+        && cockpitChrome?.sessionId === sessionId
+        && cockpitChrome.terminalTabAvailable;
     const paneFocusMode = usePaneFocusMode(paneScopeId);
     const sessionsRightPaneDefaultOpen = useLocalSetting('sessionsRightPaneDefaultOpen');
     const {
@@ -2044,32 +2051,21 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         workspaceRefs: Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : [],
     }), [currentSessionRouteServerId, headerMachineTarget, stableSessionForHeader, workspaceRefsV1]);
     const headerWorkspaceSyncSummaries = useWorkspaceSyncRelationshipSummaries(headerWorkspaceDisplay.workspaceRefId);
-    const headerWorkspaceSyncConflictCount = React.useMemo(
+    const headerWorkspaceSyncAttention = React.useMemo(
         () => headerWorkspaceDisplay.workspaceRefId
-            ? resolveWorkspaceSyncConflictCountForWorkspaceRef(
+            ? resolveWorkspaceSyncSetAttention(
                 headerWorkspaceSyncSummaries,
                 headerWorkspaceDisplay.workspaceRefId,
             )
-            : 0,
+            : null,
         [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries],
     );
     const openHeaderWorkspaceSyncConflicts = React.useCallback(() => {
-        const target = resolveWorkspaceSyncConflictOpenTarget(headerWorkspaceSyncSummaries.map((summary) => ({
-            relationshipId: summary.relationshipId,
-            conflictCount: summary.status?.conflictCount ?? 0,
-        })));
-        if (target.kind === 'none') return;
-        if (target.kind === 'relationshipList') {
-            navigateWithBlurOnWeb(() => routerRef.current.push(buildCurrentSessionHref('/info') as any));
-            return;
+        const currentSet = headerWorkspaceSyncSummaries.find((summary) => summary.relationship.enabled);
+        if (currentSet) {
+            pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(currentSet, headerWorkspaceDisplay.workspaceRefId), { intent: 'pinned' });
         }
-        const conflicted = headerWorkspaceSyncSummaries.find(
-            (summary) => summary.relationshipId === target.relationshipId,
-        );
-        if (conflicted) {
-            pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(conflicted, headerWorkspaceDisplay.workspaceRefId), { intent: 'pinned' });
-        }
-    }, [buildCurrentSessionHref, headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries, navigateWithBlurOnWeb, pane]);
+    }, [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries, pane]);
 
     // Phase 2.2 — plugin-UI projection + open handler for the session header
     // action menu (closing finding #11; the header action menu was previously
@@ -2169,6 +2165,8 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         sessionAutomationsHref: buildCurrentSessionHref('/automations'),
         paneScopeId,
         windowWidth,
+        actionRailVisible,
+        mobileTerminalTabAvailable,
         sessionAutomationsEnabledCount,
         sessionExecutionRunsSupported,
         showAutomations,
@@ -2190,7 +2188,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         pluginUiScopeIsCurrent: headerPluginScopeIsCurrent,
         actionAccountLifetime: sessionAccountBinding,
         onOpenPluginSurface: handleOpenSessionPluginSurface,
-        workspaceSyncConflictCount: headerWorkspaceSyncConflictCount,
+        workspaceSyncAttention: headerWorkspaceSyncAttention ?? undefined,
         onOpenWorkspaceSyncConflicts: openHeaderWorkspaceSyncConflicts,
         boardHeaderAction: boardDestinationAvailable
             ? {
@@ -2211,6 +2209,8 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
             isPhone: deviceType === 'phone',
         } : undefined,
     }), [
+        actionRailVisible,
+        mobileTerminalTabAvailable,
         buildCurrentSessionHref,
         clientExecutableRegistrationRevision,
         currentSessionMachineId,
@@ -2222,7 +2222,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         headerPluginProjection.pluginUiProjection,
         headerWorkspaceDisplay.displayTitle,
         headerWorkspaceDisplay.subtitleEllipsizeMode,
-        headerWorkspaceSyncConflictCount,
+        headerWorkspaceSyncAttention,
         openHeaderWorkspaceSyncConflicts,
         openSessionBoard,
         boardDestinationAvailable,
@@ -2387,6 +2387,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
                         onBackPress={handleBackPress}
                         showBackButton={!isTablet}
                         constrainWidth={constrainHeaderWidth}
+                        contentTrailingInsetPx={actionRailVisible ? PANE_ACTION_RAIL_WIDTH : 0}
                         includeTopInset={headerSafeAreaTopMode !== 'external'}
                     />
                 </View>
@@ -3338,15 +3339,24 @@ function SessionViewLoaded({
     }> | null>(null);
     const hasWriteAccess = hasSessionWriteAccess(session.access);
     const sessionMachineRecord = useMachine(typeof machineId === 'string' ? machineId : '');
-    const pendingActivationPresentation = React.useMemo(() => resolvePendingActivationBanner({
-        authorization: session.pendingActivationAuthorization,
-        activeAt: session.activeAt,
-        active: session.active,
-        machineReachable: isMachineReachable,
-        canWrite: hasWriteAccess,
-        resumingAt: sessionRuntimeStatusSource.resumingAt,
-        pendingMessages,
-    }), [hasWriteAccess, isMachineReachable, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionRuntimeStatusSource.resumingAt]);
+    const pendingActivationPresentation = React.useMemo(() => {
+        // A Pending row can synchronize before an in-flight Agent transition
+        // answers. The composer already owns that live submission and shows its
+        // spinner, so the generic inactive-Session recovery must not compete with
+        // it or imply that the reader should resume the source Agent. Once the
+        // submission settles, the existing pending-activation owner resumes its
+        // normal role without any transition-specific recovery path.
+        if (isComposerSending) return null;
+        return resolvePendingActivationBanner({
+            authorization: session.pendingActivationAuthorization,
+            activeAt: session.activeAt,
+            active: session.active,
+            machineReachable: isMachineReachable,
+            canWrite: hasWriteAccess,
+            resumingAt: sessionRuntimeStatusSource.resumingAt,
+            pendingMessages,
+        });
+    }, [hasWriteAccess, isComposerSending, isMachineReachable, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionRuntimeStatusSource.resumingAt]);
     const [pendingActivationActionBusy, setPendingActivationActionBusy] = React.useState(false);
     const goalControlMachineId = controlMachineTarget?.machineId ?? machineId;
     const goalControlMachineRecord = useMachine(typeof goalControlMachineId === 'string' ? goalControlMachineId : '');
@@ -3448,6 +3458,12 @@ function SessionViewLoaded({
             restoredArmedContinuationOutcomeKeyRef.current = null;
             return;
         }
+        // The live same-mount submission writes its durable snapshot before the
+        // transition RPC starts. That ordering protects a remount, but it is not
+        // evidence that this mount lost the RPC outcome. While the composer owns
+        // the live promise, its spinner is the truthful state; only a later mount
+        // with no live submission reconstructs outcome_unknown from the snapshot.
+        if (isComposerSending) return;
         // A nested submission proves a transition left this mount, but carries no
         // daemon result to replay. Establish the same mount-local unknown outcome
         // the RPC path records before this composer can accept input, so the
@@ -3476,6 +3492,7 @@ function SessionViewLoaded({
         inSessionAgentPicker.armedContinuationLocalId,
         inSessionAgentPicker.armedContinuationSubmission,
         inSessionAgentPicker.armedContinuationSubmissionIntent,
+        isComposerSending,
         sessionId,
     ]);
     // The armed target, resolved once against the same catalog the rail offered
@@ -7738,7 +7755,6 @@ function SessionViewLoaded({
                 } : undefined}
                 armedContinuationTarget={armedContinuationTarget}
                 composeAgentPickerOptions={inSessionAgentPicker.composeAgentPickerOptions}
-                onAgentPickerIntent={inSessionAgentPicker.onAgentPickerIntent}
                 onAgentPickerVisibilityChange={inSessionAgentPicker.onAgentPickerVisibilityChange}
                 agentPickerSelectedOptionId={inSessionAgentPicker.agentPickerSelectedOptionId}
                 onAttachmentsAdded={attachmentsUploadsEnabled && !pendingComposerDocument ? addAttachments : undefined}
@@ -9246,7 +9262,9 @@ function SessionViewLoaded({
                     ? { onRemoveBoardItem: removeCompanionBoardItem }
                     : {})}
                 paneScopeId={paneScopeId}
-                resolvePrimaryHost={resolveBoardPrimaryHost}
+                // The mounted Board owner adds whether its selected view draws the item, so
+                // a Board tab showing another view never claims a Companion item's mount.
+                resolvePrimaryHost={mountedBoard?.resolvePrimaryHost ?? resolveBoardPrimaryHost}
                 summaryDestinations={companionSummaryDestinations}
             /> : null}
         </>

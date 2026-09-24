@@ -47,6 +47,8 @@ export {
 } from './actionIds.js';
 export {
   bindHomeDomainHttpRequestV1,
+  classifyHomeDomainHttpMutationFailureV1,
+  type HomeDomainHttpMutationFailureV1,
   type HomeDomainHttpRequestV1,
 } from './homeDomainHttpBinding.js';
 export {
@@ -176,6 +178,11 @@ export {
   type ExternalActionEncryptionBindingV2,
 } from './externalActionEncryption.js';
 export * from './operations/index.js';
+export {
+  TargetedActionRpcRequestV1Schema,
+  createTargetedActionRpcRequestV1,
+  type TargetedActionRpcRequestV1,
+} from './actionRpcTransport.js';
 export { ACTION_UI_PLACEMENTS, ActionUiPlacementSchema, type ActionUiPlacement } from './actionUiPlacements.js';
 export {
   ACTION_SETTINGS_OPT_IN_PLACEMENTS,
@@ -241,6 +248,7 @@ export {
   readActionInputOptionValue,
   ActionInputWidgetSchema,
   PluginScaffoldUiModeSchema,
+  DEFAULT_PLUGIN_SCAFFOLD_UI_MODE,
   PluginScaffoldTemplateSchema,
   SESSION_TRANSCRIPT_GET_MAX_LIMIT,
   SessionEventsGetInputSchema,
@@ -467,10 +475,13 @@ export {
 export {
   ActionCliCommandBindingSchema,
   ActionCliProjectionSchema,
+  actionCliDerivedDefault,
   actionCliFlagNameForField,
+  readActionCliDerivedDefault,
   readActionSchemaTopLevelFieldNames,
   type ActionCliBindContext,
   type ActionCliBindInput,
+  type ActionCliDerivedDefault,
   type ActionCliCommandBinding,
   type ActionCliProjection,
 } from './actionCliProjection.js';

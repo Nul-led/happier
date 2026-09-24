@@ -17,6 +17,7 @@ import { createQualifiedConnectedAccountGroupDigest, createQualifiedConnectedAcc
 import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { peerMediationGrantSigningEnv } from "@/testkit/env";
 
 import { registerTeamCredentialResourceRoutes } from "./registerTeamCredentialResourceRoutes";
 import { projectTeamCredentialResourceSummaryInTx } from "./resourceRead";
@@ -42,6 +43,10 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
                 HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+                // The external Provider API is deployment-ready only when the
+                // broker relay can mint route grants (`teamsFeature.ts`), so a
+                // ready Home carries the same signing substrate production needs.
+                ...peerMediationGrantSigningEnv(),
             },
         });
         app = createAuthenticatedTestApp();
@@ -3022,6 +3027,9 @@ describe("Team credential resource routes (SQLite integration)", () => {
             id: resource.id,
             mayReceiveDirect: true,
             directMaterialState: "stale",
+            // Readiness and retained delivery history are separate facts: this
+            // is what lets a selection skip a disclosure already given.
+            directDeliveryRecorded: true,
         }));
         const groupRecipientAdminPage = await post("/v1/teams/credential-resources/list", groupRecipient.id, { teamId: team.id });
         expect(groupRecipientAdminPage.statusCode, groupRecipientAdminPage.body).toBe(200);
@@ -3258,5 +3266,144 @@ describe("Team credential resource routes (SQLite integration)", () => {
         });
         expect((await db.account.findUniqueOrThrow({ where: { id: custodian.id } })).seq)
             .toBeGreaterThan(seqBeforeWithdrawal);
+    });
+
+    // Child 06 L10D-R13 and row invariants (:94, :372): preparation is a
+    // missing/stale census and an upsert of the same logical tuple is
+    // idempotent. A re-upload of an unchanged tuple must not wake the Team:
+    // that wake re-hydrates the source daemon's catalog, whose snapshot starts
+    // the next reconciliation, so publishing it made the cycle renew itself.
+    it("reports current direct tuples to preparation and publishes a Team change only for a logical tuple change", async () => {
+        const custodian = await createAccount();
+        const recipient = await createAccount();
+        const team = await db.team.create({ data: { name: "Direct publication" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "owner" } });
+        const recipientMembership = await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: recipient.id, role: "member",
+        } });
+        const service = { pluginId: "example.accounts", localId: "direct-publication" };
+        const sourceAccount = { service, accountId: "direct-publication-source" };
+        const credential = await db.serviceAccountToken.create({ data: {
+            accountId: custodian.id,
+            servicePluginId: service.pluginId,
+            serviceLocalId: service.localId,
+            qualifiedServiceDigest: createQualifiedConnectedAccountServiceDigest(service),
+            connectedAccountId: sourceAccount.accountId,
+            qualifiedIdentityDigest: createQualifiedConnectedAccountIdentityDigest(sourceAccount),
+            authenticationModeId: "api-key",
+            token: Buffer.from("direct-publication-source-secret"),
+            metadata: {
+                v: 4,
+                storage: "stored_envelope_v1",
+                credentialRevision: "csr_bbbbbbbbbbbbbbbbbbbbbbbb",
+                directExportContract: TEAM_CREDENTIAL_MANUAL_CONNECTED_ACCOUNT_DIRECT_CONTRACT_V1,
+                contributionContractVersion: "resource-routes-fixture-v1",
+                values: { scopes: [] },
+            },
+        } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id,
+            custodianAccountId: custodian.id,
+            displayName: "Direct publication",
+            disclosureCeiling: "direct_allowed",
+            sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({
+                v: 1,
+                kind: "connected_account",
+                target: { kind: "account", account: sourceAccount },
+                credentialIncarnation: credential.id,
+            }),
+            memberGrants: { create: { teamMembershipId: recipientMembership.id, deliveryMode: "direct" } },
+        } });
+        const sourceMember = { kind: "connected_account" as const, service, connectedAccountId: sourceAccount.accountId };
+        const sourceMemberKey = computeTeamCredentialSourceMemberKeyV1(sourceMember);
+        const currentness = await inTx(tx => resolveTeamCredentialDirectSourceCurrentnessInTx(tx, {
+            custodianAccountId: custodian.id,
+            source: JSON.parse((resource.sourceBindingJson)),
+            sourceMemberKey,
+        }));
+        if (currentness.status !== "current" || currentness.sourceVersion === null) {
+            throw new Error(`expected a current direct source, received ${JSON.stringify(currentness)}`);
+        }
+        const sourceVersion = currentness.sourceVersion;
+        const directMaterialPath = `/v2/teams/${team.id}/credential-resources/${resource.id}/direct-material`;
+        const preparation = async () => {
+            const response = await get(
+                `${directMaterialPath}?view=preparation&sourceMemberKey=${encodeURIComponent(sourceMemberKey)}`,
+                custodian.id,
+            );
+            expect(response.statusCode, response.body).toBe(200);
+            return response.json() as { recipients: Array<Record<string, unknown>> };
+        };
+        const upload = async (token: string, expectedStoredSourceVersion: string | null) => {
+            const stored = createTeamCredentialDirectMaterialStoredV1({
+                recipientMode: "plain",
+                payload: {
+                    v: 1,
+                    domain: "happier.team-credential-direct-material",
+                    homeServerIdentityId: "home",
+                    teamId: team.id,
+                    resourceId: resource.id,
+                    resourceRevision: resource.revision,
+                    recipientAccountId: recipient.id,
+                    sourceMember,
+                    sourceVersion,
+                    material: {
+                        kind: "qualified_connected_account",
+                        credential: { v: 1, values: { token } },
+                        configuration: null,
+                        authenticationModeId: "api-key",
+                    },
+                },
+            });
+            return await app.inject({
+                method: "PUT",
+                url: directMaterialPath,
+                headers: { "x-test-user-id": custodian.id },
+                payload: { items: [{
+                    recipientAccountId: recipient.id,
+                    sourceMemberKey,
+                    sourceVersion,
+                    expectedPublishedSourceVersion: expectedStoredSourceVersion,
+                    recipientMode: "plain",
+                    recipientContentPublicKeyFingerprint: null,
+                    stored,
+                    expectedResourceRevision: resource.revision,
+                    expectedStoredSourceVersion,
+                }] },
+            });
+        };
+        const teamWake = () => db.accountChange.findFirst({
+            where: { accountId: recipient.id, kind: "account", entityId: TEAM_CHANGE_ENTITY_ID },
+        });
+
+        expect((await preparation()).recipients).toEqual([expect.objectContaining({
+            recipientAccountId: recipient.id,
+            expectedStoredSourceVersion: null,
+            storedTupleCurrent: false,
+        })]);
+        await db.accountChange.deleteMany({ where: { entityId: TEAM_CHANGE_ENTITY_ID } });
+        const first = await upload("first-token", null);
+        expect(first.statusCode, first.body).toBe(200);
+        expect(first.json().results).toEqual([expect.objectContaining({ status: "stored", sourceVersion })]);
+        await expect(teamWake()).resolves.not.toBeNull();
+        const storedAfterFirst = await db.teamCredentialRecipientMaterial.findFirstOrThrow({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id },
+        });
+        expect((await preparation()).recipients).toEqual([expect.objectContaining({
+            recipientAccountId: recipient.id,
+            expectedStoredSourceVersion: sourceVersion,
+            storedTupleCurrent: true,
+        })]);
+
+        await db.accountChange.deleteMany({ where: { entityId: TEAM_CHANGE_ENTITY_ID } });
+        const repeated = await upload("repeated-token", sourceVersion);
+        expect(repeated.statusCode, repeated.body).toBe(200);
+        expect(repeated.json().results).toEqual([expect.objectContaining({ status: "stored", sourceVersion })]);
+        await expect(teamWake()).resolves.toBeNull();
+        const storedAfterRepeat = await db.teamCredentialRecipientMaterial.findFirstOrThrow({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id },
+        });
+        expect(Buffer.from(storedAfterRepeat.storedMaterial).equals(Buffer.from(storedAfterFirst.storedMaterial))).toBe(true);
     });
 });

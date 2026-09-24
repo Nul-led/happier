@@ -7,9 +7,11 @@ import {
   computeRunnerMachineContentKeyFingerprintV1,
   sealEncryptedDataKeyEnvelopeV1,
   sealRunnerMachineContentKeyVerifierFactV1,
+  signRunnerClaimV1,
   signRunnerMachineContentKeyBindingV1,
   wrapApiTokenEncryptionAccessV1,
 } from '@happier-dev/protocol';
+import { signMachineInstallationProof } from '@happier-dev/protocol/machines/identity/installationIdentity';
 import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
 import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import {
@@ -52,19 +54,72 @@ const runnerMaterial = { type: 'dataKey' as const, machineKey: runnerContentKey 
 
 /**
  * The exact facts a creator publishes for a restricted Runner: an Account-sealed
- * content-key envelope, the strict binding signed by the activation identity, and
- * that identity sealed for every authorized Account reader.
+ * content-key envelope, the strict binding signed by the activation identity,
+ * that identity sealed for every authorized Account reader, and the endpoint's
+ * activation-signed claim the Home persisted when the Runner claimed its Session.
  */
+const RUNNER_SESSION_ID = 'session-runner-1';
+
+function buildRunnerClaim(params: Readonly<{
+  activationId: string;
+  machineId: string;
+  sessionId: string;
+  installationId: string;
+  signing: tweetnacl.SignKeyPair;
+}>) {
+  const installation = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(12));
+  return signRunnerClaimV1({
+    activationSecretKey: params.signing.secretKey,
+    payload: {
+      v: 1,
+      purpose: 'happier.ephemeral-session-runner.claim',
+      binding: {
+        activationId: params.activationId,
+        homeServerIdentityId: pins.serverIdentityId,
+        creatorAccountId: pins.accountId,
+        creatorTokenEpoch: 0,
+        activationExpiresAt: null,
+        workspace: { kind: 'choose_on_endpoint' },
+        sessionId: params.sessionId,
+        machineId: params.machineId,
+        activationSigningPublicKey: encodeBase64(params.signing.publicKey, 'base64url'),
+        authoringCommitment: encodeBase64(new Uint8Array(32).fill(13), 'base64url'),
+        artifact: { product: 'happier-runner', version: '0.3.0', target: 'linux-x64', sha256: 'a'.repeat(64) },
+        endpointFactsRecipient: { mode: 'plain', creatorAccountId: pins.accountId },
+      },
+      runnerBoxPublicKey: encodeBase64(
+        tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(14)).publicKey, 'base64url',
+      ),
+      installation: {
+        installationId: params.installationId,
+        publicKey: encodeBase64(installation.publicKey, 'base64url'),
+        proof: signMachineInstallationProof({
+          payload: {
+            version: 1,
+            installationId: params.installationId,
+            machineId: params.machineId,
+            accountId: pins.accountId,
+          },
+          privateKey: installation.secretKey,
+        }),
+      },
+      protocolEpoch: 1,
+    },
+  });
+}
+
 function buildRunnerBootstrapRow(overrides: Readonly<{
   contentKey?: Uint8Array;
   machineId?: string;
   verifierMachineId?: string;
+  sessionId?: string;
+  activationSeed?: number;
 }> = {}) {
   const contentKey = overrides.contentKey ?? runnerContentKey;
   const machineId = overrides.machineId ?? RUNNER_MACHINE_ID;
   const activationId = '11111111-2222-4333-8444-555555555555';
   const installationId = 'installation-1';
-  const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(5));
+  const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(overrides.activationSeed ?? 5));
   const binding = signRunnerMachineContentKeyBindingV1({
     payload: {
       v: 1,
@@ -84,6 +139,10 @@ function buildRunnerBootstrapRow(overrides: Readonly<{
     revokedAt: null,
     replacedByMachineId: null,
     kind: 'ephemeral_session_runner' as const,
+    runnerClaim: buildRunnerClaim({
+      activationId, machineId, installationId, signing,
+      sessionId: overrides.sessionId ?? RUNNER_SESSION_ID,
+    }),
     installationId,
     dataEncryptionKey: encodeBase64(sealEncryptedDataKeyEnvelopeV1({
       dataKey: contentKey,
@@ -218,6 +277,77 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
           requestId: envelope.requestId, target: envelope.target! },
       })).toBeNull();
       expect(actionCall?.body).not.toContain('private-team-sentinel');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('seals a Session-targeted Action for the Runner that Session was activated for', async () => {
+    const runnerRow = buildRunnerBootstrapRow();
+    const server = await serve({ machines: [runnerRow], requestMaterial: runnerMaterial });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.sessions.get(RUNNER_SESSION_ID).send('input-sentinel'))
+        .resolves.toMatchObject({ status: 'accepted' });
+      expect(server.failures).toEqual([]);
+      const actionCall = server.captured.find((call) => call.path.startsWith('/v1/actions/'));
+      const envelope = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(actionCall!.body));
+      expect(envelope.target).toEqual({ kind: 'session', sessionId: RUNNER_SESSION_ID });
+      // The Account key never sealed it: only the Runner's own content key opens it.
+      expect(openExternalActionRequestV2({ envelope, material,
+        binding: { serverIdentityId: pins.serverIdentityId, accountId: pins.accountId,
+          credentialId: pins.tokenId, actionId: 'session.message.send',
+          requestId: envelope.requestId, target: envelope.target! },
+      })).toBeNull();
+      expect(actionCall?.body).not.toContain('input-sentinel');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('keeps Account sealing for a Session no published Runner was activated for', async () => {
+    const server = await serve({ machines: [buildRunnerBootstrapRow()] });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.sessions.get('session-other').send('input-sentinel'))
+        .resolves.toMatchObject({ status: 'accepted' });
+      expect(server.failures).toEqual([]);
+      const actionCall = server.captured.find((call) => call.path.startsWith('/v1/actions/'));
+      const envelope = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(actionCall!.body));
+      expect(openExternalActionRequestV2({ envelope, material,
+        binding: { serverIdentityId: pins.serverIdentityId, accountId: pins.accountId,
+          credentialId: pins.tokenId, actionId: 'session.message.send',
+          requestId: envelope.requestId, target: envelope.target! },
+      })).not.toBeNull();
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('never seals a Session\'s request to another genuine Runner the Home maps it to', async () => {
+    // Runner B is entirely genuine — key, binding, verifier fact and its own
+    // claim for its own Session. The Home asserts B holds Session A by
+    // rewriting the relayed claim; the activation signature no longer verifies.
+    const runnerB = buildRunnerBootstrapRow({ sessionId: 'session-b' });
+    const relabelled = { ...runnerB, runnerClaim: {
+      ...runnerB.runnerClaim,
+      payload: { ...runnerB.runnerClaim.payload,
+        binding: { ...runnerB.runnerClaim.payload.binding, sessionId: 'session-a' } },
+    } };
+    const server = await serve({ machines: [relabelled], requestMaterial: runnerMaterial });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.sessions.get('session-a').send('input-sentinel'))
+        .rejects.toMatchObject({ name: 'HappierTransportError', code: 'invalid_encrypted_envelope' });
+      expect(server.captured.some((call) => call.path.startsWith('/v1/actions/'))).toBe(false);
+      expect(JSON.stringify(server.captured)).not.toContain('input-sentinel');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('does not treat two Runners claiming one Session as a correspondence', async () => {
+    const server = await serve({ machines: [
+      buildRunnerBootstrapRow(),
+      buildRunnerBootstrapRow({ machineId: 'runner-2', activationSeed: 6 }),
+    ], requestMaterial: runnerMaterial });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.sessions.get(RUNNER_SESSION_ID).send('input-sentinel'))
+        .rejects.toMatchObject({ name: 'HappierTransportError', code: 'invalid_encrypted_envelope' });
+      expect(server.captured.some((call) => call.path.startsWith('/v1/actions/'))).toBe(false);
     } finally { await client.close(); await server.close(); }
   });
 

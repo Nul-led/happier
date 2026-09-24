@@ -783,6 +783,54 @@ describe('SessionFollowSourcesEditor', () => {
         await screen.unmount();
     });
 
+    it('retries the exact failed Stop following instead of reloading the list', async () => {
+        const relation = {
+            sourceSessionId: 'source-a', destinationSessionId: 'destination-a', mode: 'next_turn' as const,
+            deliveryState: 'eligible' as const, hasPendingUpdates: false,
+        };
+        let removed = false;
+        api.list.mockImplementation(async () => ({
+            kind: 'ok',
+            value: { sources: removed ? [] : [relation] },
+        }));
+        api.remove.mockImplementationOnce(async () => ({ kind: 'error', error: 'unavailable' }));
+        followState.rows = {
+            'home-a': {
+                'source-a': createSessionListRenderableSessionFixture({ id: 'source-a', encryptionMode: 'plain' }),
+            },
+        };
+        followState.machinesByServer = {
+            'home-a': [createMachineFixture({ id: 'runner-a', active: true })],
+        };
+
+        const screen = await renderSettingsView(<SessionFollowSourcesEditor
+            destination={createSessionFixture({ id: 'destination-a' })}
+            serverId="home-a"
+            destinationMachineId="runner-a"
+        />);
+        await vi.waitFor(() => expect(screen.findByTestId('session-follow-source-source-a-remove')).not.toBeNull());
+
+        await act(async () => {
+            screen.findByTestId('session-follow-source-source-a-remove')?.props.onPress?.();
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(screen.findByTestId('session-follow-sources-error')).not.toBeNull());
+
+        // A definite rejection of Stop following is not retried by listing again.
+        api.remove.mockImplementationOnce(async () => {
+            removed = true;
+            return { kind: 'ok', value: { changed: true } };
+        });
+        await act(async () => {
+            screen.findByTestId('session-follow-sources-error')?.props.onPress?.();
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(api.remove).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(findSourceRow(screen, 'source-a')).toBeNull());
+        expect(screen.findByTestId('session-follow-sources-error')).toBeNull();
+        await screen.unmount();
+    });
+
     it('keeps loaded source choices visible but disables mutations while offline', async () => {
         connectivity.online = false;
         api.list.mockResolvedValueOnce({ kind: 'ok', value: { sources: [{

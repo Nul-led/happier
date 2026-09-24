@@ -262,6 +262,41 @@ describe('createNativeCryptoWorkerBatchQueue', () => {
         expect(dispatches).toEqual([[1]]);
     });
 
+    it('rejects a pending entry aborted while dispatch is suspended, without waiting for resume', async () => {
+        const lifecycle = getQueueLifecycleExports();
+        lifecycle.resetNativeCryptoWorkerQueueLifecycleForTests();
+        lifecycle.markNativeCryptoWorkerQueueQuiescent();
+
+        const dispatches: number[][] = [];
+        const queue = createNativeCryptoWorkerBatchQueue<number, string>({
+            maxBatchSize: 2,
+            dispatch: async (items) => {
+                dispatches.push([...items]);
+                return items.map((item) => `r${item}`);
+            },
+        });
+
+        const controller = new AbortController();
+        const cancelled = queue.enqueue(1, { signal: controller.signal });
+        const kept = queue.enqueue(2);
+        await Promise.resolve();
+        expect(dispatches).toEqual([]);
+
+        controller.abort();
+        // The abort is honoured where it is observable, not only when the queue
+        // eventually drains: a suspended queue can stay suspended indefinitely.
+        await expect(cancelled).rejects.toMatchObject({
+            code: 'native_crypto_worker_queue_cancelled',
+        });
+        expect(queue.getQueueDepth()).toBe(1);
+
+        await lifecycle.markNativeCryptoWorkerQueueActive();
+        await expect(kept).resolves.toBe('r2');
+        expect(dispatches).toEqual([[2]]);
+
+        lifecycle.resetNativeCryptoWorkerQueueLifecycleForTests();
+    });
+
     it('rejects every item in a failed batch without blocking later batches', async () => {
         let dispatchCount = 0;
         const queue = createNativeCryptoWorkerBatchQueue<number, string>({
@@ -283,18 +318,12 @@ describe('createNativeCryptoWorkerBatchQueue', () => {
         await expect(second).resolves.toEqual(['r3', 'r4']);
     });
 
-    it('rejects enqueues beyond one in-flight batch plus one pending batch with telemetry', async () => {
-        const telemetry = createSyncPerformanceTelemetry({
-            enabled: true,
-            slowThresholdMs: 1_000_000,
-        });
+    it('keeps concurrent overflow work on the native queue instead of rejecting it to the JS fallback', async () => {
         const firstDispatch = createDeferred<readonly string[]>();
         let dispatchCount = 0;
         const queue = createNativeCryptoWorkerBatchQueue<number, string>({
             maxBatchSize: 2,
             operation: 'decryptSecretboxJson',
-            telemetry,
-            telemetryEnabled: true,
             dispatch: async (items) => {
                 dispatchCount += 1;
                 if (dispatchCount === 1) {
@@ -308,27 +337,42 @@ describe('createNativeCryptoWorkerBatchQueue', () => {
         await Promise.resolve();
         expect(queue.getQueueDepth()).toBe(2);
 
-        const overflow = queue.enqueue(5);
-        const overflowSettlement = await getPromiseSettlement(overflow);
+        const concurrentOverflow = queue.enqueue(5);
+        expect(await getPromiseSettlement(concurrentOverflow)).toBeNull();
 
         firstDispatch.resolve(['r1', 'r2']);
-        await expect(Promise.all(accepted)).resolves.toEqual(['r1', 'r2', 'r3', 'r4']);
+        await expect(Promise.all([...accepted, concurrentOverflow])).resolves.toEqual(['r1', 'r2', 'r3', 'r4', 'r5']);
+        expect(dispatchCount).toBe(3);
+        expect(queue.getQueueDepth()).toBe(0);
+    });
 
-        expect(overflowSettlement).toMatchObject({
-            status: 'rejected',
-            reason: {
-                code: 'native_crypto_worker_queue_backpressure',
-            },
-        });
-        expect(queue.getQueueDepth()).toBeLessThanOrEqual(2);
-        expect(telemetry.snapshot().events).toContainEqual(expect.objectContaining({
-            name: 'sync.crypto.worker.queueBackpressure',
-            fields: expect.objectContaining({
-                operation: 2,
-                queueDepth: 2,
-                capacity: 2,
-            }),
-        }));
+    it('serializes concurrent queued batch callers through the same native worker scope', async () => {
+        const owner = {};
+        const firstDispatch = createDeferred<readonly string[]>();
+        const dispatches: number[][] = [];
+        const dispatch = async (items: readonly number[]) => {
+            dispatches.push([...items]);
+            if (dispatches.length === 1) return await firstDispatch.promise;
+            return items.map((item) => `r${item}`);
+        };
+        const common = {
+            owner,
+            operation: 'decryptSecretboxJson' as const,
+            scope: { accountId: 'account', serverId: 'server', generation: 1 },
+            maxBatchSize: 2,
+            dispatch,
+        };
+
+        const first = runNativeCryptoWorkerQueuedBatch({ ...common, items: [1, 2, 3, 4, 5] });
+        const second = runNativeCryptoWorkerQueuedBatch({ ...common, items: [10] });
+        await Promise.resolve();
+        expect(dispatches).toEqual([[1, 2]]);
+        expect(await getPromiseSettlement(second)).toBeNull();
+
+        firstDispatch.resolve(['r1', 'r2']);
+        await expect(first).resolves.toEqual(['r1', 'r2', 'r3', 'r4', 'r5']);
+        await expect(second).resolves.toEqual(['r10']);
+        expect(dispatches).toEqual([[1, 2], [3, 4], [10], [5]]);
     });
 
     it('records queue depth and wait telemetry only when worker telemetry is enabled', async () => {

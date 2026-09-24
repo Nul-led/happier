@@ -84,7 +84,7 @@ export type SessionByIdEncryption = {
     options?: import('@/sync/encryption/encryption').EncryptionScopeInput,
   ) => Promise<EncryptionGenerationScope | null | void>;
   getSessionEncryption: (sessionId: string) => SessionEncryption | null;
-  removeSessionEncryption?: (sessionId: string) => void;
+  removeSessionEncryption?: (sessionId: string) => EncryptionGenerationScope | null | void;
 } & Partial<EncryptionGenerationScopeAuthority>;
 
 type SessionDataKeyEnvelopeCache = Map<string, string>;
@@ -535,7 +535,12 @@ export async function fetchAndApplySessionById(params: Readonly<{
   if (hydration.sessionEncryptionClears.includes(sessionId)) {
     params.sessionDataKeys.delete(sessionId);
     params.sessionDataKeyEnvelopes?.delete(sessionId);
-    params.encryption.removeSessionEncryption?.(sessionId);
+    // Clearing a reader this request just found unopenable advances the owning
+    // generation exactly like installing one does, so the post-commit scope is
+    // adopted here too. Without it the request rejects its own truthful
+    // ready→locked result and the route keeps spinning on a retryable error.
+    const clearedScope = params.encryption.removeSessionEncryption?.(sessionId);
+    if (clearedScope) capturedEncryptionGeneration = clearedScope;
   } else {
     const hydratedKey = requestSessionDataKeys.get(sessionId);
     if (hydratedKey) params.sessionDataKeys.set(sessionId, hydratedKey);

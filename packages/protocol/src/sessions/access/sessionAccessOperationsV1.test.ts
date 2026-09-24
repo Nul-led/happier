@@ -48,6 +48,7 @@ describe('Session access operation contracts', () => {
     'session_access_authentication_unavailable',
     'session_access_external_sharing_requires_team_admin',
     'session_access_external_sharing_disabled',
+    'session_access_sharing_unavailable',
     'session_access_invalid_recipient_envelope',
     'session_responsibility_assignee_unavailable',
     'invalid_cursor',
@@ -91,9 +92,19 @@ describe('projectSessionAccessGrantTransitionsV1', () => {
   it('keeps the required-floor and eligibility rules the write path enforces', () => {
     expect(access.projectSessionAccessGrantTransitionsV1({ current: edit, canDelegate: true, requiredByTeamPolicy: true }))
       .toMatchObject({ accessLevels: ['edit', 'admin'], canRemove: false, reason: 'session_access_team_policy_required' });
+    // An ineligible subject offers no change, but the writer still admits the
+    // withdrawal of a retained grant, so removal stays available and only a
+    // removal-mode refusal takes it away.
     expect(access.projectSessionAccessGrantTransitionsV1({
       current: edit, canDelegate: true, requiredByTeamPolicy: false, ineligible: 'session_access_subject_ineligible',
-    })).toEqual({ accessLevels: [], canChangePermissionDelegation: false, canRemove: false, reason: 'session_access_subject_ineligible' });
+    })).toEqual({ accessLevels: [], canChangePermissionDelegation: false, canRemove: true, reason: 'session_access_subject_ineligible' });
+    expect(access.projectSessionAccessGrantTransitionsV1({
+      current: edit,
+      canDelegate: true,
+      requiredByTeamPolicy: false,
+      ineligible: 'session_access_owner_grant_invalid',
+      removalIneligible: 'session_access_owner_grant_invalid',
+    })).toEqual({ accessLevels: [], canChangePermissionDelegation: false, canRemove: false, reason: 'session_access_owner_grant_invalid' });
     // An actor without delegation authority cannot offer the transition that would
     // create it: the delegation flag. A level change alone creates no delegation.
     expect(access.projectSessionAccessGrantTransitionsV1({ current: edit, canDelegate: false, requiredByTeamPolicy: false }))

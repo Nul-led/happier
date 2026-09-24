@@ -8,13 +8,24 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
-import { Switch } from '@/components/ui/forms/Switch';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { AgentDetailHeader, AgentMachineContextBar } from '@/components/settings/agents/detail/AgentDetailHeader';
+import { AgentAttentionBanner, AgentMachineOfflineBanner } from '@/components/settings/agents/detail/AgentAttentionBanner';
+import {
+    useAgentsAdministrationTargetSelection,
+    useAgentsMachineScope,
+} from '@/components/settings/agents/collection/useAgentAdministrationCatalog';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { BadgeGrid, type BadgeGridItem } from '@/components/ui/layout/BadgeGrid';
 import { useSettings } from '@/sync/domains/state/storage';
 import { useApplySettings } from '@/sync/store/settingsWriters';
+import { useActiveServerAccountScope } from '@/sync/store/hooks';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
 import {
     resolveBundledAgentIdFromContributionIdentity,
 } from '@/agents/catalog/catalog';
@@ -40,21 +51,23 @@ import { useCapabilityInstallability } from '@/hooks/machine/useCapabilityInstal
 import { buildProviderCliCapabilityId } from '@/capabilities/cliCapabilityId';
 import { AgentCliInstallItem } from '@/components/settings/agents/AgentCliInstallItem';
 import { resolveAgentChannelLabelKey } from '@/components/settings/agents/agentChannelLabel';
-import { getPermissionModeLabelForAgentType, getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
+import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
-import { AgentAuthenticationCard } from '@/components/settings/agents/authentication/AgentAuthenticationCard';
-import { AgentCatalogIdentityIcon } from '@/agents/presentation/AgentCatalogIdentityIcon';
+import { AgentAuthenticationSummaryRow } from '@/components/settings/agents/authentication/AgentAuthenticationStatusRows';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { openExternalUrl } from '@/utils/url/openExternalUrl';
 import { AgentAuthenticationTerminalPane } from '@/components/settings/agents/authentication/AgentAuthenticationTerminalPane';
 import { scheduleAgentAuthenticationRefreshes } from '@/components/settings/agents/authentication/scheduleAgentAuthenticationRefreshes';
 import { useAgentAuthenticationState } from '@/components/settings/agents/authentication/useAgentAuthenticationState';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { isLegacyCompatAgentType } from '@/agents/backendCatalog/legacyCompatAgents';
 import {
     PluginContributionIdentityV1Schema,
-    QualifiedConnectedAccountPurposeBindingsV1Schema,
     qualifiedPurposeKey,
+    resolveAgentConnectedAccountPurposeDefaults,
+    writeAgentConnectedAccountPurposeDefault,
+    type AgentConnectedAccountPurposeTeamResourceDefault,
     type PluginProjectedAgentConnectedAccountPurposeV2,
     type QualifiedConnectedAccountPurposeBindingTargetV1,
 } from '@happier-dev/protocol';
@@ -77,10 +90,8 @@ import {
     resolveAgentDetailQualifiedIdentity,
 } from '@/components/settings/agents/resolveAgentDetailSettingsProjection';
 import { Icon } from '@/components/ui/icons/Icon';
-import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
 import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
 import {
-    useMachineAdministrationTargetSelection,
     type FreshMachineAdministrationExecutionTargetV1,
     type MachineAdministrationTargetSelectionV1,
 } from '@/sync/domains/machines/administration/useTargetSelection';
@@ -142,16 +153,102 @@ function resolveLegacyCompatAgentRouteRedirect(params: Readonly<{
 
 const AGENT_AUTH_TERMINAL_TAB_ID = 'agent-auth-terminal';
 
+/**
+ * The one line under an agent's name: what it is when that adds anything, its CLI and version,
+ * a non-stable release channel, and the machine this page manages.
+ */
+function describeAgentDetail(params: Readonly<{
+    agentId: string;
+    subtitle: string | null;
+    binaryName: string | null;
+    version: string | null;
+    cliAvailable: boolean | null;
+    channelLabel: string | null;
+    machineLabel: string | null;
+}>): string {
+    const subtitle = params.subtitle && params.subtitle !== params.agentId && params.subtitle !== params.binaryName
+        ? params.subtitle
+        : null;
+    const cli = params.binaryName && params.cliAvailable !== false
+        ? params.version
+            ? t('settingsAgents.detailPage.cliVersion', { cli: params.binaryName, version: params.version })
+            : t('settingsAgents.detailPage.cliName', { cli: params.binaryName })
+        : null;
+    const machine = params.machineLabel
+        ? params.cliAvailable === false
+            ? t('settingsAgents.detailPage.notInstalledOnMachine', { machine: params.machineLabel })
+            : t('settingsAgents.detailPage.onMachine', { machine: params.machineLabel })
+        : null;
+    return [subtitle, cli, params.channelLabel, machine].filter(Boolean).join(' · ');
+}
+
+/**
+ * Where the managed machine stands for this page. Only readiness, CLI, install and sign-in depend
+ * on it; the agent's settings are Account settings and never wait for it.
+ */
+type AgentMachineState = 'none' | 'offline' | 'checking' | 'error' | 'ready';
+
+function AgentMachineReadinessStateRow(props: Readonly<{
+    state: Exclude<AgentMachineState, 'offline' | 'ready'>;
+    agentTitle: string;
+    machineLabel: string | null;
+    onRetry: () => void;
+}>) {
+    if (props.state === 'none') {
+        return (
+            <Item
+                testID="settings.agents.detail.noMachine"
+                title={t('settingsAgents.detailPage.noMachineTitle')}
+                subtitle={t('settingsAgents.detailPage.noMachineDescription', { agent: props.agentTitle })}
+                subtitleLines={0}
+                mode="info"
+            />
+        );
+    }
+    if (props.state === 'checking') {
+        return (
+            <Item
+                testID="settings.agents.detail.machineChecking"
+                title={props.machineLabel
+                    ? t('settingsAgents.detailPage.checkingMachine', { machine: props.machineLabel })
+                    : t('common.loading')}
+                loading
+                mode="info"
+            />
+        );
+    }
+    return (
+        <Item
+            testID="settings.agents.detail.machineError"
+            title={t('common.unavailable')}
+            subtitle={t('settingsAgents.detailPage.machineUnavailableDescription')}
+            subtitleLines={0}
+            mode="info"
+            showChevron={false}
+            rightElement={(
+                <RoundButton size="small" display="secondary" title={t('common.retry')} onPress={props.onRetry} />
+            )}
+        />
+    );
+}
+
+/** Loading, error and not-found agent pages keep the machine chip: it is how they recover. */
+function AgentSettingsStatusHeader(props: Readonly<{ targetSelection: MachineAdministrationTargetSelectionV1 }>) {
+    return (
+        <>
+            <AgentMachineContextBar targetSelection={props.targetSelection} />
+            <SettingsPageHeader />
+        </>
+    );
+}
+
 const AgentSettingsNotFound = React.memo(function AgentSettingsNotFound(props: Readonly<{
     theme: ReturnType<typeof useUnistyles>['theme'];
     targetSelection: MachineAdministrationTargetSelectionV1;
 }>) {
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={props.targetSelection}
-                testIDPrefix="settings.agents.administration.target"
-            />
+        <ItemList presentation="page">
+            <AgentSettingsStatusHeader targetSelection={props.targetSelection} />
             <ItemGroup>
                 <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 16 }}>
                     <Icon name="warning" size={48} color={props.theme.colors.state.danger.foreground} style={{ marginBottom: 16 }} />
@@ -175,11 +272,8 @@ const AgentSettingsProjectionStatus = React.memo(function AgentSettingsProjectio
     const loading = props.phase === 'loading';
     const retryable = props.phase === 'error' && props.onRetry !== undefined;
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={props.targetSelection}
-                testIDPrefix="settings.agents.administration.target"
-            />
+        <ItemList presentation="page">
+            <AgentSettingsStatusHeader targetSelection={props.targetSelection} />
             <ItemGroup>
                 <Item
                     testID="settings.agents.projection.status"
@@ -250,36 +344,62 @@ const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentCon
     const settings = useSettings();
     const applySettings = useApplySettings();
     const identity = props.projection.identity;
-    const declarations = props.projection.connectedAccounts ?? [];
-    const targets = React.useMemo(() => new Map(
-        settings.connectedAccountPurposeBindingsV1.bindings.map((binding) => [
-            qualifiedPurposeKey(binding.purpose),
-            binding.target,
-        ] as const),
-    ), [settings.connectedAccountPurposeBindingsV1]);
+    const declarations = React.useMemo(
+        () => props.projection.connectedAccounts ?? [],
+        [props.projection.connectedAccounts],
+    );
+    // Agent purposes are materialized inside a Session, where the Home admits a
+    // Team binding, so this surface offers the viewer's entitled Team resources.
+    const activeAccountScope = useActiveServerAccountScope();
+    const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
+        scopeKind: 'spawn',
+        serverId: activeAccountScope?.serverId,
+    });
+    const teamCredentialCatalog = useHomeTeamCredentialModelCatalog({
+        serverId: activeAccountScope?.serverId,
+        enabled: teamCredentialResourcesEnabled && declarations.length > 0,
+    });
+    // The one Agent default-authentication owner reads and writes these
+    // purpose defaults; a released service-keyed default is shown until the
+    // first write folds it into the purpose-binding store.
+    const defaultAuthSettings = React.useMemo(() => ({
+        connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
+        connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1,
+    }), [settings.connectedAccountPurposeBindingsV1, settings.connectedServicesDefaultAuthByAgentIdV1]);
+    const defaultsByPurposeKey = React.useMemo(() => new Map(
+        identity
+            ? resolveAgentConnectedAccountPurposeDefaults({
+                settings: defaultAuthSettings,
+                agentId: props.projection.agentId,
+                consumer: identity,
+                declarations,
+            }).map((entry) => [qualifiedPurposeKey(entry.purpose), entry] as const)
+            : [],
+    ), [declarations, defaultAuthSettings, identity, props.projection.agentId]);
+    // A Team resource choice is written as the canonical Team selection of its
+    // Team (lane 10 child 02 :271, child 06 :506), never as a purpose target.
     const setTarget = React.useCallback((
         declaration: PluginProjectedAgentConnectedAccountPurposeV2,
         target: QualifiedConnectedAccountPurposeBindingTargetV1 | null,
+        teamResource: AgentConnectedAccountPurposeTeamResourceDefault | null,
     ) => {
         if (!identity || !props.accountSettingsAvailable) return;
-        const purpose = { consumer: identity, purpose: declaration.purpose };
-        const key = qualifiedPurposeKey(purpose);
-        const retained = settings.connectedAccountPurposeBindingsV1.bindings.filter(
-            (binding) => qualifiedPurposeKey(binding.purpose) !== key,
-        );
-        applySettings({
-            connectedAccountPurposeBindingsV1: QualifiedConnectedAccountPurposeBindingsV1Schema.parse({
-                v: 1,
-                bindings: target ? [...retained, { purpose, target }] : retained,
-            }),
-        });
-    }, [applySettings, identity, props.accountSettingsAvailable, settings.connectedAccountPurposeBindingsV1]);
+        applySettings(writeAgentConnectedAccountPurposeDefault({
+            settings: defaultAuthSettings,
+            agentId: props.projection.agentId,
+            consumer: identity,
+            declarations,
+            purpose: declaration.purpose,
+            target,
+            teamResource,
+        }));
+    }, [applySettings, declarations, defaultAuthSettings, identity, props.accountSettingsAvailable, props.projection.agentId]);
 
     if (!identity || declarations.length === 0) return null;
     return (
         <ItemGroup
             title={t('connectedServices.defaultAuth.agentDetailTitle')}
-            footer={t('connectedServices.defaultAuth.agentDetailFooter')}
+            description={t('connectedServices.defaultAuth.agentDetailFooter')}
         >
             {declarations.map((declaration) => {
                 const purpose = { consumer: identity, purpose: declaration.purpose };
@@ -290,15 +410,115 @@ const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentCon
                         testID={`agent-connected-account-purpose:${declaration.purpose}`}
                         localizedTextPluginId={identity.pluginId}
                         declaration={declaration}
-                        value={targets.get(purposeKey) ?? null}
+                        value={defaultsByPurposeKey.get(purposeKey)?.target ?? null}
+                        teamResourceValue={defaultsByPurposeKey.get(purposeKey)?.teamResource ?? null}
+                        teamCredentialCatalog={teamCredentialCatalog}
                         disabled={!props.accountSettingsAvailable}
                         disabledReason={!props.accountSettingsAvailable
                             ? t('connectedServices.accountScopeMismatchDescription')
                             : undefined}
-                        onChange={(target) => setTarget(declaration, target)}
+                        onChange={(target, teamResource) => setTarget(declaration, target, teamResource)}
                     />
                 );
             })}
+        </ItemGroup>
+    );
+});
+
+/**
+ * Session defaults are Account settings keyed by the agent's backend target: they load and save
+ * with no machine, and apply on every machine a new session starts on.
+ */
+const AgentSessionDefaultsSection = React.memo(function AgentSessionDefaultsSection(props: Readonly<{
+    projection: ResolvedAgentCatalogEntry;
+    compatibilityTargetKeys: readonly string[];
+    accountSettingsAvailable: boolean;
+    /** The popover boundary the dropdown form of the permission choice measures against. */
+    popoverBoundaryRef?: React.ComponentProps<typeof DropdownMenu>['popoverBoundaryRef'];
+    onOpenModels: (() => void) | null;
+}>) {
+    const settings = useSettings();
+    const applySettings = useApplySettings();
+    const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
+    const { projection, compatibilityTargetKeys, accountSettingsAvailable } = props;
+    const providerTargetKey = projection.backendTargetKey;
+    const defaultPermissionByTargetKey = settings.sessionDefaultPermissionModeByTargetKey;
+    const permissionModeOptions = getPermissionModeOptionsForAgentType(projection.agentId);
+    const permissionMode = providerTargetKey
+        ? (
+            readBackendTargetSettingValue({
+                valuesByTargetKey: defaultPermissionByTargetKey,
+                canonicalTargetKey: providerTargetKey,
+                compatibilityTargetKeys,
+            }) ?? 'default'
+        )
+        : 'default';
+    const setPermissionMode = (next: PermissionMode) => {
+        if (!providerTargetKey || !accountSettingsAvailable) return;
+        applySettings({
+            sessionDefaultPermissionModeByTargetKey: {
+                ...(defaultPermissionByTargetKey ?? {}),
+                [providerTargetKey]: next,
+            },
+        });
+    };
+    const showPermissionMode = Boolean(providerTargetKey) && permissionModeOptions.length > 0;
+    if (!showPermissionMode && !props.onOpenModels) return null;
+    return (
+        <ItemGroup
+            title={t('settingsAgents.detailPage.sessionDefaultsTitle')}
+            description={t('settingsAgents.detailPage.sessionDefaultsAccountDescription', { agent: projection.title })}
+        >
+            {showPermissionMode ? (
+                permissionModeOptions.length <= 4 ? (
+                    <SegmentedChoiceItem<PermissionMode>
+                        testID="settings.agents.detail.permissionMode"
+                        testIDPrefix="settings.agents.detail.permissionMode"
+                        title={t('settingsSession.permissions.defaultPermissionModeTitle')}
+                        subtitle={t('settingsSession.permissions.backendFooter')}
+                        options={permissionModeOptions.map((option) => ({ id: option.value, label: option.label }))}
+                        value={permissionMode}
+                        disabled={!accountSettingsAvailable}
+                        onChange={setPermissionMode}
+                    />
+                ) : (
+                    <DropdownMenu
+                        open={permissionMenuOpen}
+                        onOpenChange={setPermissionMenuOpen}
+                        variant="selectable"
+                        search={false}
+                        selectedId={permissionMode}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={props.popoverBoundaryRef}
+                        popoverPortalWebTarget="body"
+                        itemTrigger={{
+                            title: t('settingsSession.permissions.defaultPermissionModeTitle'),
+                            subtitle: t('settingsSession.permissions.backendFooter'),
+                            itemProps: { disabled: !accountSettingsAvailable, testID: 'settings.agents.detail.permissionMode' },
+                        }}
+                        items={permissionModeOptions.map((option) => ({
+                            id: option.value,
+                            title: option.label,
+                            subtitle: option.description,
+                        }))}
+                        onSelect={(id) => {
+                            const nextMode = permissionModeOptions.find((option) => option.value === id)?.value;
+                            if (nextMode) setPermissionMode(nextMode);
+                            setPermissionMenuOpen(false);
+                        }}
+                    />
+                )
+            ) : null}
+            {props.onOpenModels ? (
+                <Item
+                    testID="settings.agents.detail.models"
+                    title={t('settingsProviders.models.manage')}
+                    onPress={props.onOpenModels}
+                />
+            ) : null}
         </ItemGroup>
     );
 });
@@ -314,8 +534,12 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
     externalSessionsAgent: ExternalSessionsQualifiedAgent | null;
     externalSessionsBrowseAvailable: boolean;
     externalSessionsRefreshKey: string | null;
+    machineState: AgentMachineState;
+    compatibilityTargetKeys: readonly string[];
+    machineLabel: string | null;
+    machineOffline: boolean;
+    onRetryMachine: () => void;
 }>) {
-    const { theme } = useUnistyles();
     const settings = useSettings();
     const applySettings = useApplySettings();
     const providerTargetKey = props.projection.backendTargetKey;
@@ -330,20 +554,75 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
             },
         });
     }, [applySettings, backendEnabledByTargetKey, props.accountSettingsAvailable, providerTargetKey]);
-    const title = props.projection.title;
-    const subtitle = props.projection.subtitle ?? props.projection.agentId;
+    const machine = props.executionTarget?.machine ?? null;
+    const machineLabel = props.machineLabel;
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={props.targetSelection}
-                testIDPrefix="settings.agents.administration.target"
+        <ItemList presentation="page">
+            <AgentMachineContextBar targetSelection={props.targetSelection} />
+            <AgentDetailHeader
+                projection={props.projection}
+                description={describeAgentDetail({
+                    agentId: props.projection.agentId,
+                    subtitle: props.projection.subtitle,
+                    binaryName: null,
+                    version: null,
+                    cliAvailable: null,
+                    channelLabel: props.projection.channel === 'stable'
+                        ? null
+                        : t(resolveAgentChannelLabelKey(props.projection.channel)),
+                    machineLabel,
+                })}
+                machineId={machine?.id ?? null}
+                serverId={props.executionTarget?.serverId ?? null}
+                identityCurrent={props.daemonOperationsAvailable}
+                enabled={providerTargetKey ? {
+                    value: backendEnabled,
+                    disabled: !props.accountSettingsAvailable,
+                    onChange: setBackendEnabled,
+                } : null}
             />
-            <AgentContributedSettingsSection
-                pluginSettingsProjection={props.pluginSettingsProjection}
-                targetSelection={props.targetSelection}
-                executionTarget={props.executionTarget}
-                daemonOperationsAvailable={props.daemonOperationsAvailable}
+            {props.machineOffline ? <AgentMachineOfflineBanner onRetry={props.onRetryMachine} /> : null}
+            {!props.accountSettingsAvailable && props.targetSelection.selectedTarget !== null ? (
+                <AgentAttentionBanner
+                    testID="settings.agents.detail.accountScope"
+                    title={t('connectedServices.accountScopeMismatchTitle')}
+                    description={t('connectedServices.accountScopeMismatchDescription')}
+                />
+            ) : null}
+            {props.machineState === 'offline' ? null : (
+                <ItemGroup
+                    title={t('settingsAgents.detailPage.readinessTitle')}
+                    description={t('settingsAgents.detailPage.readinessDescription')}
+                >
+                    {props.machineState === 'ready' ? (
+                        // The machine answered and the agent has no CLI or sign-in to manage there.
+                        <Item
+                            testID="settings.agents.detail.nothingToSetUp"
+                            title={t('settingsAgents.detailPage.nothingToSetUpTitle')}
+                            subtitle={t('settingsAgents.detailPage.nothingToSetUpDescription', { agent: props.projection.title })}
+                            subtitleLines={0}
+                            mode="info"
+                        />
+                    ) : (
+                        <AgentMachineReadinessStateRow
+                            state={props.machineState}
+                            agentTitle={props.projection.title}
+                            machineLabel={props.machineLabel}
+                            onRetry={props.onRetryMachine}
+                        />
+                    )}
+                </ItemGroup>
+            )}
+            <AgentSessionDefaultsSection
+                projection={props.projection}
+                compatibilityTargetKeys={props.compatibilityTargetKeys}
+                accountSettingsAvailable={props.accountSettingsAvailable}
+                onOpenModels={null}
+            />
+            <AgentConnectedAccountPurposeSettingsSection
+                projection={props.projection}
+                accountSettingsAvailable={props.accountSettingsAvailable}
             />
             {/*
               * External Sessions reachability belongs to the Agent, not to
@@ -365,56 +644,12 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
                 administrationTarget={props.targetSelection.selectedTarget}
                 accountSettingsAvailable={props.accountSettingsAvailable}
             />
-            <AgentConnectedAccountPurposeSettingsSection
-                projection={props.projection}
-                accountSettingsAvailable={props.accountSettingsAvailable}
+            <AgentContributedSettingsSection
+                pluginSettingsProjection={props.pluginSettingsProjection}
+                targetSelection={props.targetSelection}
+                executionTarget={props.executionTarget}
+                daemonOperationsAvailable={props.daemonOperationsAvailable}
             />
-            <ItemGroup title={title} footer={t('settingsAgents.footer')}>
-                <Item
-                    title={title}
-                    subtitle={subtitle}
-                    icon={(
-                        <AgentCatalogIdentityIcon
-                            entry={props.projection}
-                            machineId={props.executionTarget?.machine.id ?? null}
-                            serverId={props.executionTarget?.serverId ?? null}
-                            current={props.daemonOperationsAvailable}
-                            color={theme.colors.text.secondary}
-                        />
-                    )}
-                    mode="info"
-                />
-                {providerTargetKey ? (
-                    <Item
-                        title={t('settingsAgents.enabledTitle')}
-                        subtitle={props.accountSettingsAvailable
-                            ? t('settingsAgents.enabledSubtitle')
-                            : t('connectedServices.accountScopeMismatchDescription')}
-                        icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
-                        disabled={!props.accountSettingsAvailable}
-                        rightElement={backendEnabled === null ? undefined : (
-                            <Switch
-                                value={backendEnabled}
-                                disabled={!props.accountSettingsAvailable}
-                                onValueChange={setBackendEnabled}
-                            />
-                        )}
-                        showChevron={false}
-                        onPress={props.accountSettingsAvailable ? () => {
-                            if (backendEnabled === null) return;
-                            setBackendEnabled(!backendEnabled);
-                        } : undefined}
-                    />
-                ) : null}
-            </ItemGroup>
-            <ItemGroup title={t('settingsAgents.configuration')} footer={t('settingsAgents.notFoundSubtitle')}>
-                <Item
-                    title={props.projection.isBuiltIn ? t('settingsAgents.notAvailable') : props.projection.title}
-                    subtitle={props.projection.isBuiltIn ? t('settingsAgents.notFoundSubtitle') : subtitle}
-                    icon={<Icon name="info" size={29} color={theme.colors.text.secondary} />}
-                    mode="info"
-                />
-            </ItemGroup>
         </ItemList>
     );
 });
@@ -436,6 +671,10 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     externalSessionsBrowseAvailable: boolean;
     externalSessionsRefreshKey: string | null;
     installIntent?: 'install' | 'update';
+    machineState: AgentMachineState;
+    machineLabel: string | null;
+    machineOffline: boolean;
+    onRetryMachine: () => void;
 }>) {
     const { theme } = useUnistyles();
     const router = useRouter();
@@ -457,6 +696,9 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
         externalSessionsBrowseAvailable,
         externalSessionsRefreshKey,
         installIntent,
+        machineState,
+        machineOffline,
+        onRetryMachine,
     } = props;
     const settings = useSettings();
     const paneScopeId = React.useMemo(
@@ -467,7 +709,6 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     const applySettings = useApplySettings();
 
     const popoverBoundaryRef = React.useRef<any>(null);
-    const [openMenu, setOpenMenu] = React.useState<null | string>(null);
 
     const agentCli = projection.cli;
     const providerTargetKey = projection.backendTargetKey;
@@ -478,27 +719,6 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
         applySettings({
             backendEnabledByTargetKey: {
                 ...(backendEnabledByTargetKey ?? {}),
-                [providerTargetKey]: next,
-            },
-        });
-    };
-
-    const defaultPermissionByTargetKey = settings.sessionDefaultPermissionModeByTargetKey;
-    const permissionModeOptions = getPermissionModeOptionsForAgentType(projection.agentId);
-    const permissionMode = providerTargetKey
-        ? (
-            readBackendTargetSettingValue({
-                valuesByTargetKey: defaultPermissionByTargetKey,
-                canonicalTargetKey: providerTargetKey,
-                compatibilityTargetKeys,
-            }) ?? 'default'
-        )
-        : 'default';
-    const setPermissionMode = (next: PermissionMode) => {
-        if (!providerTargetKey || !accountSettingsAvailable) return;
-        applySettings({
-            sessionDefaultPermissionModeByTargetKey: {
-                ...(defaultPermissionByTargetKey ?? {}),
                 [providerTargetKey]: next,
             },
         });
@@ -527,9 +747,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
 
     const supportsResume = supportsCurrentProjectedAgentSessionOpen(currentAgentCapabilities, 'resume');
     const supportsTerminal = supportsCurrentProjectedAgentSurface(currentAgentCapabilities, 'terminal');
-    const installInfo = agentCli?.install.guideUrl
-        ?? agentCli?.install.docsUrl
-        ?? (agentCli ? t('settingsAgents.installInfoUseAgentCliInstaller') : t('settingsAgents.notAvailable'));
+    const setupGuideUrl = agentCli?.install.guideUrl ?? agentCli?.install.docsUrl ?? null;
 
     const primaryMachine = executionTarget?.machine ?? null;
     const capabilityServerId = executionTarget?.serverId ?? null;
@@ -571,7 +789,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
         capabilityId: providerCliCapabilityId,
         timeoutMs: 5000,
     });
-    const primaryMachineLabel = primaryMachine?.metadata?.displayName ?? primaryMachine?.metadata?.host ?? primaryMachine?.id ?? null;
+    const primaryMachineLabel = props.machineLabel;
     const detectedCliStatus = providerCliAvailable === true
         ? t('machine.detectedCliDetected')
         : providerCliAvailable === false
@@ -579,24 +797,15 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
             : cliAvailability.isDetecting
                 ? t('common.loading')
                 : t('machine.detectedCliUnknown');
-    const installSetupSubtitle = cliInstallability.kind === 'checking'
-        ? `${installInfo} • ${t('common.loading')}`
-        : cliInstallability.kind === 'not-installable'
-            ? `${installInfo} • ${t('settingsAgents.notAvailable')}`
-            : installInfo;
-
-    const statusIconName = providerCliAvailable === true
-        ? 'checkmark-circle'
-        : providerCliAvailable === false
-            ? 'close-circle'
-            : cliAvailability.isDetecting
-                ? 'time-outline'
-                : 'alert-circle';
-    const statusIconColor = providerCliAvailable === true
-        ? theme.colors.state.success.foreground
-        : providerCliAvailable === false
-            ? theme.colors.state.danger.foreground
-            : theme.colors.text.secondary;
+    const headerDescription = describeAgentDetail({
+        agentId: projection.agentId,
+        subtitle: projection.subtitle,
+        binaryName: agentCli?.executable.binaryName ?? null,
+        version: cliAgentId ? cliAvailability.version?.[cliAgentId] ?? null : null,
+        cliAvailable: agentCli ? providerCliAvailable : null,
+        channelLabel: projection.channel === 'stable' ? null : t(resolveAgentChannelLabelKey(projection.channel)),
+        machineLabel: primaryMachineLabel,
+    });
 
     const capabilityBadges: BadgeGridItem[] = [
         {
@@ -612,6 +821,11 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
             detail: supportsTerminal ? t('settingsAgents.supported') : t('settingsAgents.notSupported'),
         },
     ];
+    const capabilitySummary = capabilityBadges
+        .filter((badge) => badge.status === 'positive')
+        .map((badge) => badge.label)
+        .join(' · ') || t('settingsAgents.notSupported');
+    const [capabilitiesExpanded, setCapabilitiesExpanded] = React.useState(false);
     const authTerminalOpen =
         pane.scopeState?.bottom?.isOpen === true
         && pane.scopeState?.bottom?.activeTabId === AGENT_AUTH_TERMINAL_TAB_ID;
@@ -641,281 +855,263 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
             cancelPendingAuthRefreshesRef.current = null;
         };
     }, []);
+    const refreshCliDetection = React.useCallback(() => {
+        if (!cliAgentId || !resolveCurrentExecutionTarget()) return;
+        cliAvailability.refresh({ bypassCache: true, includeLoginStatusForAgentIds: [cliAgentId] });
+    }, [cliAgentId, cliAvailability, resolveCurrentExecutionTarget]);
+    const launchLogin = React.useCallback(() => {
+        if (
+            !agentAuthentication.canLaunchLogin
+            || !supportsDesktopControls
+            || !cliAgentId
+            || !resolveCurrentExecutionTarget()
+        ) return;
+        pane.openBottom({ tabId: AGENT_AUTH_TERMINAL_TAB_ID });
+    }, [agentAuthentication.canLaunchLogin, cliAgentId, pane, resolveCurrentExecutionTarget, supportsDesktopControls]);
+
+    // Readiness that blocks starting a session leads the page with its next action.
+    const installFirst = machineState === 'ready' && agentCli !== undefined && agentCli !== null && providerCliAvailable === false;
+    const signInBlocked = !installFirst && authPlugin !== null && agentAuthentication.authStatus?.state === 'logged_out';
+    const showCliSourcePreference = supportsDesktopControls && Boolean(agentCli?.install.managed);
+    const canLaunchLogin = agentAuthentication.canLaunchLogin && supportsDesktopControls;
+    const cliVersion = cliAgentId ? cliAvailability.version?.[cliAgentId] ?? null : null;
+    const cliInstallItem = agentCli && providerCliCapabilityId ? (
+        <AgentCliInstallItem
+            testID="settings-provider-detected-cli"
+            machineId={primaryMachine?.id ?? null}
+            serverId={capabilityServerId}
+            resolveExecutionTarget={resolveCurrentExecutionTarget}
+            capabilityId={providerCliCapabilityId}
+            providerTitle={projection.title}
+            installed={providerCliAvailable}
+            managedInstalled={providerCliManagedInstalled}
+            installability={cliInstallability}
+            intent={installIntent}
+            onManagedUpdateConfirmed={() => setProviderCliSourcePreference('managed-first')}
+            onInstalled={refreshCliDetection}
+            row={installFirst ? {
+                title: t('settingsAgents.detailPage.installTitle', { agent: projection.title }),
+                subtitle: t('settingsAgents.detailPage.installDescription', { agent: projection.title }),
+                action: 'primary',
+            } : {
+                title: t('settingsAgents.detectedCliTitle'),
+                subtitle: [agentCli.executable.binaryName, cliVersion].filter(Boolean).join(' ') + ` • ${detectedCliStatus}`,
+                action: 'secondary',
+            }}
+        />
+    ) : null;
+    const signInGuideUrl = agentAuthentication.docsUrl && agentAuthentication.docsUrl !== setupGuideUrl
+        ? agentAuthentication.docsUrl
+        : null;
+    const menuActions = React.useMemo(() => [
+        ...(setupGuideUrl ? [{
+            id: 'setupGuide',
+            title: t('settingsAgents.setupGuideUrlTitle'),
+            onSelect: () => { void openExternalUrl(setupGuideUrl); },
+        }] : []),
+        ...(signInGuideUrl ? [{
+            id: 'signInGuide',
+            title: t('settingsAgents.detailPage.signInGuide'),
+            onSelect: () => { void openExternalUrl(signInGuideUrl); },
+        }] : []),
+    ], [setupGuideUrl, signInGuideUrl]);
+    const showReadiness = authPlugin !== null || (agentCli !== undefined && agentCli !== null);
 
     const main = (
-        <ItemList style={{ paddingTop: 0 }}>
-                <MachineAdministrationTargetSelector
-                    selection={targetSelection}
-                    testIDPrefix="settings.agents.administration.target"
+        <ItemList presentation="page">
+            <AgentMachineContextBar targetSelection={targetSelection} />
+            <AgentDetailHeader
+                projection={projection}
+                description={headerDescription}
+                machineId={primaryMachine?.id ?? null}
+                serverId={capabilityServerId}
+                identityCurrent={projection.identity
+                    ? daemonOperationsAvailable
+                    : projection.isBuiltIn || daemonOperationsAvailable}
+                enabled={providerTargetKey ? {
+                    value: backendEnabled,
+                    disabled: !accountSettingsAvailable,
+                    onChange: setBackendEnabled,
+                } : null}
+                menuActions={menuActions}
+            />
+            {machineOffline ? (
+                <AgentMachineOfflineBanner onRetry={onRetryMachine} />
+            ) : null}
+            {!accountSettingsAvailable && targetSelection.selectedTarget !== null ? (
+                <AgentAttentionBanner
+                    testID="settings.agents.detail.accountScope"
+                    title={t('connectedServices.accountScopeMismatchTitle')}
+                    description={t('connectedServices.accountScopeMismatchDescription')}
                 />
-                <AgentContributedSettingsSection
-                    pluginSettingsProjection={pluginSettingsProjection}
-                    targetSelection={targetSelection}
-                    executionTarget={executionTarget}
-                    daemonOperationsAvailable={daemonOperationsAvailable}
+            ) : null}
+            {signInBlocked && !machineOffline ? (
+                <AgentAttentionBanner
+                    testID="settings.agents.detail.signIn"
+                    title={t('settingsAgents.detailPage.signInBannerTitle')}
+                    description={t('settingsAgents.detailPage.signInBannerDescription', { agent: projection.title })}
+                    action={canLaunchLogin
+                        ? { label: t('settingsAgents.authentication.logInTitle'), onPress: launchLogin }
+                        : null}
                 />
-                <ItemGroup title={t('settingsAgents.configuration')} footer={projection.subtitle ?? t('settingsAgents.footer')}>
-                <Item
-                    title={projection.title}
-                    subtitle={projection.subtitle ?? projection.agentId}
-                    icon={(
-                        <AgentCatalogIdentityIcon
-                            entry={projection}
-                            machineId={primaryMachine?.id ?? null}
-                            serverId={capabilityServerId}
-                            current={projection.identity
-                                ? daemonOperationsAvailable
-                                : projection.isBuiltIn || daemonOperationsAvailable}
-                            color={theme.colors.text.secondary}
-                        />
-                    )}
-                    mode="info"
-                />
-                <Item
-                    title={primaryMachineLabel ? `${primaryMachineLabel} · ${detectedCliStatus}` : detectedCliStatus}
-                    subtitle={t(resolveAgentChannelLabelKey(projection.channel))}
-                    icon={<Icon name={statusIconName as any} size={29} color={statusIconColor} />}
+            ) : null}
+            {installFirst ? (
+                <ItemGroup>
+                    {cliInstallItem}
+                    <Item
+                        testID="settings.agents.detail.checkAgain"
+                        title={t('settingsAgents.detailPage.checkAgain')}
+                        subtitle={`${agentCli?.executable.binaryName ?? ''} • ${detectedCliStatus}`}
                         mode="info"
+                        showChevron={false}
+                        rightElement={(
+                            <RoundButton
+                                size="small"
+                                display="secondary"
+                                title={t('settingsAgents.detailPage.checkAgain')}
+                                disabled={!agentAuthentication.canCheckNow}
+                                onPress={refreshCliDetection}
+                            />
+                        )}
                     />
-                    {providerTargetKey ? (
-                        <Item
-                            title={t('settingsAgents.enabledTitle')}
-                            subtitle={accountSettingsAvailable
-                                ? t('settingsAgents.enabledSubtitle')
-                                : t('connectedServices.accountScopeMismatchDescription')}
-                            icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
+                </ItemGroup>
+            ) : null}
+
+            {machineState === 'none' || machineState === 'checking' || machineState === 'error' ? (
+                <ItemGroup
+                    title={t('settingsAgents.detailPage.readinessTitle')}
+                    description={t('settingsAgents.detailPage.readinessDescription')}
+                >
+                    <AgentMachineReadinessStateRow
+                        state={machineState}
+                        agentTitle={projection.title}
+                        machineLabel={props.machineLabel}
+                        onRetry={onRetryMachine}
+                    />
+                </ItemGroup>
+            ) : showReadiness && (authPlugin !== null || !installFirst) ? (
+                <ItemGroup
+                    title={t('settingsAgents.detailPage.readinessTitle')}
+                    description={t('settingsAgents.detailPage.readinessDescription')}
+                    action={agentAuthentication.canCheckNow && supportsDesktopControls ? (
+                        <RoundButton
+                            testID="settings-provider-auth-check-now"
+                            size="small"
+                            display="inverted"
+                            title={t('settingsAgents.authentication.checkNowTitle')}
+                            leading={<Icon name="arrow-clockwise" size={14} color={theme.colors.text.secondary} />}
+                            onPress={refreshCliDetection}
+                        />
+                    ) : undefined}
+                >
+                    {authPlugin ? (
+                        <AgentAuthenticationSummaryRow
+                            authStatus={agentAuthentication.authStatus}
+                            action={canLaunchLogin ? (
+                                <RoundButton
+                                    testID="settings-provider-auth-login"
+                                    size="small"
+                                    display="secondary"
+                                    title={agentAuthentication.loginActionKind === 'reauthenticate'
+                                        ? t('settingsAgents.authentication.reauthenticateTitle')
+                                        : t('settingsAgents.authentication.logInTitle')}
+                                    onPress={launchLogin}
+                                />
+                            ) : undefined}
+                        />
+                    ) : null}
+                    {installFirst ? null : cliInstallItem}
+                </ItemGroup>
+            ) : null}
+
+            <AgentSessionDefaultsSection
+                projection={projection}
+                compatibilityTargetKeys={compatibilityTargetKeys}
+                accountSettingsAvailable={accountSettingsAvailable}
+                popoverBoundaryRef={popoverBoundaryRef}
+                onOpenModels={currentAgentCapabilities && providerTargetKey ? () => router.push({
+                    pathname: '/(app)/settings/agents/[agentId]/models',
+                    params: {
+                        agentId,
+                        agentTargetKey: projection.backendTargetKey,
+                        pluginId: projection.identity?.pluginId ?? '',
+                        runtimeAgentId: '',
+                    },
+                } as never) : null}
+            />
+
+            <AgentConnectedAccountPurposeSettingsSection
+                projection={projection}
+                accountSettingsAvailable={accountSettingsAvailable}
+            />
+
+            <AgentDetailExternalSessionsSection
+                agentId={agentId}
+                behaviorAgentId={projection.agentId}
+                agentTitle={projection.title}
+                machineId={primaryMachine?.id ?? null}
+                daemonStateVersion={primaryMachine?.daemonStateVersion ?? null}
+                serverId={capabilityServerId}
+                agent={externalSessionsAgent}
+                browseAvailable={externalSessionsBrowseAvailable}
+                refreshKey={externalSessionsRefreshKey}
+                projectionPhase={externalSessionsProjectionPhase}
+                administrationTarget={targetSelection.selectedTarget}
+                accountSettingsAvailable={accountSettingsAvailable}
+            />
+
+            <AgentContributedSettingsSection
+                pluginSettingsProjection={pluginSettingsProjection}
+                targetSelection={targetSelection}
+                executionTarget={executionTarget}
+                daemonOperationsAvailable={daemonOperationsAvailable}
+            />
+
+            {showCliSourcePreference || currentAgentCapabilities ? (
+                <ItemGroup title={t('settingsAgents.detailPage.advancedTitle')}>
+                    {showCliSourcePreference ? (
+                        <SegmentedChoiceItem<'system-first' | 'managed-first'>
+                            testID="settings-provider-cli-source-preference"
+                            testIDPrefix="settings-provider-cli-source-preference"
+                            title={t('settingsAgents.cliSourcePreference.title')}
+                            subtitle={t('settingsAgents.cliSourcePreference.subtitle')}
+                            options={[
+                                { id: 'system-first', label: t('settingsAgents.cliSourcePreference.options.systemFirst.title') },
+                                { id: 'managed-first', label: t('settingsAgents.cliSourcePreference.options.managedFirst.title') },
+                            ]}
+                            value={providerCliSourcePreference}
                             disabled={!accountSettingsAvailable}
-                            rightElement={(
-                                <Switch
-                                    value={backendEnabled ?? undefined}
-                                    disabled={!accountSettingsAvailable}
-                                    onValueChange={setBackendEnabled}
+                            onChange={setProviderCliSourcePreference}
+                        />
+                    ) : null}
+                    {currentAgentCapabilities ? (
+                        <ExpandableItem
+                            testID="settings.agents.detail.capabilities"
+                            expanded={capabilitiesExpanded}
+                            onExpandedChange={setCapabilitiesExpanded}
+                            header={(state) => (
+                                <Item
+                                    {...state.headerProps}
+                                    testID="settings.agents.detail.capabilities.header"
+                                    title={t('settingsAgents.capabilities')}
+                                    detail={capabilitySummary}
+                                    showChevron={false}
+                                    rightElement={(
+                                        <Icon
+                                            name={state.expanded ? 'caret-down' : 'caret-right'}
+                                            size={16}
+                                            color={theme.colors.text.secondary}
+                                        />
+                                    )}
                                 />
                             )}
-                            showChevron={false}
-                            onPress={accountSettingsAvailable ? () => {
-                                if (backendEnabled === null) return;
-                                setBackendEnabled(!backendEnabled);
-                            } : undefined}
-                        />
-                    ) : null}
-                </ItemGroup>
-
-                {providerTargetKey && permissionModeOptions.length > 0 ? (
-                    <ItemGroup
-                        title={t('settingsSession.permissions.title')}
-                        footer={t('settingsSession.permissions.backendFooter')}
-                    >
-                        <DropdownMenu
-                        open={openMenu === 'permissionMode'}
-                        onOpenChange={(next) => setOpenMenu(next ? 'permissionMode' : null)}
-                        variant="selectable"
-                        search={false}
-                        selectedId={permissionMode}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={true}
-                        connectToTrigger={true}
-                        rowKind="item"
-                        popoverBoundaryRef={popoverBoundaryRef}
-                        popoverPortalWebTarget="body"
-                        itemTrigger={{
-                            title: t('settingsSession.permissions.defaultPermissionModeTitle'),
-                            subtitle: accountSettingsAvailable
-                                ? getPermissionModeLabelForAgentType(projection.agentId, permissionMode)
-                                : t('connectedServices.accountScopeMismatchDescription'),
-                            icon: <Icon name="shield-check" size={29} color={theme.colors.state.success.foreground} />,
-                            itemProps: { disabled: !accountSettingsAvailable },
-                        }}
-                        items={permissionModeOptions.map((opt) => ({
-                            id: opt.value,
-                            title: opt.label,
-                            subtitle: opt.description,
-                            icon: (
-                                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                    <Icon name={opt.icon as any} size={20} color={theme.colors.text.secondary} />
-                                </View>
-                            ),
-                        }))}
-                        onSelect={(id) => {
-                            const nextMode = permissionModeOptions.find((opt) => opt.value === id)?.value;
-                            if (nextMode) setPermissionMode(nextMode);
-                            setOpenMenu(null);
-                        }}
-                    />
-                    </ItemGroup>
-                ) : null}
-
-                <AgentConnectedAccountPurposeSettingsSection
-                    projection={projection}
-                    accountSettingsAvailable={accountSettingsAvailable}
-                />
-
-                    {authPlugin ? <AgentAuthenticationCard
-                        agentId={agentId}
-                        state={agentAuthentication}
-                        showActions={supportsDesktopControls}
-                        onCheckNow={() => {
-                            if (!cliAgentId || !resolveCurrentExecutionTarget()) return;
-                            cliAvailability.refresh({ bypassCache: true, includeLoginStatusForAgentIds: [cliAgentId] });
-                        }}
-                        onLaunchLogin={() => {
-                            if (
-                                !agentAuthentication.canLaunchLogin
-                                || !supportsDesktopControls
-                                || !cliAgentId
-                                || !resolveCurrentExecutionTarget()
-                            ) return;
-                            pane.openBottom({ tabId: AGENT_AUTH_TERMINAL_TAB_ID });
-                        }}
-                    /> : null}
-
-                <ItemGroup title={t('settingsAgents.cliConnection')}>
-                    <Item
-                        testID="settings-provider-target-machine"
-                        title={t('settingsAgents.targetMachineTitle')}
-                        subtitle={primaryMachineLabel ?? t('machine.detectedCliUnknown')}
-                        icon={<Icon name="desktop" size={29} color={theme.colors.text.secondary} />}
-                        mode="info"
-                    />
-                    {agentCli ? (
-                        <Item
-                            testID="settings-provider-detected-cli"
-                            title={t('settingsAgents.detectedCliTitle')}
-                            subtitle={`${agentCli.executable.binaryName} • ${detectedCliStatus}`}
-                            icon={<Icon name="code" size={29} color={theme.colors.text.secondary} />}
-                            mode="info"
-                        />
-                    ) : null}
-                    <Item
-                        title={t('settingsAgents.installSetupTitle')}
-                        subtitle={installSetupSubtitle}
-                        icon={<Icon name="info" size={29} color={theme.colors.text.secondary} />}
-                        mode="info"
-                    />
-                    {agentCli && providerCliCapabilityId ? (
-                        <AgentCliInstallItem
-                            machineId={primaryMachine?.id ?? null}
-                            serverId={capabilityServerId}
-                            resolveExecutionTarget={resolveCurrentExecutionTarget}
-                            capabilityId={providerCliCapabilityId}
-                            providerTitle={projection.title}
-                            installed={providerCliAvailable}
-                            managedInstalled={providerCliManagedInstalled}
-                            installability={cliInstallability}
-                            intent={installIntent}
-                            onManagedUpdateConfirmed={() => setProviderCliSourcePreference('managed-first')}
-                            onInstalled={() => {
-                                if (!cliAgentId || !resolveCurrentExecutionTarget()) return;
-                                cliAvailability.refresh({
-                                    bypassCache: true,
-                                    includeLoginStatusForAgentIds: [cliAgentId],
-                                });
-                            }}
-                        />
-                    ) : null}
-                    {supportsDesktopControls && agentCli?.install.managed ? (
-                        <DropdownMenu
-                            open={openMenu === 'cliSourcePreference'}
-                            onOpenChange={(next) => setOpenMenu(next ? 'cliSourcePreference' : null)}
-                            variant="selectable"
-                            search={false}
-                            selectedId={providerCliSourcePreference}
-                            showCategoryTitles={false}
-                            matchTriggerWidth={true}
-                            connectToTrigger={true}
-                            rowKind="item"
-                            popoverBoundaryRef={popoverBoundaryRef}
-                            popoverPortalWebTarget="body"
-                            itemTrigger={{
-                                title: t('settingsAgents.cliSourcePreference.title'),
-                                subtitle: accountSettingsAvailable
-                                    ? t('settingsAgents.cliSourcePreference.subtitle')
-                                    : t('connectedServices.accountScopeMismatchDescription'),
-                                showSelectedSubtitle: false,
-                                icon: <Icon name="arrows-left-right" size={29} color={theme.colors.text.secondary} />,
-                                itemProps: {
-                                    testID: 'settings-provider-cli-source-preference',
-                                    disabled: !accountSettingsAvailable,
-                                },
-                            }}
-                            items={[
-                                {
-                                    id: 'system-first',
-                                    title: t('settingsAgents.cliSourcePreference.options.systemFirst.title'),
-                                    subtitle: t('settingsAgents.cliSourcePreference.options.systemFirst.subtitle'),
-                                    icon: (
-                                        <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                            <Icon name="desktop" size={20} color={theme.colors.text.secondary} />
-                                        </View>
-                                    ),
-                                },
-                                {
-                                    id: 'managed-first',
-                                    title: t('settingsAgents.cliSourcePreference.options.managedFirst.title'),
-                                    subtitle: t('settingsAgents.cliSourcePreference.options.managedFirst.subtitle'),
-                                    icon: (
-                                        <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                            <Icon name="download" size={20} color={theme.colors.text.secondary} />
-                                        </View>
-                                    ),
-                                },
-                            ]}
-                            onSelect={(id) => {
-                                setProviderCliSourcePreference(id as 'system-first' | 'managed-first');
-                                setOpenMenu(null);
-                            }}
-                        />
-                    ) : null}
-                    {agentCli && (agentCli.install.guideUrl ?? agentCli.install.docsUrl) ? (
-                        <Item
-                            title={t('settingsAgents.setupGuideUrlTitle')}
-                            subtitle={agentCli.install.guideUrl ?? agentCli.install.docsUrl!}
-                            icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
-                            mode="info"
-                            copy={agentCli.install.guideUrl ?? agentCli.install.docsUrl!}
-                        />
-                    ) : null}
-                </ItemGroup>
-
-                <AgentDetailExternalSessionsSection
-                    agentId={agentId}
-                    behaviorAgentId={projection.agentId}
-                    agentTitle={projection.title}
-                    machineId={primaryMachine?.id ?? null}
-                    daemonStateVersion={primaryMachine?.daemonStateVersion ?? null}
-                    serverId={capabilityServerId}
-                    agent={externalSessionsAgent}
-                    browseAvailable={externalSessionsBrowseAvailable}
-                    refreshKey={externalSessionsRefreshKey}
-                    projectionPhase={externalSessionsProjectionPhase}
-                    administrationTarget={targetSelection.selectedTarget}
-                    accountSettingsAvailable={accountSettingsAvailable}
-                />
-
-                {currentAgentCapabilities ? (
-                    <>
-                        <ItemGroup title={t('settingsAgents.capabilities')}>
+                        >
                             <BadgeGrid items={capabilityBadges} columns={2} />
-                        </ItemGroup>
-
-                        {providerTargetKey ? <ItemGroup title={t('settingsAgents.models')}>
-                            <Item
-                                title={t('settingsProviders.models.manage')}
-                                icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                                onPress={() => router.push({
-                                    pathname: '/(app)/settings/agents/[agentId]/models',
-                                    params: {
-                                        agentId,
-                                        agentTargetKey: projection.backendTargetKey,
-                                        pluginId: projection.identity?.pluginId ?? '',
-                                        runtimeAgentId: '',
-                                    },
-                                } as never)}
-                            />
-                        </ItemGroup> : null}
-                    </>
-                ) : null}
-            </ItemList>
+                        </ExpandableItem>
+                    ) : null}
+                </ItemGroup>
+            ) : null}
+        </ItemList>
     );
     const authTerminalBottomPaneAdapter = React.useMemo(() => ({
         destinationIds: [AGENT_AUTH_TERMINAL_TAB_ID],
@@ -965,9 +1161,7 @@ export default React.memo(function AgentSettingsScreen() {
     const { theme } = useUnistyles();
     const params = useLocalSearchParams();
     const settings = useSettings();
-    const administrationTargetSelection = useMachineAdministrationTargetSelection(
-        MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.agents,
-    );
+    const administrationTargetSelection = useAgentsAdministrationTargetSelection();
     const rawAgentId = params.agentId;
     const normalizedAgentId = typeof rawAgentId === 'string' ? rawAgentId.trim() : '';
     const routePluginId = typeof params.pluginId === 'string' ? params.pluginId.trim() : '';
@@ -1021,37 +1215,28 @@ export default React.memo(function AgentSettingsScreen() {
         appliedRecoveryInstallRequestRef.current = recoveryInstallRequestKey;
         administrationTargetSelection.selectTarget(recoveryInstallTarget.target);
     }, [administrationTargetSelection, recoveryInstallRequestKey, recoveryInstallTarget]);
-    const executionTarget = React.useMemo(() => {
-        const selectedTarget = administrationTargetSelection.selectedTarget;
-        const resolvedTarget = administrationTargetSelection.resolveExecutionTarget();
-        return selectedTarget !== null
-            && resolvedTarget !== null
-            && machineAdministrationTargetsEqual(selectedTarget, resolvedTarget.target)
-            ? resolvedTarget
-            : null;
-    }, [administrationTargetSelection]);
+    const machineScope = useAgentsMachineScope(administrationTargetSelection);
+    const executionTarget = machineScope.executionTarget;
     const installIntent =
         recoveryInstallTarget
         && executionTarget
         && machineAdministrationTargetsEqual(recoveryInstallTarget.target, executionTarget.target)
             ? recoveryInstallTarget.installIntent
             : undefined;
+    // An offline machine keeps its scope so its last known projection stays visible.
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
-        machineId: executionTarget?.machine.id ?? null,
-        serverId: executionTarget?.serverId ?? null,
-        enabled: executionTarget !== null,
+        machineId: machineScope.projectionScope?.machineId ?? null,
+        serverId: machineScope.projectionScope?.serverId ?? null,
+        enabled: machineScope.projectionScope !== null,
     });
     // The hook already fences target and Account scope changes while retaining
     // same-scope LKG inputs through refresh/error. These inputs are inert
-    // presentation metadata; effectful daemon operations remain phase-gated.
+    // presentation metadata; effectful daemon operations remain gated on a live target.
     const daemonMergedProjectionInputs = daemonMergedProjection.inputs;
     const retryDaemonProjection = React.useCallback(() => {
-        if (!executionTarget) return;
-        publishMachineContributionRegistryProjectionInvalidation({
-            machineId: executionTarget.machine.id,
-            serverId: executionTarget.serverId,
-        });
-    }, [executionTarget]);
+        if (!machineScope.projectionScope) return;
+        publishMachineContributionRegistryProjectionInvalidation(machineScope.projectionScope);
+    }, [machineScope.projectionScope]);
     const legacyCompatAgentRedirectId = React.useMemo(() => resolveLegacyCompatAgentRouteRedirect({
         agentId: hasQualifiedAgentRoute ? '' : normalizedAgentId,
         daemonMergedProjectionInputs,
@@ -1169,7 +1354,19 @@ export default React.memo(function AgentSettingsScreen() {
     const externalSessionsRefreshKey = externalSessionsBinding
         ? `${externalSessionsBinding.generation}:${executionTarget?.serverId ?? ''}:${executionTarget?.machine.id ?? ''}`
         : null;
-    const accountSettingsAvailable = administrationTargetSelection.selectedTargetServerMatchesActiveAccount;
+    // Agent settings are Account settings: with no machine chosen they belong to the active Account;
+    // a machine from another server's Account makes them read-only here.
+    const accountSettingsAvailable = administrationTargetSelection.selectedTarget === null
+        || administrationTargetSelection.selectedTargetServerMatchesActiveAccount;
+    const machineState: AgentMachineState = administrationTargetSelection.selectedTarget === null
+        ? 'none'
+        : machineScope.offline
+            ? 'offline'
+            : daemonMergedProjection.phase === 'ready' || daemonMergedProjection.phase === 'unsupported'
+                ? 'ready'
+                : daemonMergedProjection.phase === 'error'
+                    ? 'error'
+                    : 'checking';
     // Keep the hook graph stable while the daemon projection advances from its
     // loading state to a resolved compatibility redirect.
     if (waitingForLegacyCompatProjection) {
@@ -1209,9 +1406,13 @@ export default React.memo(function AgentSettingsScreen() {
             />
         );
     }
+    // An agent whose CLI the machine has not declared (no machine, still checking, or genuinely no
+    // CLI) gets the page without machine operations; its Account settings still show at once.
     if (!currentAgentCapabilities && !projection.cli) {
         return (
             <AgentSettingsFallbackScreenInner
+                machineState={machineState}
+                compatibilityTargetKeys={compatibilityTargetKeys}
                 projection={projection}
                 pluginSettingsProjection={pluginSettingsProjection}
                 targetSelection={administrationTargetSelection}
@@ -1222,6 +1423,9 @@ export default React.memo(function AgentSettingsScreen() {
                 externalSessionsAgent={externalSessionsBinding?.agent ?? null}
                 externalSessionsBrowseAvailable={externalSessionsBinding?.browseAvailable === true}
                 externalSessionsRefreshKey={externalSessionsRefreshKey}
+                machineLabel={machineScope.machineLabel}
+                machineOffline={machineScope.offline}
+                onRetryMachine={retryDaemonProjection}
             />
         );
     }
@@ -1244,6 +1448,10 @@ export default React.memo(function AgentSettingsScreen() {
             externalSessionsBrowseAvailable={externalSessionsBinding?.browseAvailable === true}
             externalSessionsRefreshKey={externalSessionsRefreshKey}
             installIntent={installIntent}
+            machineState={machineState}
+            machineLabel={machineScope.machineLabel}
+            machineOffline={machineScope.offline}
+            onRetryMachine={retryDaemonProjection}
         />
     );
 });

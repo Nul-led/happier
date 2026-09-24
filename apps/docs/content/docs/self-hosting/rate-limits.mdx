@@ -19,7 +19,7 @@ The window accepts the same duration strings the defaults use (`1 minute`,
 per signed-in account, so one busy user cannot exhaust another's budget.
 `IP address` limits apply before Happier knows who is calling — they protect
 unauthenticated routes, and behind a reverse proxy they are only as accurate as
-the forwarded client address your proxy sets. 43 of the 68 limits are
+the forwarded client address your proxy sets. 42 of the 67 limits are
 per-account.
 
 Two clusters are worth knowing about before a rollout, because they throttle
@@ -94,7 +94,6 @@ account from a headless machine.
 | `share.public.manage` | 10 / 1 minute | Account | `HAPPIER_SHARE_PUBLIC_MANAGE_RATE_LIMIT_MAX`<br />`HAPPIER_SHARE_PUBLIC_MANAGE_RATE_LIMIT_WINDOW` |
 | `share.public.messages` | 20 / 1 minute | IP address | `HAPPIER_SHARE_PUBLIC_MESSAGES_RATE_LIMIT_MAX`<br />`HAPPIER_SHARE_PUBLIC_MESSAGES_RATE_LIMIT_WINDOW` |
 | `share.public.read` | 10 / 1 minute | IP address | `HAPPIER_SHARE_PUBLIC_READ_RATE_LIMIT_MAX`<br />`HAPPIER_SHARE_PUBLIC_READ_RATE_LIMIT_WINDOW` |
-| `share.session.create` | 20 / 1 minute | Account | `HAPPIER_SHARE_SESSION_CREATE_RATE_LIMIT_MAX`<br />`HAPPIER_SHARE_SESSION_CREATE_RATE_LIMIT_WINDOW` |
 | `voice.sessionComplete` | 60 / 1 minute | Account | `HAPPIER_VOICE_SESSION_COMPLETE_RATE_LIMIT_MAX`<br />`HAPPIER_VOICE_SESSION_COMPLETE_RATE_LIMIT_WINDOW` |
 | `voice.token` | 10 / 1 minute | Account | `HAPPIER_VOICE_TOKEN_RATE_LIMIT_MAX`<br />`HAPPIER_VOICE_TOKEN_RATE_LIMIT_WINDOW` |
 

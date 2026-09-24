@@ -14,6 +14,7 @@ import {
     type SessionReminderPresetV1,
 } from '@/sync/domains/session/organization/sessionReminderPreset';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function moveItem(items: readonly SessionReminderPresetV1[], from: number, to: number): SessionReminderPresetV1[] {
     if (to < 0 || to >= items.length) return [...items];
@@ -46,7 +47,6 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
         title: t('sessionsList.reminders.managePresets'),
         subtitle: t('sessionsList.reminders.managePresetsMessage'),
         testID: 'session-reminder-preset-manager-modal',
-        layout: 'fill' as const,
         dimensions: { width: 560, maxHeightRatio: 0.86, size: 'md' as const },
         footer,
     }), [footer]));
@@ -93,7 +93,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                         accessibilityLabel={t('sessionsList.reminders.movePresetUpLabel', { preset: effectivePresetLabel })}
                         disabled={index === 0}
                         onPress={() => setDrafts((current) => moveItem(current, index, index - 1))}
-                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === 0 ? 0.28 : pressed ? 0.55 : 1 })}
+                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === 0 ? 0.28 : pressed ? motionTokens.press.opacity : 1 })}
                     >
                         <Icon name="arrow-up" size={16} color={theme.colors.text.secondary} />
                     </Pressable>
@@ -102,7 +102,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                         accessibilityLabel={t('sessionsList.reminders.movePresetDownLabel', { preset: effectivePresetLabel })}
                         disabled={index === drafts.length - 1}
                         onPress={() => setDrafts((current) => moveItem(current, index, index + 1))}
-                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === drafts.length - 1 ? 0.28 : pressed ? 0.55 : 1 })}
+                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: index === drafts.length - 1 ? 0.28 : pressed ? motionTokens.press.opacity : 1 })}
                     >
                         <Icon name="arrow-down" size={16} color={theme.colors.text.secondary} />
                     </Pressable>
@@ -110,7 +110,7 @@ export function SessionReminderPresetManagerModal(props: Readonly<{
                         accessibilityRole="button"
                         accessibilityLabel={t('sessionsList.reminders.deletePresetLabel', { preset: effectivePresetLabel })}
                         onPress={() => setDrafts((current) => current.filter((_, presetIndex) => presetIndex !== index))}
-                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.55 : 1 })}
+                        style={({ pressed }) => ({ width: 48, height: 48, alignItems: 'center', justifyContent: 'center', opacity: pressed ? motionTokens.press.opacity : 1 })}
                     >
                         <Icon name="trash" size={16} color={theme.colors.state.danger.foreground} />
                     </Pressable>

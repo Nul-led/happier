@@ -34,6 +34,9 @@ export async function fetchAndApplySessionOrganizationSnapshot(params: Readonly<
             params.request,
         );
     } catch (error) {
+        // A superseded request's failure belongs to the Account that sent it, not to
+        // whichever Account now owns this Home's organization state.
+        if (params.shouldContinue && !params.shouldContinue()) throw error;
         getStorage().getState().setSessionOrganizationError(
             params.serverId,
             error instanceof Error ? error.message : 'Failed to fetch session organization snapshot',

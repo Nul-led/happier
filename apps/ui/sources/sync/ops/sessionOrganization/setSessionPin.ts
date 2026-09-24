@@ -2,6 +2,7 @@ import { SESSION_ORGANIZATION_MAX_PINNED_SESSIONS } from '@happier-dev/protocol'
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { setSessionPin as setSessionPinApi } from '@/sync/api/session/sessionOrganizationApi';
+import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 import { getStorage } from '@/sync/domains/state/storageStore';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors/errors';
@@ -25,9 +26,14 @@ export async function setSessionPin(params: Readonly<{
             sessionId: params.sessionId,
             request: { pinned: params.pinned, sortKey: params.sortKey },
         });
-        getStorage().getState().commitSessionOrganizationOptimistic(recordId);
-        const reconcileRecordId = getStorage().getState().setSessionPinOptimistic(params.serverId, params.sessionId, response.pin);
-        getStorage().getState().commitSessionOrganizationOptimistic(reconcileRecordId);
+        // Same rule as every other organization write: confirm this response's own key instead
+        // of republishing it over a newer pin change that is still in flight.
+        getStorage().getState().confirmSessionOrganizationOptimistic(
+            recordId,
+            'sessionOrganizationPinsBySessionKey',
+            buildSessionOrganizationSessionKey(params.serverId, params.sessionId),
+            response.pin,
+        );
     } catch (error) {
         getStorage().getState().rollbackSessionOrganizationOptimistic(recordId);
         if (error instanceof HappyError && error.message === 'session-pin-limit-exceeded') {

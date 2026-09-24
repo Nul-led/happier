@@ -58,6 +58,7 @@ describe('resolveAuthEntry', () => {
     }, 180_000);
 
     afterEach(async () => {
+        await db.teamDirectorySource.deleteMany({});
         await db.teamIdentityConnection.deleteMany({});
         await db.identityProviderInstance.deleteMany({});
         await db.teamMembership.deleteMany({});
@@ -203,6 +204,85 @@ describe('resolveAuthEntry', () => {
         expect(delayed).toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
     });
 
+    it('offers a provisioned non-member only a Team connection that carries an admissible directory source', async () => {
+        // teams-lane-03/02 §8.1 / TA-R19: an existing Account imported by the
+        // directory before it signed up proves the Team provider identity through
+        // the authenticated connect flow, and the exact binder admits it. Only a
+        // connection whose directory source can currently bind is such a proof;
+        // otherwise waiting for the directory is the truthful answer.
+        const previousTeamsBit = process.env.HAPPIER_FEATURE_TEAMS__ENABLED;
+        process.env.HAPPIER_FEATURE_TEAMS__ENABLED = '1';
+        try {
+            const env = {
+                HAPPIER_FEATURE_TEAMS__ENABLED: '1',
+                HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test',
+                WORKOS_API_KEY: 'sk_test',
+                WORKOS_CLIENT_ID: 'client_test',
+            } as const;
+            const team = await db.team.create({ data: { name: 'Directory Team', admissionMode: 'provisioned' } });
+            const workos = await db.identityProviderInstance.create({ data: {
+                ownerTeamId: team.id, kind: 'workos_sso', displayName: 'Company SSO', enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'), config: { v: 1, kind: 'workos_sso' },
+            } });
+            const workosConnection = await db.teamIdentityConnection.create({ data: {
+                teamId: team.id, providerInstanceId: workos.id, enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'),
+                externalReference: { v: 1, kind: 'workos_sso', organizationId: 'org_exact', connectionId: 'conn_exact' },
+                settings: { v: 1, kind: 'workos_sso' },
+            } });
+            // A plain OIDC connection can never bind a directory person.
+            const oidc = await db.identityProviderInstance.create({ data: {
+                ownerTeamId: team.id, kind: 'oidc', displayName: 'Other SSO', enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'), config: MANAGED_OIDC_CONFIG,
+            } });
+            await db.teamIdentityConnection.create({ data: {
+                teamId: team.id, providerInstanceId: oidc.id, enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'),
+                externalReference: { v: 1, kind: 'oidc' },
+                settings: { v: 1, kind: 'oidc', allowedUsers: [], allowedEmailDomains: [], groupsAny: [], groupsAll: [] },
+            } });
+            const source = await db.teamDirectorySource.create({ data: {
+                teamId: team.id, kind: 'workos_directory', state: 'initializing', displayName: 'Directory',
+                externalSourceKey: 'directory_entry', bindingConfig: { v: 1, kind: 'workos_directory' },
+                teamIdentityConnectionId: workosConnection.id,
+                activeReconcileRunId: 'first-import', activeReconcileStartedAt: new Date(),
+            } });
+            const account = await db.account.create({
+                data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' },
+            });
+            const entry = () => resolveAuthEntry(
+                { v: 1, scope: { kind: 'team', teamId: team.id } },
+                { env, principal: { accountId: account.id } },
+            );
+
+            // The first import is still running: nothing can bind yet.
+            await expect(entry()).resolves.toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
+
+            await db.teamDirectorySource.update({
+                where: { id: source.id },
+                data: {
+                    state: 'active', activeReconcileRunId: null, activeReconcileStartedAt: null,
+                    lastSuccessAt: new Date(), lastFullReconcileAt: new Date(),
+                },
+            });
+            const offered = await entry();
+            if (offered.state !== 'admission_required') throw new Error(`expected admission, got ${JSON.stringify(offered)}`);
+            const authenticate = offered.actions.filter((action) => action.kind === 'authenticate');
+            expect(authenticate).toEqual([expect.objectContaining({
+                methodId: workos.id, action: 'connect', origin: 'team',
+                presentation: expect.objectContaining({ providerKind: 'workos_sso' }),
+            })]);
+            expect(offered.actions).toContainEqual({ kind: 'switch_account' });
+
+            // A paused directory cannot bind either.
+            await db.teamDirectorySource.update({ where: { id: source.id }, data: { state: 'paused' } });
+            await expect(entry()).resolves.toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
+        } finally {
+            if (previousTeamsBit === undefined) delete process.env.HAPPIER_FEATURE_TEAMS__ENABLED;
+            else process.env.HAPPIER_FEATURE_TEAMS__ENABLED = previousTeamsBit;
+        }
+    });
+
     it('names directory delay for a signed-in non-member of a provisioned Team whose policy is usable', async () => {
         // A `provisioned` Team takes its roster from a directory, so no sign-in
         // this visitor performs can admit them. That is true whether or not the
@@ -287,17 +367,7 @@ describe('resolveAuthEntry', () => {
     });
 
     it('projects a current Team-bound provider from the canonical Team catalog', async () => {
-        await db.homeGovernancePolicy.create({
-            data: {
-                id: 'home',
-                teamProviderPolicy: {
-                    v: 1,
-                    allowedTeamProviderKinds: ['oidc'],
-                    teamJitAllowed: false,
-                    approvedGitHubEnterpriseOrigins: [],
-                },
-            },
-        });
+        // A fresh Home inherits the deployment ceiling; no narrowed row is seeded.
         const team = await db.team.create({ data: { name: 'Provider Team' } });
         const provider = await db.identityProviderInstance.create({
             data: {
@@ -349,6 +419,96 @@ describe('resolveAuthEntry', () => {
                 presentation: expect.objectContaining({ displayName: 'Provider Team SSO' }),
             }),
         ]));
+    });
+
+    it('carries the safe descriptor fields and names an accepted provider that cannot run yet', async () => {
+        // teams-lane-03/01 §10.2: provider kind, icon, connect-button colour, badge
+        // support and a per-provider safe unavailable reason are real wire fields.
+        const team = await db.team.create({ data: { name: 'Descriptor Team' } });
+        const connected = await db.identityProviderInstance.create({
+            data: {
+                ownerTeamId: team.id,
+                kind: 'oidc',
+                displayName: 'Descriptor SSO',
+                enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'),
+                config: { ...MANAGED_OIDC_CONFIG, ui: { buttonColor: '#0f62fe', iconHint: 'oidc' } },
+            },
+        });
+        const drafting = await db.identityProviderInstance.create({
+            data: {
+                ownerTeamId: team.id,
+                kind: 'oidc',
+                displayName: 'Backup SSO',
+                enabled: true,
+                config: MANAGED_OIDC_CONFIG,
+            },
+        });
+        const oidcSettings = {
+            v: 1, kind: 'oidc', allowedUsers: [], allowedEmailDomains: [], groupsAny: [], groupsAll: [],
+        } as const;
+        const connectedConnection = await db.teamIdentityConnection.create({
+            data: {
+                teamId: team.id,
+                providerInstanceId: connected.id,
+                externalReference: { v: 1, kind: 'oidc' },
+                settings: oidcSettings,
+                enabled: true,
+                firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'),
+            },
+        });
+        const draftConnection = await db.teamIdentityConnection.create({
+            data: {
+                teamId: team.id,
+                providerInstanceId: drafting.id,
+                externalReference: { v: 1, kind: 'oidc' },
+                settings: oidcSettings,
+            },
+        });
+        await db.team.update({
+            where: { id: team.id },
+            data: {
+                authenticationPolicy: {
+                    v: 1,
+                    mode: 'restricted',
+                    accepted: [
+                        { kind: 'team_connection', connectionId: connectedConnection.id },
+                        { kind: 'team_connection', connectionId: draftConnection.id },
+                    ],
+                },
+            },
+        });
+
+        const projection = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: team.id } },
+            { env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1', HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test' } },
+        );
+
+        if (projection.state !== 'admission_required') throw new Error(`expected Team admission, got ${JSON.stringify(projection)}`);
+        expect(projection.actions).toEqual(expect.arrayContaining([
+            {
+                kind: 'authenticate',
+                methodId: connected.id,
+                action: 'connect',
+                mode: 'either',
+                origin: 'team',
+                presentation: {
+                    displayName: 'Descriptor SSO',
+                    iconHint: 'oidc',
+                    providerKind: 'oidc',
+                    connectButtonColor: '#0f62fe',
+                    supportsProfileBadge: false,
+                },
+            },
+            {
+                kind: 'provider_unavailable',
+                methodId: drafting.id,
+                origin: 'team',
+                presentation: { displayName: 'Backup SSO', providerKind: 'oidc' },
+                reason: 'provider_setup_incomplete',
+            },
+        ]));
+        expect(JSON.stringify(projection)).not.toContain('revision');
     });
 
     it('never reveals membership to an anonymous Team entry request', async () => {
@@ -934,6 +1094,46 @@ describe('resolveAuthEntry', () => {
         expect(JSON.stringify(projection)).not.toContain('client-id-is-private');
     });
 
+    it("carries the Home's recommended provisioning mode on the open provision action", async () => {
+        await db.homeGovernancePolicy.create({ data: {
+            id: 'home',
+            authenticationPolicy: {
+                v: 1,
+                permittedAccountModes: ['plain', 'e2ee'],
+                recommendedProvisioningMode: 'e2ee',
+            },
+        } });
+        const projection = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'home' } },
+            {
+                env: {
+                    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+                    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: '1',
+                    HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: '1',
+                    HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
+                },
+                emailDeliveryReady: true,
+            },
+        );
+
+        expect(projection.state).toBe('ready');
+        if (projection.state !== 'ready') throw new Error('expected ready projection');
+        const provision = projection.actions.find((action) => action.kind === 'authenticate'
+            && action.methodId === 'email_password'
+            && action.action === 'provision');
+        const login = projection.actions.find((action) => action.kind === 'authenticate'
+            && action.methodId === 'email_password'
+            && action.action === 'login');
+        // Both protections remain permitted, so the chooser is still offered; the
+        // Home's own recommendation travels with it instead of the client seeding
+        // from whichever permitted mode happens to sort first.
+        expect(provision).toMatchObject({ mode: 'either', recommendedProvisionMode: 'e2ee' });
+        // An existing Account keeps its stored mode, so login states no
+        // provisioning recommendation at all.
+        expect(login).toBeDefined();
+        expect(login).not.toHaveProperty('recommendedProvisionMode');
+    });
+
     it('fails account-service purpose closed when the Home is not an Account Directory', async () => {
         const projection = await resolveAuthEntry(
             { v: 1, scope: { kind: 'home' }, purpose: 'account_service' },
@@ -1042,17 +1242,7 @@ describe('resolveAuthEntry', () => {
     });
 
     it('keeps Team and invitation entry open while an accepted connection still awaits its activation test', async () => {
-        await db.homeGovernancePolicy.create({
-            data: {
-                id: 'home',
-                teamProviderPolicy: {
-                    v: 1,
-                    allowedTeamProviderKinds: ['oidc'],
-                    teamJitAllowed: false,
-                    approvedGitHubEnterpriseOrigins: [],
-                },
-            },
-        });
+        // A fresh Home inherits the deployment ceiling; no narrowed row is seeded.
         const team = await db.team.create({ data: { name: 'Untested Team' } });
         const provider = await db.identityProviderInstance.create({
             data: {
@@ -1107,6 +1297,8 @@ describe('resolveAuthEntry', () => {
             { env },
         );
 
+        // Both scopes project the connection through the one Team-connection
+        // projector, so the invitation carries the same safe descriptor fields.
         for (const projection of [teamEntry, invitationEntry]) {
             expect(projection.state).toBe('admission_required');
             if (projection.state !== 'admission_required') throw new Error('expected admission');
@@ -1114,6 +1306,7 @@ describe('resolveAuthEntry', () => {
                 methodId: provider.id,
                 action: 'connect',
                 origin: 'team',
+                presentation: { displayName: 'Untested SSO', iconHint: 'oidc', providerKind: 'oidc', supportsProfileBadge: false },
             }));
         }
     });
@@ -1239,7 +1432,14 @@ describe('resolveAuthEntry', () => {
             action: 'login',
             origin: 'home',
         }));
-        expect(projection.actions).not.toContainEqual(expect.objectContaining({ methodId: provider.id, origin: 'team' }));
+        // The prohibited connection is never startable, but as an accepted choice it
+        // is named with its safe reason instead of vanishing (teams-lane-03/01 §10.2).
+        expect(projection.actions).not.toContainEqual(expect.objectContaining({
+            kind: 'authenticate', methodId: provider.id, origin: 'team',
+        }));
+        expect(projection.actions).toContainEqual(expect.objectContaining({
+            kind: 'provider_unavailable', methodId: provider.id, origin: 'team', reason: 'provider_unavailable',
+        }));
     });
 
     it('names a spent or unknown invitation to the bearer that presented it', async () => {

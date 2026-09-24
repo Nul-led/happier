@@ -71,7 +71,7 @@ type LayoutOneScenario = Readonly<{
   recipient: IsolatedExternalSessionLiveAccount;
   dataKey: Uint8Array | null;
   sessionId: string;
-  shareId: string;
+  recipientId: string;
   publicToken: string;
   sentinels: ScenarioPrivacySentinels;
 }>;
@@ -493,8 +493,8 @@ async function createScenario(params: Readonly<{
         randomBytes: (length) => Uint8Array.from(randomBytes(length)),
       })).toString('base64')
     : undefined;
-  const share = await fetchJson<{ share?: unknown }>(
-    `${params.server.baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/shares`,
+  const share = await fetchJson<{ changed?: unknown }>(
+    `${params.server.baseUrl}/v2/sessions/access-grants/set`,
     {
       method: 'POST',
       headers: {
@@ -503,18 +503,17 @@ async function createScenario(params: Readonly<{
         ...CURRENT_HEADERS,
       },
       body: JSON.stringify({
-        userId: recipientId,
+        sessionId,
+        subject: { kind: 'account', accountId: recipientId },
         accessLevel: 'view',
-        ...(recipientDataKey ? { encryptedDataKey: recipientDataKey } : {}),
+        canApprovePermissions: false,
+        ...(recipientDataKey ? { accountEnvelopeInput: { v: 1, encryptedDataKey: recipientDataKey } } : {}),
       }),
       timeoutMs: 20_000,
     },
   );
   expect(share.status).toBe(200);
-  const shareId = requireString(
-    asRecord(share.data?.share, 'created share').id,
-    'created share id',
-  );
+  expect(share.data?.changed).toBe(true);
 
   const publicToken = `es_public_${params.mode}_${suffix}`;
   const publicShare = await fetchJson<{ publicShare?: unknown }>(
@@ -544,7 +543,7 @@ async function createScenario(params: Readonly<{
     recipient,
     dataKey,
     sessionId,
-    shareId,
+    recipientId,
     publicToken,
     sentinels,
   };
@@ -648,24 +647,29 @@ async function updateShareAccess(params: Readonly<{
   baseUrl: string;
   ownerToken: string;
   sessionId: string;
-  shareId: string;
+  recipientId: string;
   accessLevel: 'edit' | 'admin';
 }>): Promise<void> {
-  const response = await fetchJson<{ share?: unknown }>(
-    `${params.baseUrl}/v1/sessions/${encodeURIComponent(params.sessionId)}/shares/${encodeURIComponent(params.shareId)}`,
+  const response = await fetchJson<{ grant?: unknown }>(
+    `${params.baseUrl}/v2/sessions/access-grants/set`,
     {
-      method: 'PATCH',
+      method: 'POST',
       headers: {
         Authorization: `Bearer ${params.ownerToken}`,
         'Content-Type': 'application/json',
         ...CURRENT_HEADERS,
       },
-      body: JSON.stringify({ accessLevel: params.accessLevel }),
+      body: JSON.stringify({
+        sessionId: params.sessionId,
+        subject: { kind: 'account', accountId: params.recipientId },
+        accessLevel: params.accessLevel,
+        canApprovePermissions: false,
+      }),
       timeoutMs: 20_000,
     },
   );
   expect(response.status).toBe(200);
-  expect(asRecord(response.data?.share, 'updated share').accessLevel).toBe(
+  expect(asRecord(response.data?.grant, 'updated grant').accessLevel).toBe(
     params.accessLevel,
   );
 }
@@ -871,7 +875,7 @@ describe('core e2e: External Sessions layout-1 two-recipient privacy', () => {
             baseUrl: server.baseUrl,
             ownerToken: scenario.owner.auth.token,
             sessionId: scenario.sessionId,
-            shareId: scenario.shareId,
+            recipientId: scenario.recipientId,
             accessLevel,
           });
         }
@@ -1014,7 +1018,7 @@ describe('core e2e: External Sessions layout-1 two-recipient privacy', () => {
         EXTERNAL_SESSION_OPERATION_PRESENTATION_METADATA_KEY,
       );
       expect(agentHandoffMetadata.path).toBe(scenario.sentinels.workspace);
-      expect(agentHandoffMetadata.codexSessionId).toBe(
+      expect(agentHandoffMetadata.runtimeDescriptorV1?.agent.providerSessionId).toBe(
         scenario.sentinels.providerNative,
       );
       const agentHandoffSerialized = JSON.stringify(agentHandoffMetadata);
@@ -1060,13 +1064,18 @@ describe('core e2e: External Sessions layout-1 two-recipient privacy', () => {
       );
       expect(removedPublicShare.status).toBe(404);
       const deleteDirectShare = await fetchJson(
-        `${server.baseUrl}/v1/sessions/${encodeURIComponent(scenario.sessionId)}/shares/${encodeURIComponent(scenario.shareId)}`,
+        `${server.baseUrl}/v2/sessions/access-grants/remove`,
         {
-          method: 'DELETE',
+          method: 'POST',
           headers: {
             Authorization: `Bearer ${scenario.owner.auth.token}`,
+            'Content-Type': 'application/json',
             ...CURRENT_HEADERS,
           },
+          body: JSON.stringify({
+            sessionId: scenario.sessionId,
+            subject: { kind: 'account', accountId: scenario.recipientId },
+          }),
           timeoutMs: 20_000,
         },
       );

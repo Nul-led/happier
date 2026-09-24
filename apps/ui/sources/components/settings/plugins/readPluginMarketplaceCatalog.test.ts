@@ -38,7 +38,7 @@ function createIndexItem(overrides: Partial<IndexItem> = {}): IndexItem {
         review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
         categories: ['agents'],
         media: [],
-        updatePolicy: 'reviewEveryUpdate',
+        updatePolicy: 'allowed',
         links: {},
         source: CURATED_SOURCE,
         freshness: { state: 'fresh', fetchedAtMs: 1 },
@@ -65,6 +65,20 @@ function createPage(overrides: Partial<MarketplaceIndexQueryResultV1> = {}): Mar
 }
 
 describe('projectDaemonMarketplaceIndexPage', () => {
+    it('keeps admitted links and contribution families for inspection before installation', () => {
+        const page = projectDaemonMarketplaceIndexPage(createPage({
+            items: [createIndexItem({
+                links: { homepage: 'https://example.test/plugin', repository: 'https://example.test/source', support: null },
+                summary: { contributions: ['agents', 'tools'], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+            })],
+        }));
+
+        expect(page.entries[0]).toMatchObject({
+            links: { homepage: 'https://example.test/plugin', repository: 'https://example.test/source', support: null },
+            contributions: ['agents', 'tools'],
+        });
+    });
+
     it('projects a curated listing from the typed daemon page without fetching anything in the client', () => {
         const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
@@ -81,9 +95,11 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             sourceKind: 'curated',
             sourceTitle: 'Happier curated',
             reviewStatus: 'approved',
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             publisher: { id: 'sample', displayName: 'Sample' },
             categories: ['agents'],
+            contributions: ['agents'],
+            links: {},
             executableRealms: ['daemon'],
             platforms: ['web'],
             title: 'Sample Plugin',
@@ -93,6 +109,7 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             // manifest plugin id and the install action depends on it.
             packageName: 'sample-plugin',
             installable: true,
+            registrySelectionOrigin: null,
         }]);
         expect(page.nonInstallable).toEqual([]);
         expect(fetchSpy).not.toHaveBeenCalled();
@@ -131,9 +148,11 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             sourceKind: 'community-npm',
             sourceTitle: 'Community npm',
             reviewStatus: 'unreviewed',
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             publisher: { id: 'sample', displayName: 'Sample' },
             categories: ['agents'],
+            contributions: ['agents'],
+            links: {},
             executableRealms: ['daemon'],
             platforms: ['web'],
             title: 'Community Plugin',
@@ -141,6 +160,7 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             version: '1.2.3',
             packageName: 'sample-plugin',
             installable: true,
+            registrySelectionOrigin: null,
             warning: 'unreviewed',
         }]);
     });
@@ -160,9 +180,11 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             sourceKind: 'curated',
             sourceTitle: 'Happier curated',
             reviewStatus: 'withdrawn',
-            updatePolicy: 'reviewEveryUpdate',
+            updatePolicy: 'allowed',
             publisher: { id: 'sample', displayName: 'Sample' },
             categories: ['agents'],
+            contributions: ['agents'],
+            links: {},
             executableRealms: ['daemon'],
             platforms: ['web'],
             title: 'Withdrawn Plugin',
@@ -170,6 +192,7 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             version: '1.2.3',
             packageName: 'sample-plugin',
             installable: false,
+            registrySelectionOrigin: null,
             warning: 'withdrawn',
         }]);
         // A withdrawal is a warning the reader must see, not a listing this
@@ -180,7 +203,7 @@ describe('projectDaemonMarketplaceIndexPage', () => {
     it.each([
         ['sourceStale', { freshness: { state: 'stale' as const, fetchedAtMs: 1, staleSinceMs: 1 } }],
         ['notApproved', { review: { status: 'blocked' as const, reviewedAt: null } }],
-        ['artifactUnavailable', { artifactAccess: { state: 'auth-unavailable' as const, registryProfileId: 'profile-1' } }],
+        ['artifactUnavailable', { artifactAccess: { state: 'offline' as const, registryProfileId: 'profile-1' } }],
     ])('reports a dropped %s listing instead of silently discarding the source fact', (reason, override) => {
         const page = projectDaemonMarketplaceIndexPage(createPage({
             items: [createIndexItem(override)],
@@ -194,6 +217,38 @@ describe('projectDaemonMarketplaceIndexPage', () => {
             sourceTitle: 'Happier curated',
             reason,
         }]);
+    });
+
+    it.each([
+        ['a bound profile that must sign in again', { state: 'auth-unavailable' as const, registryProfileId: 'profile-1' }],
+        ['a private registry no profile is bound for', { state: 'unverified-profile' as const, registryProfileId: null }],
+        ['a bound profile that was removed', { state: 'source-removed' as const, registryProfileId: 'profile-gone' }],
+    ])('keeps %s installable as a registry selection the user can make', (_name, artifactAccess) => {
+        const page = projectDaemonMarketplaceIndexPage(createPage({
+            items: [createIndexItem({
+                distribution: { ...createIndexItem().distribution, registryOrigin: 'https://npm.acme.example' },
+                artifactAccess,
+            })],
+        }));
+
+        expect(page.nonInstallable).toEqual([]);
+        expect(page.entries).toEqual([expect.objectContaining({
+            id: 'sample.plugin',
+            installable: true,
+            registrySelectionOrigin: 'https://npm.acme.example',
+        })]);
+    });
+
+    it('never offers a registry selection past a durable review or freshness refusal', () => {
+        const page = projectDaemonMarketplaceIndexPage(createPage({
+            items: [createIndexItem({
+                freshness: { state: 'stale', fetchedAtMs: 1, staleSinceMs: 1 },
+                artifactAccess: { state: 'unverified-profile', registryProfileId: null },
+            })],
+        }));
+
+        expect(page.entries).toEqual([]);
+        expect(page.nonInstallable).toEqual([expect.objectContaining({ reason: 'sourceStale' })]);
     });
 
     it('carries per-source freshness and diagnostics through instead of collapsing them into one failure', () => {

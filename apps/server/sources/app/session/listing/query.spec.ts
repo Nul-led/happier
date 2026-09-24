@@ -61,7 +61,15 @@ describe("createFilteredSessionListWhere", () => {
                 { responsibleAccountId: "viewer" },
                 { sessionTagAssignments: { some: { accountId: "viewer", tagId: { in: ["tag"] } } } },
                 attentionWhere,
-                { OR: [{ active: true }, attentionWhere] },
+                // "Hide inactive" selects the liveness the row projection publishes:
+                // the stored column alone is not the answer, so a Session whose
+                // transcript is not hosted is only admitted through attention.
+                {
+                    OR: [
+                        { AND: [{ currentStorageState: "hosted" }, { active: true }] },
+                        attentionWhere,
+                    ],
+                },
             ],
         });
     });

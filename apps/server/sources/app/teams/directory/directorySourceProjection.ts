@@ -77,6 +77,15 @@ export function readUpstreamResponseHeader(error: unknown, name: string): string
 }
 
 export function parseDirectoryRetryAfterMs(value: unknown, now: Date = new Date()): number | undefined {
+    // Some provider SDKs parse `Retry-After` themselves and hand the delay back
+    // as a number of seconds on the exception instead of leaving a readable
+    // response header, so the one parser accepts both forms of the same fact.
+    if (typeof value === "number") {
+        const delay = value * 1_000;
+        return Number.isSafeInteger(value) && value >= 0 && Number.isSafeInteger(delay)
+            ? delay
+            : undefined;
+    }
     if (typeof value !== "string") return undefined;
     const normalized = value.trim();
     if (/^[0-9]+$/.test(normalized)) {
@@ -135,6 +144,41 @@ export function isDirectoryErrorRetryable(errorCode: string): boolean {
     return safeError !== null && !NON_RETRYABLE_DIRECTORY_ERRORS.has(safeError);
 }
 
+const RETRYABLE_DIRECTORY_ERROR_CODES = Object.keys(DIRECTORY_ERROR_CODES)
+    .filter((errorCode) => isDirectoryErrorRetryable(errorCode));
+
+/**
+ * The decision of {@link isDirectoryErrorRetryable} in the shape a persisted-row
+ * predicate needs: a source stays eligible for scheduled or requested work only
+ * while its recorded failure can plausibly succeed again.
+ *
+ * Due selection, the durable repair request and the failure writers consume this
+ * one owner. Restating the non-retryable set inside a query is what let the
+ * automatic scheduler and the explicit repair read the same recorded error
+ * differently — and an unrecognized persisted code, which the failure writers
+ * already treat as non-retryable, would otherwise stay selectable forever.
+ */
+export function retryableDirectoryErrorWhere() {
+    return {
+        OR: [
+            { lastErrorCode: null },
+            { lastErrorCode: { in: [...RETRYABLE_DIRECTORY_ERROR_CODES] } },
+        ],
+    };
+}
+
+/** The one freshness rule: shown by the summary, and compared by publishers. */
+export function projectDirectorySyncFreshness(
+    source: Pick<DirectorySourceProjectionRow, "state" | "kind" | "lastSuccessAt">,
+    now: Date,
+): "unknown" | "never_synced" | "stale" | "fresh" {
+    if (source.state === "paused") return "unknown";
+    if (source.lastSuccessAt === null) return "never_synced";
+    return now.getTime() - source.lastSuccessAt.getTime() >= readDirectorySyncTargetMs(source.kind) * 2
+        ? "stale"
+        : "fresh";
+}
+
 function projectAllowedActions(
     state: DirectorySourceProjectionRow["state"],
 ): readonly TeamDirectorySourceAllowedActionV1[] {
@@ -172,20 +216,14 @@ export function projectTeamDirectorySourceSummary(params: Readonly<{
                     ? "never" as const
                     : "succeeded" as const;
 
-    const freshness = source.state === "paused"
-        ? "unknown" as const
-        : source.lastSuccessAt === null
-            ? "never_synced" as const
-            : now.getTime() - source.lastSuccessAt.getTime() >= targetMs * 2
-                ? "stale" as const
-                : "fresh" as const;
+    const freshness = projectDirectorySyncFreshness(source, now);
 
     // A recorded retryable failure already has one persisted worker schedule
     // (`retryNotBefore`); the projection reports that fact instead of deriving a
     // second, disagreeing delay. Paused sources have no scheduled work.
     let nextScheduledAt: Date | null = null;
     if (source.state !== "paused") {
-        const pendingRetryAt = safeError !== null && !NON_RETRYABLE_DIRECTORY_ERRORS.has(safeError)
+        const pendingRetryAt = safeError !== null && isDirectoryErrorRetryable(safeError)
             ? source.retryNotBefore ?? null
             : null;
         if (pendingRetryAt !== null) {
@@ -223,6 +261,6 @@ export function projectTeamDirectorySourceSummary(params: Readonly<{
         },
         error: safeError === null
             ? null
-            : { code: safeError, retryable: !NON_RETRYABLE_DIRECTORY_ERRORS.has(safeError) },
+            : { code: safeError, retryable: isDirectoryErrorRetryable(safeError) },
     };
 }

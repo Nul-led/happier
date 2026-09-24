@@ -4,6 +4,10 @@ import { ensureLayout1SessionCreateInvariantsInTx } from "./layout1SessionCreate
 import {
     applyRequestedSessionPlacementInTx,
     insertLayout1SessionRowInTx,
+    isSessionCreationPlacementError,
+    isSessionOwnerEnvelopeError,
+    isSessionTeamCredentialBindingError,
+    SessionInitialAccessError,
     type Layout1SessionCreateOutcome,
 } from "./layout1SessionRowWrite";
 import type {
@@ -11,6 +15,29 @@ import type {
     PreparedLayout1SessionCreate,
 } from "./prepareLayout1SessionCreate";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+
+/**
+ * Classifies a throw from Layout-1 Session creation as a domain rejection.
+ *
+ * The constructors deliberately throw these so the caller's own transaction
+ * rolls back with the Session row. Whether a given throw is a domain refusal or
+ * an infrastructure failure is one question, so it is answered here rather than
+ * re-answered by every wrapper: a wrapper that forgets turns a folder removed
+ * between review and submit into an unexpected 500.
+ */
+export function classifyLayout1SessionCreateThrow(
+    error: unknown,
+): FreshBoundLayout1SessionCreateRejection | null {
+    if (isSessionCreationPlacementError(error)) return { reason: "invalid-organization-placement" };
+    if (isSessionOwnerEnvelopeError(error)) return { reason: "invalid-params" };
+    if (error instanceof SessionInitialAccessError) {
+        return { reason: "session-initial-access-invalid", code: error.code };
+    }
+    if (isSessionTeamCredentialBindingError(error)) {
+        return { reason: "team-credential-binding-invalid", code: error.reason };
+    }
+    return null;
+}
 
 /**
  * Creates one ordinary Layout-1 Session at a reserved final identity.

@@ -28,6 +28,7 @@ import { PresentationNoticeHost } from './PresentationNoticeHost';
 import { publishPresentationNotice } from './presentationNotices';
 import {
     readSessionComposerPresentationTargetAtAddress,
+    readSessionPresentationAdapterAtAddress,
     subscribeSessionComposerPresentationTargets,
 } from './sessionComposerPresentationTargets';
 
@@ -113,7 +114,11 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
                 || !areServerProfileIdentifiersEquivalent(scopeLifetime.scope.serverId, address.serverId)
             ) return;
             const composer = readSessionComposerPresentationTargetAtAddress(address);
-            if (!composer) {
+            // A presented composer-less surface (full-screen Board/Companion) is a
+            // current-UI target in its own right: presentation availability does
+            // not depend on whether Chat's composer is mounted.
+            const presentationAdapter = readSessionPresentationAdapterAtAddress(address);
+            if (!composer && !presentationAdapter) {
                 await retireBinding({ address, scopeLifetime, bindingKey });
                 return;
             }
@@ -150,7 +155,10 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
                     result.sessionId !== sessionId
                     || disposed
                     || !isCurrentSessionRowAtAddress(address, scopeLifetime)
-                    || !readSessionComposerPresentationTargetAtAddress(address)
+                    || (
+                        !readSessionComposerPresentationTargetAtAddress(address)
+                        && !readSessionPresentationAdapterAtAddress(address)
+                    )
                 ) {
                     // The Home/daemon may have accepted this exact socket origin
                     // while its mounted target was retiring. Record it just long
@@ -215,9 +223,7 @@ export const CurrentSessionPresentationRuntime = React.memo(function CurrentSess
                     revision: composer.revision,
                     apply: composer.applyTransaction,
                 },
-                presentation: composer?.applySessionPresentationIntent
-                    ? { apply: composer.applySessionPresentationIntent }
-                    : null,
+                presentation: presentationAdapter ? { apply: presentationAdapter.apply } : null,
             });
             if (!application) return;
             processedCommands.set(commandKey, application.ack);

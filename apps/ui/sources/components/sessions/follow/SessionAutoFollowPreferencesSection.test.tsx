@@ -99,9 +99,37 @@ it('coalesces Account-change wakes during a save and reconciles to the Home afte
     secondWrite.resolve(new Response('{}', { status: 503 }));
     await flushAsyncWork();
     expect(reads).toBe(3);
+    // The confirmed Home value is refreshed beneath the failed change…
     expect(screen.findByTestId('session-auto-follow-assigned')?.props.value).toBe(false);
-    expect(screen.findByTestId('session-auto-follow-group')?.props.value).toBe(false);
+    // …and the change the user asked for, its error and its retry all survive that refresh.
+    expect(screen.findByTestId('session-auto-follow-group')?.props.value).toBe(true);
+    expect(screen.findByTestId('session-auto-follow-error')).not.toBeNull();
+    expect(screen.findByTestId('session-auto-follow-retry')).not.toBeNull();
+
+    // A later reconnect wake is still only a refresh: it may not abandon the failed change.
+    act(() => { publishHomeAccountChange(home.id); });
+    await flushAsyncWork();
+    expect(reads).toBe(4);
+    expect(screen.findByTestId('session-auto-follow-group')?.props.value).toBe(true);
+    expect(screen.findByTestId('session-auto-follow-retry')).not.toBeNull();
+
+    // Retry re-executes that exact intent against the current confirmed value, not a stale
+    // snapshot: the refreshed `assigned: false` survives and only `group` changes.
+    let retried: unknown = null;
+    setRuntimeFetch(async (url, init) => {
+        if (new URL(String(url)).pathname === '/v1/auth/ping') return new Response('{}', { status: 200 });
+        if (init?.method === 'PUT') {
+            retried = JSON.parse(String(init.body));
+            return new Response(String(init.body), { status: 200 });
+        }
+        reads += 1;
+        return new Response(JSON.stringify(authoritative), { status: 200 });
+    });
+    await act(async () => { screen.findByTestId('session-auto-follow-retry')?.props.onPress(); });
+    await flushAsyncWork();
+    expect(retried).toEqual({ ...initial, assigned: false, group: true });
     expect(screen.findByTestId('session-auto-follow-error')).toBeNull();
+    expect(screen.findByTestId('session-auto-follow-group')?.props.value).toBe(true);
     await screen.unmount();
 });
 

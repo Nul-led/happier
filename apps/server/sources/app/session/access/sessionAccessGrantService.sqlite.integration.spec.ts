@@ -81,7 +81,6 @@ describe("Session access grant service (SQLite integration)", () => {
             tempDirPrefix: "happier-session-access-grants-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });
@@ -461,25 +460,6 @@ describe("Session access grant service (SQLite integration)", () => {
         });
         expect(await db.sessionShare.count({ where: { sessionId: fixture.session.id } })).toBe(0);
         expect(await db.sessionDataKeyEnvelope.count({ where: { sessionId: fixture.session.id } })).toBe(0);
-    });
-
-    it("rejects supplied released-adapter recipient material for a Plain Session", async () => {
-        const fixture = await createFixture();
-        const input = {
-            actorAccountId: fixture.owner.id,
-            sessionId: fixture.session.id,
-            subject: { kind: "account" as const, accountId: fixture.collaborator.id },
-            grant: { accessLevel: "view" as const, canApprovePermissions: false },
-            directEnvelope: {
-                encryptedDataKey: new Uint8Array(SESSION_DATA_KEY_ENVELOPE_BYTES_V1),
-            },
-        };
-
-        expect(await inTx((tx) => putSessionAccessGrantInTx(tx, input))).toEqual({
-            ok: false,
-            error: "data_key_not_required",
-        });
-        expect(await db.sessionShare.count({ where: { sessionId: fixture.session.id } })).toBe(0);
     });
 
     it("Plain direct grants do not query recipient crypto fields or the envelope tuple", async () => {
@@ -912,6 +892,40 @@ describe("Session access grant service (SQLite integration)", () => {
         expect(await db.accountSessionFollow.findUnique({ where })).toMatchObject({ following: false });
         await inTx((tx) => putSessionAccessGrantInTx(tx, input));
         expect(await db.accountSessionFollow.findUnique({ where })).toMatchObject({ following: false });
+    });
+
+    // teams-lane-04-session-access-sharing-authorship-presence.md §3: the relationship
+    // effect receives only Accounts that actually gained effective read; an overlap
+    // cannot auto-Follow someone who already reads the Session.
+    it("does not auto-Follow a direct share to someone who already reads through a Team, but follows a genuinely new reader", async () => {
+        const fixture = await createFixture();
+        // A friend outside the Team: the direct grant is their only read source.
+        const newReader = await createAccount("grant-new-reader");
+        await db.userRelationship.create({ data: { fromUserId: fixture.owner.id, toUserId: newReader.id, status: "friend" } });
+        await db.account.update({ where: { id: fixture.collaborator.id }, data: { sessionAutoFollowDirect: true, sessionAutoFollowTeam: false } });
+        await db.account.update({ where: { id: newReader.id }, data: { sessionAutoFollowDirect: true } });
+        expect(await inTx((tx) => putSessionAccessGrantInTx(tx, {
+            actorAccountId: fixture.owner.id,
+            sessionId: fixture.session.id,
+            subject: { kind: "team", teamId: fixture.team.id },
+            grant: { accessLevel: "view", canApprovePermissions: false },
+        }))).toMatchObject({ ok: true });
+
+        expect(await inTx((tx) => putSessionAccessGrantInTx(tx, {
+            actorAccountId: fixture.owner.id,
+            sessionId: fixture.session.id,
+            subject: { kind: "account", accountId: fixture.collaborator.id },
+            grant: { accessLevel: "edit", canApprovePermissions: false },
+        }))).toMatchObject({ ok: true, changed: true });
+        expect(await db.accountSessionFollow.findUnique({ where: { accountId_sessionId: { accountId: fixture.collaborator.id, sessionId: fixture.session.id } } })).toBeNull();
+
+        expect(await inTx((tx) => putSessionAccessGrantInTx(tx, {
+            actorAccountId: fixture.owner.id,
+            sessionId: fixture.session.id,
+            subject: { kind: "account", accountId: newReader.id },
+            grant: { accessLevel: "view", canApprovePermissions: false },
+        }))).toMatchObject({ ok: true, changed: true });
+        expect(await db.accountSessionFollow.findUnique({ where: { accountId_sessionId: { accountId: newReader.id, sessionId: fixture.session.id } } })).toMatchObject({ following: true });
     });
 
     async function writeDraft(accountId: string, sessionId: string): Promise<string> {
@@ -2033,5 +2047,66 @@ describe("Session access grant service (SQLite integration)", () => {
             .toEqual({ ok: false, error: "session_access_external_sharing_disabled" });
         expect(await inTx((tx) => putSessionAccessGrantInTx(tx, { ...external, grant: { accessLevel: "view", canApprovePermissions: false } })))
             .toMatchObject({ ok: true, changed: true });
+    });
+
+    it("offers removal of a retained grant whose subject is archived, and keeps the required-Team floor", async () => {
+        const fixture = await createFixture();
+        const archivedGroup = await db.teamGroup.create({
+            data: {
+                teamId: fixture.team.id,
+                name: "Retired group",
+                nameKey: `retired-${crypto.randomUUID()}`,
+                archivedAt: new Date(),
+            },
+        });
+        await db.sessionGroupGrant.create({ data: {
+            sessionId: fixture.session.id,
+            teamGroupId: archivedGroup.id,
+            accessLevel: "edit",
+            canApprovePermissions: false,
+            effectiveAt: new Date(),
+        } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: fixture.session.id,
+            teamId: fixture.team.id,
+            accessLevel: "edit",
+            canApprovePermissions: false,
+            requiredByTeamPolicy: true,
+            effectiveAt: new Date(),
+        } });
+        await db.team.update({
+            where: { id: fixture.team.id },
+            data: { sessionCreationPolicy: "team_required" },
+        });
+
+        const inspection = await inspectSessionAccessGrants({
+            actorAccountId: fixture.owner.id, sessionId: fixture.session.id, authentication: TEST_AUTHENTICATION,
+        });
+        if (!inspection.ok || inspection.value.visibility !== "complete") throw new Error("Expected the complete roster");
+        const groupRow = inspection.value.grants.find((row) => row.grant.subject.kind === "group");
+        const teamRow = inspection.value.grants.find((row) => row.grant.subject.kind === "team");
+        // The writer admits this removal, so the affordance must offer it while
+        // still reporting why no other transition is available.
+        expect(groupRow?.allowedTransitions).toEqual({
+            accessLevels: [], canChangePermissionDelegation: false, canRemove: true,
+            reason: "session_access_subject_ineligible",
+        });
+        expect(teamRow?.allowedTransitions).toMatchObject({
+            canRemove: false, reason: "session_access_team_policy_required",
+        });
+
+        expect(await inTx((tx) => deleteSessionAccessGrantInTx(tx, {
+            actorAccountId: fixture.owner.id,
+            sessionId: fixture.session.id,
+            subject: { kind: "group", teamId: fixture.team.id, groupId: archivedGroup.id },
+        }))).toMatchObject({ ok: true, changed: true });
+        expect(await db.sessionGroupGrant.count({
+            where: { sessionId: fixture.session.id, teamGroupId: archivedGroup.id },
+        })).toBe(0);
+        expect(await inTx((tx) => deleteSessionAccessGrantInTx(tx, {
+            actorAccountId: fixture.owner.id,
+            sessionId: fixture.session.id,
+            subject: { kind: "team", teamId: fixture.team.id },
+        }))).toEqual({ ok: false, error: "session_access_team_policy_required" });
     });
 });

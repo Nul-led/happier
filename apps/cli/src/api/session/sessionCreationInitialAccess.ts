@@ -39,6 +39,12 @@ export class SessionInitialAccessEnvelopeHostError extends Error {
   }
 }
 
+/**
+ * A genuinely older component: the target daemon cannot carry initial access,
+ * or the Home cannot project recipient readiness. Session sharing being off on
+ * this Home is not this error; it is the typed `SessionInitialAccessServerError`
+ * `session_access_sharing_unavailable`.
+ */
 export class SessionInitialAccessUpdateRequiredError extends Error implements OperationUpdateRequiredV1 {
   readonly kind = 'update_required' as const;
   readonly code = 'update_required' as const;
@@ -76,7 +82,10 @@ export class SessionTeamCredentialBindingUpdateRequiredError extends Error imple
   }
 }
 
-/** A strict access rejection returned by the atomic Session-create boundary. */
+/**
+ * A strict access rejection returned by the atomic Session-create boundary, or
+ * the same answer read from the Home's own `sharing.session` decision before POST.
+ */
 export class SessionInitialAccessServerError extends Error {
   readonly retryable = false;
 
@@ -100,11 +109,15 @@ export function buildSessionInitialAccessCreateFields(
   const primaryTeamId = SessionSpawnNewInputV2Schema.shape.primaryTeamId.parse(input.primaryTeamId);
   if (initialAccess === undefined && primaryTeamId === undefined) return {};
   const decision = resolveCliFeatureDecision({
-    featureId: 'sessions.collaboration',
+    featureId: 'sharing.session',
     env: process.env,
     serverSnapshot,
   });
-  if (decision.state !== 'enabled') throw new SessionInitialAccessUpdateRequiredError();
+  // The Home's decision is the same one its atomic create enforces, so the
+  // refusal is that create's typed answer rather than an update requirement.
+  if (decision.state !== 'enabled') {
+    throw new SessionInitialAccessServerError('session_access_sharing_unavailable', 409);
+  }
   return {
     ...(initialAccess !== undefined ? { initialAccess } : {}),
     ...(primaryTeamId !== undefined ? { primaryTeamId } : {}),
@@ -194,21 +207,6 @@ export async function materializeSessionInitialAccessCreateFields(params: Readon
     ...params.fields,
     initialAccess: SessionInitialAccessMaterializedV1Schema.parse({ grants }),
   };
-}
-
-/** Only the peer's explicit, strict no-effect refusal is an update requirement. */
-export function readSessionInitialAccessUpdateRequiredError(body: unknown): SessionInitialAccessUpdateRequiredError | null {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
-  const { error, ...details } = body as Record<string, unknown>;
-  if (error !== 'update_required') return null;
-  const parsed = OperationUpdateRequiredV1Schema.safeParse(details);
-  if (
-    !parsed.success
-    || parsed.data.operation !== 'session.spawn_new'
-    || parsed.data.reason !== 'session_initial_access_update_required'
-    || parsed.data.component !== 'server'
-  ) return null;
-  return new SessionInitialAccessUpdateRequiredError(parsed.data.component);
 }
 
 /**

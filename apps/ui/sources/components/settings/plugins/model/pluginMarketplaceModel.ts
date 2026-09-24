@@ -1,32 +1,44 @@
 import type { DaemonMergedProjectionPhase } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import type { useMachineCapabilitiesCache } from '@/hooks/server/useMachineCapabilitiesCache';
+import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { type CapabilityId } from '@/sync/api/capabilities/capabilitiesProtocol';
 import { t } from '@/text';
+import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
 import {
     PluginChangePendingReviewResultSchema,
-    type PluginDevelopmentSourceRootReview,
+    type PluginChangePendingReviewResult,
+    type PluginDevelopmentProjectTrustReview,
     type PluginInstallationReview,
 } from '@happier-dev/protocol/marketplace/internal';
-import type { PluginUpdatePolicyV1 } from '@happier-dev/protocol/marketplace';
+import {
+    MarketplaceRegistryProfileRequiredResultV1Schema,
+    type MarketplaceRegistryProfileRequirementV1,
+    type PluginUpdatePolicyV1,
+} from '@happier-dev/protocol/marketplace';
 
 export const MARKETPLACE_CAPABILITY_ID = 'tool.plugins' as CapabilityId;
 
-export type PluginSettingsViewId = 'installed' | 'discover' | 'development' | 'diagnostics';
+/**
+ * The two primary product tasks the Plugins home answers in place.
+ *
+ * Development and Diagnostics are deliberately NOT arms of this union: they are
+ * addressable routes under the Developer group, so this screen has exactly one
+ * navigation owner. When both halves lived in this union each of the two
+ * segmented controls rendered with nothing selected whenever the other one held
+ * the active value.
+ */
+export type PluginSettingsViewId = 'installed' | 'discover';
 
 type PluginSettingsViewTranslationKey =
     | 'settingsPlugins.views.installed'
-    | 'settingsPlugins.views.discover'
-    | 'settingsPlugins.views.development'
-    | 'settingsPlugins.views.diagnostics';
+    | 'settingsPlugins.catalog.browse';
 
 export function createPluginSettingsViews(
     translate: (key: PluginSettingsViewTranslationKey) => string,
 ): readonly Readonly<{ id: PluginSettingsViewId; label: string }>[] {
     return [
         { id: 'installed', label: translate('settingsPlugins.views.installed') },
-        { id: 'discover', label: translate('settingsPlugins.views.discover') },
-        { id: 'development', label: translate('settingsPlugins.views.development') },
-        { id: 'diagnostics', label: translate('settingsPlugins.views.diagnostics') },
+        { id: 'discover', label: translate('settingsPlugins.catalog.browse') },
     ];
 }
 
@@ -128,14 +140,14 @@ export function projectInstalledPluginLifecycleCapabilities(
 export type DevelopmentPluginEntry = Readonly<{
     installed: InstalledPluginEntry;
     sourceRootPath: string;
-    watch: Readonly<{ state: 'configured' }>;
-    reload: Readonly<{
-        state: 'clear' | 'attention';
-        diagnostics: readonly InstalledPluginDiagnostic[];
-    }>;
+    phase: 'observing' | 'preparing_dependencies' | 'compiling' | 'validating' | 'active' | 'retained_incumbent' | 'unavailable';
+    occurrenceId?: string;
+    uiArtifactDigest?: string;
+    diagnostic?: Readonly<{ code: string; message?: string }>;
     actions: Readonly<{
         test: boolean;
         pack: boolean;
+        unregister: boolean;
     }>;
 }>;
 
@@ -239,6 +251,12 @@ export function isPluginMutationVisibleAfterRefresh(params: Readonly<{
  */
 export type PendingPluginChangeReview = Readonly<{
     pendingChangeId: string;
+    reason: 'firstInstall' | 'authorityExpansion';
+    currentVersion: string | null;
+    authorityExpansion: Extract<PluginChangePendingReviewResult, Readonly<{
+        kind: 'reviewRequired';
+        reviewKind: 'installation';
+    }>>['authorityExpansion'];
     review: PluginInstallationReview;
 }>;
 
@@ -267,17 +285,17 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
  * daemon has not been allowed to read that root. The locator is the whole
  * security payload, so it is carried verbatim and shown verbatim.
  */
-export type PendingPluginDevelopmentSourceRootReview = Readonly<{
+export type PendingPluginDevelopmentProjectTrustReview = Readonly<{
     pendingChangeId: string;
-    review: PluginDevelopmentSourceRootReview;
+    review: PluginDevelopmentProjectTrustReview;
 }>;
 
-export function readPluginDevelopmentSourceRootReviewChange(
+export function readPluginDevelopmentProjectTrustReviewChange(
     change: unknown,
-): PendingPluginDevelopmentSourceRootReview | null {
-    if (!isRecord(change) || change.kind !== 'sourceRootReviewRequired') return null;
+): PendingPluginDevelopmentProjectTrustReview | null {
+    if (!isRecord(change) || change.kind !== 'reviewRequired') return null;
     const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
-    if (!parsed.success || parsed.data.kind !== 'sourceRootReviewRequired') return null;
+    if (!parsed.success || parsed.data.reviewKind !== 'projectTrust') return null;
     return {
         pendingChangeId: parsed.data.pendingChangeId,
         review: parsed.data.review,
@@ -296,25 +314,28 @@ export function readPluginDevelopmentSourceRootReviewChange(
  * actually at.
  */
 export type PendingPluginChangeDecision =
-    | Readonly<{ kind: 'sourceRootReviewRequired'; sourceRootReview: PendingPluginDevelopmentSourceRootReview }>
-    | Readonly<{ kind: 'reviewRequired'; installationReview: PendingPluginChangeReview }>;
+    | Readonly<{ kind: 'projectTrust'; projectTrustReview: PendingPluginDevelopmentProjectTrustReview }>
+    | Readonly<{ kind: 'installation'; installationReview: PendingPluginChangeReview }>;
 
 export function readPendingPluginChangeDecision(change: unknown): PendingPluginChangeDecision | null {
     if (!isRecord(change)) return null;
     const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
     if (!parsed.success) return null;
-    return parsed.data.kind === 'sourceRootReviewRequired'
+    return parsed.data.reviewKind === 'projectTrust'
         ? {
-            kind: 'sourceRootReviewRequired',
-            sourceRootReview: {
+            kind: 'projectTrust',
+            projectTrustReview: {
                 pendingChangeId: parsed.data.pendingChangeId,
                 review: parsed.data.review,
             },
         }
         : {
-            kind: 'reviewRequired',
+            kind: 'installation',
             installationReview: {
                 pendingChangeId: parsed.data.pendingChangeId,
+                reason: parsed.data.reason,
+                currentVersion: parsed.data.currentVersion,
+                authorityExpansion: parsed.data.authorityExpansion,
                 review: parsed.data.review,
             },
         };
@@ -322,8 +343,8 @@ export function readPendingPluginChangeDecision(change: unknown): PendingPluginC
 
 /** The daemon-issued id of whichever decision this change is currently at. */
 export function readPendingPluginChangeDecisionId(decision: PendingPluginChangeDecision): string {
-    return decision.kind === 'sourceRootReviewRequired'
-        ? decision.sourceRootReview.pendingChangeId
+    return decision.kind === 'projectTrust'
+        ? decision.projectTrustReview.pendingChangeId
         : decision.installationReview.pendingChangeId;
 }
 
@@ -412,8 +433,8 @@ export function readPendingPluginChangeStatus(result: unknown): PendingPluginCha
  * Reads the daemon's bare `reviewRequired` change through the one cross-process
  * review schema owned by `@happier-dev/protocol/marketplace/internal` — the
  * same schema the daemon projects and the CLI control client parses. Both the
- * capability-invoke envelope and the follow-up returned by a source-root trust
- * decision carry the identical change shape, so they share this one reader.
+ * capability-invoke envelope and an authority-expansion follow-up carry the
+ * identical change shape, so they share this one reader.
  */
 export function readPluginInstallationReviewChange(
     change: unknown,
@@ -421,10 +442,13 @@ export function readPluginInstallationReviewChange(
 ): PendingPluginChangeReview | null {
     if (!isRecord(change) || change.kind !== 'reviewRequired') return null;
     const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
-    if (!parsed.success || parsed.data.kind !== 'reviewRequired') return null;
+    if (!parsed.success || parsed.data.reviewKind !== 'installation') return null;
     if (expectedPluginId !== null && parsed.data.review.pluginId !== expectedPluginId) return null;
     return {
         pendingChangeId: parsed.data.pendingChangeId,
+        reason: parsed.data.reason,
+        currentVersion: parsed.data.currentVersion,
+        authorityExpansion: parsed.data.authorityExpansion,
         review: parsed.data.review,
     };
 }
@@ -441,6 +465,26 @@ export function readPendingPluginChangeReview(
         || !isRecord(value.change)
     ) return null;
     return readPluginInstallationReviewChange(value.change, expectedPluginId);
+}
+
+/**
+ * The registry selection a marketplace install or update owes before the
+ * daemon will fetch anything, read from the change owner's typed result.
+ */
+export function readPluginRegistryProfileRequirement(
+    value: unknown,
+    action: 'install' | 'update',
+    expectedPluginId: string,
+): MarketplaceRegistryProfileRequirementV1 | null {
+    if (
+        !isRecord(value)
+        || value.action !== action
+        || value.pluginId !== expectedPluginId
+    ) return null;
+    const parsed = MarketplaceRegistryProfileRequiredResultV1Schema.safeParse(value.change);
+    if (!parsed.success) return null;
+    const { kind: _kind, ...requirement } = parsed.data;
+    return requirement;
 }
 
 export function readPluginChangeKind(
@@ -465,17 +509,23 @@ type MarketplaceCapabilitySnapshot = Readonly<{
             checkedAt: number;
             data?: {
                 installedPlugins?: readonly InstalledPluginEntry[];
-                developmentActions?: Readonly<{ create: boolean; develop?: boolean }>;
-                developmentSources?: readonly Readonly<{
-                    pluginId: string;
-                    sourceRootPath: string;
-                    watch: Readonly<{ state: 'configured' }>;
-                    reload: Readonly<{
-                        state: 'clear' | 'attention';
-                        diagnostics: readonly InstalledPluginDiagnostic[];
-                    }>;
-                    actions: Readonly<{ test: boolean; pack: boolean }>;
-                }>[];
+                developmentActions?: Readonly<{ create: boolean; develop?: boolean; unregister?: boolean }>;
+                developmentStatus?: Readonly<{
+                    roots: readonly Readonly<{
+                        kind: 'home' | 'workspace' | 'explicit';
+                        rootPath: string;
+                        trusted: boolean;
+                        persisted: boolean;
+                    }>[];
+                    plugins: readonly Readonly<{
+                        pluginId?: string;
+                        sourceRootPath: string;
+                        phase: DevelopmentPluginEntry['phase'];
+                        occurrenceId?: string;
+                        uiArtifactDigest?: string;
+                        diagnostic?: Readonly<{ code: string; message?: string }>;
+                    }>[];
+                }>;
                 /**
                  * Daemon-owned outstanding decisions, projected verbatim. A
                  * machine whose snapshot predates the enumeration reports
@@ -547,15 +597,31 @@ export function readDevelopmentPlugins(
         : null;
     if (!snapshot) return [];
     const toolPlugins = (snapshot as MarketplaceCapabilitySnapshot).response.results[MARKETPLACE_CAPABILITY_ID];
-    const developmentSources = toolPlugins?.ok && toolPlugins.data && typeof toolPlugins.data === 'object'
-        ? toolPlugins.data.developmentSources
+    const developmentStatus = toolPlugins?.ok && toolPlugins.data && typeof toolPlugins.data === 'object'
+        ? toolPlugins.data.developmentStatus
         : null;
-    if (!Array.isArray(developmentSources)) return [];
+    if (!developmentStatus || !Array.isArray(developmentStatus.plugins)) return [];
 
     const installedById = new Map(installedPlugins.map((entry) => [entry.pluginId, entry] as const));
-    return developmentSources.flatMap((source) => {
+    const unregisterAvailable = toolPlugins?.ok === true
+        && toolPlugins.data !== null
+        && typeof toolPlugins.data === 'object'
+        && toolPlugins.data.developmentActions?.unregister === true;
+    const explicitRoots = new Set(developmentStatus.roots
+        .filter((root) => root.kind === 'explicit')
+        .map((root) => root.rootPath));
+    return developmentStatus.plugins.flatMap((source) => {
+        if (!source.pluginId) return [];
         const installed = installedById.get(source.pluginId);
-        return installed ? [{ ...source, installed }] : [];
+        return installed ? [{
+            ...source,
+            installed,
+            actions: Object.freeze({
+                test: true,
+                pack: true,
+                unregister: unregisterAvailable && explicitRoots.has(source.sourceRootPath),
+            }),
+        }] : [];
     });
 }
 
@@ -635,14 +701,37 @@ export function readPluginCreateResult(value: unknown): Readonly<{ pluginId: str
 }
 
 /**
+ * Reads the selected daemon's current Edit-with-Agent target.
+ *
+ * `sourceRootPath` is the exact admitted subject (a directory or a single
+ * source file). `sessionDirectory` is the daemon-canonicalized directory the
+ * ordinary New Session composer may use as its cwd.
+ */
+export function readPluginEditTargetResult(
+    value: unknown,
+    expectedPluginId: string,
+): Readonly<{ pluginId: string; sourceRootPath: string; sessionDirectory: string }> | null {
+    if (!isRecord(value) || value.action !== 'edit' || !hasOnlyKeys(
+        value,
+        ['action', 'pluginId', 'sourceRootPath', 'sessionDirectory'],
+    )) return null;
+    const pluginId = readNonEmptyString(value.pluginId);
+    const sourceRootPath = readNonEmptyString(value.sourceRootPath);
+    const sessionDirectory = readNonEmptyString(value.sessionDirectory);
+    return pluginId === expectedPluginId && sourceRootPath !== null && sessionDirectory !== null
+        ? { pluginId, sourceRootPath, sessionDirectory }
+        : null;
+}
+
+/**
  * What a listed pending change is asking for, in the user's own terms. The
  * locator and the package identity are the whole security payload of the two
  * decisions, so both are shown verbatim rather than summarised away.
  */
 export function formatPendingPluginChangeTitle(entry: PendingPluginChangeListing): string {
     if (entry.kind === 'applying') return t('settingsPlugins.pendingChangeApplying');
-    return entry.kind === 'sourceRootReviewRequired'
-        ? t('settingsPlugins.developmentTrustSourceRootTitle')
+    return entry.kind === 'projectTrust'
+        ? t('settingsPlugins.developmentTrustProjectSourceTitle')
         : t('settingsPlugins.marketplaceInstallReviewTitle', {
             name: entry.installationReview.review.displayName,
             version: entry.installationReview.review.version,
@@ -651,9 +740,9 @@ export function formatPendingPluginChangeTitle(entry: PendingPluginChangeListing
 
 export function formatPendingPluginChangeSubtitle(entry: PendingPluginChangeListing): string {
     if (entry.kind === 'applying') return entry.pendingChangeId;
-    return entry.kind === 'sourceRootReviewRequired'
+    return entry.kind === 'projectTrust'
         ? t('settingsPlugins.pendingChangeSourceRootSubtitle', {
-            path: entry.sourceRootReview.review.source.locator,
+            path: entry.projectTrustReview.review.source.locator,
         })
         : t('settingsPlugins.pendingChangeInstallSubtitle', {
             pluginId: entry.installationReview.review.pluginId,
@@ -665,30 +754,153 @@ export function formatCatalogEntryVersion(version: string | null): string | unde
     return version ?? undefined;
 }
 
-export function formatInstalledSubtitle(entry: InstalledPluginEntry): string {
-    const diagnostics = [...entry.diagnostics, ...entry.compatibility.diagnostics];
-    const parts = [
-        entry.enabled ? t('common.enabled') : t('common.disabled'),
-        `${entry.source.kind}: ${entry.source.locator}`,
-    ];
-    if (entry.compatibility.status !== 'compatible') {
-        parts.push(entry.compatibility.status);
-    }
-    if (diagnostics.length > 0) {
-        parts.push(diagnostics[0].message);
-    }
-    return parts.join(' | ');
+/**
+ * One row's state vocabulary, shared by the Installed and Development lists.
+ *
+ * A row states ONE status and, when something needs a decision, ONE actionable
+ * consequence. Raw compatibility codes, source kinds and diagnostic codes are
+ * technical evidence: they belong under Details and Diagnostics, never
+ * concatenated into a subtitle a reader has to parse.
+ */
+export type PluginRowStatusId =
+    | 'enabled'
+    | 'disabled'
+    | 'incompatible'
+    | 'trustRemoved'
+    | 'needsAttention';
+
+export type PluginRowStatus = Readonly<{
+    id: PluginRowStatusId;
+    label: string;
+    variant: StatusPillVariant;
+}>;
+
+const PLUGIN_ROW_STATUS_VARIANTS = {
+    enabled: 'success',
+    disabled: 'neutral',
+    incompatible: 'warning',
+    trustRemoved: 'danger',
+    needsAttention: 'warning',
+} as const satisfies Readonly<Record<PluginRowStatusId, StatusPillVariant>>;
+
+function createPluginRowStatus(id: PluginRowStatusId): PluginRowStatus {
+    return Object.freeze({
+        id,
+        label: t(`settingsPlugins.rowStatus.${id}` as 'settingsPlugins.rowStatus.enabled'),
+        variant: PLUGIN_ROW_STATUS_VARIANTS[id],
+    });
 }
 
-export function formatDevelopmentPluginSubtitle(entry: DevelopmentPluginEntry): string {
-    const parts = [
-        entry.installed.pluginId,
-        entry.installed.enabled ? t('common.enabled') : t('common.disabled'),
-        t('settingsPlugins.developmentSourcePathLabel', { path: entry.sourceRootPath }),
-    ];
-    if (entry.installed.compatibility.status !== 'compatible') {
-        parts.push(entry.installed.compatibility.status);
+/**
+ * Ordered by authority, then admissibility, then health, then user intent:
+ * trust the user withdrew outranks a compatibility refusal, which outranks a
+ * reported defect, which outranks a plugin the user simply turned off.
+ */
+function resolveInstalledRowStatusId(entry: InstalledPluginEntry): PluginRowStatusId {
+    if (entry.source.trustPolicy === 'untrusted') return 'trustRemoved';
+    if (entry.compatibility.status !== 'compatible') return 'incompatible';
+    if (entry.diagnostics.length > 0 || entry.compatibility.diagnostics.length > 0) return 'needsAttention';
+    return entry.enabled ? 'enabled' : 'disabled';
+}
+
+/** A concise origin label. The exact locator stays on the plugin detail route. */
+function resolveInstalledSourceLabel(entry: InstalledPluginEntry): string {
+    switch (entry.source.kind) {
+        case 'bundled':
+            return t('settingsPlugins.rowSource.bundled');
+        case 'npm':
+            return t('settingsPlugins.rowSource.npm');
+        case 'archive':
+            return t('settingsPlugins.rowSource.archive');
+        case 'path':
+        case 'localPath':
+            return t('settingsPlugins.rowSource.localPath');
+        default:
+            return t('settingsPlugins.rowSource.other');
     }
-    parts.push(...entry.reload.diagnostics.map((diagnostic) => diagnostic.message));
-    return parts.join(' | ');
+}
+
+export type InstalledPluginPresentation = Readonly<{
+    status: PluginRowStatus;
+    sourceLabel: string;
+    /** One human consequence when the row needs a decision, else `null`. */
+    attentionLabel: string | null;
+}>;
+
+export function projectInstalledPluginPresentation(
+    entry: InstalledPluginEntry,
+): InstalledPluginPresentation {
+    const statusId = resolveInstalledRowStatusId(entry);
+    // The canonical diagnostic message is already written for a reader; its
+    // `code` is not, so only the message reaches the row.
+    const diagnostic = entry.diagnostics[0] ?? entry.compatibility.diagnostics[0] ?? null;
+    const attentionLabel = statusId === 'trustRemoved'
+        ? t('settingsPlugins.rowAttention.trustRemoved')
+        : statusId === 'incompatible'
+            ? diagnostic?.message ?? t('settingsPlugins.rowAttention.incompatible')
+            : statusId === 'needsAttention'
+                ? diagnostic?.message ?? null
+                : null;
+    return Object.freeze({
+        status: createPluginRowStatus(statusId),
+        sourceLabel: resolveInstalledSourceLabel(entry),
+        attentionLabel,
+    });
+}
+
+export type DevelopmentPluginPresentation = Readonly<{
+    status: PluginRowStatus;
+    /**
+     * The daemon-canonical development root for the exact selected machine,
+     * shown through the one repository home-relative formatter so it reads the
+     * same way an ordinary Session working directory does.
+     */
+    sourcePathLabel: string;
+    attentionLabel: string | null;
+}>;
+
+export function projectDevelopmentPluginPresentation(
+    entry: DevelopmentPluginEntry,
+    homeDir?: string,
+): DevelopmentPluginPresentation {
+    const statusId: PluginRowStatusId = entry.installed.compatibility.status !== 'compatible'
+        ? 'incompatible'
+        : entry.phase === 'retained_incumbent' || entry.phase === 'unavailable'
+            ? 'needsAttention'
+            : entry.installed.enabled
+                ? 'enabled'
+                : 'disabled';
+    const diagnostic = entry.diagnostic ?? entry.installed.compatibility.diagnostics[0] ?? null;
+    const phaseKey = {
+        observing: 'observing',
+        preparing_dependencies: 'preparingDependencies',
+        compiling: 'compiling',
+        validating: 'validating',
+        active: 'active',
+        retained_incumbent: 'retainedIncumbent',
+        unavailable: 'unavailable',
+    } as const;
+    const phaseVariant: StatusPillVariant = entry.phase === 'active'
+        ? 'success'
+        : entry.phase === 'retained_incumbent'
+            ? 'warning'
+            : entry.phase === 'unavailable'
+                ? 'danger'
+                : 'neutral';
+    const daemonPhaseStatus = Object.freeze({
+        id: statusId,
+        label: t(`settingsPlugins.developmentPhase.${phaseKey[entry.phase]}`),
+        variant: phaseVariant,
+    });
+    return Object.freeze({
+        status: statusId === 'incompatible' || statusId === 'disabled'
+            ? createPluginRowStatus(statusId)
+            : daemonPhaseStatus,
+        sourcePathLabel: formatPathRelativeToHome(entry.sourceRootPath, homeDir),
+        attentionLabel: statusId === 'incompatible'
+            ? diagnostic?.message ?? t('settingsPlugins.rowAttention.incompatible')
+            : statusId === 'needsAttention'
+                ? diagnostic?.message ?? null
+                : null,
+    });
 }

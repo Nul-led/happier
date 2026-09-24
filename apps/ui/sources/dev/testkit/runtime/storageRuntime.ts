@@ -1,5 +1,4 @@
-import { isDeepStrictEqual } from 'node:util';
-
+import { getVitestNodeBuiltin } from '@/dev/vitestNodeBuiltins';
 import {
     settingsParse,
     type Settings,
@@ -10,6 +9,10 @@ import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listi
 import { createReducer } from '@/sync/reducer/reducer';
 import type { StorageState } from '@/sync/store/types';
 import type { StoreApi, UseBoundStore } from 'zustand';
+
+const { isDeepStrictEqual } = getVitestNodeBuiltin<{
+    isDeepStrictEqual: (left: unknown, right: unknown) => boolean;
+}>('node:util');
 
 type StorageModule = typeof import('@/sync/domains/state/storage');
 type Profile = ReturnType<StorageModule['useProfile']>;
@@ -125,19 +128,69 @@ export function isStorageStoreLike(value: unknown): value is StorageStoreLike {
  * silently make those tests static.
  */
 export function adaptStorageStoreLike(storeLike: StorageStoreLike): StorageStore {
-    const select = typeof storeLike === 'function'
+    // A callable fixture owns its own state shape and stays passthrough; a
+    // hand-rolled store-like may return a partial snapshot, and readers such
+    // as `state.sessions[sessionId]` index into records the real store always
+    // exposes. Complete those snapshots at this boundary — the same minimal
+    // real shape the canonical store mocks use — and memoize per raw snapshot
+    // so unchanged fixtures keep the referential stability readers rely on.
+    const rawGetState = storeLike.getState;
+    const isCallableFixture = typeof storeLike === 'function';
+    const readCompletedState = isCallableFixture
+        ? rawGetState
+        : createCompletedStateReader(rawGetState);
+    const select = isCallableFixture
         ? storeLike as unknown as StorageStore
         : (selector?: (value: StorageState) => unknown) => {
-            const snapshot = storeLike.getState();
+            const snapshot = readCompletedState();
             return typeof selector === 'function' ? selector(snapshot) : snapshot;
         };
     return Object.assign(select as StorageStore, {
-        getState: storeLike.getState,
-        getInitialState: storeLike.getInitialState ?? storeLike.getState,
+        getState: readCompletedState,
+        getInitialState: storeLike.getInitialState
+            ? createCompletedStateReader(storeLike.getInitialState)
+            : readCompletedState,
         setState: storeLike.setState ?? (() => undefined),
         subscribe: storeLike.subscribe ?? (() => () => undefined),
         destroy: storeLike.destroy ?? (() => undefined),
     });
+}
+
+/**
+ * The real storage store always exposes these identity/list records, even when
+ * empty. A minimal fixture must mirror that boundary so readers can index into
+ * them without guarding; fixture values always win over the empty base.
+ */
+function completePartialStorageState(state: Partial<StorageState>): StorageState {
+    return {
+        sessions: {},
+        machines: {},
+        sessionMessages: {},
+        sessionPending: {},
+        sessionListRowsByServerId: {},
+        ordinarySessionListMembershipByServerId: {},
+        archivedSessionListMembershipByServerId: {},
+        sessionTailContiguousBoundary: {},
+        sessionTranscriptLoadIssues: {},
+        ...state,
+        localSettings: state.localSettings ?? localSettingsDefaults,
+    } as StorageState;
+}
+
+function createCompletedStateReader(readRaw: () => StorageState): () => StorageState {
+    const completedByRawSnapshot = new WeakMap<object, StorageState>();
+    return () => {
+        const raw = readRaw() as unknown;
+        if (raw === null || typeof raw !== 'object') {
+            // Degenerate fixture snapshot: fall back to the minimal real boundary alone.
+            return completePartialStorageState({});
+        }
+        const cached = completedByRawSnapshot.get(raw);
+        if (cached !== undefined) return cached;
+        const completed = completePartialStorageState(raw as Partial<StorageState>);
+        completedByRawSnapshot.set(raw, completed);
+        return completed;
+    };
 }
 
 export function createStorageModuleStub<TOverrides extends object>(
@@ -228,6 +281,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         useSessionUsage: () => null,
         useSessionProjectScmSnapshot: () => null,
         useSessionSubagentSourceMessages: () => [],
+        useSessionSidechainMessages: () => [],
         useMachineCliDetectionTarget: () => ({ daemonStateVersion: 0, isOnline: false }),
         useSessionForkSupportSource: () => null,
         useSessionInteractionSource: () => null,
@@ -242,6 +296,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         useMachineDisplayById: () => machineDisplayById,
         useMachineDisplayNamesById: () => ({}),
         useAllSessions: () => allSessions,
+        useFriendRequestCount: () => 0,
         useAllSessionsForAttention: () => allAttentionSessions,
         useAllSessionListRenderables: () => allSessionListRenderables,
         useAllSessionListAttentionRows: () => allSessionListAttentionRows,
@@ -390,19 +445,7 @@ export function createUseLocalSettingMutableMock(
 }
 
 export function createStorageStoreMock(state: Partial<StorageState>): UseBoundStore<StoreApi<StorageState>> {
-    const snapshot = {
-        sessions: {},
-        machines: {},
-        sessionMessages: {},
-        sessionPending: {},
-        sessionListRowsByServerId: {},
-        ordinarySessionListMembershipByServerId: {},
-        archivedSessionListMembershipByServerId: {},
-        sessionTailContiguousFloorSeq: {},
-        sessionTranscriptLoadIssues: {},
-        ...state,
-        localSettings: state.localSettings ?? localSettingsDefaults,
-    } as StorageState;
+    const snapshot = completePartialStorageState(state);
 
     return Object.assign(
         ((selector?: (value: StorageState) => unknown) =>
@@ -420,22 +463,7 @@ export function createStorageStoreMock(state: Partial<StorageState>): UseBoundSt
 }
 
 export function createLiveStorageStoreMock(readState: () => Partial<StorageState>): UseBoundStore<StoreApi<StorageState>> {
-    const getSnapshot = (): StorageState => {
-        const state = readState();
-        return {
-            sessions: {},
-            machines: {},
-            sessionMessages: {},
-            sessionPending: {},
-            sessionListRowsByServerId: {},
-            ordinarySessionListMembershipByServerId: {},
-            archivedSessionListMembershipByServerId: {},
-            sessionTailContiguousFloorSeq: {},
-            sessionTranscriptLoadIssues: {},
-            ...state,
-            localSettings: state.localSettings ?? localSettingsDefaults,
-        } as StorageState;
-    };
+    const getSnapshot = (): StorageState => completePartialStorageState(readState());
 
     return Object.assign(
         ((selector?: (value: StorageState) => unknown) => {

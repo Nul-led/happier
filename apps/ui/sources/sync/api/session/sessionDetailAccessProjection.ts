@@ -4,7 +4,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 
 /**
  * Released detail stays owner/direct unless the exact Home's already-loaded
- * collaboration decision opts this request into the current access projection.
+ * Session-sharing decision opts this request into the current access projection.
  */
 export function readSessionDetailAccessProjectionVersion(
     serverId?: string | null,
@@ -14,7 +14,7 @@ export function readSessionDetailAccessProjectionVersion(
     });
     const decision = snapshot
         ? resolveRuntimeFeatureDecisionFromSnapshot({
-            featureId: 'sessions.collaboration',
+            featureId: 'sharing.session',
             settings: storage.getState().settings,
             snapshot,
         })

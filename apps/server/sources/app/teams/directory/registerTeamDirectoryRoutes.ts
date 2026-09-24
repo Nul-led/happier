@@ -26,11 +26,14 @@ import {
     TeamExternalGroupBindingsPageV1Schema,
     TeamErrorCodeV1Schema,
     TeamErrorV1Schema,
+    TeamIdentityErrorV1Schema,
     teamErrorHttpStatusV1,
+    teamIdentityErrorHttpStatusV1,
     type TeamDirectorySafeErrorCodeV1,
     type TeamDirectoryErrorV1,
     type TeamErrorCodeV1,
     type TeamErrorV1,
+    type TeamIdentityErrorCodeV1,
 } from "@happier-dev/protocol/teams";
 import {
     TEAM_DIRECTORY_ACTION_PATHS_V1,
@@ -58,7 +61,9 @@ import {
     setExternalGroupBindingForActor,
 } from "./externalGroupBindingAdministration";
 
-const DirectoryRouteErrorV1Schema = TeamDirectoryErrorV1Schema.or(TeamErrorV1Schema);
+// `team_identity_not_allowed` is the Home provider-kind refusal the identity
+// routes already return for the same Home policy fact.
+const DirectoryRouteErrorV1Schema = TeamDirectoryErrorV1Schema.or(TeamErrorV1Schema).or(TeamIdentityErrorV1Schema);
 const DirectoryErrors = {
     400: DirectoryRouteErrorV1Schema,
     403: DirectoryRouteErrorV1Schema,
@@ -67,14 +72,15 @@ const DirectoryErrors = {
     503: DirectoryRouteErrorV1Schema,
 } as const;
 
-type DirectoryRouteError = TeamErrorCodeV1 | TeamDirectorySafeErrorCodeV1;
+type DirectoryRouteError = TeamErrorCodeV1 | TeamDirectorySafeErrorCodeV1 | "team_identity_not_allowed";
 type DirectoryErrorReply = {
     code: (status: 400 | 403 | 404 | 409 | 503) => {
-        send: (payload: TeamErrorV1 | TeamDirectoryErrorV1) => void;
+        send: (payload: TeamErrorV1 | TeamDirectoryErrorV1 | Readonly<{ error: TeamIdentityErrorCodeV1 }>) => void;
     };
 };
 
 function directoryErrorHttpStatus(error: DirectoryRouteError): 400 | 403 | 404 | 409 | 503 {
+    if (error === "team_identity_not_allowed") return teamIdentityErrorHttpStatusV1(error);
     const teamError = TeamErrorCodeV1Schema.safeParse(error);
     if (teamError.success) return teamErrorHttpStatusV1(teamError.data);
     const directoryError = TeamDirectorySafeErrorCodeV1Schema.parse(error);
@@ -99,6 +105,10 @@ function directoryErrorHttpStatus(error: DirectoryRouteError): 400 | 403 | 404 |
 }
 
 function fail(reply: DirectoryErrorReply, error: DirectoryRouteError): void {
+    if (error === "team_identity_not_allowed") {
+        reply.code(directoryErrorHttpStatus(error)).send({ error });
+        return;
+    }
     const teamError = TeamErrorCodeV1Schema.safeParse(error);
     if (teamError.success) {
         reply.code(directoryErrorHttpStatus(error)).send({ error: teamError.data });

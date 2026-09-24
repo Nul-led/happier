@@ -9,6 +9,7 @@ import type { PluginServices } from '@happier-dev/plugin-sdk';
 import {
     ComposerAttachmentMessageAcceptedV1Schema,
     ComposerAttachmentResolveRequestV1Schema,
+    pluginSourceCustodyV1Equal,
 } from '@happier-dev/protocol';
 import type {
     PluginRuntimeAuthoritySnapshotV1,
@@ -63,7 +64,10 @@ import {
 import {
     readCurrentPluginImmutableGenerationIntegrityCurrentness,
 } from '@/plugins/store/registry/generationStore';
-import { BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS } from '@/plugins/projection/registry/sources/generatedBundledPluginArtifacts';
+import {
+    createPluginRuntimeOccurrenceId,
+    type PluginRuntimeOccurrenceId,
+} from '@/plugins/runtime/runtimeSlots';
 import { readPrivateBearerFile } from '@/daemon/privateBearerFile';
 import {
     updateSessionMarkerRunnerManagedProviderAuthority,
@@ -143,10 +147,11 @@ function assertBootstrapIdentityMatchesClaim(
         || identity.pluginVersion !== descriptor.pluginVersion
         || identity.agentId !== descriptor.agentId
         || identity.backendId !== descriptor.backendId
-        || identity.generation
-            !== (descriptor.immutableGenerationId ?? descriptor.generation)
-        || identity.immutableGenerationId
-            !== (descriptor.immutableGenerationId ?? null)
+        || identity.occurrenceId !== descriptor.occurrenceId
+        || !pluginSourceCustodyV1Equal(
+            identity.sourceCustody,
+            descriptor.sourceCustody,
+        )
         || !descriptorAgentDeclaration
         || claimedAgent.pluginId !== descriptor.pluginId
         || claimedAgent.provenance
@@ -444,9 +449,7 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
         pluginId: descriptor.pluginId,
         localId: bootstrapAgentLocalId,
     });
-    const bootstrapVoiceAuthorityGeneration =
-        descriptor.immutableGenerationId
-        ?? descriptor.generation;
+    const bootstrapVoiceAuthorityOccurrenceId = descriptor.occurrenceId;
     const resolveClaimedVoiceAuthority = () => {
         const authority =
             claimed?.agentSessionRealtimeVoiceAuthority
@@ -464,12 +467,12 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
     const agentSessionRealtimeVoiceAuthority:
         AgentSessionRealtimeVoiceAuthority =
             Object.freeze({
-                get generation() {
+                get occurrenceId() {
                     return (
                         claimed
                             ?.agentSessionRealtimeVoiceAuthority
-                            ?.generation
-                        ?? bootstrapVoiceAuthorityGeneration
+                            ?.occurrenceId
+                        ?? bootstrapVoiceAuthorityOccurrenceId
                     );
                 },
                 policyAgentRef,
@@ -483,9 +486,9 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
                         ?.isCurrent(provider)
                         ?? false;
                 },
-                resolveProviderGeneration(provider) {
+                resolveProviderOccurrenceId(provider) {
                     return resolveClaimedVoiceAuthority()
-                        ?.resolveProviderGeneration(provider)
+                        ?.resolveProviderOccurrenceId(provider)
                         ?? null;
                 },
                 resolveRetirementSignal(provider) {
@@ -519,15 +522,21 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
                 return claimed?.identity.backendId
                     ?? descriptor.backendId;
             },
-            get generation() {
-                return claimed?.identity.generation
-                    ?? descriptor.immutableGenerationId
-                    ?? descriptor.generation;
+            get occurrenceId() {
+                if (!claimed) {
+                    throw createRunnerSourceUnavailableError(
+                        'Runner Agent canonical session authority has not been claimed',
+                    );
+                }
+                return claimed.identity.occurrenceId;
             },
-            get immutableGenerationId() {
-                return claimed?.identity.immutableGenerationId
-                    ?? descriptor.immutableGenerationId
-                    ?? null;
+            get sourceCustody() {
+                if (!claimed) {
+                    throw createRunnerSourceUnavailableError(
+                        'Runner Agent canonical session authority has not been claimed',
+                    );
+                }
+                return claimed.identity.sourceCustody;
             },
             get runtimeAuthority() {
                 return claimed?.identity.runtimeAuthority
@@ -559,6 +568,7 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
                         publicReleaseRing: input.publicReleaseRing,
                         authorityFilePath: input.authorityFilePath,
                         expectedSessionId: canonicalSessionId,
+                        occurrenceId: descriptor.occurrenceId,
                         runtimeAuthority: descriptor.runtimeAuthority,
                     });
                 if (!source) {
@@ -647,6 +657,7 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
     publicReleaseRing: PublicReleaseRingId;
     authorityFilePath: string;
     expectedSessionId?: string;
+    occurrenceId?: string;
     runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
 }>): Promise<RunnerAgentSessionRuntimeSource | null> {
     const authority =
@@ -661,6 +672,21 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
     if (!authority) return null;
 
     const binding = authority.retainedAgent;
+    if (
+        binding.sourceCustody.kind === 'development'
+        && !input.occurrenceId?.trim()
+    ) {
+        return null;
+    }
+    // The private bootstrap schema has already bounded and validated this
+    // daemon-minted opaque id; direct construction mints one locally.
+    const runnerOccurrenceId: PluginRuntimeOccurrenceId = input.occurrenceId
+        ? input.occurrenceId as PluginRuntimeOccurrenceId
+        : createPluginRuntimeOccurrenceId(binding.pluginId);
+    const bindingManagedGenerationId =
+        binding.sourceCustody.kind === 'managed'
+            ? binding.sourceCustody.immutableGenerationId
+            : null;
     const lifetime = new AbortController();
     const storePaths = resolvePluginStorePaths({
         happyHomeDir: input.happyHomeDir,
@@ -678,6 +704,9 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
             paths: storePaths,
             authority: expectedAuthority,
             retainedAgent: binding,
+            ...(binding.sourceCustody.kind === 'development'
+                ? { developmentOccurrenceId: runnerOccurrenceId }
+                : {}),
         });
     const verifiedAgentDeclaration =
         runnerManagedServiceOwner.verifiedAgentDeclaration;
@@ -704,17 +733,15 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                     .readCurrentProviderPluginHardRevocationRevision(
                         pluginId,
                     ),
-            readCurrentProviderImmutableGenerationIntegrityCurrentness:
-                (providerAuthority) =>
-                    readCurrentPluginImmutableGenerationIntegrityCurrentness({
+            readCurrentProviderSourceCustodyIntegrityCurrentness:
+                (providerAuthority) => providerAuthority.sourceCustody.kind
+                    !== 'managed'
+                    || readCurrentPluginImmutableGenerationIntegrityCurrentness({
                         paths: storePaths,
                         pluginId: providerAuthority.pluginId,
                         immutableGenerationId:
-                            providerAuthority.immutableGenerationId,
-                        bundledArtifacts:
-                            BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS,
-                        retainedManifestAuthority:
-                            providerAuthority.manifestAuthority,
+                            providerAuthority.sourceCustody
+                                .immutableGenerationId,
                     }),
             projectEndpointAccess: (projectionInput) =>
                 runnerManagedServiceOwner
@@ -729,9 +756,11 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
             retainAdoptedProviderAuthority: (providerAuthority) =>
                 attachExactRunnerRetainedPluginGenerations({
                     paths: storePaths,
-                    immutableGenerationIds: [
-                        providerAuthority.immutableGenerationId,
-                    ],
+                    immutableGenerationIds:
+                        providerAuthority.sourceCustody.kind === 'managed'
+                            ? [providerAuthority.sourceCustody
+                                .immutableGenerationId]
+                            : [],
                     attach: async () =>
                         await updateSessionMarkerRunnerManagedProviderAuthority({
                             pid: authority.runner.pid,
@@ -768,11 +797,20 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
             loadRetainedAgentRuntimeLeaf({
                 paths: storePaths,
                 binding,
+                ...(binding.sourceCustody.kind === 'development'
+                    ? { developmentOccurrenceId: runnerOccurrenceId }
+                    : {}),
+            }).catch((error: unknown) => {
+                if (binding.sourceCustody.kind !== 'development') throw error;
+                const message = error instanceof Error
+                    ? error.message
+                    : 'current trusted development Agent source is unavailable';
+                throw createRunnerSourceUnavailableError(message);
             });
         await runtimeLeafPromise;
     };
     // One retained External Sessions authority for this Session: the exact
-    // immutable generation that admitted it. Both the runner's own private
+    // durable source custody that admitted it. Both the runner's own private
     // composition and the daemon-forwarded provider requests of an already
     // admitted private follow read this single surface, so no second
     // decision-maker can answer for the same Session.
@@ -794,14 +832,13 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                     identity: {
                         pluginId: binding.pluginId,
                         agentId: binding.agentId,
-                        generation: binding.immutableGenerationId,
+                        occurrenceId: runnerOccurrenceId,
                         contributionQualifiedId:
                             resolveAgentContributionQualifiedId({
                                 pluginId: binding.pluginId,
                                 localId: binding.localAgentId,
                             }),
-                        immutableGenerationId:
-                            binding.immutableGenerationId,
+                        sourceCustody: binding.sourceCustody,
                     },
                     isCurrent: () => !lifetime.signal.aborted,
                     retirementSignal: lifetime.signal,
@@ -1208,8 +1245,8 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
             // manifest-local id. Never re-derive an alias here.
             agentId: binding.agentId,
             backendId: binding.agentId,
-            generation: binding.immutableGenerationId,
-            immutableGenerationId: binding.immutableGenerationId,
+            occurrenceId: runnerOccurrenceId,
+            sourceCustody: binding.sourceCustody,
             ...(input.runtimeAuthority
                 ? { runtimeAuthority: input.runtimeAuthority }
                 : {}),
@@ -1258,7 +1295,8 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                                 localId: binding.localAgentId,
                             }),
                     }),
-                    generation: binding.immutableGenerationId,
+                    occurrenceId: runnerOccurrenceId,
+                    sourceCustody: binding.sourceCustody,
                     correlationId: params.sessionId,
                     surface: 'agent' as const,
                     session: params.session,
@@ -1266,7 +1304,7 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                     signal: params.signal,
                     readActiveTurnAdmissionWitness:
                         params.readActiveTurnAdmissionWitness,
-                    isGenerationCurrent: () =>
+                    isOccurrenceCurrent: () =>
                         !lifetime.signal.aborted,
                 });
                 const localServices =
@@ -1452,7 +1490,8 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                             localId: binding.localAgentId,
                         }),
                 }),
-                generation: params.generation,
+                occurrenceId: runnerOccurrenceId,
+                sourceCustody: binding.sourceCustody,
                 correlationId: params.correlationId,
                 surface: 'agent' as const,
                 ...(params.session
@@ -1471,7 +1510,7 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                                 .readActiveTurnAdmissionWitness,
                     }
                     : {}),
-                isGenerationCurrent: params.isGenerationCurrent,
+                isOccurrenceCurrent: params.isOccurrenceCurrent,
             });
             const localServices =
                 invocationServiceOwners.createOperationServices(seed, {
@@ -1596,6 +1635,13 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
                     agentTargetKey: params.agentTargetKey,
                     modelId: params.modelId,
                     ...(params.consumer ? { consumer: params.consumer } : {}),
+                    ...(params.executionRunSelection
+                        ? {
+                            teamId: params.executionRunSelection.teamId,
+                            deliveryMode: params.executionRunSelection.deliveryMode,
+                        }
+                        : {}),
+                    ...(params.executionRunAgentId ? { agentId: params.executionRunAgentId } : {}),
                 },
                 signal: params.signal,
             });

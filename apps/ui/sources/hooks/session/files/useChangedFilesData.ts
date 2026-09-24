@@ -148,12 +148,22 @@ function buildAttributedScope(params: Readonly<{
     for (const file of params.changeSet?.files ?? []) {
         if (!evidenceByPath.has(file.filePath)) evidenceByPath.set(file.filePath, [file]);
     }
+    // A rename folds its source path into the final file, so the contributions recorded before the
+    // rename must stay reachable from the row that now carries them. A copy keeps both rows, so it
+    // never absorbs its source's lineage.
+    const readEvidence = (change: SessionChangeSetFile): readonly FileChangeEvidence[] => {
+        const current = evidenceByPath.get(change.filePath) ?? [];
+        const renamedFrom = change.changeKind === 'renamed' ? change.previousFilePath : null;
+        if (!renamedFrom || renamedFrom === change.filePath) return current;
+        const previous = evidenceByPath.get(renamedFrom) ?? [];
+        return previous.length > 0 ? [...previous, ...current] : current;
+    };
     const qualify = (change: SessionChangeSetFile): Omit<SessionAttributedFile, 'file'> => ({
         turns: change.turns,
         content: { source: change.source, confidence: change.confidence },
         attribution: change.attribution,
         checkpointOverlap: change.checkpointOverlap,
-        evidence: evidenceByPath.get(change.filePath) ?? [],
+        evidence: readEvidence(change),
     });
     const filesByPath = new Map(params.allRepositoryChangedFiles.map((file) => [file.fullPath, file] as const));
     const matchedAttributedFiles = params.projection.matchedFiles

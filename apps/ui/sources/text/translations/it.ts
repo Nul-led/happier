@@ -11,7 +11,10 @@ import { externalSessionOperationTranslations } from './externalSessionOperation
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
 import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
 import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
@@ -4990,9 +4993,25 @@ export const it = {
   settingsProviders: settingsProvidersTranslations.it,
 
   settingsAgents: {
+        authoring: {
+              configureAcpBackendPrompt: 'Aiutami ad aggiungere un agente ACP personalizzato a Happier. Chiedimi quale agente voglio avviare e come parte (comando, argomenti, variabili d\'ambiente), verifica che il comando funzioni su questa macchina, poi salvalo con l\'azione agents.acp.backends.upsert (leggi prima il suo input con action_spec_get). Dimmi quando compare in Impostazioni → Agenti.',
+              addAgentPrompt: 'Voglio aggiungere un nuovo agente di programmazione a Happier. Chiedimi quale. Se parla ACP (Agent Client Protocol) e si avvia con un comando, aggiungilo come agente ACP personalizzato con l\'azione agents.acp.backends.upsert. Altrimenti crea un plugin di Happier che lo aggiunga seguendo la skill happier-plugin-authoring e partendo dall\'azione plugins.scaffold. Dimmi quale strada hai scelto e perché prima di modificare qualsiasi cosa.',
+              needsMachine: 'Serve una macchina. Apre la configurazione delle macchine.',
+              useAgentToConfigure: 'Configura con un agente',
+              useAgentToConfigureDescription: 'Un agente ti chiede cosa vuoi avviare e lo salva per te.',
+        },
         collection: {
+              askAgentToAdd: 'Chiedi a un agente di aggiungerne uno',
+              askAgentToAddDescription: 'Un agente lo configura per te in una nuova sessione.',
+              addAgent: 'Aggiungi un agente',
+              addAcpAgent: 'Aggiungi un agente ACP',
+              addAcpAgentDescription: 'Avvia qualsiasi agente compatibile con ACP con un comando.',
+              ready: 'Pronto',
+              beta: 'Beta',
+              install: 'Installa',
+              reinstall: 'Reinstalla',
+              customAgents: 'Agenti personalizzati',
               onMachine: ({ machine }: { machine: string }) => `Su ${machine}`,
-              onThisMachine: 'Su questa macchina',
               availableToInstall: 'Disponibili da installare',
               searchPlaceholder: 'Cerca agenti',
               notInstalled: 'Non installato',
@@ -5001,7 +5020,27 @@ export const it = {
               noMatches: 'Nessun agente corrisponde alla ricerca',
               overviewDescription: 'Gli agenti di programmazione che Happier può avviare sulle tue macchine.',
         },
+        offline: {
+              pickerDetail: 'Offline · mostra l\'ultimo stato noto',
+              bannerTitle: 'Questa macchina è offline',
+              bannerDescription: 'Viene mostrato l\'ultimo stato noto. Le azioni sulla macchina non sono disponibili finché non si riconnette.',
+        },
         detailPage: {
+              machineScopeLabel: 'Configurazione e stato su',
+              readinessDescription: 'Accesso e CLI sulla macchina qui sopra.',
+              sessionDefaultsAccountDescription: ({ agent }: { agent: string }) => `Salvate nel tuo account e usate su ogni macchina quando inizia una nuova sessione con ${agent}.`,
+              checkingMachine: ({ machine }: { machine: string }) => `Verifica di ${machine}…`,
+              machineUnavailableDescription: 'Happier non è riuscito a leggere questa macchina. Le impostazioni dell\'agente restano valide.',
+              noMachineTitle: 'Scegli una macchina',
+              noMachineDescription: ({ agent }: { agent: string }) => `La configurazione di ${agent} dipende dalla macchina su cui gira. Scegline una qui sopra.`,
+              cliVersion: ({ cli, version }: { cli: string; version: string }) => `CLI ${cli} ${version}`,
+              cliName: ({ cli }: { cli: string }) => `CLI ${cli}`,
+              checkedAt: ({ time }: { time: string }) => `verificato ${time}`,
+              signInTitle: 'Accesso',
+              signInGuide: 'Guida all\'accesso',
+              nothingToSetUpTitle: 'Niente da configurare su questa macchina',
+              nothingToSetUpDescription: ({ agent }: { agent: string }) => `${agent} non ha una CLI né un accesso da gestire qui.`,
+              integrationsTitle: 'Integrazioni',
               onMachine: ({ machine }: { machine: string }) => `su ${machine}`,
               notInstalledOnMachine: ({ machine }: { machine: string }) => `Non installato su ${machine}`,
               readinessTitle: 'Disponibilità',
@@ -5261,7 +5300,7 @@ export const it = {
                     },
                     claudeRemoteAgentSdkEnabled: {
                         title: "Usa Agent SDK (remoto)",
-                        subtitle: "Usa l’@anthropic-ai/claude-agent-sdk ufficiale per la modalita remota."
+                        subtitle: "Usa il runtime Claude Agent SDK di Happier per la modalita remota."
                     },
                     claudeRemoteDebugEnabled: {
                         title: "Modalita debug",
@@ -5488,11 +5527,21 @@ export const it = {
   },
 
   settingsAppearance: {
-    lightThemeSlot: 'Tema chiaro',
-    lightThemeSlotDescription: 'Usato quando l’app è in modalità chiara.',
-    darkThemeSlot: 'Tema scuro',
-    darkThemeSlotDescription: 'Usato quando l’app è in modalità scura.',
     pageDescription: 'Tema, testo, layout e animazioni.',
+    themesSummary: ({ light, dark }: { light: string; dark: string }) => `Chiaro: ${light} · Scuro: ${dark}`,
+    themesCount: ({ builtIn, custom }: { builtIn: number; custom: number }) => `${builtIn} integrati · ${custom} personalizzati`,
+    textSizeGlyph: 'A',
+    densityPreview: {
+        title: 'Anteprima',
+        sessionTitle1: 'Correggere il test di riconnessione instabile',
+        sessionTitle2: 'Rifare la struttura delle impostazioni',
+        sessionTitle3: 'Scrivere le note di rilascio',
+        sessionSubtitle1: 'happier · Claude',
+        sessionSubtitle2: 'happier · Codex',
+        sessionSubtitle3: 'docs · Claude',
+    },
+    resetConfirmTitle: 'Ripristinare l’aspetto?',
+    resetConfirmBody: 'Tema, testo, layout, animazioni, avatar e barra delle schede tornano ai valori predefiniti. I tuoi temi personalizzati restano.',
     tabBarAppearance: {
       title: 'Barra schede',
       footer: 'Personalizza la barra delle schede in basso.',
@@ -6798,6 +6847,7 @@ export const it = {
 	    invalidLinkTitle: "Link di sessione non valido",
         whichHomeTitle: "Quale Home?",
         whichHomeDescription: "Questa sessione è presente su più Home. Scegli il Home da aprire.",
+        whichHomeUnknownDescription: 'Happier non riesce a capire quale Home contiene questa sessione. Scegli il Home su cui aprirla.',
 	    invalidLinkDescription: "Il link della sessione è mancante o non valido. Controlla l’URL e riprova.",
 	    resumeSupportNoteChecking:
 	      "Nota: Happier sta ancora verificando se questa macchina può riprendere la sessione del provider.",
@@ -7517,28 +7567,11 @@ export const it = {
     serverGroupMustHaveServer:
       "Un gruppo di Home deve includere almeno un Home.",
     relayDrift: {
-        bannerDifferentRelayTitle: 'Il tuo servizio in background è connesso a un altro Home',
-        bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) =>
-            `App: ${activeRelayUrl} · Servizio in background: ${daemonRelayUrl}`,
-        bannerNeedsAuthTitle: 'Il tuo servizio in background deve accedere a questo Home',
-        bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `L’app sta usando ${activeRelayUrl}, ma il servizio in background ha ancora bisogno di approvazione o accesso.`,
-        bannerNotConfiguredTitle: 'Il tuo servizio in background non è ancora connesso a questo Home',
-        bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `L’app sta usando ${activeRelayUrl}, ma questo computer non ha ancora terminato la connessione del servizio in background.`,
-        bannerNotInstalledTitle: 'Il tuo servizio in background non è installato per questo Home',
-        bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `L’app sta usando ${activeRelayUrl}, ma questo computer deve ancora installare il servizio in background per usarlo.`,
-        bannerNotRunningTitle: 'Il tuo servizio in background è installato ma non è in esecuzione',
-        bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `L’app sta usando ${activeRelayUrl}, ma il servizio in background è fermo e deve essere riavviato.`,
-        repairAction: 'Connetti il servizio in background a questo Home',
         progressTitle: 'Connessione del servizio in background a questo Home in corso',
         progressStepPrepare: 'Prepara il servizio in background',
         progressStepConfigureRelay: 'Aggiorna la connessione al Home',
         progressStepAuthenticate: 'Completa accesso e approvazione',
         progressStepFinish: 'Completa la riparazione',
-        statusUnknown: 'Sconosciuto',
     },
     retention: {
       title: "Criterio di conservazione",
@@ -10780,9 +10813,10 @@ settingsSession: {
         presentationScreenSubtitle: "Apre Nuova sessione nell'area principale con il compositore ancorato in basso.",
         presentationModalTitle: "Modale",
         presentationModalSubtitle: "Apre Nuova sessione sopra l'area di lavoro corrente come modale richiudibile.",
-        wizardModeTitle: "Modalita procedura guidata",
-        wizardModeEnabledSubtitle: "Apre la configurazione guidata con selettori separati.",
-        wizardModeDisabledSubtitle: "Usa il modale compatto centrato sul compositore.",
+        startWithTitle: "Inizia con",
+        startWithDescription: "La procedura guidata passa da ogni scelta; il compositore riparte dalla tua ultima configurazione.",
+        startWithComposer: "Compositore",
+        startWithWizard: "Procedura guidata",
         rememberLastProjectSelectionsTitle: "Ricorda le ultime selezioni di sessione del progetto",
         rememberLastProjectSelectionsEnabledSubtitle:
           "Le scorciatoie di progetto riutilizzano macchina, cartella, motore, modello e opzioni della sessione più recente.",
@@ -12023,6 +12057,21 @@ settingsSession: {
 
   settingsAccount: {
     securityPageDescription: "Metodi di accesso, recupero, sessioni e crittografia per questo Home.",
+    hideRecoveryKey: "Nascondi la chiave di recupero",
+    showRecoveryKey: "Mostra la chiave di recupero",
+    accountIdCopy: "Copia l’ID account",
+    accountIdLabel: "ID account",
+    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `Accedi a ${accountService}`,
+    accountServiceBenefitFindHomes: "I tuoi Home, trovati",
+    thisHome: "questo Home",
+    thisHomeTitle: "Questo Home",
+    shareUsageData: "Condividi dati di utilizzo anonimi",
+    shareUsageDataDescription: "Aiuta a migliorare Happier. Non vengono raccolte informazioni personali.",
+    shareCrashReports: "Condividi i rapporti sugli arresti anomali",
+    deleteAccountEllipsis: "Elimina account…",
+    signOutFootnote: "Uscire da questo Home ti lascia connesso agli altri Home e al servizio di accesso.",
+    sessionsSectionTitle: "Sessioni",
+    apiAccessSectionTitle: "Accesso API",
     endToEndEncrypted: "Crittografato end-to-end",
     notEndToEndEncrypted: "Non crittografato end-to-end",
     editUsername: "Modifica nome utente",
@@ -12039,14 +12088,14 @@ settingsSession: {
     moreSecurity: "Altra sicurezza",
     moreSecuritySummary: "Token API · crittografia · sessioni",
     allSecuritySettings: "Tutte le impostazioni di accesso e sicurezza",
-    accountServiceDescription: "Trova i tuoi Home e ti fa accedere da qualsiasi dispositivo.",
-    accountServiceInviteTitle: "I tuoi Home, su ogni dispositivo",
-    accountServiceInviteBody: "Accedi una volta per trovare gli Home che usi e aprirli da telefono, portatile o browser. I tuoi Home e i loro dati restano dove sono.",
-    accountServiceBenefitFindHomesDescription: "Gli Home collegati compaiono automaticamente.",
-    accountServiceBenefitSignIn: "Accedi agli Home",
+    accountServiceDescription: "Un account che collega i tuoi dispositivi ai tuoi Home.",
+    accountServiceInviteTitle: "Porta i tuoi Home ovunque",
+    accountServiceInviteBody: "Connettiti una volta e ogni dispositivo che usi potrà trovare e aprire i tuoi Home. I tuoi Home e i loro dati restano dove sono.",
+    accountServiceBenefitFindHomesDescription: "Gli Home collegati al tuo account compaiono su ognuno dei tuoi dispositivi.",
+    accountServiceBenefitSignIn: "Apri gli Home direttamente",
     accountServiceBenefitSignInDescription: "Apri un Home collegato senza reinserirne le credenziali.",
-    accountServiceBenefitDevices: "Usa gli altri dispositivi",
-    accountServiceBenefitDevicesDescription: "Gli altri dispositivi possono trovare i tuoi Home e chiedere l’accesso.",
+    accountServiceBenefitDevices: "Tutti i tuoi dispositivi",
+    accountServiceBenefitDevicesDescription: "Collega il telefono e gli altri dispositivi ai tuoi Home.",
     accountServiceLinkedHomes: "Home collegati",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `Aggiornato ${time}`,
     accountServiceSignInAgain: "Accedi di nuovo",
@@ -12708,20 +12757,16 @@ settingsSession: {
 
           },
         cliFollowUpTitle: 'Alternativa dal terminale (facoltativa)',
-        manualDisclosure: {
-            show: 'Mostra i passaggi manuali del terminale',
-            hide: 'Nascondi i passaggi manuali del terminale',
-        },
 
           subtitle: {
 
               connectMachine: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `Usa il flusso di configurazione desktop per connettere questo computer a ${targetLabel}. Apri i passaggi manuali solo se preferisci la via del terminale.`,
+                  `Usa il flusso di configurazione desktop per connettere questo computer a ${targetLabel}.`,
 
               startDaemon: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `Usa il flusso di configurazione desktop per riconnettere il servizio in background di ${targetLabel}. Apri i passaggi manuali solo se sei già su quel computer.`,
+                  `Usa il flusso di configurazione desktop per riconnettere il servizio in background di ${targetLabel}.`,
 
               createSession: 'Avvia una nuova sessione con il pulsante + o dal tuo terminale.',
 
@@ -13142,6 +13187,7 @@ settingsSession: {
     },
     repairBackgroundServiceAction: "Ripara il servizio in background",
     repairBackgroundServiceProgressTitle: "Riparazione del servizio in background",
+    thisComputer: thisComputerConnectionTranslations.it,
     cliPath: cliPathExposureTranslations.it,
     cliTrust: cliTrustPromptTranslations.it,
     runtimeInventory: 'Inventario del runtime di Happier',
@@ -13612,6 +13658,12 @@ settingsSession: {
       outcomeUnknown: "Happier non ha potuto confermare se il segreto è stato condiviso. Aggiorna l’elenco prima di riprovare.",
       inUseTitle: "Ancora in uso",
       inUseBody: ({ places }: { places: string }) => `Rimuovi prima questo segreto condiviso dai punti che lo usano:\n${places}`,
+      recipientReadinessTitle: "Chi può aprirlo",
+      recipientHomeManagedRequired: "Questa persona usa l'archiviazione gestita dalla Home. Cambia questo segreto in gestito dalla Home per condividerlo con lei.",
+      recipientEncryptionSetupRequired: "Non ha ancora completato la configurazione della crittografia",
+      recipientEncryptionRepairRequired: "Le sue chiavi di crittografia vanno riparate prima che possa aprirlo",
+      recipientFinishSharing: "Completa la condivisione",
+      recipientReadinessUnavailable: "Impossibile verificare chi può aprire questo segreto. Riprova.",
       shareDisclosureTitle: "Condividere questo segreto?",
       shareDisclosureBody: "Chi lo riceve può usarlo ovunque Happier accetti segreti salvati. Le app e gli strumenti locali possono riceverne il valore.",
       shareDisclosureTargetCount: ({ count }: { count: number }) =>
@@ -13769,6 +13821,7 @@ settingsSession: {
   },
    ...apiTokenSettingsTranslations.it,
    settingsPlugins: {
+      updateReview: pluginUpdateReviewTranslations.it,
       ...pluginWebhookAdministrationTranslations['it'],
       ...pluginAccountDataEraseTranslations.it,
       ...pluginAccountReleaseSelectionTranslations.it,
@@ -13816,23 +13869,24 @@ settingsSession: {
     developmentEditWithAgent: "Modifica con un agente",
     developmentEditWithAgentSubtitle: "Apre una sessione ordinaria nella cartella sorgente di questo plugin.",
     developmentCreateWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `Continua a creare il plugin Happier '${pluginId}' in questa cartella. Usa l'abilità happier-plugin-authoring e solo comandi pubblici di 'happier plugins' e import pubblici dell'SDK; le nuove autorizzazioni o credenziali restano una mia decisione.`,
-    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `Questa è la cartella di sviluppo del plugin Happier '${pluginId}'. Usa l'abilità happier-plugin-authoring e solo comandi pubblici di 'happier plugins' e import pubblici dell'SDK per la modifica che ti chiederò; le nuove autorizzazioni o credenziali restano una mia decisione.`,
+    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `Questa è la sorgente di sviluppo attuale del plugin Happier '${pluginId}'. Usa l'abilità happier-plugin-authoring e solo comandi pubblici di 'happier plugins' e import pubblici dell'SDK per la modifica che ti chiederò; le nuove autorizzazioni o credenziali restano una mia decisione.`,
     developmentSourcePathLabel: ({ path }: { path: string }) => `Percorso: ${path}`,
-    developmentSourceInstall: "Sviluppa una cartella plugin locale",
-    developmentSourceInstallSubtitle: "Consenti al daemon di questo computer di compilare ed eseguire un plugin da una cartella tua. Prima approvi la cartella esatta.",
-    developmentSourceInstallTitle: "Cartella del plugin",
-    developmentSourceInstallBody: "Inserisci il percorso completo della cartella del progetto del plugin su questo computer.",
+    developmentSourceInstall: "Sviluppa un plugin locale",
+    developmentSourceInstallSubtitle: "Consenti al daemon di questo computer di compilare ed eseguire un plugin da un file o una cartella tuoi. Prima approvi la sorgente esatta.",
+    developmentSourceInstallTitle: "File o cartella del plugin",
+    developmentSourceInstallBody: "Inserisci il percorso completo di un file plugin .ts, .mts, .js o .mjs, oppure di una cartella di progetto del plugin su questo computer.",
+    developmentSourceInstallPlaceholder: "/percorso/al/plugin.mjs o /percorso/alla-cartella-plugin",
     developmentSourceInstallSucceeded: "Sorgente di sviluppo approvata e proiettata.",
     developmentSourceInstallFailed: ({ outcome }: { outcome: string }) => `La sorgente di sviluppo non è stata installata (${outcome}).`,
-    developmentTrustProjectSourceTitle: "Vuoi fidarti di questa cartella plugin?",
-    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier installerà dipendenze, compilerà ed eseguirà codice da:\n\n${path} su ${machine} (${server})\n\nContinua solo se ti fidi di tutto ciò che si trova in quella cartella e di tutto ciò che può scaricare.`,
-    developmentTrustProjectSourceConfirm: "Fidati della cartella",
+    developmentTrustProjectSourceTitle: "Vuoi fidarti di questa sorgente del plugin?",
+    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier compilerà ed eseguirà il codice da:\n\n${path} su ${machine} (${server})\n\nPer una cartella di progetto, Happier può installare le dipendenze dichiarate. Continua solo se ti fidi di questa sorgente e delle sue dipendenze.`,
+    developmentTrustProjectSourceConfirm: "Fidati della sorgente",
     pendingChangesTitle: "In attesa della tua decisione",
     pendingChangesFooter: "Modifiche ai plugin preparate su questa macchina. Un agente può prepararle, ma solo tu puoi approvarle.",
     pendingChangesReviewHint: "Mostra la revisione completa prima di concedere fiducia.",
     pendingChangeReviewAction: "Esamina",
     pendingChangeRejectHint: "Scarta la modifica preparata. Non viene installato o considerato attendibile nulla.",
-    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `Cartella del plugin: ${path}`,
+    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `Sorgente del plugin: ${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId} da ${source}`,
     pendingChangeApplying: "Questa modifica è già stata decisa ed è in corso di applicazione.",
     pendingChangeExpired: "Questa modifica è scaduta prima di essere decisa. Richiedila di nuovo.",
@@ -14127,12 +14181,13 @@ settingsSession: {
             readyStatus: 'Il tuo Home è pronto.',
             failureBody: 'Non è stato possibile completare questo passaggio. La configurazione già completata è al sicuro; riprova o apri i dettagli.',
             profileRecoveryBody: 'Il tuo Home personale è pronto. Happier deve ancora completare la connessione.',
-            computerRecoveryBody: 'Il tuo Home personale è pronto. La configurazione dell’agente richiede attenzione.',
+            computerRecoveryBody: 'Il tuo Home personale è pronto. Questo computer richiede attenzione prima di poter eseguire agenti.',
             existingRuntimeBody: 'Happier ha trovato un Home locale esistente su questo computer. Scegli come continuare.',
             useExisting: 'Usa questo Home locale',
             useExistingDetail: 'Verifica il suo accesso e proteggi la registrazione senza cambiare l’Home selezionato.',
             useAnother: 'Usa un altro Home',
             useAnotherDetail: 'Lascia invariato questo Home locale e scegli tra i tuoi Home.',
+            ...personalHomeDecisionTranslations.it,
             ...personalHomeBootstrapBlockedTranslations.it,
         },
     },

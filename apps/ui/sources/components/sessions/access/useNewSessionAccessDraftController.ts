@@ -43,10 +43,17 @@ export function useNewSessionAccessDraftController(input: Readonly<{
     primaryTeamId: string | null;
     availability: SessionCollaborationAvailability;
     homeReconciled?: boolean;
+    /**
+     * Whether a mounted editor presentation is actually demanding candidate
+     * discovery. The composer keeps this controller mounted for its chip label,
+     * which is projected from authored grants alone; the Home directory is
+     * detail work and must not start until the editor is open.
+     */
+    demanded: boolean;
     onChange: (next: SessionInitialAccessDraftV1 | null) => void;
     onPrimaryTeamIdChange: (next: string | null) => void;
 }>): SessionAccessEditorController {
-    const { access, availability, onChange, onPrimaryTeamIdChange, primaryTeamId, scope } = input;
+    const { access, availability, demanded, onChange, onPrimaryTeamIdChange, primaryTeamId, scope } = input;
     const [query, setQuery] = React.useState('');
     const [revision, setRevision] = React.useState(0);
     const [pendingContextTeamId, setPendingContextTeamId] = React.useState<string | null | undefined>(undefined);
@@ -59,9 +66,9 @@ export function useNewSessionAccessDraftController(input: Readonly<{
     const grantsRef = React.useRef(grants);
     grantsRef.current = grants;
 
-    // Only the current collaboration vertical can carry a creation access draft
-    // atomically; an older Home would create the Session first and share after.
-    const editable = availability === 'full_collaboration';
+    // A creation access draft is carried atomically by the fresh-create
+    // transaction wherever the target Home shares Sessions at all.
+    const editable = availability === 'available';
 
     const publish = React.useCallback((next: readonly SessionInitialAccessDraftV1['grants'][number][]) => {
         onChange(next.length === 0 ? null : { grants: [...next] });
@@ -71,8 +78,14 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         .filter((grant) => grant.subject.kind === 'team')
         .map((grant) => ({ teamId: grant.subject.kind === 'team' ? grant.subject.teamId : '', name: names[sessionAccessSubjectKey(grant.subject)]?.displayName ?? t('session.access.team') })), [grants, names]);
 
+    // Candidate discovery is editor detail and waits for an open presentation.
+    // The primary Team's creation policy is not: it decides the required floor
+    // this draft carries into `POST /sessions` whether or not a picker is ever
+    // opened, so a draft that already names a Team keeps resolving it here
+    // rather than through a second reader.
     const directory = useSessionAccessDirectory({
-        scope, availability, contextTeams, operations: {}, revision, enabled: editable,
+        scope, availability, contextTeams, operations: {}, revision,
+        enabled: editable && (demanded || primaryTeamId !== null),
     });
     const directoryTeamsRef = React.useRef(directory.teamContexts);
     directoryTeamsRef.current = directory.teamContexts;
@@ -99,18 +112,18 @@ export function useNewSessionAccessDraftController(input: Readonly<{
                 ? { kind: 'editable', value: grant.accessLevel, options: ACCESS_LEVEL_OPTIONS
                     .filter((value) => !requiredByTeamPolicy || value !== 'view')
                     .map((value) => ({ value, label: t(`session.access.${value}`) })) }
-                : { kind: 'locked', value: grant.accessLevel, reason: { code: 'session_access_update_required', message: t('session.access.updateRequired') } },
+                : { kind: 'locked', value: grant.accessLevel, reason: { code: 'session_access_sharing_unavailable', message: t('session.collaboration.accessUnavailableReason') } },
             permissionDelegation: projectSessionAccessDelegationControl({
                 accessLevel: grant.accessLevel,
                 canApprovePermissions: grant.canApprovePermissions,
                 canChange: editable,
-                reason: { code: 'session_access_update_required', message: t('session.access.updateRequired') },
+                reason: { code: 'session_access_sharing_unavailable', message: t('session.collaboration.accessUnavailableReason') },
             }),
             removal: requiredByTeamPolicy
                 ? { kind: 'blocked', reason: { code: 'session_access_team_policy_required', message: t('session.access.required') } }
                 : editable
                 ? { kind: 'allowed' }
-                : { kind: 'blocked', reason: { code: 'session_access_update_required', message: t('session.access.updateRequired') } },
+                : { kind: 'blocked', reason: { code: 'session_access_sharing_unavailable', message: t('session.collaboration.accessUnavailableReason') } },
             requiredByTeamPolicy,
             operation: { kind: 'idle' },
         };
@@ -251,7 +264,7 @@ export function useNewSessionAccessDraftController(input: Readonly<{
         model: {
             revision,
             accessMode: editable ? 'editable' : 'read_only',
-            ...(editable ? {} : { readOnlyReason: { code: 'session_access_update_required', message: t('session.access.updateRequired') } }),
+            ...(editable ? {} : { readOnlyReason: { code: 'session_access_sharing_unavailable', message: t('session.collaboration.accessUnavailableReason') } }),
             content: { phase: 'ready', hasLastAcknowledgedSnapshot: true },
             owner: null,
             grants: rows,
@@ -293,7 +306,7 @@ export function useNewSessionAccessDraftController(input: Readonly<{
                     } } }
                 : editable || grants.length === 0
                     ? {}
-                    : { notice: { message: t('session.access.updateRequired'), action: 'clear_access' as const } }),
+                    : { notice: { message: t('session.collaboration.accessUnavailableReason'), action: 'clear_access' as const } }),
         },
     };
 }

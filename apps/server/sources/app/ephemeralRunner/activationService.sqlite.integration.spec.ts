@@ -1358,6 +1358,70 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
             .resolves.toMatchObject({ state: 'consented', sealedBootstrap: null });
     });
 
+    it('refuses an E2EE materialization with no Session owner envelope, before any row exists', async () => {
+        const fixture = await materializationFixture('e2ee');
+        const baseRequest = materializationRequest(fixture);
+
+        // Runner bootstrap always mints a fresh Session key, so no legitimate
+        // Runner producer can ask for E2EE without its owner envelope. Admitting
+        // it would create a Session whose transcript nobody can ever read.
+        await expect(materializeEphemeralRunner({
+            creatorAccountId: fixture.account.id,
+            request: { ...baseRequest, session: { ...baseRequest.session, dataEncryptionKey: null } },
+            authentication: presentUserAuthentication,
+            env: process.env,
+        })).resolves.toEqual({ status: 'invalid_request' });
+
+        const binding = {
+            accountId: fixture.account.id,
+            sessionId: fixture.created.activation.sessionId,
+            machineId: fixture.created.activation.machineId,
+        };
+        await expect(db.session.count({ where: { id: binding.sessionId } })).resolves.toBe(0);
+        await expect(db.sessionDataKeyEnvelope.count({ where: { sessionId: binding.sessionId } })).resolves.toBe(0);
+        await expect(db.machine.count({ where: { id: binding.machineId } })).resolves.toBe(0);
+        await expect(db.accessKey.count({ where: binding })).resolves.toBe(0);
+
+        // The released Plain keyless path is untouched.
+        const plain = await materializationFixture();
+        await expect(materializeEphemeralRunner({
+            creatorAccountId: plain.account.id,
+            request: materializationRequest(plain),
+            authentication: presentUserAuthentication,
+            env: process.env,
+        })).resolves.toMatchObject({ status: 'materialized' });
+    });
+
+    it('answers a constructor refusal with a typed conflict instead of an unexpected failure', async () => {
+        const fixture = await materializationFixture('e2ee');
+        const baseRequest = materializationRequest(fixture);
+
+        // The folder was reviewed but removed before the endpoint submitted. The
+        // shared constructor throws that refusal so its own transaction rolls
+        // back; the Runner route must classify it, not surface it as a 500.
+        await expect(materializeEphemeralRunner({
+            creatorAccountId: fixture.account.id,
+            request: {
+                ...baseRequest,
+                session: {
+                    ...baseRequest.session,
+                    organizationPlacement: { folderId: '00000000-0000-4000-8000-0000000000f0', tagIds: [] },
+                },
+            },
+            authentication: presentUserAuthentication,
+            env: process.env,
+        })).resolves.toEqual({ status: 'conflict', reason: 'session_create_rejected' });
+
+        const binding = {
+            accountId: fixture.account.id,
+            sessionId: fixture.created.activation.sessionId,
+            machineId: fixture.created.activation.machineId,
+        };
+        await expect(db.session.count({ where: { id: binding.sessionId } })).resolves.toBe(0);
+        await expect(db.machine.count({ where: { id: binding.machineId } })).resolves.toBe(0);
+        await expect(db.accessKey.count({ where: binding })).resolves.toBe(0);
+    });
+
     it('materializes the canonical team_required edit grant without permission delegation', async () => {
         const fixture = await materializationFixture('e2ee');
         await db.team.update({
@@ -1388,6 +1452,57 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
             canApprovePermissions: false,
             requiredByTeamPolicy: true,
         });
+    });
+
+    it('discloses a published review to the proof the endpoint can actually sign, and never a materialized secret', async () => {
+        const fixture = await materializationFixture();
+        const activationId = fixture.activationRequest.activationId;
+        const proof = (launchManifestCommitment: string | null) => signRunnerEndpointProjectionProofV1({
+            payload: {
+                v: 1,
+                purpose: 'happier.ephemeral-session-runner.endpoint-projection',
+                activationId,
+                sessionId: fixture.created.activation.sessionId,
+                machineId: fixture.created.activation.machineId,
+                launchManifestCommitment,
+                creatorTokenEpoch: fixture.account.tokenEpoch,
+            },
+            activationSecretKey: fixture.activationKey.secretKey,
+            installationSecretKey: fixture.installationKey.secretKey,
+        });
+
+        // The endpoint learns the commitment only by opening the sealed manifest
+        // carried inside this very response, so its first poll after the creator
+        // publishes a review necessarily carries none.
+        await db.ephemeralRunnerActivation.update({ where: { id: activationId }, data: { state: 'claimed', consent: null, readiness: null } });
+        const discovered = await readEphemeralRunnerEndpointProjection({ activationId, request: proof(null) });
+        expect(discovered).toMatchObject({ status: 'pending' });
+        if (discovered.status !== 'pending') throw new Error('Expected a pending Runner endpoint projection');
+        expect(discovered.activation.review).not.toBeNull();
+        await expect(readEphemeralRunnerEndpointProjection({
+            activationId,
+            request: proof(encodeBase64(new Uint8Array(32).fill(7), 'base64url')),
+        })).resolves.toEqual({ status: 'conflict', reason: 'proof_mismatch' });
+
+        // Once the endpoint has consented it knows the commitment, so the exact
+        // commitment is mandatory again for every later disclosure.
+        expect(await storeRunnerActivationConsent({ activationId, consent: fixture.consent })).toMatchObject({ status: 'stored' });
+        expect(await storeRunnerActivationReadiness({ activationId, readiness: fixture.readiness })).toMatchObject({ status: 'stored' });
+        await expect(readEphemeralRunnerEndpointProjection({ activationId, request: proof(null) }))
+            .resolves.toEqual({ status: 'conflict', reason: 'proof_mismatch' });
+
+        await expect(materializeEphemeralRunner({
+            creatorAccountId: fixture.account.id,
+            request: materializationRequest(fixture),
+            authentication: presentUserAuthentication,
+            env: process.env,
+        })).resolves.toMatchObject({ status: 'materialized' });
+        await expect(readEphemeralRunnerEndpointProjection({ activationId, request: proof(null) }))
+            .resolves.toEqual({ status: 'conflict', reason: 'proof_mismatch' });
+        await expect(readEphemeralRunnerEndpointProjection({
+            activationId,
+            request: proof(fixture.review.launchManifestCommitment),
+        })).resolves.toMatchObject({ status: 'materialized' });
     });
 
     it('materializes restricted Team work only from the exact explicitly authorized activation snapshot', async () => {

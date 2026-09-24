@@ -17,7 +17,16 @@ export type HomeAuthenticationExecution =
     | Readonly<{ kind: 'generated_key' }>
     | Readonly<{ kind: 'key_entry' }>
     | Readonly<{ kind: 'mtls' }>
-    | Readonly<{ kind: 'email_password'; action: EmailPasswordEntryAction; mode: 'keyed' | 'keyless' | 'either' }>
+    | Readonly<{
+        kind: 'email_password';
+        action: EmailPasswordEntryAction;
+        mode: 'keyed' | 'keyless' | 'either';
+        /**
+         * The Home's recommended protection for a new Account, resolved by the
+         * Home's effective-method owner and carried on its `provision` action.
+         */
+        recommendedProvisionMode?: 'plain' | 'e2ee';
+    }>
     | Readonly<{ kind: 'oauth'; providerId: string; mode: 'keyed' | 'keyless' }>;
 
 function isEmailPasswordEntryAction(value: string): value is EmailPasswordEntryAction {
@@ -38,6 +47,19 @@ export function resolveEmailPasswordProvisionModes(
     return ['plain', 'e2ee'];
 }
 
+/**
+ * The protection a new email/password Account starts with: the Home's
+ * recommendation when it is one of the permitted modes, otherwise the first
+ * permitted mode. The person may still choose the other permitted mode.
+ */
+export function resolveEmailPasswordProvisionDefault(
+    mode: 'keyed' | 'keyless' | 'either',
+    recommended?: 'plain' | 'e2ee' | null,
+): 'plain' | 'e2ee' {
+    const permitted = resolveEmailPasswordProvisionModes(mode);
+    return recommended && permitted.includes(recommended) ? recommended : permitted[0]!;
+}
+
 export type HomeAuthenticationAction = Readonly<{
     method: ProjectedAuthenticationMethod;
     action: ProjectedAuthenticationAction;
@@ -52,6 +74,39 @@ function authenticationActionsFrom(
     return actions.filter((action): action is AuthEntryAuthenticationAction => action.kind === 'authenticate');
 }
 
+/**
+ * The feature catalog and auth-entry route are distinct acquisition boundaries,
+ * but an advertised method/action pair has one execution meaning after either
+ * boundary has normalized it.
+ */
+function projectAuthenticationExecution(
+    method: ProjectedAuthenticationMethod,
+    action: ProjectedAuthenticationAction,
+): HomeAuthenticationExecution | null {
+    const methodId = normalizeAuthenticationProviderId(method.id);
+    if (methodId === 'key_challenge') {
+        if (action.mode !== 'keyed' && action.mode !== 'either') return null;
+        if (action.id === 'provision') return { kind: 'generated_key' };
+        if (action.id === 'login') return { kind: 'key_entry' };
+        return null;
+    }
+    if (methodId === 'mtls') {
+        return action.id === 'login' && (action.mode === 'keyless' || action.mode === 'either')
+            ? { kind: 'mtls' }
+            : null;
+    }
+    if (methodId === 'email_password') {
+        return isEmailPasswordEntryAction(action.id)
+            ? { kind: 'email_password', action: action.id, mode: action.mode }
+            : null;
+    }
+    if (action.id !== 'login' && action.id !== 'provision' && action.id !== 'connect') return null;
+    const mode = action.mode === 'either'
+        ? action.id === 'login' ? 'keyless' : 'keyed'
+        : action.mode;
+    return { kind: 'oauth', providerId: methodId, mode };
+}
+
 export type AuthenticationMethodCapabilities = Readonly<{
     catalog: ProjectedAuthenticationCatalog;
     usesStructuredMethods: boolean;
@@ -61,7 +116,6 @@ export type AuthenticationMethodCapabilities = Readonly<{
     keyChallengeV2Available: boolean;
     keyedProvisionProviderIds: readonly string[];
     configuredKeyedProvisionProviderIds: readonly string[];
-    configuredEnabledKeyedProvisionProviderIds: readonly string[];
     keylessLoginMethodIds: readonly string[];
     configuredKeylessProviderIds: readonly string[];
     authenticationActions: readonly HomeAuthenticationAction[];
@@ -84,38 +138,17 @@ export function projectAuthEntryMethodCapabilities(
         const method = methods.get(normalizeAuthenticationProviderId(row.methodId));
         if (!method) return [];
         const action: ProjectedAuthenticationAction = { id: row.action, mode: row.mode };
-        if (method.id === 'key_challenge') {
-            if (row.action === 'provision' && (row.mode === 'keyed' || row.mode === 'either')) {
-                return [{ method, action, execution: { kind: 'generated_key' } }];
-            }
-            if (row.action === 'login' && (row.mode === 'keyed' || row.mode === 'either')) {
-                return [{ method, action, execution: { kind: 'key_entry' } }];
-            }
-            return [];
-        }
-        if (method.id === 'mtls') {
-            return row.action === 'login' && (row.mode === 'keyless' || row.mode === 'either')
-                ? [{ method, action, execution: { kind: 'mtls' } }]
-                : [];
-        }
-        if (method.id === 'email_password') {
-            return isEmailPasswordEntryAction(row.action)
-                ? [{ method, action, execution: { kind: 'email_password', action: row.action, mode: row.mode } }]
-                : [];
-        }
-        // `connect` attaches an external method to the caller's existing
-        // Account — the shape a Team identity connection is projected as. It
-        // belongs to the same OAuth execution as `login`/`provision`, so this
-        // projector owns it too rather than leaving the Team entry surface to
-        // rebuild the execution itself.
-        if (row.action !== 'login' && row.action !== 'provision' && row.action !== 'connect') return [];
-        // An unconstrained mode is decided once, here: a keyless login reuses
-        // the Home's plain credential, while provisioning a new Account and
-        // attaching a method to an existing one both carry key material.
-        const mode = row.mode === 'either'
-            ? row.action === 'login' ? 'keyless' : 'keyed'
-            : row.mode;
-        return [{ method, action, execution: { kind: 'oauth', providerId: method.id, mode } }];
+        const execution = projectAuthenticationExecution(method, action);
+        if (!execution) return [];
+        // The auth-entry row is the only carrier of the Home's recommendation;
+        // keep it with the native provision execution instead of dropping it.
+        return [{
+            method,
+            action,
+            execution: execution.kind === 'email_password' && row.recommendedProvisionMode
+                ? { ...execution, recommendedProvisionMode: row.recommendedProvisionMode }
+                : execution,
+        }];
     });
     const keyedProvisionProviderIds = uniqueProviderIds(authenticationActions.flatMap(({ method, action }) => (
         method.id !== 'key_challenge' && method.id !== 'mtls' && method.id !== 'email_password'
@@ -140,7 +173,6 @@ export function projectAuthEntryMethodCapabilities(
         keyChallengeV2Available: false,
         keyedProvisionProviderIds,
         configuredKeyedProvisionProviderIds: keyedProvisionProviderIds,
-        configuredEnabledKeyedProvisionProviderIds: keyedProvisionProviderIds,
         keylessLoginMethodIds,
         configuredKeylessProviderIds: keylessLoginMethodIds.filter((id) => id !== 'mtls'),
         authenticationActions,
@@ -186,45 +218,16 @@ export function projectAuthenticationMethodCapabilities(
     const configuredKeyedProvisionProviderIds = usesStructuredMethods
         ? keyedProvisionProviderIds
         : keyedProvisionProviderIds.filter((id) => oauthProviders[id]?.configured === true);
-    const configuredEnabledKeyedProvisionProviderIds = usesStructuredMethods
-        ? keyedProvisionProviderIds
-        : keyedProvisionProviderIds.filter(
-            (id) => oauthProviders[id]?.configured === true && oauthProviders[id]?.enabled === true,
-        );
     const configuredKeylessProviderIds = usesStructuredMethods
         ? keylessLoginMethodIds.filter((id) => id !== 'mtls')
         : keylessLoginMethodIds.filter((id) => id !== 'mtls' && oauthProviders[id]?.configured === true);
     const authenticationActions = catalog.methods.flatMap((method): HomeAuthenticationAction[] => {
         const methodId = normalizeAuthenticationProviderId(method.id);
-        if (methodId === 'key_challenge') {
-            return method.enabledActions.flatMap((action): HomeAuthenticationAction[] => {
-                if (action.mode !== 'keyed' && action.mode !== 'either') return [];
-                if (action.id === 'provision') return [{ method, action, execution: { kind: 'generated_key' } }];
-                if (action.id === 'login') return [{ method, action, execution: { kind: 'key_entry' } }];
-                return [];
-            });
-        }
-        if (methodId === 'mtls') {
-            return method.enabledActions.flatMap((action): HomeAuthenticationAction[] => (
-                action.id === 'login' && (action.mode === 'keyless' || action.mode === 'either')
-                    ? [{ method, action, execution: { kind: 'mtls' } }]
-                    : []
-            ));
-        }
-        if (methodId === 'email_password') {
-            return method.enabledActions.flatMap((action): HomeAuthenticationAction[] => (
-                isEmailPasswordEntryAction(action.id)
-                    ? [{ method, action, execution: { kind: 'email_password', action: action.id, mode: action.mode } }]
-                    : []
-            ));
-        }
-        if (!usesStructuredMethods && oauthProviders[methodId]?.configured !== true) return [];
+        const isNativeMethod = methodId === 'key_challenge' || methodId === 'mtls' || methodId === 'email_password';
+        if (!usesStructuredMethods && !isNativeMethod && oauthProviders[methodId]?.configured !== true) return [];
         return method.enabledActions.flatMap((action): HomeAuthenticationAction[] => {
-            if (action.id !== 'login' && action.id !== 'provision') return [];
-            const mode = action.mode === 'either'
-                ? action.id === 'provision' ? 'keyed' : 'keyless'
-                : action.mode;
-            return [{ method, action, execution: { kind: 'oauth', providerId: methodId, mode } }];
+            const execution = projectAuthenticationExecution(method, action);
+            return execution ? [{ method, action, execution }] : [];
         });
     });
 
@@ -240,7 +243,6 @@ export function projectAuthenticationMethodCapabilities(
         keyChallengeV2Available: features?.capabilities?.auth?.keyChallenge?.v2 === true,
         keyedProvisionProviderIds,
         configuredKeyedProvisionProviderIds,
-        configuredEnabledKeyedProvisionProviderIds,
         keylessLoginMethodIds,
         configuredKeylessProviderIds,
         authenticationActions,

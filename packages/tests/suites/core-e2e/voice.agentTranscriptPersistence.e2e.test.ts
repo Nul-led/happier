@@ -502,9 +502,9 @@ describe('core e2e: inactive Voice History transcript canonical persistence', ()
 
         expect(decryptTranscriptReplayCore({
           rows: storedRows,
-          ...(mode === 'e2ee'
-            ? { encryptionKey: dataKey, encryptionVariant: 'dataKey' as const }
-            : {}),
+          crypto: mode === 'e2ee'
+            ? { mode: 'e2ee', ctx: { encryptionKey: dataKey, encryptionVariant: 'dataKey' } }
+            : { mode: 'plain', ctx: null },
         }).dialog).toEqual([]);
 
         const deleteResponse = await fetchJson<Readonly<{ success?: unknown }>>(

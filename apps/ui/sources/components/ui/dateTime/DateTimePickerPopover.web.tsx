@@ -10,8 +10,26 @@ import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type { DateTimePickerPopoverProps } from './DateTimePickerPopover';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const DAY_SIZE = 44;
+const TIME_OPTION_HEIGHT = 44;
+const TIME_OPTION_GAP = 2;
+const TIME_OPTION_PITCH = TIME_OPTION_HEIGHT + TIME_OPTION_GAP;
+
+/**
+ * Scroll offset that brings the selected row into the column, centred when the measured column is
+ * tall enough. Derived from the row geometry below rather than a literal, so the last minutes stay
+ * reachable instead of scrolling the selection out of view.
+ */
+export function resolveTimeColumnScrollOffset(params: Readonly<{
+    selected: number;
+    viewportHeight: number;
+}>): number {
+    const rowTop = params.selected * TIME_OPTION_PITCH;
+    const centringInset = Math.max(0, (params.viewportHeight - TIME_OPTION_HEIGHT) / 2);
+    return Math.max(0, rowTop - centringInset);
+}
 const MONDAY = new Date(2024, 0, 1, 12);
 
 function dayOrdinal(value: Date): number {
@@ -103,12 +121,19 @@ function CalendarPicker(props: DateTimePickerPopoverProps) {
 function TimeColumn(props: Readonly<{ label: string; values: readonly number[]; selected: number; accentColor: string; onSelect: (value: number) => void }>) {
     const { theme } = useUnistyles();
     const scrollRef = React.useRef<React.ElementRef<typeof ScrollView> | null>(null);
+    const [viewportHeight, setViewportHeight] = React.useState(0);
     React.useEffect(() => {
-        scrollRef.current?.scrollTo?.({ y: Math.max(0, props.selected * 38 - 88), animated: false });
-    }, [props.selected]);
+        scrollRef.current?.scrollTo?.({
+            y: resolveTimeColumnScrollOffset({ selected: props.selected, viewportHeight }),
+            animated: false,
+        });
+    }, [props.selected, viewportHeight]);
     return <View style={styles.timeColumn}>
         <Text style={[styles.timeColumnLabel, { color: theme.colors.text.tertiary }]}>{props.label}</Text>
-        <ScrollView ref={scrollRef} style={styles.timeScroll} contentContainerStyle={styles.timeScrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <ScrollView
+            ref={scrollRef}
+            onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}
+            style={styles.timeScroll} contentContainerStyle={styles.timeScrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             {props.values.map((value) => {
                 const selected = value === props.selected;
                 return <Pressable
@@ -117,7 +142,7 @@ function TimeColumn(props: Readonly<{ label: string; values: readonly number[]; 
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
                     onPress={() => props.onSelect(value)}
-                    style={({ pressed }) => [styles.timeOption, selected ? { backgroundColor: theme.colors.surface.elevated } : null, pressed ? { opacity: 0.66 } : null]}
+                    style={({ pressed }) => [styles.timeOption, selected ? { backgroundColor: theme.colors.surface.elevated } : null, pressed ? { opacity: motionTokens.press.opacity } : null]}
                 >
                     <Text style={[styles.timeOptionText, { color: selected ? theme.colors.text.primary : theme.colors.text.secondary }]}>{String(value).padStart(2, '0')}</Text>
                     {selected ? <View style={[styles.selectionDot, { backgroundColor: props.accentColor }]} /> : null}
@@ -180,8 +205,8 @@ const styles = StyleSheet.create(() => ({
     timeColumn: { flex: 1, minWidth: 0 },
     timeColumnLabel: { paddingHorizontal: 10, paddingBottom: 6, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
     timeScroll: { flex: 1 },
-    timeScrollContent: { gap: 2, paddingBottom: 8 },
-    timeOption: { height: 44, borderRadius: 10, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    timeScrollContent: { gap: TIME_OPTION_GAP, paddingBottom: 8 },
+    timeOption: { height: TIME_OPTION_HEIGHT, borderRadius: 10, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     timeOptionText: { ...Typography.default(), fontSize: 14, fontVariant: ['tabular-nums'] },
     selectionDot: { width: 5, height: 5, borderRadius: 3 },
     timeFooter: { alignItems: 'flex-end', paddingTop: 10 },

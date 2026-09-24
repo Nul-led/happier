@@ -12,7 +12,10 @@ import { externalSessionOperationTranslations } from './externalSessionOperation
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
+import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
 import { sessionListFilterTranslations } from './sessionListFilterTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
 import { sessionBoardTranslations } from './sessionBoardTranslations';
@@ -4524,9 +4527,25 @@ export const zhHans = {
   settingsProviders: settingsProvidersTranslations.zhHans,
 
   settingsAgents: {
+    authoring: {
+      configureAcpBackendPrompt: '帮我向 Happier 添加一个自定义 ACP 智能体。问我想运行哪个智能体以及它如何启动（命令、参数、环境变量），确认该命令能在此设备上运行，然后用 agents.acp.backends.upsert 操作保存它（先用 action_spec_get 查看输入）。它出现在 设置 → 智能体 中时告诉我。',
+      addAgentPrompt: '我想向 Happier 添加一个新的编码智能体。问我是哪一个。如果它支持 ACP（Agent Client Protocol）并通过命令启动，就用 agents.acp.backends.upsert 操作把它添加为自定义 ACP 智能体。否则，按照 happier-plugin-authoring 技能，从 plugins.scaffold 操作开始，构建一个添加它的 Happier 插件。在做任何更改之前，告诉我你选择了哪种方式以及原因。',
+      needsMachine: '需要一台设备。将打开设备设置。',
+      useAgentToConfigure: '使用智能体配置',
+      useAgentToConfigureDescription: '智能体会询问你要运行什么并为你保存。',
+    },
     collection: {
+      askAgentToAdd: '让智能体添加一个',
+      askAgentToAddDescription: '智能体会在新会话中为你设置。',
+      addAgent: '添加智能体',
+      addAcpAgent: '添加 ACP 智能体',
+      addAcpAgentDescription: '通过命令运行任何支持 ACP 的智能体。',
+      ready: '就绪',
+      beta: '测试版',
+      install: '安装',
+      reinstall: '重新安装',
+      customAgents: '自定义智能体',
       onMachine: ({ machine }: { machine: string }) => `在 ${machine} 上`,
-      onThisMachine: '在此设备上',
       availableToInstall: '可安装',
       searchPlaceholder: '搜索智能体',
       notInstalled: '未安装',
@@ -4535,7 +4554,27 @@ export const zhHans = {
       noMatches: '没有匹配搜索的智能体',
       overviewDescription: 'Happier 可以在你的设备上启动的编码智能体。',
     },
+    offline: {
+      pickerDetail: '离线 · 显示最后已知状态',
+      bannerTitle: '此设备已离线',
+      bannerDescription: '正在显示最后已知状态。设备重新连接前，设备操作不可用。',
+    },
     detailPage: {
+      machineScopeLabel: '设置与状态所在设备',
+      readinessDescription: '上方设备上的登录和 CLI。',
+      sessionDefaultsAccountDescription: ({ agent }: { agent: string }) => `保存到你的账户，在任何设备上使用 ${agent} 开始新会话时生效。`,
+      checkingMachine: ({ machine }: { machine: string }) => `正在检查 ${machine}…`,
+      machineUnavailableDescription: 'Happier 无法读取此设备。你的智能体设置仍然有效。',
+      noMachineTitle: '选择设备',
+      noMachineDescription: ({ agent }: { agent: string }) => `${agent} 的设置取决于它运行的设备。请在上方选择。`,
+      cliVersion: ({ cli, version }: { cli: string; version: string }) => `${cli} CLI ${version}`,
+      cliName: ({ cli }: { cli: string }) => `${cli} CLI`,
+      checkedAt: ({ time }: { time: string }) => `检查于 ${time}`,
+      signInTitle: '登录',
+      signInGuide: '登录指南',
+      nothingToSetUpTitle: '此设备上无需设置',
+      nothingToSetUpDescription: ({ agent }: { agent: string }) => `${agent} 在此没有需要管理的 CLI 或登录。`,
+      integrationsTitle: '集成',
       onMachine: ({ machine }: { machine: string }) => `在 ${machine} 上`,
       notInstalledOnMachine: ({ machine }: { machine: string }) => `未安装在 ${machine} 上`,
       readinessTitle: '就绪状态',
@@ -4792,7 +4831,7 @@ export const zhHans = {
                     },
                     claudeRemoteAgentSdkEnabled: {
                         title: "使用 Agent SDK（远程）",
-                        subtitle: "在远程模式下使用官方 @anthropic-ai/claude-agent-sdk。"
+                        subtitle: "在远程模式下使用 Happier 的 Claude Agent SDK 运行时。"
                     },
                     claudeRemoteDebugEnabled: {
                         title: "调试模式",
@@ -5018,11 +5057,21 @@ export const zhHans = {
   },
 
   settingsAppearance: {
-    lightThemeSlot: '浅色主题',
-    lightThemeSlotDescription: '应用为浅色模式时使用。',
-    darkThemeSlot: '深色主题',
-    darkThemeSlotDescription: '应用为深色模式时使用。',
     pageDescription: '主题、文字、布局与动效。',
+    themesSummary: ({ light, dark }: { light: string; dark: string }) => `浅色：${light} · 深色：${dark}`,
+    themesCount: ({ builtIn, custom }: { builtIn: number; custom: number }) => `内置 ${builtIn} 个 · 自定义 ${custom} 个`,
+    textSizeGlyph: '文',
+    densityPreview: {
+        title: '预览',
+        sessionTitle1: '修复不稳定的重连测试',
+        sessionTitle2: '重构设置外框',
+        sessionTitle3: '起草发布说明',
+        sessionSubtitle1: 'happier · Claude',
+        sessionSubtitle2: 'happier · Codex',
+        sessionSubtitle3: 'docs · Claude',
+    },
+    resetConfirmTitle: '重置外观？',
+    resetConfirmBody: '主题、文字、布局、动效、头像和标签栏将恢复默认设置。你的自定义主题会保留。',
     tabBarAppearance: {
       title: '标签栏',
       footer: '自定义底部标签栏。',
@@ -6259,6 +6308,7 @@ export const zhHans = {
 	    invalidLinkTitle: "无效的会话链接",
         whichHomeTitle: "哪个 Home？",
         whichHomeDescription: "多个 Home 中都有此会话。请选择要打开的 Home。",
+        whichHomeUnknownDescription: 'Happier 无法判断此会话位于哪个 Home。请选择要在哪个 Home 中打开它。',
 	    invalidLinkDescription: "会话链接缺失或无效。请检查 URL 并重试。",
 	    resumeSupportNoteChecking:
 	      "注意：Happier 仍在检查此机器是否可以恢复提供方会话。",
@@ -6957,25 +7007,11 @@ export const zhHans = {
     saveServerGroup: "保存组",
     serverGroupMustHaveServer: "Home 组必须至少包含一个 Home。",
     relayDrift: {
-        bannerDifferentRelayTitle: '你的后台服务已连接到其他 Home',
-        bannerDifferentRelayDescription: ({ activeRelayUrl, daemonRelayUrl }: { activeRelayUrl: string; daemonRelayUrl: string }) => `App: ${activeRelayUrl} · Background service: ${daemonRelayUrl}`,
-        bannerNeedsAuthTitle: '你的后台服务需要登录到此 Home',
-        bannerNeedsAuthDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `The app is using ${activeRelayUrl}, but the background service still needs approval or sign-in.`,
-        bannerNotConfiguredTitle: '你的后台服务尚未连接到此 Home',
-        bannerNotConfiguredDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) => `The app is using ${activeRelayUrl}, but this computer has not finished connecting the background service.`,
-        bannerNotInstalledTitle: '你的后台服务尚未为此 Home 安装',
-        bannerNotInstalledDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `The app is using ${activeRelayUrl}, but this computer still needs to install the background service for it.`,
-        bannerNotRunningTitle: '你的后台服务已安装但未运行',
-        bannerNotRunningDescription: ({ activeRelayUrl }: { activeRelayUrl: string }) =>
-            `The app is using ${activeRelayUrl}, but the background service is stopped and needs to be started again.`,
-        repairAction: '将后台服务连接到此 Home',
         progressTitle: '正在将后台服务连接到此 Home',
         progressStepPrepare: '准备后台服务',
         progressStepConfigureRelay: '更新 Home 连接',
         progressStepAuthenticate: '完成登录和授权',
         progressStepFinish: '完成修复',
-        statusUnknown: '未知',
     },
     retention: {
         title: "数据保留策略",
@@ -10149,9 +10185,10 @@ settingsSession: {
       presentationScreenSubtitle: "在主内容区打开“新会话”，并将输入框固定在底部。",
       presentationModalTitle: "弹窗",
       presentationModalSubtitle: "在当前工作区上方以可关闭弹窗打开“新会话”。",
-      wizardModeTitle: "向导模式",
-      wizardModeEnabledSubtitle: "打开带有独立选择器的引导式设置。",
-      wizardModeDisabledSubtitle: "使用以输入框为中心的紧凑弹窗。",
+      startWithTitle: "开始方式",
+      startWithDescription: "向导会逐项引导选择；输入框会沿用你上次的设置。",
+      startWithComposer: "输入框",
+      startWithWizard: "向导",
       rememberLastProjectSelectionsTitle: "记住项目上次会话选择",
       rememberLastProjectSelectionsEnabledSubtitle:
         "项目快捷方式会复用最新会话的机器、文件夹、引擎、模型和会话选项。",
@@ -11311,6 +11348,21 @@ settingsSession: {
   settingsAccount: {
     security: "登录与安全",
     securityPageDescription: "此 Home 的登录方式、恢复、会话和加密。",
+    hideRecoveryKey: "隐藏恢复密钥",
+    showRecoveryKey: "显示恢复密钥",
+    accountIdCopy: "复制账户 ID",
+    accountIdLabel: "账户 ID",
+    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `登录 ${accountService}`,
+    accountServiceBenefitFindHomes: "自动找到你的 Home",
+    thisHome: "此 Home",
+    thisHomeTitle: "此 Home",
+    shareUsageData: "共享匿名使用数据",
+    shareUsageDataDescription: "帮助改进 Happier。不会收集任何个人信息。",
+    shareCrashReports: "共享崩溃报告",
+    deleteAccountEllipsis: "删除账户…",
+    signOutFootnote: "退出此 Home 后，你的其他 Home 和登录服务仍保持登录。",
+    sessionsSectionTitle: "会话",
+    apiAccessSectionTitle: "API 访问",
     endToEndEncrypted: "端到端加密",
     notEndToEndEncrypted: "未端到端加密",
     editUsername: "编辑用户名",
@@ -11327,14 +11379,14 @@ settingsSession: {
     moreSecurity: "更多安全选项",
     moreSecuritySummary: "API 令牌 · 加密 · 会话",
     allSecuritySettings: "所有登录与安全设置",
-    accountServiceDescription: "查找你的 Home，并让你在任何设备上登录它们。",
-    accountServiceInviteTitle: "在每台设备上使用你的 Home",
-    accountServiceInviteBody: "登录一次即可找到你使用的 Home，并在手机、笔记本电脑或浏览器中打开它们。你的 Home 及其数据保留在原处。",
-    accountServiceBenefitFindHomesDescription: "已关联的 Home 会自动显示。",
-    accountServiceBenefitSignIn: "登录 Home",
+    accountServiceDescription: "一个把你的设备和 Home 连接起来的账户。",
+    accountServiceInviteTitle: "把你的 Home 带到任何地方",
+    accountServiceInviteBody: "连接一次，你使用的每台设备都能找到并打开你的 Home。你的 Home 及其数据保留在原处。",
+    accountServiceBenefitFindHomesDescription: "与你的账户关联的 Home 会出现在你的每台设备上。",
+    accountServiceBenefitSignIn: "直接打开 Home",
     accountServiceBenefitSignInDescription: "无需再次输入凭据即可打开已关联的 Home。",
-    accountServiceBenefitDevices: "使用你的其他设备",
-    accountServiceBenefitDevicesDescription: "你的其他设备可以找到你的 Home 并请求访问。",
+    accountServiceBenefitDevices: "所有设备都能用",
+    accountServiceBenefitDevicesDescription: "把你的手机和其他设备连接到你的 Home。",
     accountServiceLinkedHomes: "已关联的 Home",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `刷新于 ${time}`,
     accountServiceSignInAgain: "重新登录",
@@ -11986,20 +12038,16 @@ settingsSession: {
 
           },
         cliFollowUpTitle: '终端备用路径（可选）',
-        manualDisclosure: {
-            show: '显示手动终端步骤',
-            hide: '隐藏手动终端步骤',
-        },
 
           subtitle: {
 
               connectMachine: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `Use the desktop setup flow to connect this computer to ${targetLabel}. Open the manual steps only if you prefer the terminal path.`,
+                  `使用桌面设置流程将这台电脑连接到 ${targetLabel}。`,
 
               startDaemon: ({ targetLabel }: { targetLabel: string }) =>
 
-                  `Use the desktop setup flow to reconnect the background service for ${targetLabel}. Open the manual steps only if you are already on that computer.`,
+                  `使用桌面设置流程为 ${targetLabel} 重新连接后台服务。`,
 
               createSession: '使用 + 按钮或从终端启动一个新会话。',
 
@@ -12406,6 +12454,7 @@ settingsSession: {
     },
     repairBackgroundServiceAction: "修复后台服务",
     repairBackgroundServiceProgressTitle: "正在修复后台服务",
+    thisComputer: thisComputerConnectionTranslations.zhHans,
     cliPath: cliPathExposureTranslations.zhHans,
     cliTrust: cliTrustPromptTranslations.zhHans,
     runtimeInventory: 'Happier 运行时清单',
@@ -13187,6 +13236,12 @@ settingsSession: {
       outcomeUnknown: "Happier 无法确认此机密是否已共享。请先刷新列表再重试。",
       inUseTitle: "仍在使用中",
       inUseBody: ({ places }: { places: string }) => `请先从以下使用它的位置移除这个共享机密：\n${places}`,
+      recipientReadinessTitle: "谁可以打开",
+      recipientHomeManagedRequired: "此人使用由 Home 管理的存储。将此机密改为由 Home 管理即可与其共享。",
+      recipientEncryptionSetupRequired: "尚未完成加密设置",
+      recipientEncryptionRepairRequired: "其加密密钥需要修复后才能打开",
+      recipientFinishSharing: "完成共享",
+      recipientReadinessUnavailable: "无法检查谁可以打开此机密。请重试。",
       shareDisclosureTitle: "共享此机密？",
       shareDisclosureBody: "获得共享的人可以在 Happier 接受已保存机密的任何位置使用它。应用和本地工具可能会收到它的值。",
       shareDisclosureTargetCount: ({ count }: { count: number }) => `${count} 位接收者`,
@@ -13341,6 +13396,7 @@ settingsSession: {
   },
    ...apiTokenSettingsTranslations['zh-Hans'],
    settingsPlugins: {
+      updateReview: pluginUpdateReviewTranslations.zhHans,
       ...pluginWebhookAdministrationTranslations['zh-Hans'],
       ...pluginAccountDataEraseTranslations['zh-Hans'],
       ...pluginAccountReleaseSelectionTranslations['zh-Hans'],
@@ -13388,23 +13444,24 @@ settingsSession: {
     developmentEditWithAgent: "使用智能体编辑",
     developmentEditWithAgentSubtitle: "在此插件的源码文件夹中打开普通会话。",
     developmentCreateWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `请在此文件夹中继续创建 Happier 插件“${pluginId}”。请使用 happier-plugin-authoring 技能，并且只使用公开的“happier plugins”命令和公开的 SDK 导入；新增权限或凭据授权仍由我决定。`,
-    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `这里是 Happier 插件“${pluginId}”的开发文件夹。对于我要求的更改，请使用 happier-plugin-authoring 技能，并且只使用公开的“happier plugins”命令和公开的 SDK 导入；新增权限或凭据授权仍由我决定。`,
+    developmentEditWithAgentPrompt: ({ pluginId }: { pluginId: string }) => `这是 Happier 插件“${pluginId}”当前的开发源。对于我要求的更改，请使用 happier-plugin-authoring 技能，并且只使用公开的“happier plugins”命令和公开的 SDK 导入；新增权限或凭据授权仍由我决定。`,
     developmentSourcePathLabel: ({ path }: { path: string }) => `路径：${path}`,
-    developmentSourceInstall: "开发本地插件文件夹",
-    developmentSourceInstallSubtitle: "让此机器上的守护进程从你的文件夹构建并运行插件。你需要先批准该文件夹。",
-    developmentSourceInstallTitle: "插件文件夹",
-    developmentSourceInstallBody: "输入此机器上插件项目文件夹的完整路径。",
+    developmentSourceInstall: "开发本地插件",
+    developmentSourceInstallSubtitle: "让此机器上的守护进程从你的文件或文件夹构建并运行插件。你需要先批准确切的源。",
+    developmentSourceInstallTitle: "插件文件或文件夹",
+    developmentSourceInstallBody: "输入此机器上 .ts、.mts、.js 或 .mjs 插件文件，或插件项目文件夹的完整路径。",
+    developmentSourceInstallPlaceholder: "/path/to/plugin.mjs 或 /path/to/plugin-folder",
     developmentSourceInstallSucceeded: "开发源已批准并投影。",
     developmentSourceInstallFailed: ({ outcome }: { outcome: string }) => `未能安装开发源（${outcome}）。`,
-    developmentTrustProjectSourceTitle: "信任此插件文件夹？",
-    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier 将在以下位置安装依赖、构建并运行代码：\n\n${path}（${machine} / ${server}）\n\n只有在你信任该文件夹中的全部内容以及它可能拉取的全部内容时才继续。`,
-    developmentTrustProjectSourceConfirm: "信任文件夹",
+    developmentTrustProjectSourceTitle: "信任此插件源？",
+    developmentTrustProjectSourceBody: ({ path, machine, server }: { path: string; machine: string; server: string }) => `Happier 将构建并运行以下位置的代码：\n\n${path}（${machine} / ${server}）\n\n对于项目文件夹，Happier 可能会安装其声明的依赖。只有在你信任此源及其依赖时才继续。`,
+    developmentTrustProjectSourceConfirm: "信任源",
     pendingChangesTitle: "等待你的决定",
     pendingChangesFooter: "在这台机器上准备好的插件变更。代理可以准备变更，但只有你能批准。",
     pendingChangesReviewHint: "在信任任何内容之前先显示完整审阅。",
     pendingChangeReviewAction: "审阅",
     pendingChangeRejectHint: "丢弃已准备的变更。不会安装或信任任何内容。",
-    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `插件文件夹：${path}`,
+    pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `插件源：${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId}，来自 ${source}`,
     pendingChangeApplying: "该变更已被决定，正在应用中。",
     pendingChangeExpired: "该变更在决定前已过期。请重新申请。",
@@ -13695,12 +13752,13 @@ settingsSession: {
             readyStatus: '你的 Home 已准备就绪。',
             failureBody: '无法完成此步骤。已完成的设置内容不会丢失；请重试或打开详情。',
             profileRecoveryBody: '你的个人 Home 已准备就绪。Happier 仍需完成与它的连接。',
-            computerRecoveryBody: '你的个人 Home 已准备就绪。Agent 设置需要处理。',
+            computerRecoveryBody: '你的个人 Home 已准备就绪。这台电脑需要处理后才能运行 Agent。',
             existingRuntimeBody: 'Happier 在此计算机上发现了现有的本地 Home。请选择如何继续。',
             useExisting: '使用此本地 Home',
             useExistingDetail: '验证其访问权限并保护注册流程，同时不更改当前选中的 Home。',
             useAnother: '使用另一个 Home',
             useAnotherDetail: '保持此本地 Home 不变，并从你的 Home 中选择。',
+            ...personalHomeDecisionTranslations.zhHans,
             ...personalHomeBootstrapBlockedTranslations['zh-Hans'],
         },
     },

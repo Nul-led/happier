@@ -76,7 +76,6 @@ const voiceDeclaration = VoiceProviderContributionSchema.parse({
   },
   client: {
     artifactId: 'web-runtime',
-    modulePath: './voiceRuntime',
     exportName: 'activate',
   },
 });
@@ -1061,6 +1060,69 @@ describe('Account Settings SavedSecret mutation owner', () => {
         { purpose: unrelatedPurpose, target: settings.connectedAccountPurposeBindingsV1.bindings[0]!.target },
         { purpose: voicePurpose, target: selectedTarget },
       ],
+    });
+  });
+
+  it('refuses a Team resource as a Voice source, and keeps an Agent Team default it shares the document with', () => {
+    const voiceService = { pluginId: 'happier.voice.openai', localId: 'openai' };
+    const teamSelection = {
+      source: 'team_resource' as const,
+      resourceId: 'resource-1',
+      deliveryMode: 'direct' as const,
+      disclosedMember: { service: voiceService, accountId: 'source-member' },
+    };
+    // The purpose target union is `account | group` (lane 10 child 02 :271):
+    // a Team resource is not a Voice source at the writer.
+    expect(() => applyVoiceCredentialSourceMutation({ secrets: [secret] }, {
+      contribution: voiceContribution,
+      credentialSlotId: 'api_key',
+      selection: {
+        kind: 'connectedAccount',
+        target: { kind: 'team_resource', service: voiceService, teamId: 'team-acme', selection: teamSelection },
+      } as never,
+    })).toThrow(expect.objectContaining({ code: 'saved_secret_invalid' }));
+
+    // An earlier 0.3 build could persist it as a Voice purpose target; it
+    // reads forward as a Team selection, which Voice never resolves.
+    const storedTeamSelection = {
+      voiceSettingsV1: {
+        credentialBindings: [{
+          contribution: voiceContribution,
+          credentialSlotId: 'api_key',
+          credentialSource: { kind: 'connectedAccount' },
+          credentialBindings: { account: {}, byMachineId: {} },
+        }],
+      },
+      connectedAccountPurposeBindingsV1: {
+        v: 1,
+        bindings: [{
+          purpose: voicePurpose,
+          target: { kind: 'team_resource', service: voiceService, teamId: 'team-acme', selection: teamSelection },
+        }],
+      },
+    };
+    expect(() => resolveVoiceCredentialSource(storedTeamSelection, null))
+      .toThrow(expect.objectContaining({ code: 'saved_secret_reference_invalid' }));
+
+    // A Voice write keeps the Agent's Team default in the shared document.
+    const agentTeamDefault = {
+      purpose: { consumer: { pluginId: 'happier.agent.codex', localId: 'codex' }, purpose: 'model-openai' },
+      teamId: 'team-acme',
+      selection: { source: 'team_resource' as const, resourceId: 'resource-2', deliveryMode: 'brokered' as const },
+    };
+    const result = applyVoiceCredentialSourceMutation({
+      secrets: [secret],
+      connectedAccountPurposeBindingsV1: { v: 1, bindings: [], teamResourceSelections: [agentTeamDefault] },
+    }, {
+      contribution: voiceContribution,
+      credentialSlotId: 'api_key',
+      selection: {
+        kind: 'connectedAccount',
+        target: { kind: 'account', account: { service: voiceService, accountId: 'account-openai' } },
+      },
+    });
+    expect(result.settings.connectedAccountPurposeBindingsV1).toMatchObject({
+      teamResourceSelections: [agentTeamDefault],
     });
   });
 

@@ -267,9 +267,9 @@ describe('session draft repository V2 addresses', () => {
         const mutate = remote.transport.mutate;
         const transport: SessionDraftRepositoryTransport = {
             ...remote.transport,
-            mutate: vi.fn(async (request, compatibility) => {
+            mutate: vi.fn(async (request) => {
                 await release.promise;
-                return mutate(request, compatibility);
+                return mutate(request);
             }),
         };
         let current = true;
@@ -365,7 +365,7 @@ describe('session draft repository V2 addresses', () => {
         expect(transport.read).toHaveBeenCalledWith(address);
     });
 
-    it('carries a lossless predecessor mutation beside the canonical V2 newSession write', async () => {
+    it('writes one canonical V2 newSession document and no predecessor mutation', async () => {
         const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000010' } as const;
         const remote = createRemote(address);
         const repository = createSessionDraftRepository({
@@ -391,15 +391,20 @@ describe('session draft repository V2 addresses', () => {
         });
 
         expect(await repository.flushSessionDraft({ scope, address })).toEqual({ status: 'clean' });
-        const compatibility = vi.mocked(remote.transport.mutate).mock.calls[0]?.[1];
-        expect(compatibility?.supportedPredecessorV1Content).toMatchObject({
-            t: 'plain',
-            v: {
-                v: 1,
-                address,
-                document: {
-                    v: 1,
-                    target: { kind: 'newSession', authoring: { executionTarget: { value: target } } },
+        // 0.3 is a one-way upgrade: the write carries the canonical V2 document
+        // and nothing else. There is no second predecessor projection to prepare.
+        const request = vi.mocked(remote.transport.mutate).mock.calls[0]?.[0];
+        expect(request).toMatchObject({
+            address,
+            content: {
+                t: 'plain',
+                v: {
+                    v: 2,
+                    address,
+                    document: {
+                        v: 2,
+                        target: { kind: 'newSession', authoring: { executionTarget: { value: target } } },
+                    },
                 },
             },
         });
@@ -464,6 +469,9 @@ describe('session draft repository V2 addresses', () => {
             text: 'retain on this device', authoring: { executionTarget: target },
         } });
         expect(await repository.flushSessionDraft({ scope, address })).toEqual({ status: 'error', code: 'session_draft_epoch_unavailable' });
+        // A Home that cannot serve the V2 draft epoch is a permanent, explainable
+        // state, not the generic sync error, so the replica carries its own status.
+        expect(repository.getSessionDraftSnapshot(scope, address)?.status).toBe('unsupported');
         expect(repository.getSessionDraftSnapshot(scope, address)?.document).toMatchObject({
             composer: { text: { value: 'retain on this device' } }, target: { authoring: { executionTarget: { value: target } } },
         });

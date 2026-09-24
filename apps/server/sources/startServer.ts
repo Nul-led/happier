@@ -48,6 +48,7 @@ import {
 } from '@/config/backends';
 import { readSocketAdapterRuntimeConfigFromEnv } from '@/config/socketAdapter';
 import { createRedisStreamsRoomEmitter } from '@/app/events/createRedisStreamsRoomEmitter';
+import { registerSessionHumanPresenceAccessChangePublisher } from '@/app/session/humanPresence/sessionHumanPresenceService';
 import { eventRouter } from '@/app/events/eventRouter';
 import { getRedisClient } from '@/storage/redis/redis';
 import { shouldConsumePresenceFromRedis, shouldEnableLocalPresenceDbFlush } from '@/app/presence/presenceMode';
@@ -77,6 +78,7 @@ import {
 import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
 import { createPersonalHomeAuthenticatedReadiness } from '@/app/runtime/personalHomeReadiness';
 import { createHomeConnectionDescriptorContinuityStoreForServer } from '@/app/features/homeConnectionDescriptorContinuity';
+import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
 
 export type ServerFlavor = 'full' | 'light';
 export type ServerRole = 'all' | 'api' | 'worker';
@@ -412,10 +414,14 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
                 );
             }
             // Background workers should publish into rooms without joining the Socket.IO cluster as a fetchSockets peer.
-            eventRouter.setIo(createRedisStreamsRoomEmitter({
+            const workerRoomEmitter = createRedisStreamsRoomEmitter({
                 maxLen: socketAdapterConfig.redisStreamsOptions.maxLen,
                 streamName: socketAdapterConfig.redisStreamsOptions.streamName,
-            }));
+            });
+            eventRouter.setIo(workerRoomEmitter);
+            // Access transitions this process commits (directory reconciliation)
+            // must still reach the API nodes that own human presence rooms.
+            registerSessionHumanPresenceAccessChangePublisher(workerRoomEmitter);
 
             if (shouldConsumePresenceFromRedis(process.env)) {
                 const presenceWorker = startPresenceRedisWorker(readPresenceRedisWorkerConfigFromEnv(process.env));
@@ -464,11 +470,22 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
                 && homeConnectionDescriptorContinuityStore
             ) {
                 onShutdown('iroh', () => stopHomeIrohEndpoint());
-                await ensureHomeIrohEndpoint({
+                const irohState = await ensureHomeIrohEndpoint({
                     env: process.env,
                     apiPort: listener?.port ?? null,
                     continuityStore: homeConnectionDescriptorContinuityStore,
                 });
+                if (irohState.status === 'active') {
+                    // The public features route only projects a committed
+                    // generation. A restarted acceptor may have new direct
+                    // addresses, so commit through the canonical publisher
+                    // before the startup receipt makes this Home discoverable.
+                    await readHomeConnectionDescriptor({
+                        env: process.env,
+                        continuityStore: homeConnectionDescriptorContinuityStore,
+                        visibility: 'authenticated',
+                    });
+                }
             } else if (shouldPreparePersonalHomeIroh) {
                 markHomeIrohEndpointStartupUnavailable();
             }

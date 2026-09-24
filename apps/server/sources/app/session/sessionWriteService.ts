@@ -2495,6 +2495,10 @@ export async function updateSessionAgentState(params: {
                         event: occurrence.requestKind === "permission"
                             ? "permission_required"
                             : "user_action_required",
+                        // Carry the committed request identity so a recipient whose
+                        // own device also observed this request shows one alert, not
+                        // one per leg.
+                        committedRequestId: occurrence.requestId,
                         ...(params.runtimeComposition ? { runtimeComposition: params.runtimeComposition } : {}),
                     }));
                 }
@@ -2633,7 +2637,9 @@ async function resolveSessionTurnTeamCredentialWitnessInTx(params: Readonly<{
         sessionId: params.sessionId,
         accountId: params.actorAccountId,
         resourceId: binding.resourceId,
-        expectedResourceRevision: binding.resourceRevision,
+        // The witness names the accepted resource and route; its recorded
+        // revision is not a lock. The resource's policy is admitted as it is
+        // now (`teams-lane-10/11` A2(4)).
         deliveryMode: binding.deliveryMode,
         authentication: params.authentication,
     });
@@ -5039,11 +5045,12 @@ export async function updateSessionMetadataEnvelopeTupleInTx(
                 })
                 : await validateSessionTeamCredentialBindingIntentInTx(tx, bindingInput);
             if (!bindingAdmission.ok) {
-                return {
-                    ok: false,
-                    error: "session_team_credential_binding_rejected",
-                    reason: bindingAdmission.reason,
-                };
+                // Consent can already have written the required Team visibility
+                // grant above, so a rejection decided after it must abort the
+                // transaction rather than return normally and commit the grant
+                // for a selection this mutation refused. The public wrapper
+                // already converts this exact error into the same result.
+                throw new SessionTeamCredentialBindingMutationError(bindingAdmission.reason);
             }
         }
     }

@@ -1287,9 +1287,15 @@ function writeVoicePurposeBinding(input: Readonly<{
   settings: Readonly<Record<string, unknown>>;
   binding: QualifiedConnectedAccountPurposeBindingV1 | null;
 }> {
-  const existing = readQualifiedPurposeBindings(input.settings);
+  const current = readAccountSettingsConnectedAccountPurposeBindings(input.settings);
+  const existing = current.bindings;
   const purposeKey = qualifiedPurposeKey(input.purpose);
   const withoutPurpose = existing.filter((candidate) => (
+    qualifiedPurposeKey(candidate.purpose) !== purposeKey
+  ));
+  // The same document holds Agent Team resource defaults; they are kept, and
+  // the written purpose keeps exactly one default.
+  const teamResourceSelections = (current.teamResourceSelections ?? []).filter((candidate) => (
     qualifiedPurposeKey(candidate.purpose) !== purposeKey
   ));
   const binding = input.selection.kind === 'connectedAccount'
@@ -1301,6 +1307,7 @@ function writeVoicePurposeBinding(input: Readonly<{
   const next = QualifiedConnectedAccountPurposeBindingsV1Schema.parse({
     v: 1,
     bindings: binding ? [...withoutPurpose, binding] : withoutPurpose,
+    ...(teamResourceSelections.length > 0 ? { teamResourceSelections } : {}),
   });
   return Object.freeze({
     settings: Object.freeze({

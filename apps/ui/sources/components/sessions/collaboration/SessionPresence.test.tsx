@@ -133,7 +133,7 @@ describe('Session presence surfaces', () => {
         expect(label).not.toContain('Bob · Typing…');
     });
 
-    it('announces presence changes from the Viewing now region the user navigated to', async () => {
+    it('announces presence changes only inside the Viewing now region the user focused', async () => {
         home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
         home.beginDeclaration([target.sessionId]);
         const screen = await renderScreen(<SessionPresenceSection {...target} />);
@@ -142,8 +142,33 @@ describe('Session presence surfaces', () => {
             viewers: [{ account: account('Alice'), typing: false }],
         }));
 
-        expect(screen.findByTestId('session-presence-status')?.props.accessibilityLiveRegion).toBe('polite');
+        // Unfocused, the row states presence but publishes no live region: an
+        // unattended polite region speaks every viewer change of every Session.
+        expect(screen.findByTestId('session-presence-status')?.props.accessibilityLiveRegion).toBeUndefined();
         expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice');
+        expect(screen.findByTestId('session-presence-announcement')).toBeNull();
+
+        await act(async () => { screen.findByTestId('session-presence-summary-anchor')?.props.onFocus?.(); });
+        const announcement = () => screen.findByTestId('session-presence-announcement')?.props.children?.props.children;
+        expect(announcement()).toBe('Viewing now: Alice');
+
+        // A typing renewal is not a membership change; the announcement is
+        // coalesced away while the visible row still shows it.
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 4,
+            viewers: [{ account: account('Alice'), typing: true }],
+        }));
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice · Typing…');
+        expect(announcement()).toBe('Viewing now: Alice');
+
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 5,
+            viewers: [{ account: account('Alice'), typing: true }, { account: account('Bob'), typing: false }],
+        }));
+        expect(announcement()).toBe('Viewing now: Alice, Bob');
+
+        await act(async () => { screen.findByTestId('session-presence-summary-anchor')?.props.onBlur?.(); });
+        expect(screen.findByTestId('session-presence-announcement')).toBeNull();
     });
 
     it('replaces the solo collaboration action with the compact facepile when another viewer arrives', async () => {

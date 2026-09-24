@@ -1,5 +1,6 @@
 import * as React from 'react';
 import type { TeamCredentialBrokerPlacementV1, TeamCredentialDeliveryModeV1, TeamCredentialDisclosureCeilingV1, TeamCredentialRequestPolicyV1, TeamCredentialRequestProtocolKindV1, TeamCredentialResourceReplacementV1, TeamCredentialResourceSummaryV1, TeamCredentialSourceBindingV1, TeamCredentialUsageCapabilitiesV1, TeamCredentialUsageLimitMetricV1, TeamCredentialUsageLimitPeriodV1, TeamCredentialUsageLimitSubjectKindV1, TeamCredentialUsageLimitV1 } from '@happier-dev/protocol/teams';
+import { narrowTeamCredentialDeliveryModeToBrokeredOnlyV1 } from '@happier-dev/protocol/teams';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
@@ -231,6 +232,34 @@ function directAudienceEntries(audience: AudienceDraft): readonly unknown[] {
             .filter(([, mode]) => directMode(mode))
             .map(([id, mode]) => ['member', id, mode]),
     ];
+}
+
+/**
+ * Choosing the `brokered_only` ceiling in the create or edit draft.
+ *
+ * Applies the protocol's one narrowing rule (child 01 §7.1 rule 5) — the same
+ * rule the Home applies to a PATCH and to a full replacement: `both` keeps its
+ * broker half, a direct-only grant ends, and no grant gains broker use it did
+ * not already carry. Broker grants authored afterwards are ordinary edits.
+ */
+export function narrowTeamCredentialResourceDraftToBrokeredOnly(
+    draft: TeamCredentialResourceDraft,
+): TeamCredentialResourceDraft {
+    const narrowGrants = (grants: ReadonlyMap<string, TeamCredentialDeliveryModeV1>) => new Map(
+        [...grants].flatMap(([id, mode]) => {
+            const narrowed = narrowTeamCredentialDeliveryModeToBrokeredOnlyV1(mode);
+            return narrowed === null ? [] : [[id, narrowed] as const];
+        }),
+    );
+    return {
+        ...draft,
+        disclosureCeiling: 'brokered_only',
+        audience: {
+            allMembers: narrowTeamCredentialDeliveryModeToBrokeredOnlyV1(draft.audience.allMembers),
+            groups: narrowGrants(draft.audience.groups),
+            members: narrowGrants(draft.audience.members),
+        },
+    };
 }
 
 /** Identity of the exact material-disclosure consequence acknowledged by a user. */

@@ -13,6 +13,7 @@ import { VerifiedEphemeralSessionRunnerPrincipalSchema } from '@happier-dev/prot
 import tweetnacl from 'tweetnacl';
 import { describe, expect, it, vi } from 'vitest';
 
+import { HttpStatusError } from '@/api/client/httpStatusError';
 import { logger } from '@/ui/logger';
 
 import { createRestrictedMachineRpcClient } from './createRestrictedMachineRpcClient';
@@ -101,7 +102,11 @@ describe('restricted Runner Machine RPC client', () => {
       runtimeOrigin: 'https://home.example',
       runtimeToken: 'runner-token',
       transportEnvironment: { HOME: '/runner-home', TMPDIR: '/runner-home/tmp' },
-      irohEndpointId: 'a'.repeat(64),
+      irohEndpoint: {
+        endpointId: 'a'.repeat(64),
+        relayUrls: ['https://relay.example.test'],
+        directAddresses: ['192.0.2.10:443'],
+      },
       installationProof,
       transport: { encryptionMode: 'plain' },
       registerHandlers: (rpc) => {
@@ -129,7 +134,10 @@ describe('restricted Runner Machine RPC client', () => {
             sessionFollow: { contextV1: true },
             finiteTransferRpc: { protocolVersions: [1] },
             externalActionExecutionAuthorization: { protocolVersions: [1] },
-            irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+            irohMachineEndpoint: {
+              protocolVersions: [1], endpointId: 'a'.repeat(64),
+              relayUrls: ['https://relay.example.test'], directAddresses: ['192.0.2.10:443'],
+            },
           },
         },
       );
@@ -144,7 +152,10 @@ describe('restricted Runner Machine RPC client', () => {
           externalActionExecutionAuthorization: { protocolVersions: [1] },
           sessionInputAdmission: { protocolVersions: [1, 2] },
           sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
-          irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+          irohMachineEndpoint: {
+            protocolVersions: [1], endpointId: 'a'.repeat(64),
+            relayUrls: ['https://relay.example.test'], directAddresses: ['192.0.2.10:443'],
+          },
         },
       },
     ));
@@ -158,7 +169,10 @@ describe('restricted Runner Machine RPC client', () => {
           externalActionExecutionAuthorization: { protocolVersions: [1] },
           sessionInputAdmission: { protocolVersions: [1, 2] },
           sessionFollow: { contextV1: true },
-          irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+          irohMachineEndpoint: {
+            protocolVersions: [1], endpointId: 'a'.repeat(64),
+            relayUrls: ['https://relay.example.test'], directAddresses: ['192.0.2.10:443'],
+          },
         },
       },
     ));
@@ -570,6 +584,15 @@ describe('restricted Runner Machine RPC client', () => {
     });
 
     expect(onTerminalConnectionFailure).toHaveBeenCalledOnce();
+
+    // The supervisor defaults every failed connect to `server_unreachable`, so
+    // without the shared classifier `onAuthFailed` above could never fire for a
+    // Home that rejected this Runner's credential: it would retry offline with a
+    // live child Agent instead of stopping.
+    const classify = supervisorConfiguration.current?.classifyTransportErrorToProbeResult;
+    expect(classify?.(new HttpStatusError(401, 'revoked runner token')))
+      .toMatchObject({ status: 'auth_failed', statusCode: 401 });
+    expect(classify?.(new Error('socket hang up'))).toBeNull();
     await client.close();
   });
 

@@ -806,7 +806,7 @@ export function createDaemonConnectedAccountPurposeBindingRuntime(params: Readon
     const interactions = createPluginInteractionsService({
       currentSession: input.currentSession ?? null,
       signal: input.signal,
-      isGenerationCurrent: () => {
+      isOccurrenceCurrent: () => {
         try {
           input.assertGenerationCurrent();
           return !input.signal.aborted;

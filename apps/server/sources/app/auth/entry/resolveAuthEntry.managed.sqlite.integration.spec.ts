@@ -18,7 +18,7 @@ const managedOidcConfig = {
     allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
     fetchUserInfo: true,
     storeRefreshToken: false,
-    ui: { buttonColor: null, iconHint: "oidc" },
+    ui: { buttonColor: "#0B5FFF", iconHint: "oidc" },
 } as const;
 
 describe("resolveAuthEntry managed Home providers (SQLite integration)", () => {
@@ -76,6 +76,16 @@ describe("resolveAuthEntry managed Home providers (SQLite integration)", () => {
             },
         );
 
+        // teams-lane-03/01 §10.2: every projector carries the descriptor's
+        // provider kind, display name, icon hint, connect-button colour and
+        // profile-badge support; a client must not recreate them for a dynamic provider.
+        const companyLoginPresentation = {
+            displayName: "Company login",
+            iconHint: "oidc",
+            providerKind: "oidc",
+            connectButtonColor: "#0B5FFF",
+            supportsProfileBadge: false,
+        };
         expect(projection.state).toBe("ready");
         if (projection.state !== "ready") throw new Error("expected ready projection");
         expect(projection.actions.filter((action) => action.methodId === managed.id)).toEqual([
@@ -83,13 +93,13 @@ describe("resolveAuthEntry managed Home providers (SQLite integration)", () => {
                 methodId: managed.id,
                 action: "connect",
                 mode: "either",
-                presentation: { displayName: "Company login", iconHint: "oidc" },
+                presentation: companyLoginPresentation,
             }),
             expect.objectContaining({
                 methodId: managed.id,
                 action: "provision",
                 mode: "keyed",
-                presentation: { displayName: "Company login", iconHint: "oidc" },
+                presentation: companyLoginPresentation,
             }),
         ]);
     });

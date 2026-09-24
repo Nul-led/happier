@@ -22,7 +22,11 @@ import { inTx, type Tx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import { resolveTeamActorContextInTx, type TeamOperationAuthenticationContext } from "../actorContext";
 import { authorizeTeamIdentityAdministrationInTx } from "../identity/teamIdentityAdministrationAuthority";
-import { applyExternalGroupContributionInTx, removeExternalGroupBindingInTx } from "../memberships/externalFacts";
+import {
+    applyExternalGroupContributionInTx,
+    directoryGroupContributorIdentityWhere,
+    removeExternalGroupBindingInTx,
+} from "../memberships/externalFacts";
 import { publishTeamChangedInTx } from "../teamChanges";
 import { isDirectorySourceCompletedEvidenceAllowedInTx } from "./directorySourcePolicy";
 
@@ -239,10 +243,7 @@ export async function setExternalGroupBindingForActor(
                     where: {
                         directorySourceId: input.owner.directorySourceId,
                         externalGroupId: input.externalGroupId,
-                        identity: {
-                            state: { in: ["active", "suspended"] },
-                            boundAccountId: { not: null },
-                        },
+                        identity: directoryGroupContributorIdentityWhere(),
                     },
                     select: {
                         identity: {
@@ -343,6 +344,8 @@ export async function setExternalGroupBindingForActor(
                             desired: "present",
                             historyAccess: authorized.value.defaultSessionHistoryAccess,
                             sessionAccessImpacts,
+                            // child 05 §5: one audience, one publication below.
+                            publishChange: false,
                         });
                     }
                 }

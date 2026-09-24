@@ -84,5 +84,6 @@ export async function resolveDaemonExecutionRunBrokerAuthority(
     intent: live.intent,
     runtimeState: live.runtimeState,
     activeTurnId: live.activeTurnId ?? null,
+    teamCredentialProviderModel: live.teamCredentialProviderModel,
   };
 }

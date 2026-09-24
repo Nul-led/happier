@@ -50,6 +50,8 @@ import {
     buildAccountStoredContentCompatibilityHttpHeadersV1,
     computeAccountEncryptionMigrateKeyFingerprintV1,
     createAccountEncryptionMigrateProofSigningInputV1,
+    createAccountEncryptionMigrateRequestBindingDigestV1,
+    encodePasswordCredentialFieldV1,
     deriveAutomationOccurrenceKeyV1,
     encodePlainArtifactStoredContent,
     encodeSessionOwnerMetadataEnvelopeV1,
@@ -78,6 +80,8 @@ import {
     createReviewCommentAccountEncryptionMigrationPersistenceInTx,
 } from "@/app/reviews/comments/accountEncryptionMigrationPersistence";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
+import { createNativePasswordFirstKeyStepUp } from "@/app/auth/password/nativePasswordFirstKeyStepUp";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
 
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -3036,6 +3040,128 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
             seq: account.seq + 1,
         });
         await app.close();
+    });
+
+    it("requires the current password for a password-bearing retained-key plain -> e2ee conversion", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "true",
+            AUTH_REQUIRED_LOGIN_PROVIDERS: "",
+        });
+        // The state a password-bearing E2EE Account reaches after its own
+        // e2ee -> plain conversion: the complete public binding is retained
+        // and the native password is a Plain verifier.
+        const kp = tweetnacl.sign.keyPair();
+        const publicKey = Uint8Array.from(kp.publicKey);
+        const secretKey = Uint8Array.from(kp.secretKey);
+        const contentBinding = createSignedContentKeyBinding(secretKey);
+        const password = "retained key current password";
+        const account = await db.account.create({
+            data: {
+                publicKey: privacyKit.encodeHex(publicKey),
+                contentPublicKey: contentBinding.contentPublicKeyBytes,
+                contentPublicKeySig: contentBinding.contentPublicKeySigBytes,
+                encryptionMode: "plain",
+                settings: null,
+                settingsVersion: 0,
+            },
+            select: { id: true, seq: true },
+        });
+        await db.accountIdentity.create({ data: {
+            accountId: account.id, provider: "email", providerUserId: `retained-${account.id}@example.test`, profile: {},
+        } });
+        await db.accountPasswordCredential.create({ data: {
+            accountId: account.id,
+            credential: { v: 1, kind: "plain_password_hash", hash: await hashPasswordMaterial(new TextEncoder().encode(password)) },
+        } });
+        const zeroHash = {
+            v: 1, algorithm: "scrypt", parameters: { n: 16384, r: 8, p: 5, keyLength: 32 },
+            salt: encodePasswordCredentialFieldV1(new Uint8Array(16)),
+            digest: encodePasswordCredentialFieldV1(new Uint8Array(32)),
+        } as const;
+        const targetCredential = {
+            v: 1, kind: "e2ee_password_envelope",
+            envelope: {
+                v: 1, accountSigningPublicKey: encodePasswordCredentialFieldV1(publicKey),
+                kdf: { algorithm: "argon2id13", salt: encodePasswordCredentialFieldV1(new Uint8Array(16)), opsLimit: 3, memLimitBytes: 64 * 1024 * 1024, outputBytes: 32 },
+                cipher: { algorithm: "aes256gcm", nonce: encodePasswordCredentialFieldV1(new Uint8Array(12)), ciphertext: encodePasswordCredentialFieldV1(new Uint8Array(48)) },
+            },
+            authVerifier: { v: 1, hash: zeroHash },
+        } as const;
+
+        const app = createTestApp();
+        registerAccountEncryptionMigrateRoutes(app as any);
+        await app.ready();
+        const signedRequest = signPlainToE2eeMigrationRequest({
+            accountId: account.id,
+            signingSecretKey: secretKey,
+            request: {
+                toMode: "e2ee",
+                expectedAccountVersion: account.seq,
+                expectedSigningKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(publicKey),
+                expectedContentKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(contentBinding.contentPublicKeyBytes),
+                expectedSettingsVersion: 0,
+                settingsContent: null,
+                connectedServices: { action: "assert_empty" },
+                automations: { action: "assert_empty" },
+                machines: { action: "assert_empty" },
+                todos: { action: "assert_empty" },
+                artifacts: { action: "assert_empty" },
+                sessions: { action: "assert_empty" },
+                reviewComments: { action: "assert_empty" },
+                sessionOrganization: { action: "assert_empty" },
+                pets: { action: "assert_empty" },
+                passwordCredential: { expectedRevision: 1, credential: targetCredential },
+                keyProof: {
+                    v: 1,
+                    publicKey: privacyKit.encodeBase64(publicKey),
+                    contentPublicKey: contentBinding.contentPublicKey,
+                    contentPublicKeySig: contentBinding.contentPublicKeySig,
+                },
+            },
+        });
+        const migrate = (payload: unknown) => app.inject({
+            method: "POST",
+            url: "/v1/account/encryption/migrate",
+            headers: { "content-type": "application/json", "x-test-user-id": account.id },
+            payload: payload as any,
+        });
+
+        try {
+            // The retained signing key alone is not the current-password proof
+            // an existing Plain password credential requires (L02-R22).
+            const keyOnly = await migrate(signedRequest);
+            expect(keyOnly.statusCode, keyOnly.body).toBe(400);
+            expect(keyOnly.json()).toEqual({ error: "invalid-params", reason: "key_proof_required" });
+            await expect(db.account.findUniqueOrThrow({ where: { id: account.id }, select: { encryptionMode: true } }))
+                .resolves.toEqual({ encryptionMode: "plain" });
+            await expect(db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: account.id } }))
+                .resolves.toMatchObject({ revision: 1, credential: { kind: "plain_password_hash" } });
+
+            const requestDigest = createAccountEncryptionMigrateRequestBindingDigestV1({
+                request: signedRequest, accountId: account.id, sourceMode: "plain",
+            });
+            expect(await createNativePasswordFirstKeyStepUp({ accountId: account.id, password: "not the password", requestDigest }))
+                .toBeNull();
+            const externalAuthProof = await createNativePasswordFirstKeyStepUp({ accountId: account.id, password, requestDigest });
+            expect(externalAuthProof?.provider).toBe("email_password");
+
+            const converted = await migrate({ ...signedRequest, externalAuthProof });
+            expect(converted.statusCode, converted.body).toBe(200);
+            expect(converted.json()).toMatchObject({ success: true, mode: "e2ee" });
+            await expect(db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: account.id } }))
+                .resolves.toMatchObject({ revision: 2, credential: targetCredential });
+            // Raw password material never enters transition persistence.
+            const pending = await db.repeatKey.findUnique({ where: { key: externalAuthProof!.pending } });
+            expect(JSON.stringify(pending?.value ?? "")).not.toContain(password);
+            // A lost response is recovered by replaying the exact same request.
+            const replayed = await migrate({ ...signedRequest, externalAuthProof });
+            expect(replayed.statusCode, replayed.body).toBe(200);
+            expect(replayed.json()).toMatchObject({ success: true, mode: "e2ee" });
+        } finally {
+            await app.close();
+        }
     });
 
     it("refuses a mode-bound plugin Account-KV row on plain -> e2ee before changing Account mode", async () => {

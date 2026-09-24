@@ -5,6 +5,7 @@ import { decryptTranscriptReplaySlice } from './decryptTranscriptReplaySlice';
 describe('decryptTranscriptReplaySlice', () => {
   it('extracts latest session synopsis and excludes artifact rows from dialog', () => {
     const out = decryptTranscriptReplaySlice({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -42,6 +43,7 @@ describe('decryptTranscriptReplaySlice', () => {
 
   it('prefers the most recent synopsis by updatedAtMs', () => {
     const out = decryptTranscriptReplaySlice({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 10,

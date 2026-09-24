@@ -130,12 +130,11 @@ async function runWithMembershipEnvelopeAuthority<TResult>(
     options: MembershipSessionDataKeyEnvelopeRequestOptions,
     operation: (bound: BoundMembershipEnvelopeCollection) => Promise<TResult>,
 ): Promise<TResult> {
-    // A Home that only serves released direct sharing has no membership-history resource at all.
-    // Failing here is the whole contract: probing for the route, or preparing through the
-    // per-Session seam instead, would either invent a capability or quietly narrow a Team/Group
-    // audience to one Account.
-    if (options.availability !== 'full_collaboration') {
-        throw new SessionAccessApiError('unsupported_action');
+    // A Home that does not share Sessions has no membership-history resource at all.
+    // Failing here is the whole contract: probing for the route would invent a capability
+    // the Home's own decision withholds.
+    if (options.availability !== 'available') {
+        throw new SessionAccessApiError('session_access_sharing_unavailable');
     }
     const path = membershipEnvelopeCollectionPath(options.address, options.target);
     return await runWithServerAccountScopeRequestGuard({

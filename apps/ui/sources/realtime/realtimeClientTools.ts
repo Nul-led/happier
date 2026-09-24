@@ -24,8 +24,8 @@ export function createRealtimeClientTools(input: Readonly<{
   currentUiContext?: VoiceCurrentUiToolPort;
 }> = {}): RealtimeClientTools {
   const allTools = createVoiceToolHandlers({
-    resolveSessionId: (explicitSessionId) =>
-      resolveToolSessionId({
+    resolveSessionId: async (explicitSessionId) =>
+      await resolveToolSessionId({
         explicitSessionId,
         currentSessionId: null,
       }),

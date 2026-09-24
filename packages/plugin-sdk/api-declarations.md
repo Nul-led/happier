@@ -1378,7 +1378,7 @@ type PluginInvocationCaller = Readonly<{
     contribution: PluginInvocationContributionIdentity;
     occurrenceId: string;
     sourceCustody: PluginSourceCustodyV1;
-    materialization: PluginMachineMaterializationRefV1;
+    materialization?: PluginMachineMaterializationRefV1;
     originSurface?: PluginInvocationOriginSurface;
 }> | Readonly<{
     kind: 'host';
@@ -2775,6 +2775,7 @@ type AdmittedTargetedOperationIdentity<TRole extends string = string> = Readonly
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     role: TRole;
 }>;
@@ -3034,196 +3035,11 @@ type PluginActionInputById = {
     };
     readonly "workflow.validate": {
         definition: {
-            blocks: PluginActionWorkflowIngressBlockV1[];
+            blocks: unknown[];
             version?: 1 | undefined;
-            inputs?: undefined | {
-                name: string;
-                valueType: 'boolean' | 'json' | 'number' | 'string';
-                required: boolean;
-                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
-                    readonly [key: string]: JsonValue;
-                };
-                description?: string | undefined;
-            }[];
-            defaults?: undefined | {
-                agentTarget?: null | undefined | {
-                    kind: 'agent';
-                    identity: {
-                        pluginId: string;
-                        localId: string;
-                    };
-                };
-                modelSelection?: null | undefined | {
-                    v: 1;
-                    ref: {
-                        agentTargetKey: string;
-                        providerConnectionId: null;
-                        modelId: string;
-                    } | {
-                        agentTargetKey: string;
-                        providerConnectionId: string;
-                        modelId: string;
-                    };
-                    updatedAt: number;
-                };
-                profileId?: null | string | undefined;
-                permissionMode?: null | string | undefined;
-                acpSessionModeId?: null | string | undefined;
-                sessionConfigOptionOverrides?: null | undefined | {
-                    [x: string]: unknown;
-                    v: 1;
-                    updatedAt: number;
-                    overrides: Record<string, {
-                        [x: string]: unknown;
-                        updatedAt: number;
-                        value: boolean | null | number | string;
-                    }>;
-                };
-                mcpSelection?: null | undefined | {
-                    forceIncludeServerIds: string[];
-                    forceExcludeServerIds: string[];
-                    v: 1;
-                    managedServersEnabled: boolean;
-                };
-                connectedServices?: null | undefined | {
-                    v: 2;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'profile';
-                        profileId: string;
-                    } | {
-                        source: 'native';
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'brokered';
-                        disclosedMember?: undefined;
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'direct';
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    }>;
-                };
-                transcriptStorage?: 'direct' | 'persisted' | null | undefined;
-                terminal?: null | undefined | {
-                    mode?: 'integrated' | 'plain' | 'tmux' | 'windows_console' | 'windows_terminal' | undefined;
-                    tmux?: undefined | {
-                        sessionName?: string | undefined;
-                        isolated?: boolean | undefined;
-                        tmpDir?: null | string | undefined;
-                    };
-                    windows?: undefined | {
-                        launchMode?: 'console' | 'hidden' | 'windows_terminal' | undefined;
-                        console?: 'hidden' | 'visible' | undefined;
-                        windowName?: string | undefined;
-                    };
-                };
-                windowsRemoteSessionLaunchMode?: 'console' | 'hidden' | 'windows_terminal' | null | undefined;
-                windowsRemoteSessionConsole?: 'hidden' | 'visible' | null | undefined;
-                windowsTerminalWindowName?: null | string | undefined;
-                runtimeDescriptorV1?: null | undefined | {
-                    v: 1;
-                    agentId: string;
-                    agent: {
-                        backendMode: string;
-                        home?: 'connectedService' | 'user' | undefined;
-                        connectedServiceId?: string | undefined;
-                        connectedServiceProfileId?: string | undefined;
-                        connectedServiceGroupId?: string | undefined;
-                    };
-                };
-                conversation?: undefined | {
-                    kind: 'existing_session';
-                    sessionId: string;
-                    machineId: string;
-                } | {
-                    kind: 'fresh';
-                } | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'shared_run';
-                };
-                workspace?: undefined | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'inherit';
-                } | {
-                    kind: 'new_worktree';
-                    source: {
-                        kind: 'original';
-                    } | {
-                        kind: 'step';
-                        producer: {
-                            blockId: string;
-                            scope: {
-                                kind: 'current';
-                            } | {
-                                kind: 'outer';
-                                levels: number;
-                            } | {
-                                kind: 'previous_iteration';
-                                loopBlockId: string;
-                            };
-                        };
-                    } | {
-                        kind: 'workflow';
-                    };
-                } | {
-                    kind: 'project_checkout';
-                };
-            };
-            finalOutput?: undefined | {
-                kind: 'result';
-                producer: {
-                    blockId: string;
-                    scope: {
-                        kind: 'current';
-                    } | {
-                        kind: 'outer';
-                        levels: number;
-                    } | {
-                        kind: 'previous_iteration';
-                        loopBlockId: string;
-                    };
-                };
-                path: (number | string)[];
-            };
+            inputs?: undefined | unknown[];
+            defaults?: unknown;
+            finalOutput?: unknown;
         };
         inputs?: Record<string, unknown> | undefined;
         target?: undefined | {
@@ -3235,196 +3051,11 @@ type PluginActionInputById = {
         source: {
             kind: 'inline';
             definition: {
-                blocks: PluginActionWorkflowIngressBlockV1[];
+                blocks: unknown[];
                 version?: 1 | undefined;
-                inputs?: undefined | {
-                    name: string;
-                    valueType: 'boolean' | 'json' | 'number' | 'string';
-                    required: boolean;
-                    default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
-                        readonly [key: string]: JsonValue;
-                    };
-                    description?: string | undefined;
-                }[];
-                defaults?: undefined | {
-                    agentTarget?: null | undefined | {
-                        kind: 'agent';
-                        identity: {
-                            pluginId: string;
-                            localId: string;
-                        };
-                    };
-                    modelSelection?: null | undefined | {
-                        v: 1;
-                        ref: {
-                            agentTargetKey: string;
-                            providerConnectionId: null;
-                            modelId: string;
-                        } | {
-                            agentTargetKey: string;
-                            providerConnectionId: string;
-                            modelId: string;
-                        };
-                        updatedAt: number;
-                    };
-                    profileId?: null | string | undefined;
-                    permissionMode?: null | string | undefined;
-                    acpSessionModeId?: null | string | undefined;
-                    sessionConfigOptionOverrides?: null | undefined | {
-                        [x: string]: unknown;
-                        v: 1;
-                        updatedAt: number;
-                        overrides: Record<string, {
-                            [x: string]: unknown;
-                            updatedAt: number;
-                            value: boolean | null | number | string;
-                        }>;
-                    };
-                    mcpSelection?: null | undefined | {
-                        forceIncludeServerIds: string[];
-                        forceExcludeServerIds: string[];
-                        v: 1;
-                        managedServersEnabled: boolean;
-                    };
-                    connectedServices?: null | undefined | {
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: 'connected';
-                            selection: 'group';
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: 'connected';
-                            selection: 'profile';
-                            profileId: string;
-                        } | {
-                            source: 'native';
-                        } | {
-                            source: 'team_resource';
-                            resourceId: string;
-                            deliveryMode: 'brokered';
-                            disclosedMember?: undefined;
-                        } | {
-                            source: 'team_resource';
-                            resourceId: string;
-                            deliveryMode: 'direct';
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
-                            };
-                        }>;
-                    };
-                    transcriptStorage?: 'direct' | 'persisted' | null | undefined;
-                    terminal?: null | undefined | {
-                        mode?: 'integrated' | 'plain' | 'tmux' | 'windows_console' | 'windows_terminal' | undefined;
-                        tmux?: undefined | {
-                            sessionName?: string | undefined;
-                            isolated?: boolean | undefined;
-                            tmpDir?: null | string | undefined;
-                        };
-                        windows?: undefined | {
-                            launchMode?: 'console' | 'hidden' | 'windows_terminal' | undefined;
-                            console?: 'hidden' | 'visible' | undefined;
-                            windowName?: string | undefined;
-                        };
-                    };
-                    windowsRemoteSessionLaunchMode?: 'console' | 'hidden' | 'windows_terminal' | null | undefined;
-                    windowsRemoteSessionConsole?: 'hidden' | 'visible' | null | undefined;
-                    windowsTerminalWindowName?: null | string | undefined;
-                    runtimeDescriptorV1?: null | undefined | {
-                        v: 1;
-                        agentId: string;
-                        agent: {
-                            backendMode: string;
-                            home?: 'connectedService' | 'user' | undefined;
-                            connectedServiceId?: string | undefined;
-                            connectedServiceProfileId?: string | undefined;
-                            connectedServiceGroupId?: string | undefined;
-                        };
-                    };
-                    conversation?: undefined | {
-                        kind: 'existing_session';
-                        sessionId: string;
-                        machineId: string;
-                    } | {
-                        kind: 'fresh';
-                    } | {
-                        kind: 'from_step';
-                        producer: {
-                            blockId: string;
-                            scope: {
-                                kind: 'current';
-                            } | {
-                                kind: 'outer';
-                                levels: number;
-                            } | {
-                                kind: 'previous_iteration';
-                                loopBlockId: string;
-                            };
-                        };
-                    } | {
-                        kind: 'shared_run';
-                    };
-                    workspace?: undefined | {
-                        kind: 'from_step';
-                        producer: {
-                            blockId: string;
-                            scope: {
-                                kind: 'current';
-                            } | {
-                                kind: 'outer';
-                                levels: number;
-                            } | {
-                                kind: 'previous_iteration';
-                                loopBlockId: string;
-                            };
-                        };
-                    } | {
-                        kind: 'inherit';
-                    } | {
-                        kind: 'new_worktree';
-                        source: {
-                            kind: 'original';
-                        } | {
-                            kind: 'step';
-                            producer: {
-                                blockId: string;
-                                scope: {
-                                    kind: 'current';
-                                } | {
-                                    kind: 'outer';
-                                    levels: number;
-                                } | {
-                                    kind: 'previous_iteration';
-                                    loopBlockId: string;
-                                };
-                            };
-                        } | {
-                            kind: 'workflow';
-                        };
-                    } | {
-                        kind: 'project_checkout';
-                    };
-                };
-                finalOutput?: undefined | {
-                    kind: 'result';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                    path: (number | string)[];
-                };
+                inputs?: undefined | unknown[];
+                defaults?: unknown;
+                finalOutput?: unknown;
             };
         } | {
             kind: 'saved';
@@ -3640,196 +3271,11 @@ type PluginActionInputById = {
     readonly "workflow.definition.create": {
         definitionId: string;
         definition: {
-            blocks: PluginActionWorkflowIngressBlockV1[];
+            blocks: unknown[];
             version?: 1 | undefined;
-            inputs?: undefined | {
-                name: string;
-                valueType: 'boolean' | 'json' | 'number' | 'string';
-                required: boolean;
-                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
-                    readonly [key: string]: JsonValue;
-                };
-                description?: string | undefined;
-            }[];
-            defaults?: undefined | {
-                agentTarget?: null | undefined | {
-                    kind: 'agent';
-                    identity: {
-                        pluginId: string;
-                        localId: string;
-                    };
-                };
-                modelSelection?: null | undefined | {
-                    v: 1;
-                    ref: {
-                        agentTargetKey: string;
-                        providerConnectionId: null;
-                        modelId: string;
-                    } | {
-                        agentTargetKey: string;
-                        providerConnectionId: string;
-                        modelId: string;
-                    };
-                    updatedAt: number;
-                };
-                profileId?: null | string | undefined;
-                permissionMode?: null | string | undefined;
-                acpSessionModeId?: null | string | undefined;
-                sessionConfigOptionOverrides?: null | undefined | {
-                    [x: string]: unknown;
-                    v: 1;
-                    updatedAt: number;
-                    overrides: Record<string, {
-                        [x: string]: unknown;
-                        updatedAt: number;
-                        value: boolean | null | number | string;
-                    }>;
-                };
-                mcpSelection?: null | undefined | {
-                    forceIncludeServerIds: string[];
-                    forceExcludeServerIds: string[];
-                    v: 1;
-                    managedServersEnabled: boolean;
-                };
-                connectedServices?: null | undefined | {
-                    v: 2;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'profile';
-                        profileId: string;
-                    } | {
-                        source: 'native';
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'brokered';
-                        disclosedMember?: undefined;
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'direct';
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    }>;
-                };
-                transcriptStorage?: 'direct' | 'persisted' | null | undefined;
-                terminal?: null | undefined | {
-                    mode?: 'integrated' | 'plain' | 'tmux' | 'windows_console' | 'windows_terminal' | undefined;
-                    tmux?: undefined | {
-                        sessionName?: string | undefined;
-                        isolated?: boolean | undefined;
-                        tmpDir?: null | string | undefined;
-                    };
-                    windows?: undefined | {
-                        launchMode?: 'console' | 'hidden' | 'windows_terminal' | undefined;
-                        console?: 'hidden' | 'visible' | undefined;
-                        windowName?: string | undefined;
-                    };
-                };
-                windowsRemoteSessionLaunchMode?: 'console' | 'hidden' | 'windows_terminal' | null | undefined;
-                windowsRemoteSessionConsole?: 'hidden' | 'visible' | null | undefined;
-                windowsTerminalWindowName?: null | string | undefined;
-                runtimeDescriptorV1?: null | undefined | {
-                    v: 1;
-                    agentId: string;
-                    agent: {
-                        backendMode: string;
-                        home?: 'connectedService' | 'user' | undefined;
-                        connectedServiceId?: string | undefined;
-                        connectedServiceProfileId?: string | undefined;
-                        connectedServiceGroupId?: string | undefined;
-                    };
-                };
-                conversation?: undefined | {
-                    kind: 'existing_session';
-                    sessionId: string;
-                    machineId: string;
-                } | {
-                    kind: 'fresh';
-                } | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'shared_run';
-                };
-                workspace?: undefined | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'inherit';
-                } | {
-                    kind: 'new_worktree';
-                    source: {
-                        kind: 'original';
-                    } | {
-                        kind: 'step';
-                        producer: {
-                            blockId: string;
-                            scope: {
-                                kind: 'current';
-                            } | {
-                                kind: 'outer';
-                                levels: number;
-                            } | {
-                                kind: 'previous_iteration';
-                                loopBlockId: string;
-                            };
-                        };
-                    } | {
-                        kind: 'workflow';
-                    };
-                } | {
-                    kind: 'project_checkout';
-                };
-            };
-            finalOutput?: undefined | {
-                kind: 'result';
-                producer: {
-                    blockId: string;
-                    scope: {
-                        kind: 'current';
-                    } | {
-                        kind: 'outer';
-                        levels: number;
-                    } | {
-                        kind: 'previous_iteration';
-                        loopBlockId: string;
-                    };
-                };
-                path: (number | string)[];
-            };
+            inputs?: undefined | unknown[];
+            defaults?: unknown;
+            finalOutput?: unknown;
         };
         metadata: {
             title: string;
@@ -3843,196 +3289,11 @@ type PluginActionInputById = {
             bodyVersion: number;
         };
         definition: {
-            blocks: PluginActionWorkflowIngressBlockV1[];
+            blocks: unknown[];
             version?: 1 | undefined;
-            inputs?: undefined | {
-                name: string;
-                valueType: 'boolean' | 'json' | 'number' | 'string';
-                required: boolean;
-                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
-                    readonly [key: string]: JsonValue;
-                };
-                description?: string | undefined;
-            }[];
-            defaults?: undefined | {
-                agentTarget?: null | undefined | {
-                    kind: 'agent';
-                    identity: {
-                        pluginId: string;
-                        localId: string;
-                    };
-                };
-                modelSelection?: null | undefined | {
-                    v: 1;
-                    ref: {
-                        agentTargetKey: string;
-                        providerConnectionId: null;
-                        modelId: string;
-                    } | {
-                        agentTargetKey: string;
-                        providerConnectionId: string;
-                        modelId: string;
-                    };
-                    updatedAt: number;
-                };
-                profileId?: null | string | undefined;
-                permissionMode?: null | string | undefined;
-                acpSessionModeId?: null | string | undefined;
-                sessionConfigOptionOverrides?: null | undefined | {
-                    [x: string]: unknown;
-                    v: 1;
-                    updatedAt: number;
-                    overrides: Record<string, {
-                        [x: string]: unknown;
-                        updatedAt: number;
-                        value: boolean | null | number | string;
-                    }>;
-                };
-                mcpSelection?: null | undefined | {
-                    forceIncludeServerIds: string[];
-                    forceExcludeServerIds: string[];
-                    v: 1;
-                    managedServersEnabled: boolean;
-                };
-                connectedServices?: null | undefined | {
-                    v: 2;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'profile';
-                        profileId: string;
-                    } | {
-                        source: 'native';
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'brokered';
-                        disclosedMember?: undefined;
-                    } | {
-                        source: 'team_resource';
-                        resourceId: string;
-                        deliveryMode: 'direct';
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    }>;
-                };
-                transcriptStorage?: 'direct' | 'persisted' | null | undefined;
-                terminal?: null | undefined | {
-                    mode?: 'integrated' | 'plain' | 'tmux' | 'windows_console' | 'windows_terminal' | undefined;
-                    tmux?: undefined | {
-                        sessionName?: string | undefined;
-                        isolated?: boolean | undefined;
-                        tmpDir?: null | string | undefined;
-                    };
-                    windows?: undefined | {
-                        launchMode?: 'console' | 'hidden' | 'windows_terminal' | undefined;
-                        console?: 'hidden' | 'visible' | undefined;
-                        windowName?: string | undefined;
-                    };
-                };
-                windowsRemoteSessionLaunchMode?: 'console' | 'hidden' | 'windows_terminal' | null | undefined;
-                windowsRemoteSessionConsole?: 'hidden' | 'visible' | null | undefined;
-                windowsTerminalWindowName?: null | string | undefined;
-                runtimeDescriptorV1?: null | undefined | {
-                    v: 1;
-                    agentId: string;
-                    agent: {
-                        backendMode: string;
-                        home?: 'connectedService' | 'user' | undefined;
-                        connectedServiceId?: string | undefined;
-                        connectedServiceProfileId?: string | undefined;
-                        connectedServiceGroupId?: string | undefined;
-                    };
-                };
-                conversation?: undefined | {
-                    kind: 'existing_session';
-                    sessionId: string;
-                    machineId: string;
-                } | {
-                    kind: 'fresh';
-                } | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'shared_run';
-                };
-                workspace?: undefined | {
-                    kind: 'from_step';
-                    producer: {
-                        blockId: string;
-                        scope: {
-                            kind: 'current';
-                        } | {
-                            kind: 'outer';
-                            levels: number;
-                        } | {
-                            kind: 'previous_iteration';
-                            loopBlockId: string;
-                        };
-                    };
-                } | {
-                    kind: 'inherit';
-                } | {
-                    kind: 'new_worktree';
-                    source: {
-                        kind: 'original';
-                    } | {
-                        kind: 'step';
-                        producer: {
-                            blockId: string;
-                            scope: {
-                                kind: 'current';
-                            } | {
-                                kind: 'outer';
-                                levels: number;
-                            } | {
-                                kind: 'previous_iteration';
-                                loopBlockId: string;
-                            };
-                        };
-                    } | {
-                        kind: 'workflow';
-                    };
-                } | {
-                    kind: 'project_checkout';
-                };
-            };
-            finalOutput?: undefined | {
-                kind: 'result';
-                producer: {
-                    blockId: string;
-                    scope: {
-                        kind: 'current';
-                    } | {
-                        kind: 'outer';
-                        levels: number;
-                    } | {
-                        kind: 'previous_iteration';
-                        loopBlockId: string;
-                    };
-                };
-                path: (number | string)[];
-            };
+            inputs?: undefined | unknown[];
+            defaults?: unknown;
+            finalOutput?: unknown;
         };
         metadata: {
             title: string;
@@ -4317,6 +3578,8 @@ type PluginActionInputById = {
             };
             flushBeforeCommit: true;
         } | {
+            kind: 'linked_workspace';
+        } | {
             kind: 'none';
         } | {
             kind: 'relationship';
@@ -4330,12 +3593,171 @@ type PluginActionInputById = {
     };
     readonly "workspace.sync.conflict.resolve": {
         controllerMachineId: string;
-        request: {
-            relationshipId: string;
-            path: string;
-            keep: 'alpha' | 'beta';
-            expectedKind: 'directory' | 'file' | 'missing' | 'symlink';
-            expectedDigest?: string | undefined;
+        hubWorkspaceRefId: string;
+        path: string;
+        source: {
+            workspaceRefId: string;
+            expected: {
+                kind: 'directory';
+                fingerprint: string;
+            } | {
+                kind: 'file';
+                digest: string;
+                executable: boolean;
+                size: number;
+            } | {
+                kind: 'missing';
+            } | {
+                kind: 'symlink';
+                target: string;
+            };
+        };
+        targets: readonly {
+            workspaceRefId: string;
+            expected: {
+                kind: 'directory';
+                fingerprint: string;
+            } | {
+                kind: 'file';
+                digest: string;
+                executable: boolean;
+                size: number;
+            } | {
+                kind: 'missing';
+            } | {
+                kind: 'symlink';
+                target: string;
+            };
+        }[];
+        relationshipIds: readonly string[];
+        strategy: 'keep_both';
+        alternatives: readonly {
+            source: {
+                workspaceRefId: string;
+                expected: {
+                    kind: 'directory';
+                    fingerprint: string;
+                } | {
+                    kind: 'file';
+                    digest: string;
+                    executable: boolean;
+                    size: number;
+                } | {
+                    kind: 'missing';
+                } | {
+                    kind: 'symlink';
+                    target: string;
+                };
+            };
+            destination: {
+                workspaceRefId: string;
+                path: string;
+                expected: {
+                    kind: 'directory';
+                    fingerprint: string;
+                } | {
+                    kind: 'file';
+                    digest: string;
+                    executable: boolean;
+                    size: number;
+                } | {
+                    kind: 'missing';
+                } | {
+                    kind: 'symlink';
+                    target: string;
+                };
+            };
+            consequence: {
+                propagatingToWorkspaceRefIds: readonly string[];
+                unverifiedPropagationToWorkspaceRefIds?: readonly string[] | undefined;
+            };
+        }[];
+    } | {
+        controllerMachineId: string;
+        hubWorkspaceRefId: string;
+        path: string;
+        source: {
+            workspaceRefId: string;
+            expected: {
+                kind: 'directory';
+                fingerprint: string;
+            } | {
+                kind: 'file';
+                digest: string;
+                executable: boolean;
+                size: number;
+            } | {
+                kind: 'missing';
+            } | {
+                kind: 'symlink';
+                target: string;
+            };
+        };
+        targets: readonly {
+            workspaceRefId: string;
+            expected: {
+                kind: 'directory';
+                fingerprint: string;
+            } | {
+                kind: 'file';
+                digest: string;
+                executable: boolean;
+                size: number;
+            } | {
+                kind: 'missing';
+            } | {
+                kind: 'symlink';
+                target: string;
+            };
+        }[];
+        relationshipIds: readonly string[];
+        strategy: 'use_source';
+    };
+    readonly "workspace.sync.relationship.create": {
+        v: 1;
+        sourceWorkspaceRefId: string;
+        targetMachineId: string;
+        targetPath: string;
+        mode: 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
+        contentPolicy: {
+            v: 1;
+            selection: 'all_files' | 'git_worktree';
+            extraIgnorePatterns: readonly string[];
+            extraIncludePatterns: readonly string[];
+            policyDigest: string;
+        };
+        destinationIntent: 'materialize_from_source_workspace' | 'use_existing';
+    };
+    readonly "workspace.sync.relationships.list": {
+        controllerMachineId?: string | undefined;
+        workspaceRefId?: string | undefined;
+    };
+    readonly "workspace.sync.conflicts.list": {
+        controllerMachineId: string;
+        relationshipId: string;
+        limit: number;
+        cursor?: string | undefined;
+    };
+    readonly "workspace.sync.conflict.inspect": {
+        workspaceRefId: string;
+        path: string;
+        controllerMachineId?: string | undefined;
+        preview?: undefined | {
+            workspaceRefId: string;
+            expected: {
+                kind: 'directory';
+                fingerprint: string;
+            } | {
+                kind: 'file';
+                digest: string;
+                executable: boolean;
+                size: number;
+            } | {
+                kind: 'missing';
+            } | {
+                kind: 'symlink';
+                target: string;
+            };
         };
     };
     readonly "session.spawn_new": {
@@ -4688,6 +4110,9 @@ type PluginActionInputById = {
                 };
             };
         }[];
+        toolAnswerDelivery?: undefined | {
+            toolCallId: string;
+        };
     } | {
         sessionId: string;
         kind: 'sessionSubagentLaunch';
@@ -4934,7 +4359,23 @@ type PluginActionInputById = {
         };
         permissionMode?: string | undefined;
         profileId?: string | undefined;
-        profileGenerationId?: string | undefined;
+        profileSourceCustody?: undefined | {
+            kind: 'bundled_first_party';
+            packagedRuntime: {
+                kind: 'cli_version_root';
+                versionRootId: string;
+            } | {
+                kind: 'pinned_runner_snapshot';
+                snapshotId: string;
+            };
+        } | {
+            kind: 'development';
+            registeredRootId: string;
+        } | {
+            kind: 'managed';
+            immutableGenerationId: string;
+            installSource: 'archive' | 'localPath' | 'npm';
+        };
         secretReferenceOverlay?: undefined | {
             v: 1;
             bindings: Record<string, {
@@ -5737,7 +5178,23 @@ type PluginActionInputById = {
             draftCorrelationId?: string | undefined;
         };
         profileId?: string | undefined;
-        profileGenerationId?: string | undefined;
+        profileSourceCustody?: undefined | {
+            kind: 'bundled_first_party';
+            packagedRuntime: {
+                kind: 'cli_version_root';
+                versionRootId: string;
+            } | {
+                kind: 'pinned_runner_snapshot';
+                snapshotId: string;
+            };
+        } | {
+            kind: 'development';
+            registeredRootId: string;
+        } | {
+            kind: 'managed';
+            immutableGenerationId: string;
+            installSource: 'archive' | 'localPath' | 'npm';
+        };
         secretReferenceOverlay?: undefined | {
             v: 1;
             bindings: Record<string, {
@@ -6038,7 +5495,23 @@ type PluginActionInputById = {
                 draftCorrelationId?: string | undefined;
             };
             profileId?: string | undefined;
-            profileGenerationId?: string | undefined;
+            profileSourceCustody?: undefined | {
+                kind: 'bundled_first_party';
+                packagedRuntime: {
+                    kind: 'cli_version_root';
+                    versionRootId: string;
+                } | {
+                    kind: 'pinned_runner_snapshot';
+                    snapshotId: string;
+                };
+            } | {
+                kind: 'development';
+                registeredRootId: string;
+            } | {
+                kind: 'managed';
+                immutableGenerationId: string;
+                installSource: 'archive' | 'localPath' | 'npm';
+            };
             secretReferenceOverlay?: undefined | {
                 v: 1;
                 bindings: Record<string, {
@@ -6499,7 +5972,7 @@ type PluginActionInputById = {
                         pluginId: string;
                         localId: string;
                     }[];
-                    actions?: ('account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'account.email.change.request' | 'account.password.change' | 'account.password.enroll' | 'account.password.remove' | 'account.plugins.data.erase' | 'account.security.get' | 'account.sessions.signOutEverywhere' | 'action.invoke' | 'action.options.resolve' | 'action.spec.get' | 'action.spec.search' | 'agents.backends.list' | 'agents.config_options.list' | 'agents.models.list' | 'agents.session_modes.list' | 'approval.request.create' | 'approval.request.decide' | 'approval.request.get' | 'approval.request.list' | 'automation.conversation.admit' | 'automation.conversation.target.verify' | 'automation.conversation.targets.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.event.sources.list' | 'browser.automation.cancelActive' | 'browser.automation.click' | 'browser.automation.drag' | 'browser.automation.focus' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.hover' | 'browser.automation.navigate' | 'browser.automation.press' | 'browser.automation.queryElements' | 'browser.automation.reload' | 'browser.automation.scroll' | 'browser.automation.select' | 'browser.automation.semanticSnapshot' | 'browser.automation.setValue' | 'browser.automation.snapshot' | 'browser.automation.status' | 'browser.automation.tap' | 'browser.automation.timeline.get' | 'browser.automation.type' | 'browser.automation.upload' | 'browser.automation.waitFor' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.start' | 'browser.context.attachToAgentTurn' | 'browser.context.attachToComposer' | 'browser.context.captureConsoleSummary' | 'browser.context.captureNetworkSummary' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.clear' | 'browser.diagnostics.clear' | 'browser.diagnostics.elementPicker.cancel' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.pause' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.resume' | 'browser.diagnostics.snapshot' | 'browser.goBack' | 'browser.goForward' | 'browser.navigate' | 'browser.recording.attachToComposer' | 'browser.recording.cancel' | 'browser.recording.cleanupExpired' | 'browser.recording.discard' | 'browser.recording.listForView' | 'browser.recording.start' | 'browser.recording.status' | 'browser.recording.stop' | 'browser.reload' | 'browser.stop' | 'browser.target.set' | 'browser.view.close' | 'browser.view.focus' | 'browser.view.open' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'daemon.filesystem.browseDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.promptAssets.delete' | 'daemon.promptAssets.discover' | 'daemon.promptRegistry.install' | 'daemon.promptRegistry.scanSource' | 'devices.simulator.input.button' | 'devices.simulator.input.key' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.input.swipe' | 'devices.simulator.input.tap' | 'devices.simulator.input.text' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.release' | 'devices.simulator.lease.renew' | 'devices.simulator.list' | 'devices.simulator.sideband.request' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.stream.snapshot' | 'execution.run.action' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.get' | 'execution.run.list' | 'execution.run.send' | 'execution.run.start' | 'execution.run.stop' | 'execution.run.stream.cancel' | 'execution.run.stream.read' | 'execution.run.stream.start' | 'execution.run.wait' | 'home.accounts.delete' | 'home.accounts.disable' | 'home.accounts.enable' | 'home.accounts.list' | 'home.accounts.role.set' | 'home.accounts.search' | 'home.governance.eligibility.get' | 'home.governance.get' | 'home.policy.set' | 'identity.githubApps.create' | 'identity.githubApps.list' | 'identity.githubApps.manifestSetup.start' | 'identity.githubApps.remove' | 'identity.githubApps.update' | 'identity.githubApps.verifyInstallation' | 'identity.providers.create' | 'identity.providers.disable' | 'identity.providers.enable' | 'identity.providers.list' | 'identity.providers.remove' | 'identity.providers.remove.preview' | 'identity.providers.secret.replace' | 'identity.providers.test.consume' | 'identity.providers.test.start' | 'identity.providers.update' | 'identity.providers.validate' | 'localServices.actions.copyUrl' | 'localServices.actions.forget' | 'localServices.actions.openPreview' | 'localServices.actions.restartManaged' | 'localServices.actions.stopManaged' | 'localServices.actions.terminateDetected' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.history.clear' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.preview.openOrCreate' | 'localServices.preview.revoke' | 'localServices.preview.status' | 'localServices.publicPreview.copyUrl' | 'localServices.publicPreview.create' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.status' | 'machines.list' | 'machines.pools.create' | 'machines.pools.delete' | 'machines.pools.get' | 'machines.pools.list' | 'machines.pools.resolve' | 'machines.pools.update' | 'memory.ensure_up_to_date' | 'memory.get_window' | 'memory.search' | 'paths.list_recent' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.endpoint.convergeTarget' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.finishRotation' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.revoke' | 'plugins.change.status' | 'plugins.dev.build' | 'plugins.dev.install' | 'plugins.dev.submit' | 'plugins.dev.test' | 'plugins.dev.typecheck' | 'plugins.doctor' | 'plugins.install' | 'plugins.list' | 'plugins.pack' | 'plugins.permissions.grants.dismissRequest' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.revoke' | 'plugins.reload' | 'plugins.scaffold' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.get' | 'plugins.settings.list' | 'plugins.settings.reset' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.delete' | 'plugins.settings.secret.status' | 'plugins.settings.secret.unbind' | 'plugins.settings.set' | 'plugins.uninstall' | 'projects.list' | 'prompt_asset.export' | 'prompt_bundle.update' | 'prompt_doc.update' | 'prompt_registry.install' | 'prompts.invocation.resolve' | 'prompts.invocations.list' | 'review.engines.list' | 'review.start' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'reviews.comments.create' | 'reviews.comments.edit' | 'reviews.comments.get' | 'reviews.comments.list' | 'reviews.comments.redact' | 'reviews.comments.reply' | 'reviews.comments.setDisposition' | 'reviews.comments.transition' | 'scm.diffSummary.generate' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.pullRequest.checkout' | 'scm.pullRequest.get' | 'scm.pullRequest.list' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.prepareWorktree' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.reviewWorkspace.materializePrepared' | 'secrets.shared.create' | 'secrets.shared.delete' | 'secrets.shared.grants.set' | 'secrets.shared.list' | 'secrets.shared.promote' | 'secrets.shared.update' | 'servers.list' | 'session.access.context.set' | 'session.access.grant.remove' | 'session.access.grant.set' | 'session.access.grants.list' | 'session.activity.get' | 'session.archive' | 'session.board.get' | 'session.board.item.remove' | 'session.board.item.upsert' | 'session.board.layout.update' | 'session.checkpoint' | 'session.checkpoint_code_rollback' | 'session.continue_with_replay' | 'session.discussion.archive' | 'session.discussion.create' | 'session.discussion.get' | 'session.discussion.list' | 'session.discussion.post' | 'session.discussion.read' | 'session.discussion.read_state.set' | 'session.discussion.rename' | 'session.discussion.restore' | 'session.events.get' | 'session.follow.get' | 'session.follow.preferences.get' | 'session.follow.preferences.set' | 'session.follow.remove' | 'session.follow.set' | 'session.follow.sources.list' | 'session.follow.sources.remove' | 'session.follow.sources.set' | 'session.fork' | 'session.goal.clear' | 'session.goal.get' | 'session.goal.set' | 'session.handoff' | 'session.handoff.abort' | 'session.handoff.commit' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.status.get' | 'session.history.get' | 'session.list' | 'session.log.tail' | 'session.message.send' | 'session.messages.recent.get' | 'session.mode.set' | 'session.model.set' | 'session.open' | 'session.pendingInput.interruptAndRun' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.permission.respond' | 'session.permission_mode.set' | 'session.presentation.apply' | 'session.public_link.create' | 'session.public_link.get' | 'session.public_link.remove' | 'session.read_state.set' | 'session.responsibility.candidates.list' | 'session.responsibility.set' | 'session.restore' | 'session.rollback' | 'session.skill_catalog.list' | 'session.spawn_new' | 'session.status.get' | 'session.stop' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.terminalComposer.clear' | 'session.title.set' | 'session.transcript.get' | 'session.unarchive' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.waitResume.enable' | 'session.user_action.answer' | 'session.user_action.remote.answer' | 'session.vendor_plugin_catalog.list' | 'session.wait.idle' | 'session.work_state.get' | 'sessions.external.backgroundFollow.set' | 'sessions.external.candidate.delete' | 'sessions.external.candidates.list' | 'sessions.external.follow' | 'sessions.external.link.ensure' | 'sessions.external.materialize.start' | 'sessions.external.operation.cancel' | 'sessions.external.operation.discard' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.status.get' | 'sessions.external.status.get' | 'sessions.external.takeover' | 'sessions.external.takeover.start' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.unfollow' | 'sessions.runner.activation.cancel' | 'sessions.runner.activation.create' | 'sessions.runner.activation.get' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'sessions.spawn.profiles.list' | 'sessions.subagents.complete' | 'sessions.subagents.get' | 'sessions.subagents.list' | 'sessions.subagents.updateStatus' | 'sessions.subagents.upsert' | 'sessions.subagents.watch' | 'subagents.delegate.start' | 'subagents.plan.start' | 'teams.archive' | 'teams.create' | 'teams.credentials.activity.list' | 'teams.credentials.audience.set' | 'teams.credentials.create' | 'teams.credentials.delete' | 'teams.credentials.entitled.list' | 'teams.credentials.externalKeys.create' | 'teams.credentials.externalKeys.list' | 'teams.credentials.externalKeys.revoke' | 'teams.credentials.externalKeys.revokeAll' | 'teams.credentials.get' | 'teams.credentials.limits.delete' | 'teams.credentials.limits.list' | 'teams.credentials.limits.upsert' | 'teams.credentials.list' | 'teams.credentials.requestPolicySupport.get' | 'teams.credentials.sourceResources.list' | 'teams.credentials.sources.list' | 'teams.credentials.test' | 'teams.credentials.update' | 'teams.credentials.usage.query' | 'teams.directory.groups.list' | 'teams.directory.people.list' | 'teams.directory.sourceSetup.list' | 'teams.directory.sources.create' | 'teams.directory.sources.get' | 'teams.directory.sources.list' | 'teams.directory.sources.pause' | 'teams.directory.sources.remove' | 'teams.directory.sources.remove.preview' | 'teams.directory.sources.resume' | 'teams.directory.sources.sync' | 'teams.externalGroupBindings.list' | 'teams.externalGroupBindings.remove' | 'teams.externalGroupBindings.set' | 'teams.get' | 'teams.groups.archive' | 'teams.groups.create' | 'teams.groups.get' | 'teams.groups.list' | 'teams.groups.members.add' | 'teams.groups.members.list' | 'teams.groups.members.remove' | 'teams.groups.restore' | 'teams.groups.update' | 'teams.identity.connections.create' | 'teams.identity.connections.disable' | 'teams.identity.connections.enable' | 'teams.identity.connections.list' | 'teams.identity.connections.remove' | 'teams.identity.connections.remove.preview' | 'teams.identity.connections.settings.update' | 'teams.identity.connections.test.consume' | 'teams.identity.connections.test.start' | 'teams.identity.workos.adminPortalLink.create' | 'teams.identity.workos.connection.create' | 'teams.identity.workos.connection.set' | 'teams.identity.workos.reconcile' | 'teams.invitations.accept' | 'teams.invitations.accept.prepareApproval' | 'teams.invitations.create' | 'teams.invitations.list' | 'teams.invitations.preview' | 'teams.invitations.reissue' | 'teams.invitations.revoke' | 'teams.list' | 'teams.logo.remove' | 'teams.logo.set' | 'teams.members.add' | 'teams.members.get' | 'teams.members.groups.list' | 'teams.members.list' | 'teams.members.management.set' | 'teams.members.reactivate' | 'teams.members.remove' | 'teams.members.role.set' | 'teams.members.suspend' | 'teams.policy.set' | 'teams.restore' | 'teams.update' | 'transcript.follow' | 'transcript.import' | 'transcript.page' | 'transcript.readAfter' | 'transcript.search' | 'transcript.unfollow' | 'ui.current_context.command.invoke' | 'ui.current_context.read' | 'ui.pet.choose' | 'ui.voice_agent.teleport' | 'ui.voice_global.reset' | 'voice_agent.start' | 'workflow.definition.create' | 'workflow.definition.delete' | 'workflow.definition.get' | 'workflow.definition.list' | 'workflow.definition.update' | 'workflow.run.cancel' | 'workflow.run.delete' | 'workflow.run.get' | 'workflow.run.invocations.get' | 'workflow.run.invocations.list' | 'workflow.run.invocations.retry' | 'workflow.run.list' | 'workflow.run.pause' | 'workflow.run.resume' | 'workflow.run.start' | 'workflow.run.wait' | 'workflow.validate' | 'workspace.sync.conflict.resolve' | {
+                    actions?: ('account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'account.email.change.request' | 'account.password.change' | 'account.password.enroll' | 'account.password.remove' | 'account.plugins.data.erase' | 'account.security.get' | 'account.sessions.signOutEverywhere' | 'action.invoke' | 'action.options.resolve' | 'action.spec.get' | 'action.spec.search' | 'agents.backends.list' | 'agents.config_options.list' | 'agents.models.list' | 'agents.session_modes.list' | 'approval.request.create' | 'approval.request.decide' | 'approval.request.get' | 'approval.request.list' | 'automation.conversation.admit' | 'automation.conversation.target.verify' | 'automation.conversation.targets.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.event.sources.list' | 'browser.automation.cancelActive' | 'browser.automation.click' | 'browser.automation.drag' | 'browser.automation.focus' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.hover' | 'browser.automation.navigate' | 'browser.automation.press' | 'browser.automation.queryElements' | 'browser.automation.reload' | 'browser.automation.scroll' | 'browser.automation.select' | 'browser.automation.semanticSnapshot' | 'browser.automation.setValue' | 'browser.automation.snapshot' | 'browser.automation.status' | 'browser.automation.tap' | 'browser.automation.timeline.get' | 'browser.automation.type' | 'browser.automation.upload' | 'browser.automation.waitFor' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.start' | 'browser.context.attachToAgentTurn' | 'browser.context.attachToComposer' | 'browser.context.captureConsoleSummary' | 'browser.context.captureNetworkSummary' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.clear' | 'browser.diagnostics.clear' | 'browser.diagnostics.elementPicker.cancel' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.pause' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.resume' | 'browser.diagnostics.snapshot' | 'browser.goBack' | 'browser.goForward' | 'browser.navigate' | 'browser.recording.attachToComposer' | 'browser.recording.cancel' | 'browser.recording.cleanupExpired' | 'browser.recording.discard' | 'browser.recording.listForView' | 'browser.recording.start' | 'browser.recording.status' | 'browser.recording.stop' | 'browser.reload' | 'browser.stop' | 'browser.target.set' | 'browser.view.close' | 'browser.view.focus' | 'browser.view.open' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'daemon.filesystem.browseDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.promptAssets.delete' | 'daemon.promptAssets.discover' | 'daemon.promptRegistry.install' | 'daemon.promptRegistry.scanSource' | 'devices.simulator.input.button' | 'devices.simulator.input.key' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.input.swipe' | 'devices.simulator.input.tap' | 'devices.simulator.input.text' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.release' | 'devices.simulator.lease.renew' | 'devices.simulator.list' | 'devices.simulator.sideband.request' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.stream.snapshot' | 'execution.run.action' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.get' | 'execution.run.list' | 'execution.run.send' | 'execution.run.start' | 'execution.run.stop' | 'execution.run.stream.cancel' | 'execution.run.stream.read' | 'execution.run.stream.start' | 'execution.run.wait' | 'home.accounts.delete' | 'home.accounts.disable' | 'home.accounts.enable' | 'home.accounts.list' | 'home.accounts.role.set' | 'home.accounts.search' | 'home.governance.eligibility.get' | 'home.governance.get' | 'home.policy.set' | 'identity.githubApps.create' | 'identity.githubApps.list' | 'identity.githubApps.manifestSetup.start' | 'identity.githubApps.remove' | 'identity.githubApps.update' | 'identity.githubApps.verifyInstallation' | 'identity.providers.create' | 'identity.providers.disable' | 'identity.providers.enable' | 'identity.providers.list' | 'identity.providers.remove' | 'identity.providers.remove.preview' | 'identity.providers.secret.replace' | 'identity.providers.test.consume' | 'identity.providers.test.start' | 'identity.providers.update' | 'identity.providers.validate' | 'localServices.actions.copyUrl' | 'localServices.actions.forget' | 'localServices.actions.openPreview' | 'localServices.actions.restartManaged' | 'localServices.actions.stopManaged' | 'localServices.actions.terminateDetected' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.history.clear' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.preview.openOrCreate' | 'localServices.preview.revoke' | 'localServices.preview.status' | 'localServices.publicPreview.copyUrl' | 'localServices.publicPreview.create' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.status' | 'machines.list' | 'machines.pools.create' | 'machines.pools.delete' | 'machines.pools.get' | 'machines.pools.list' | 'machines.pools.resolve' | 'machines.pools.update' | 'memory.ensure_up_to_date' | 'memory.get_window' | 'memory.search' | 'paths.list_recent' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.endpoint.convergeTarget' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.finishRotation' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.revoke' | 'plugins.change.status' | 'plugins.dev.build' | 'plugins.dev.install' | 'plugins.dev.submit' | 'plugins.dev.test' | 'plugins.dev.typecheck' | 'plugins.doctor' | 'plugins.install' | 'plugins.list' | 'plugins.pack' | 'plugins.permissions.grants.dismissRequest' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.revoke' | 'plugins.reload' | 'plugins.scaffold' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.get' | 'plugins.settings.list' | 'plugins.settings.reset' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.delete' | 'plugins.settings.secret.status' | 'plugins.settings.secret.unbind' | 'plugins.settings.set' | 'plugins.uninstall' | 'projects.list' | 'prompt_asset.export' | 'prompt_bundle.update' | 'prompt_doc.update' | 'prompt_registry.install' | 'prompts.invocation.resolve' | 'prompts.invocations.list' | 'review.engines.list' | 'review.start' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'reviews.comments.create' | 'reviews.comments.edit' | 'reviews.comments.get' | 'reviews.comments.list' | 'reviews.comments.redact' | 'reviews.comments.reply' | 'reviews.comments.setDisposition' | 'reviews.comments.transition' | 'scm.diffSummary.generate' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.pullRequest.checkout' | 'scm.pullRequest.get' | 'scm.pullRequest.list' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.prepareWorktree' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.reviewWorkspace.materializePrepared' | 'secrets.shared.create' | 'secrets.shared.delete' | 'secrets.shared.grants.set' | 'secrets.shared.list' | 'secrets.shared.promote' | 'secrets.shared.update' | 'servers.list' | 'session.access.context.set' | 'session.access.grant.remove' | 'session.access.grant.set' | 'session.access.grants.list' | 'session.activity.get' | 'session.archive' | 'session.board.get' | 'session.board.item.remove' | 'session.board.item.upsert' | 'session.board.layout.update' | 'session.checkpoint' | 'session.checkpoint_code_rollback' | 'session.continue_with_replay' | 'session.discussion.archive' | 'session.discussion.create' | 'session.discussion.get' | 'session.discussion.list' | 'session.discussion.post' | 'session.discussion.read' | 'session.discussion.read_state.set' | 'session.discussion.rename' | 'session.discussion.restore' | 'session.events.get' | 'session.follow.get' | 'session.follow.preferences.get' | 'session.follow.preferences.set' | 'session.follow.remove' | 'session.follow.set' | 'session.follow.sources.list' | 'session.follow.sources.remove' | 'session.follow.sources.set' | 'session.fork' | 'session.goal.clear' | 'session.goal.get' | 'session.goal.set' | 'session.handoff' | 'session.handoff.abort' | 'session.handoff.commit' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.status.get' | 'session.history.get' | 'session.list' | 'session.log.tail' | 'session.message.send' | 'session.messages.recent.get' | 'session.mode.set' | 'session.model.set' | 'session.open' | 'session.pendingInput.interruptAndRun' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.permission.respond' | 'session.permission_mode.set' | 'session.presentation.apply' | 'session.public_link.create' | 'session.public_link.get' | 'session.public_link.remove' | 'session.read_state.set' | 'session.responsibility.candidates.list' | 'session.responsibility.set' | 'session.restore' | 'session.rollback' | 'session.skill_catalog.list' | 'session.spawn_new' | 'session.status.get' | 'session.stop' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.terminalComposer.clear' | 'session.title.set' | 'session.transcript.get' | 'session.unarchive' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.waitResume.enable' | 'session.user_action.answer' | 'session.user_action.remote.answer' | 'session.vendor_plugin_catalog.list' | 'session.wait.idle' | 'session.work_state.get' | 'sessions.external.backgroundFollow.set' | 'sessions.external.candidate.delete' | 'sessions.external.candidates.list' | 'sessions.external.follow' | 'sessions.external.link.ensure' | 'sessions.external.materialize.start' | 'sessions.external.operation.cancel' | 'sessions.external.operation.discard' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.status.get' | 'sessions.external.status.get' | 'sessions.external.takeover' | 'sessions.external.takeover.start' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.unfollow' | 'sessions.runner.activation.cancel' | 'sessions.runner.activation.create' | 'sessions.runner.activation.get' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'sessions.spawn.profiles.list' | 'sessions.subagents.complete' | 'sessions.subagents.get' | 'sessions.subagents.list' | 'sessions.subagents.updateStatus' | 'sessions.subagents.upsert' | 'sessions.subagents.watch' | 'subagents.delegate.start' | 'subagents.plan.start' | 'teams.archive' | 'teams.create' | 'teams.credentials.activity.list' | 'teams.credentials.audience.set' | 'teams.credentials.create' | 'teams.credentials.delete' | 'teams.credentials.entitled.list' | 'teams.credentials.externalKeys.create' | 'teams.credentials.externalKeys.list' | 'teams.credentials.externalKeys.revoke' | 'teams.credentials.externalKeys.revokeAll' | 'teams.credentials.get' | 'teams.credentials.limits.delete' | 'teams.credentials.limits.list' | 'teams.credentials.limits.upsert' | 'teams.credentials.list' | 'teams.credentials.requestPolicySupport.get' | 'teams.credentials.sourceResources.list' | 'teams.credentials.sources.list' | 'teams.credentials.test' | 'teams.credentials.update' | 'teams.credentials.usage.query' | 'teams.directory.groups.list' | 'teams.directory.people.list' | 'teams.directory.sourceSetup.list' | 'teams.directory.sources.create' | 'teams.directory.sources.get' | 'teams.directory.sources.list' | 'teams.directory.sources.pause' | 'teams.directory.sources.remove' | 'teams.directory.sources.remove.preview' | 'teams.directory.sources.resume' | 'teams.directory.sources.sync' | 'teams.externalGroupBindings.list' | 'teams.externalGroupBindings.remove' | 'teams.externalGroupBindings.set' | 'teams.get' | 'teams.groups.archive' | 'teams.groups.create' | 'teams.groups.get' | 'teams.groups.list' | 'teams.groups.members.add' | 'teams.groups.members.list' | 'teams.groups.members.remove' | 'teams.groups.restore' | 'teams.groups.update' | 'teams.identity.connections.create' | 'teams.identity.connections.disable' | 'teams.identity.connections.enable' | 'teams.identity.connections.list' | 'teams.identity.connections.remove' | 'teams.identity.connections.remove.preview' | 'teams.identity.connections.settings.update' | 'teams.identity.connections.test.consume' | 'teams.identity.connections.test.start' | 'teams.identity.workos.adminPortalLink.create' | 'teams.identity.workos.connection.create' | 'teams.identity.workos.connection.set' | 'teams.identity.workos.reconcile' | 'teams.invitations.accept' | 'teams.invitations.accept.prepareApproval' | 'teams.invitations.create' | 'teams.invitations.list' | 'teams.invitations.preview' | 'teams.invitations.reissue' | 'teams.invitations.revoke' | 'teams.list' | 'teams.logo.remove' | 'teams.logo.set' | 'teams.members.add' | 'teams.members.get' | 'teams.members.groups.list' | 'teams.members.list' | 'teams.members.management.set' | 'teams.members.reactivate' | 'teams.members.remove' | 'teams.members.role.set' | 'teams.members.suspend' | 'teams.policy.set' | 'teams.restore' | 'teams.update' | 'transcript.follow' | 'transcript.import' | 'transcript.page' | 'transcript.readAfter' | 'transcript.search' | 'transcript.unfollow' | 'ui.current_context.command.invoke' | 'ui.current_context.read' | 'ui.pet.choose' | 'ui.voice_agent.teleport' | 'ui.voice_global.reset' | 'voice_agent.start' | 'workflow.definition.create' | 'workflow.definition.delete' | 'workflow.definition.get' | 'workflow.definition.list' | 'workflow.definition.update' | 'workflow.run.cancel' | 'workflow.run.delete' | 'workflow.run.get' | 'workflow.run.invocations.get' | 'workflow.run.invocations.list' | 'workflow.run.invocations.retry' | 'workflow.run.list' | 'workflow.run.pause' | 'workflow.run.resume' | 'workflow.run.start' | 'workflow.run.wait' | 'workflow.validate' | 'workspace.sync.conflict.inspect' | 'workspace.sync.conflict.resolve' | 'workspace.sync.conflicts.list' | 'workspace.sync.relationship.create' | 'workspace.sync.relationships.list' | {
                         pluginId: string;
                         localId: string;
                     })[] | undefined;
@@ -11455,6 +10928,12 @@ type PluginActionInputById = {
                 value: string;
             };
         };
+        toMode?: 'e2ee' | 'plain' | undefined;
+        keyEnvelopes?: undefined | {
+            recipientAccountId: string;
+            encryptedDataKey: string;
+            recipientContentPublicKeyFingerprint: string;
+        }[];
     };
     readonly "secrets.shared.delete": {
         resourceId: string;
@@ -13656,7 +13135,7 @@ type PluginActionResultById = {
                 accessLevels: ('admin' | 'edit' | 'view')[];
                 canChangePermissionDelegation: boolean;
                 canRemove: boolean;
-                reason?: 'data_key_not_required' | 'invalid_cursor' | 'invalid_request' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | undefined;
+                reason?: 'data_key_not_required' | 'invalid_cursor' | 'invalid_request' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_sharing_unavailable' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | undefined;
             };
         }[];
         owner: {
@@ -14427,11 +13906,59 @@ type PluginActionResultById = {
                 alphaPath: string;
                 betaPath: string;
                 mode: 'copy_once' | 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
-                changedFiles: number;
+                endpointStates: {
+                    alpha: null | {
+                        connected: boolean;
+                        scanned: boolean;
+                        scanProblemCount: number;
+                        transitionProblemCount: number;
+                    };
+                    beta: null | {
+                        connected: boolean;
+                        scanned: boolean;
+                        scanProblemCount: number;
+                        transitionProblemCount: number;
+                    };
+                };
                 conflictCount: number;
-                lastSuccessfulSyncAtMs: null | number;
+                lastCycleObservedAtMs: null | number;
                 errorCode?: string | undefined;
             };
+            cleanupWarning?: undefined | {
+                code: string;
+                message: string;
+            };
+        } | {
+            kind: 'linked_workspace';
+            traversed: readonly {
+                relationshipId: string;
+                policyDigest: string;
+                status: {
+                    relationshipId: string;
+                    controllerMachineId: string;
+                    state: 'conflicted' | 'controller_unavailable' | 'disconnected' | 'error' | 'flushing' | 'paused' | 'starting' | 'stopped' | 'watching';
+                    alphaPath: string;
+                    betaPath: string;
+                    mode: 'copy_once' | 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
+                    endpointStates: {
+                        alpha: null | {
+                            connected: boolean;
+                            scanned: boolean;
+                            scanProblemCount: number;
+                            transitionProblemCount: number;
+                        };
+                        beta: null | {
+                            connected: boolean;
+                            scanned: boolean;
+                            scanProblemCount: number;
+                            transitionProblemCount: number;
+                        };
+                    };
+                    conflictCount: number;
+                    lastCycleObservedAtMs: null | number;
+                    errorCode?: string | undefined;
+                };
+            }[];
             cleanupWarning?: undefined | {
                 code: string;
                 message: string;
@@ -14449,9 +13976,22 @@ type PluginActionResultById = {
                 alphaPath: string;
                 betaPath: string;
                 mode: 'copy_once' | 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
-                changedFiles: number;
+                endpointStates: {
+                    alpha: null | {
+                        connected: boolean;
+                        scanned: boolean;
+                        scanProblemCount: number;
+                        transitionProblemCount: number;
+                    };
+                    beta: null | {
+                        connected: boolean;
+                        scanned: boolean;
+                        scanProblemCount: number;
+                        transitionProblemCount: number;
+                    };
+                };
                 conflictCount: number;
-                lastSuccessfulSyncAtMs: null | number;
+                lastCycleObservedAtMs: null | number;
                 errorCode?: string | undefined;
             };
             cleanupWarning?: undefined | {
@@ -14468,20 +14008,108 @@ type PluginActionResultById = {
         readonly [key: string]: JsonValue;
     };
     readonly "workspace.sync.conflict.resolve": {
+        endpoints: readonly ({
+            workspaceRefId: string;
+            status: 'applied';
+        } | {
+            workspaceRefId: string;
+            status: 'applied_paused';
+        } | {
+            workspaceRefId: string;
+            status: 'cancelled';
+        } | {
+            workspaceRefId: string;
+            status: 'changed';
+        } | {
+            workspaceRefId: string;
+            status: 'failed';
+            errorCode: string;
+        } | {
+            workspaceRefId: string;
+            status: 'offline';
+        } | {
+            workspaceRefId: string;
+            status: 'recovery_needed';
+            recoveryPath: string;
+        } | {
+            workspaceRefId: string;
+            status: 'unknown';
+        })[];
+        preserved?: readonly {
+            alternativeIndex: number;
+            sourceWorkspaceRefId: string;
+            destinationWorkspaceRefId: string;
+            path: string;
+            propagatingToWorkspaceRefIds: readonly string[];
+            outcome: {
+                status: 'already_present';
+            } | {
+                status: 'cancelled';
+            } | {
+                status: 'changed';
+            } | {
+                status: 'failed';
+                errorCode: string;
+            } | {
+                status: 'not_started';
+            } | {
+                status: 'offline';
+            } | {
+                status: 'preserved';
+            } | {
+                status: 'recovery_needed';
+                recoveryPath: string;
+            } | {
+                status: 'unknown';
+            };
+            unverifiedPropagationToWorkspaceRefIds?: readonly string[] | undefined;
+        }[] | undefined;
+    };
+    readonly "workspace.sync.relationship.create": {
+        v: 1;
         relationshipId: string;
+        created: boolean;
         controllerMachineId: string;
-        state: 'conflicted' | 'controller_unavailable' | 'disconnected' | 'error' | 'flushing' | 'paused' | 'starting' | 'stopped' | 'watching';
-        alphaPath: string;
-        betaPath: string;
-        mode: 'copy_once' | 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
-        changedFiles: number;
-        conflictCount: number;
-        lastSuccessfulSyncAtMs: null | number;
-        errorCode?: string | undefined;
+        sourceWorkspaceRefId: string;
+        targetWorkspaceRefId: string;
+        status: {
+            relationshipId: string;
+            controllerMachineId: string;
+            state: 'conflicted' | 'controller_unavailable' | 'disconnected' | 'error' | 'flushing' | 'paused' | 'starting' | 'stopped' | 'watching';
+            alphaPath: string;
+            betaPath: string;
+            mode: 'copy_once' | 'keep_both_in_sync' | 'keep_synced' | 'mirror_exactly';
+            endpointStates: {
+                alpha: null | {
+                    connected: boolean;
+                    scanned: boolean;
+                    scanProblemCount: number;
+                    transitionProblemCount: number;
+                };
+                beta: null | {
+                    connected: boolean;
+                    scanned: boolean;
+                    scanProblemCount: number;
+                    transitionProblemCount: number;
+                };
+            };
+            conflictCount: number;
+            lastCycleObservedAtMs: null | number;
+            errorCode?: string | undefined;
+        };
+    };
+    readonly "workspace.sync.relationships.list": boolean | null | number | readonly JsonValue[] | string | {
+        readonly [key: string]: JsonValue;
+    };
+    readonly "workspace.sync.conflicts.list": boolean | null | number | readonly JsonValue[] | string | {
+        readonly [key: string]: JsonValue;
+    };
+    readonly "workspace.sync.conflict.inspect": boolean | null | number | readonly JsonValue[] | string | {
+        readonly [key: string]: JsonValue;
     };
     readonly "session.spawn_new": {
         type: 'error';
-        code: 'cancelled' | 'creation_conflict' | 'data_key_not_required' | 'incompatible_target' | 'invalid_cursor' | 'invalid_input' | 'invalid_request' | 'machine_offline' | 'organization_invalid' | 'organization_unavailable' | 'permission_denied' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_request_failed' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_data_key_unavailable' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | 'spawn_failed' | 'target_required' | 'target_unavailable';
+        code: 'cancelled' | 'creation_conflict' | 'data_key_not_required' | 'incompatible_target' | 'invalid_cursor' | 'invalid_input' | 'invalid_request' | 'machine_offline' | 'organization_invalid' | 'organization_unavailable' | 'permission_denied' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_request_failed' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_sharing_unavailable' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_data_key_unavailable' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | 'spawn_failed' | 'target_required' | 'target_unavailable';
         retryable: boolean;
         providerError?: undefined | {
             v: 1;
@@ -19775,7 +19403,7 @@ type PluginActionResultById = {
                             pluginId: string;
                             localId: string;
                         }[];
-                        actions?: ('account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'account.email.change.request' | 'account.password.change' | 'account.password.enroll' | 'account.password.remove' | 'account.plugins.data.erase' | 'account.security.get' | 'account.sessions.signOutEverywhere' | 'action.invoke' | 'action.options.resolve' | 'action.spec.get' | 'action.spec.search' | 'agents.backends.list' | 'agents.config_options.list' | 'agents.models.list' | 'agents.session_modes.list' | 'approval.request.create' | 'approval.request.decide' | 'approval.request.get' | 'approval.request.list' | 'automation.conversation.admit' | 'automation.conversation.target.verify' | 'automation.conversation.targets.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.event.sources.list' | 'browser.automation.cancelActive' | 'browser.automation.click' | 'browser.automation.drag' | 'browser.automation.focus' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.hover' | 'browser.automation.navigate' | 'browser.automation.press' | 'browser.automation.queryElements' | 'browser.automation.reload' | 'browser.automation.scroll' | 'browser.automation.select' | 'browser.automation.semanticSnapshot' | 'browser.automation.setValue' | 'browser.automation.snapshot' | 'browser.automation.status' | 'browser.automation.tap' | 'browser.automation.timeline.get' | 'browser.automation.type' | 'browser.automation.upload' | 'browser.automation.waitFor' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.start' | 'browser.context.attachToAgentTurn' | 'browser.context.attachToComposer' | 'browser.context.captureConsoleSummary' | 'browser.context.captureNetworkSummary' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.clear' | 'browser.diagnostics.clear' | 'browser.diagnostics.elementPicker.cancel' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.pause' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.resume' | 'browser.diagnostics.snapshot' | 'browser.goBack' | 'browser.goForward' | 'browser.navigate' | 'browser.recording.attachToComposer' | 'browser.recording.cancel' | 'browser.recording.cleanupExpired' | 'browser.recording.discard' | 'browser.recording.listForView' | 'browser.recording.start' | 'browser.recording.status' | 'browser.recording.stop' | 'browser.reload' | 'browser.stop' | 'browser.target.set' | 'browser.view.close' | 'browser.view.focus' | 'browser.view.open' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'daemon.filesystem.browseDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.promptAssets.delete' | 'daemon.promptAssets.discover' | 'daemon.promptRegistry.install' | 'daemon.promptRegistry.scanSource' | 'devices.simulator.input.button' | 'devices.simulator.input.key' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.input.swipe' | 'devices.simulator.input.tap' | 'devices.simulator.input.text' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.release' | 'devices.simulator.lease.renew' | 'devices.simulator.list' | 'devices.simulator.sideband.request' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.stream.snapshot' | 'execution.run.action' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.get' | 'execution.run.list' | 'execution.run.send' | 'execution.run.start' | 'execution.run.stop' | 'execution.run.stream.cancel' | 'execution.run.stream.read' | 'execution.run.stream.start' | 'execution.run.wait' | 'home.accounts.delete' | 'home.accounts.disable' | 'home.accounts.enable' | 'home.accounts.list' | 'home.accounts.role.set' | 'home.accounts.search' | 'home.governance.eligibility.get' | 'home.governance.get' | 'home.policy.set' | 'identity.githubApps.create' | 'identity.githubApps.list' | 'identity.githubApps.manifestSetup.start' | 'identity.githubApps.remove' | 'identity.githubApps.update' | 'identity.githubApps.verifyInstallation' | 'identity.providers.create' | 'identity.providers.disable' | 'identity.providers.enable' | 'identity.providers.list' | 'identity.providers.remove' | 'identity.providers.remove.preview' | 'identity.providers.secret.replace' | 'identity.providers.test.consume' | 'identity.providers.test.start' | 'identity.providers.update' | 'identity.providers.validate' | 'localServices.actions.copyUrl' | 'localServices.actions.forget' | 'localServices.actions.openPreview' | 'localServices.actions.restartManaged' | 'localServices.actions.stopManaged' | 'localServices.actions.terminateDetected' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.history.clear' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.preview.openOrCreate' | 'localServices.preview.revoke' | 'localServices.preview.status' | 'localServices.publicPreview.copyUrl' | 'localServices.publicPreview.create' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.status' | 'machines.list' | 'machines.pools.create' | 'machines.pools.delete' | 'machines.pools.get' | 'machines.pools.list' | 'machines.pools.resolve' | 'machines.pools.update' | 'memory.ensure_up_to_date' | 'memory.get_window' | 'memory.search' | 'paths.list_recent' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.endpoint.convergeTarget' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.finishRotation' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.revoke' | 'plugins.change.status' | 'plugins.dev.build' | 'plugins.dev.install' | 'plugins.dev.submit' | 'plugins.dev.test' | 'plugins.dev.typecheck' | 'plugins.doctor' | 'plugins.install' | 'plugins.list' | 'plugins.pack' | 'plugins.permissions.grants.dismissRequest' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.revoke' | 'plugins.reload' | 'plugins.scaffold' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.get' | 'plugins.settings.list' | 'plugins.settings.reset' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.delete' | 'plugins.settings.secret.status' | 'plugins.settings.secret.unbind' | 'plugins.settings.set' | 'plugins.uninstall' | 'projects.list' | 'prompt_asset.export' | 'prompt_bundle.update' | 'prompt_doc.update' | 'prompt_registry.install' | 'prompts.invocation.resolve' | 'prompts.invocations.list' | 'review.engines.list' | 'review.start' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'reviews.comments.create' | 'reviews.comments.edit' | 'reviews.comments.get' | 'reviews.comments.list' | 'reviews.comments.redact' | 'reviews.comments.reply' | 'reviews.comments.setDisposition' | 'reviews.comments.transition' | 'scm.diffSummary.generate' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.pullRequest.checkout' | 'scm.pullRequest.get' | 'scm.pullRequest.list' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.prepareWorktree' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.reviewWorkspace.materializePrepared' | 'secrets.shared.create' | 'secrets.shared.delete' | 'secrets.shared.grants.set' | 'secrets.shared.list' | 'secrets.shared.promote' | 'secrets.shared.update' | 'servers.list' | 'session.access.context.set' | 'session.access.grant.remove' | 'session.access.grant.set' | 'session.access.grants.list' | 'session.activity.get' | 'session.archive' | 'session.board.get' | 'session.board.item.remove' | 'session.board.item.upsert' | 'session.board.layout.update' | 'session.checkpoint' | 'session.checkpoint_code_rollback' | 'session.continue_with_replay' | 'session.discussion.archive' | 'session.discussion.create' | 'session.discussion.get' | 'session.discussion.list' | 'session.discussion.post' | 'session.discussion.read' | 'session.discussion.read_state.set' | 'session.discussion.rename' | 'session.discussion.restore' | 'session.events.get' | 'session.follow.get' | 'session.follow.preferences.get' | 'session.follow.preferences.set' | 'session.follow.remove' | 'session.follow.set' | 'session.follow.sources.list' | 'session.follow.sources.remove' | 'session.follow.sources.set' | 'session.fork' | 'session.goal.clear' | 'session.goal.get' | 'session.goal.set' | 'session.handoff' | 'session.handoff.abort' | 'session.handoff.commit' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.status.get' | 'session.history.get' | 'session.list' | 'session.log.tail' | 'session.message.send' | 'session.messages.recent.get' | 'session.mode.set' | 'session.model.set' | 'session.open' | 'session.pendingInput.interruptAndRun' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.permission.respond' | 'session.permission_mode.set' | 'session.presentation.apply' | 'session.public_link.create' | 'session.public_link.get' | 'session.public_link.remove' | 'session.read_state.set' | 'session.responsibility.candidates.list' | 'session.responsibility.set' | 'session.restore' | 'session.rollback' | 'session.skill_catalog.list' | 'session.spawn_new' | 'session.status.get' | 'session.stop' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.terminalComposer.clear' | 'session.title.set' | 'session.transcript.get' | 'session.unarchive' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.waitResume.enable' | 'session.user_action.answer' | 'session.user_action.remote.answer' | 'session.vendor_plugin_catalog.list' | 'session.wait.idle' | 'session.work_state.get' | 'sessions.external.backgroundFollow.set' | 'sessions.external.candidate.delete' | 'sessions.external.candidates.list' | 'sessions.external.follow' | 'sessions.external.link.ensure' | 'sessions.external.materialize.start' | 'sessions.external.operation.cancel' | 'sessions.external.operation.discard' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.status.get' | 'sessions.external.status.get' | 'sessions.external.takeover' | 'sessions.external.takeover.start' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.unfollow' | 'sessions.runner.activation.cancel' | 'sessions.runner.activation.create' | 'sessions.runner.activation.get' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'sessions.spawn.profiles.list' | 'sessions.subagents.complete' | 'sessions.subagents.get' | 'sessions.subagents.list' | 'sessions.subagents.updateStatus' | 'sessions.subagents.upsert' | 'sessions.subagents.watch' | 'subagents.delegate.start' | 'subagents.plan.start' | 'teams.archive' | 'teams.create' | 'teams.credentials.activity.list' | 'teams.credentials.audience.set' | 'teams.credentials.create' | 'teams.credentials.delete' | 'teams.credentials.entitled.list' | 'teams.credentials.externalKeys.create' | 'teams.credentials.externalKeys.list' | 'teams.credentials.externalKeys.revoke' | 'teams.credentials.externalKeys.revokeAll' | 'teams.credentials.get' | 'teams.credentials.limits.delete' | 'teams.credentials.limits.list' | 'teams.credentials.limits.upsert' | 'teams.credentials.list' | 'teams.credentials.requestPolicySupport.get' | 'teams.credentials.sourceResources.list' | 'teams.credentials.sources.list' | 'teams.credentials.test' | 'teams.credentials.update' | 'teams.credentials.usage.query' | 'teams.directory.groups.list' | 'teams.directory.people.list' | 'teams.directory.sourceSetup.list' | 'teams.directory.sources.create' | 'teams.directory.sources.get' | 'teams.directory.sources.list' | 'teams.directory.sources.pause' | 'teams.directory.sources.remove' | 'teams.directory.sources.remove.preview' | 'teams.directory.sources.resume' | 'teams.directory.sources.sync' | 'teams.externalGroupBindings.list' | 'teams.externalGroupBindings.remove' | 'teams.externalGroupBindings.set' | 'teams.get' | 'teams.groups.archive' | 'teams.groups.create' | 'teams.groups.get' | 'teams.groups.list' | 'teams.groups.members.add' | 'teams.groups.members.list' | 'teams.groups.members.remove' | 'teams.groups.restore' | 'teams.groups.update' | 'teams.identity.connections.create' | 'teams.identity.connections.disable' | 'teams.identity.connections.enable' | 'teams.identity.connections.list' | 'teams.identity.connections.remove' | 'teams.identity.connections.remove.preview' | 'teams.identity.connections.settings.update' | 'teams.identity.connections.test.consume' | 'teams.identity.connections.test.start' | 'teams.identity.workos.adminPortalLink.create' | 'teams.identity.workos.connection.create' | 'teams.identity.workos.connection.set' | 'teams.identity.workos.reconcile' | 'teams.invitations.accept' | 'teams.invitations.accept.prepareApproval' | 'teams.invitations.create' | 'teams.invitations.list' | 'teams.invitations.preview' | 'teams.invitations.reissue' | 'teams.invitations.revoke' | 'teams.list' | 'teams.logo.remove' | 'teams.logo.set' | 'teams.members.add' | 'teams.members.get' | 'teams.members.groups.list' | 'teams.members.list' | 'teams.members.management.set' | 'teams.members.reactivate' | 'teams.members.remove' | 'teams.members.role.set' | 'teams.members.suspend' | 'teams.policy.set' | 'teams.restore' | 'teams.update' | 'transcript.follow' | 'transcript.import' | 'transcript.page' | 'transcript.readAfter' | 'transcript.search' | 'transcript.unfollow' | 'ui.current_context.command.invoke' | 'ui.current_context.read' | 'ui.pet.choose' | 'ui.voice_agent.teleport' | 'ui.voice_global.reset' | 'voice_agent.start' | 'workflow.definition.create' | 'workflow.definition.delete' | 'workflow.definition.get' | 'workflow.definition.list' | 'workflow.definition.update' | 'workflow.run.cancel' | 'workflow.run.delete' | 'workflow.run.get' | 'workflow.run.invocations.get' | 'workflow.run.invocations.list' | 'workflow.run.invocations.retry' | 'workflow.run.list' | 'workflow.run.pause' | 'workflow.run.resume' | 'workflow.run.start' | 'workflow.run.wait' | 'workflow.validate' | 'workspace.sync.conflict.resolve' | {
+                        actions?: ('account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'account.email.change.request' | 'account.password.change' | 'account.password.enroll' | 'account.password.remove' | 'account.plugins.data.erase' | 'account.security.get' | 'account.sessions.signOutEverywhere' | 'action.invoke' | 'action.options.resolve' | 'action.spec.get' | 'action.spec.search' | 'agents.backends.list' | 'agents.config_options.list' | 'agents.models.list' | 'agents.session_modes.list' | 'approval.request.create' | 'approval.request.decide' | 'approval.request.get' | 'approval.request.list' | 'automation.conversation.admit' | 'automation.conversation.target.verify' | 'automation.conversation.targets.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.event.sources.list' | 'browser.automation.cancelActive' | 'browser.automation.click' | 'browser.automation.drag' | 'browser.automation.focus' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.hover' | 'browser.automation.navigate' | 'browser.automation.press' | 'browser.automation.queryElements' | 'browser.automation.reload' | 'browser.automation.scroll' | 'browser.automation.select' | 'browser.automation.semanticSnapshot' | 'browser.automation.setValue' | 'browser.automation.snapshot' | 'browser.automation.status' | 'browser.automation.tap' | 'browser.automation.timeline.get' | 'browser.automation.type' | 'browser.automation.upload' | 'browser.automation.waitFor' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.start' | 'browser.context.attachToAgentTurn' | 'browser.context.attachToComposer' | 'browser.context.captureConsoleSummary' | 'browser.context.captureNetworkSummary' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.clear' | 'browser.diagnostics.clear' | 'browser.diagnostics.elementPicker.cancel' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.pause' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.resume' | 'browser.diagnostics.snapshot' | 'browser.goBack' | 'browser.goForward' | 'browser.navigate' | 'browser.recording.attachToComposer' | 'browser.recording.cancel' | 'browser.recording.cleanupExpired' | 'browser.recording.discard' | 'browser.recording.listForView' | 'browser.recording.start' | 'browser.recording.status' | 'browser.recording.stop' | 'browser.reload' | 'browser.stop' | 'browser.target.set' | 'browser.view.close' | 'browser.view.focus' | 'browser.view.open' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'daemon.filesystem.browseDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.promptAssets.delete' | 'daemon.promptAssets.discover' | 'daemon.promptRegistry.install' | 'daemon.promptRegistry.scanSource' | 'devices.simulator.input.button' | 'devices.simulator.input.key' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.input.swipe' | 'devices.simulator.input.tap' | 'devices.simulator.input.text' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.release' | 'devices.simulator.lease.renew' | 'devices.simulator.list' | 'devices.simulator.sideband.request' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.stream.snapshot' | 'execution.run.action' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.get' | 'execution.run.list' | 'execution.run.send' | 'execution.run.start' | 'execution.run.stop' | 'execution.run.stream.cancel' | 'execution.run.stream.read' | 'execution.run.stream.start' | 'execution.run.wait' | 'home.accounts.delete' | 'home.accounts.disable' | 'home.accounts.enable' | 'home.accounts.list' | 'home.accounts.role.set' | 'home.accounts.search' | 'home.governance.eligibility.get' | 'home.governance.get' | 'home.policy.set' | 'identity.githubApps.create' | 'identity.githubApps.list' | 'identity.githubApps.manifestSetup.start' | 'identity.githubApps.remove' | 'identity.githubApps.update' | 'identity.githubApps.verifyInstallation' | 'identity.providers.create' | 'identity.providers.disable' | 'identity.providers.enable' | 'identity.providers.list' | 'identity.providers.remove' | 'identity.providers.remove.preview' | 'identity.providers.secret.replace' | 'identity.providers.test.consume' | 'identity.providers.test.start' | 'identity.providers.update' | 'identity.providers.validate' | 'localServices.actions.copyUrl' | 'localServices.actions.forget' | 'localServices.actions.openPreview' | 'localServices.actions.restartManaged' | 'localServices.actions.stopManaged' | 'localServices.actions.terminateDetected' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.history.clear' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.preview.openOrCreate' | 'localServices.preview.revoke' | 'localServices.preview.status' | 'localServices.publicPreview.copyUrl' | 'localServices.publicPreview.create' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.status' | 'machines.list' | 'machines.pools.create' | 'machines.pools.delete' | 'machines.pools.get' | 'machines.pools.list' | 'machines.pools.resolve' | 'machines.pools.update' | 'memory.ensure_up_to_date' | 'memory.get_window' | 'memory.search' | 'paths.list_recent' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.endpoint.convergeTarget' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.finishRotation' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.revoke' | 'plugins.change.status' | 'plugins.dev.build' | 'plugins.dev.install' | 'plugins.dev.submit' | 'plugins.dev.test' | 'plugins.dev.typecheck' | 'plugins.doctor' | 'plugins.install' | 'plugins.list' | 'plugins.pack' | 'plugins.permissions.grants.dismissRequest' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.revoke' | 'plugins.reload' | 'plugins.scaffold' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.get' | 'plugins.settings.list' | 'plugins.settings.reset' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.delete' | 'plugins.settings.secret.status' | 'plugins.settings.secret.unbind' | 'plugins.settings.set' | 'plugins.uninstall' | 'projects.list' | 'prompt_asset.export' | 'prompt_bundle.update' | 'prompt_doc.update' | 'prompt_registry.install' | 'prompts.invocation.resolve' | 'prompts.invocations.list' | 'review.engines.list' | 'review.start' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'reviews.comments.create' | 'reviews.comments.edit' | 'reviews.comments.get' | 'reviews.comments.list' | 'reviews.comments.redact' | 'reviews.comments.reply' | 'reviews.comments.setDisposition' | 'reviews.comments.transition' | 'scm.diffSummary.generate' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.pullRequest.checkout' | 'scm.pullRequest.get' | 'scm.pullRequest.list' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.prepareWorktree' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.reviewWorkspace.materializePrepared' | 'secrets.shared.create' | 'secrets.shared.delete' | 'secrets.shared.grants.set' | 'secrets.shared.list' | 'secrets.shared.promote' | 'secrets.shared.update' | 'servers.list' | 'session.access.context.set' | 'session.access.grant.remove' | 'session.access.grant.set' | 'session.access.grants.list' | 'session.activity.get' | 'session.archive' | 'session.board.get' | 'session.board.item.remove' | 'session.board.item.upsert' | 'session.board.layout.update' | 'session.checkpoint' | 'session.checkpoint_code_rollback' | 'session.continue_with_replay' | 'session.discussion.archive' | 'session.discussion.create' | 'session.discussion.get' | 'session.discussion.list' | 'session.discussion.post' | 'session.discussion.read' | 'session.discussion.read_state.set' | 'session.discussion.rename' | 'session.discussion.restore' | 'session.events.get' | 'session.follow.get' | 'session.follow.preferences.get' | 'session.follow.preferences.set' | 'session.follow.remove' | 'session.follow.set' | 'session.follow.sources.list' | 'session.follow.sources.remove' | 'session.follow.sources.set' | 'session.fork' | 'session.goal.clear' | 'session.goal.get' | 'session.goal.set' | 'session.handoff' | 'session.handoff.abort' | 'session.handoff.commit' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.status.get' | 'session.history.get' | 'session.list' | 'session.log.tail' | 'session.message.send' | 'session.messages.recent.get' | 'session.mode.set' | 'session.model.set' | 'session.open' | 'session.pendingInput.interruptAndRun' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.permission.respond' | 'session.permission_mode.set' | 'session.presentation.apply' | 'session.public_link.create' | 'session.public_link.get' | 'session.public_link.remove' | 'session.read_state.set' | 'session.responsibility.candidates.list' | 'session.responsibility.set' | 'session.restore' | 'session.rollback' | 'session.skill_catalog.list' | 'session.spawn_new' | 'session.status.get' | 'session.stop' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.terminalComposer.clear' | 'session.title.set' | 'session.transcript.get' | 'session.unarchive' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.waitResume.enable' | 'session.user_action.answer' | 'session.user_action.remote.answer' | 'session.vendor_plugin_catalog.list' | 'session.wait.idle' | 'session.work_state.get' | 'sessions.external.backgroundFollow.set' | 'sessions.external.candidate.delete' | 'sessions.external.candidates.list' | 'sessions.external.follow' | 'sessions.external.link.ensure' | 'sessions.external.materialize.start' | 'sessions.external.operation.cancel' | 'sessions.external.operation.discard' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.status.get' | 'sessions.external.status.get' | 'sessions.external.takeover' | 'sessions.external.takeover.start' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.unfollow' | 'sessions.runner.activation.cancel' | 'sessions.runner.activation.create' | 'sessions.runner.activation.get' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'sessions.spawn.profiles.list' | 'sessions.subagents.complete' | 'sessions.subagents.get' | 'sessions.subagents.list' | 'sessions.subagents.updateStatus' | 'sessions.subagents.upsert' | 'sessions.subagents.watch' | 'subagents.delegate.start' | 'subagents.plan.start' | 'teams.archive' | 'teams.create' | 'teams.credentials.activity.list' | 'teams.credentials.audience.set' | 'teams.credentials.create' | 'teams.credentials.delete' | 'teams.credentials.entitled.list' | 'teams.credentials.externalKeys.create' | 'teams.credentials.externalKeys.list' | 'teams.credentials.externalKeys.revoke' | 'teams.credentials.externalKeys.revokeAll' | 'teams.credentials.get' | 'teams.credentials.limits.delete' | 'teams.credentials.limits.list' | 'teams.credentials.limits.upsert' | 'teams.credentials.list' | 'teams.credentials.requestPolicySupport.get' | 'teams.credentials.sourceResources.list' | 'teams.credentials.sources.list' | 'teams.credentials.test' | 'teams.credentials.update' | 'teams.credentials.usage.query' | 'teams.directory.groups.list' | 'teams.directory.people.list' | 'teams.directory.sourceSetup.list' | 'teams.directory.sources.create' | 'teams.directory.sources.get' | 'teams.directory.sources.list' | 'teams.directory.sources.pause' | 'teams.directory.sources.remove' | 'teams.directory.sources.remove.preview' | 'teams.directory.sources.resume' | 'teams.directory.sources.sync' | 'teams.externalGroupBindings.list' | 'teams.externalGroupBindings.remove' | 'teams.externalGroupBindings.set' | 'teams.get' | 'teams.groups.archive' | 'teams.groups.create' | 'teams.groups.get' | 'teams.groups.list' | 'teams.groups.members.add' | 'teams.groups.members.list' | 'teams.groups.members.remove' | 'teams.groups.restore' | 'teams.groups.update' | 'teams.identity.connections.create' | 'teams.identity.connections.disable' | 'teams.identity.connections.enable' | 'teams.identity.connections.list' | 'teams.identity.connections.remove' | 'teams.identity.connections.remove.preview' | 'teams.identity.connections.settings.update' | 'teams.identity.connections.test.consume' | 'teams.identity.connections.test.start' | 'teams.identity.workos.adminPortalLink.create' | 'teams.identity.workos.connection.create' | 'teams.identity.workos.connection.set' | 'teams.identity.workos.reconcile' | 'teams.invitations.accept' | 'teams.invitations.accept.prepareApproval' | 'teams.invitations.create' | 'teams.invitations.list' | 'teams.invitations.preview' | 'teams.invitations.reissue' | 'teams.invitations.revoke' | 'teams.list' | 'teams.logo.remove' | 'teams.logo.set' | 'teams.members.add' | 'teams.members.get' | 'teams.members.groups.list' | 'teams.members.list' | 'teams.members.management.set' | 'teams.members.reactivate' | 'teams.members.remove' | 'teams.members.role.set' | 'teams.members.suspend' | 'teams.policy.set' | 'teams.restore' | 'teams.update' | 'transcript.follow' | 'transcript.import' | 'transcript.page' | 'transcript.readAfter' | 'transcript.search' | 'transcript.unfollow' | 'ui.current_context.command.invoke' | 'ui.current_context.read' | 'ui.pet.choose' | 'ui.voice_agent.teleport' | 'ui.voice_global.reset' | 'voice_agent.start' | 'workflow.definition.create' | 'workflow.definition.delete' | 'workflow.definition.get' | 'workflow.definition.list' | 'workflow.definition.update' | 'workflow.run.cancel' | 'workflow.run.delete' | 'workflow.run.get' | 'workflow.run.invocations.get' | 'workflow.run.invocations.list' | 'workflow.run.invocations.retry' | 'workflow.run.list' | 'workflow.run.pause' | 'workflow.run.resume' | 'workflow.run.start' | 'workflow.run.wait' | 'workflow.validate' | 'workspace.sync.conflict.inspect' | 'workspace.sync.conflict.resolve' | 'workspace.sync.conflicts.list' | 'workspace.sync.relationship.create' | 'workspace.sync.relationships.list' | {
                             pluginId: string;
                             localId: string;
                         })[] | undefined;
@@ -34127,13 +33755,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34165,13 +33787,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34203,13 +33819,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34241,13 +33851,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34279,13 +33883,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34317,13 +33915,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34355,13 +33947,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34393,13 +33979,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34431,13 +34011,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34469,13 +34043,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34507,13 +34075,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34545,13 +34107,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -34583,13 +34139,7 @@ type PluginActionResultById = {
         pendingReview: {
             [x: string]: unknown;
             kind: 'reviewRequired';
-            pendingChangeId: string;
-            review: {
-                [x: string]: unknown;
-            };
-        } | {
-            [x: string]: unknown;
-            kind: 'sourceRootReviewRequired';
+            reviewKind: 'installation' | 'projectTrust';
             pendingChangeId: string;
             review: {
                 [x: string]: unknown;
@@ -39507,6 +39057,7 @@ type PluginActionResultById = {
         identityServices?: undefined | {
             workos: 'configured' | 'not_configured' | 'partially_configured';
             privateIdentityNetworkAllowed: boolean;
+            teamProviderKinds: ('github_app_identity' | 'oidc' | 'workos_sso')[];
         };
     };
     readonly "home.governance.eligibility.get": {
@@ -43059,6 +42610,7 @@ type PluginActionResultById = {
                     definitionRevision: 1;
                 };
             };
+            directDeliveryRecorded?: boolean | undefined;
             usageCapabilities?: undefined | {
                 inferenceRequests: 'available' | 'unavailable';
                 totalTokens: 'available' | 'unavailable';
@@ -45120,10 +44672,18 @@ type AgentModelConfig = Readonly<{
     acpApplyBehavior?: 'set_model' | 'restart_session';
     acpModelConfigOptionId?: string | null;
     dynamicProbe?: 'auto' | 'static-only';
+    dynamicProbeControl?: Readonly<{
+        accountSettingId: string;
+        environmentVariable?: string;
+    }>;
     nativeCatalogObservation?: Readonly<{
         providerLocalId: string;
         purpose: string;
         connectedServiceId: string;
+        nativeBearer?: Readonly<{
+            fileId: string;
+            jsonPath: readonly string[];
+        }>;
     }>;
     defaultMode: string | null;
     allowedModes: readonly string[];
@@ -46258,7 +45818,11 @@ type AgentAcpRuntimeDefinition = Readonly<{
     auth?: AgentAcpAuthenticationDefinition;
     parameterizedModelPicker?: boolean;
     modelConfigOptionId?: string;
-    permissionModeMapping?: Readonly<Partial<Record<'default' | 'read-only' | 'safe-yolo' | 'yolo' | 'plan', string | null>>>;
+    permissionModeMapping?: Readonly<Partial<Record<AgentPermissionIntent, string | null>>>;
+    permissionModeArgv?: Readonly<{
+        flag: string;
+        map: Readonly<Partial<Record<AgentPermissionIntent, string | null>>>;
+    }>;
     models?: AgentAcpModelControls;
     acceptsVerifiedImageInput?: true;
     timeouts?: AgentAcpTimeouts;
@@ -49001,6 +48565,7 @@ type AgentSessionHostServices = Readonly<{
     workflowActivity: AgentSessionWorkflowActivityService;
     toolExecution: AgentToolExecutionService;
     subagents: AgentSessionSubagentObservationPublisher;
+    inputFiles?: AgentSessionInputFilesService;
     nativeHome?: AgentSessionNativeHomeService;
     happierTools?: AgentSessionHappierToolsService;
 }>;
@@ -49034,6 +48599,19 @@ Declared by `dist/agentRuntime/session.d.ts` as `AgentSessionInput`.
 type AgentSessionInput = Readonly<{
     text: string;
     structuredInput?: JsonValue;
+}>;
+```
+
+
+### `./agents/runtime` — `AgentSessionInputFilesService` (type)
+
+Declared by `dist/agentRuntime/context.d.ts` as `AgentSessionInputFilesService`.
+
+```ts
+type AgentSessionInputFilesService = Readonly<{
+    readVerifiedImage(input: StructuredImageInputV1, options?: Readonly<{
+        signal?: AbortSignal;
+    }>): Promise<AgentSessionVerifiedImageInput | null>;
 }>;
 ```
 
@@ -50395,6 +49973,19 @@ type AgentSessionVendorPluginCatalogItem = Readonly<{
     installed: boolean;
     enabled: boolean;
     mentionable: boolean;
+}>;
+```
+
+
+### `./agents/runtime` — `AgentSessionVerifiedImageInput` (type)
+
+Declared by `dist/agentRuntime/context.d.ts` as `AgentSessionVerifiedImageInput`.
+
+```ts
+type AgentSessionVerifiedImageInput = Readonly<{
+    url: string;
+    mimeType: string;
+    filename?: string;
 }>;
 ```
 
@@ -54738,6 +54329,7 @@ abstract class ContributionSurfaceHandle<TInput extends JsonValue = JsonValue, T
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     role: string;
     presentation: TPresentation;
@@ -57660,6 +57252,14 @@ const InstallableDependencyDescriptorSchema: z.ZodIntersection<z.ZodObject<{
     }, z.core.$strict>;
     description: z.ZodString;
     source: z.ZodDiscriminatedUnion<[
+        z.ZodObject<{
+            kind: z.ZodLiteral<"first_party_runtime">;
+            componentId: z.ZodEnum<{
+                "happier-difftastic": "happier-difftastic";
+                "happier-memory-runtime": "happier-memory-runtime";
+                "happier-voice-runtime": "happier-voice-runtime";
+            }>;
+        }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"github_release_binary">;
             repo: z.ZodString;
@@ -65199,7 +64799,71 @@ const ReviewStartInputSchema: z.ZodObject<{
     }, z.core.$strict>>;
     permissionMode: z.ZodDefault<z.ZodString>;
     profileId: z.ZodOptional<z.ZodString>;
-    profileGenerationId: z.ZodOptional<z.ZodString>;
+    profileSourceCustody: z.ZodOptional<z.ZodType<({
+        kind: "managed";
+        immutableGenerationId: string;
+        installSource: "archive" | "localPath" | "npm";
+    } & {}) | ({
+        kind: "bundled_first_party";
+        packagedRuntime: ({
+            kind: "cli_version_root";
+            versionRootId: string;
+        } & {}) | ({
+            kind: "pinned_runner_snapshot";
+            snapshotId: string;
+        } & {});
+    } & {}) | ({
+        kind: "development";
+        registeredRootId: string;
+    } & {}), ({
+        kind: "managed";
+        immutableGenerationId: string;
+        installSource: "archive" | "localPath" | "npm";
+    } & {}) | ({
+        kind: "bundled_first_party";
+        packagedRuntime: ({
+            kind: "cli_version_root";
+            versionRootId: string;
+        } & {}) | ({
+            kind: "pinned_runner_snapshot";
+            snapshotId: string;
+        } & {});
+    } & {}) | ({
+        kind: "development";
+        registeredRootId: string;
+    } & {}), z.core.$ZodTypeInternals<({
+        kind: "managed";
+        immutableGenerationId: string;
+        installSource: "archive" | "localPath" | "npm";
+    } & {}) | ({
+        kind: "bundled_first_party";
+        packagedRuntime: ({
+            kind: "cli_version_root";
+            versionRootId: string;
+        } & {}) | ({
+            kind: "pinned_runner_snapshot";
+            snapshotId: string;
+        } & {});
+    } & {}) | ({
+        kind: "development";
+        registeredRootId: string;
+    } & {}), ({
+        kind: "managed";
+        immutableGenerationId: string;
+        installSource: "archive" | "localPath" | "npm";
+    } & {}) | ({
+        kind: "bundled_first_party";
+        packagedRuntime: ({
+            kind: "cli_version_root";
+            versionRootId: string;
+        } & {}) | ({
+            kind: "pinned_runner_snapshot";
+            snapshotId: string;
+        } & {});
+    } & {}) | ({
+        kind: "development";
+        registeredRootId: string;
+    } & {})>>>;
     secretReferenceOverlay: z.ZodOptional<z.ZodObject<{
         v: z.ZodLiteral<1>;
         bindings: z.ZodRecord<z.ZodString, z.ZodObject<{
@@ -77339,6 +77003,7 @@ function readJsonlFileBackwardPage(params: Readonly<{
     diagnostics?: readonly JsonlSourceDiagnosticV1[];
     nextEndOffsetBytes: number;
     reachedStart: boolean;
+    tailOffsetBytes: number | null;
 }>>;
 ```
 
@@ -77362,6 +77027,7 @@ function readJsonlFileForward(params: Readonly<{
     nextOffsetBytes: number;
     truncated: boolean;
     reachedEnd: boolean;
+    hitPageLimit: boolean;
 }>>;
 ```
 
@@ -77385,6 +77051,7 @@ function readJsonlFileForwardLines(params: Readonly<{
     nextOffsetBytes: number;
     truncated: boolean;
     reachedEnd: boolean;
+    hitPageLimit: boolean;
 }>>;
 ```
 
@@ -80250,11 +79917,13 @@ type PluginUiTestkitTargetedSurfaceAdmission = Readonly<{
     target: Readonly<{
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     point: Readonly<{
         pointId: string;
@@ -80343,6 +80012,7 @@ function readPluginUiTestkitTargetedSurfaceAdmission(input: Readonly<{
     target: Readonly<{
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: PluginSourceCustodyV1;
     }>;
     surface: unknown;
     launchInput: unknown;
@@ -84353,6 +84023,10 @@ const PLUGIN_UI_SEMANTIC_ROLES: readonly [
     'link',
     'list',
     'listitem',
+    'menu',
+    'menuitem',
+    'menuitemcheckbox',
+    'menuitemradio',
     'option',
     'progressbar',
     'radio',
@@ -85152,6 +84826,9 @@ type AgentSessionCapabilities = Readonly<{
     }>;
     usageLimitRecovery?: Readonly<{
         checkNow: AgentSessionCapabilitySupportLevel;
+    }>;
+    compaction?: Readonly<{
+        manual: AgentSessionCapabilitySupportLevel;
     }>;
 }>;
 ```
@@ -105088,6 +104765,10 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                             device_code: "device_code";
                             primary: "primary";
                         }>;
+                        target: z.ZodOptional<z.ZodEnum<{
+                            agent_acp: "agent_acp";
+                            provider_cli: "provider_cli";
+                        }>>;
                         args: z.ZodArray<z.ZodString>;
                         initialInput: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                     }, z.core.$strict>>;
@@ -105639,6 +105320,9 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                     }, z.core.$strict>
                 ], "kind">;
                 definition: z.ZodOptional<z.ZodObject<{
+                    auth: z.ZodOptional<z.ZodObject<{
+                        methodId: z.ZodString;
+                    }, z.core.$strict>>;
                     modelConfigOptionId: z.ZodOptional<z.ZodString>;
                     stderrRules: z.ZodOptional<z.ZodObject<{
                         authenticationErrorDetail: z.ZodOptional<z.ZodString>;
@@ -105707,6 +105391,16 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                         'safe-yolo': z.ZodOptional<z.ZodNullable<z.ZodString>>;
                         yolo: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                         plan: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                    }, z.core.$strict>>;
+                    permissionModeArgv: z.ZodOptional<z.ZodObject<{
+                        flag: z.ZodString;
+                        map: z.ZodObject<{
+                            default: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                            'read-only': z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                            'safe-yolo': z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                            yolo: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                            plan: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+                        }, z.core.$strict>;
                     }, z.core.$strict>>;
                 }, z.core.$strict>>;
             }, z.core.$strict>;
@@ -106133,6 +105827,10 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                             device_code: "device_code";
                             primary: "primary";
                         }>;
+                        target: z.ZodOptional<z.ZodEnum<{
+                            agent_acp: "agent_acp";
+                            provider_cli: "provider_cli";
+                        }>>;
                         args: z.ZodArray<z.ZodString>;
                         initialInput: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                     }, z.core.$strict>>;
@@ -107040,6 +106738,10 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                             device_code: "device_code";
                             primary: "primary";
                         }>;
+                        target: z.ZodOptional<z.ZodEnum<{
+                            agent_acp: "agent_acp";
+                            provider_cli: "provider_cli";
+                        }>>;
                         args: z.ZodArray<z.ZodString>;
                         initialInput: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                     }, z.core.$strict>>;
@@ -107854,6 +107556,10 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                         device_code: "device_code";
                         primary: "primary";
                     }>;
+                    target: z.ZodOptional<z.ZodEnum<{
+                        agent_acp: "agent_acp";
+                        provider_cli: "provider_cli";
+                    }>>;
                     args: z.ZodArray<z.ZodString>;
                     initialInput: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                 }, z.core.$strict>>;
@@ -112082,6 +111788,10 @@ const PluginAccountCollectionContributionV1Schema: z.ZodObject<{
         fromSchemaVersion: z.ZodNumber;
         toSchemaVersion: z.ZodNumber;
     }, z.core.$strict>>>;
+    migrationArtifact: z.ZodOptional<z.ZodObject<{
+        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        exportName: z.ZodLiteral<"collectionMigrations">;
+    }, z.core.$strict>>;
     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
 }, z.core.$strict>;
 ```
@@ -112627,6 +112337,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -112778,6 +112492,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -112926,6 +112644,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113080,6 +112802,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113231,6 +112957,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113382,6 +113112,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113558,6 +113292,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113725,6 +113463,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -113872,6 +113614,10 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
                         fromSchemaVersion: z.ZodNumber;
                         toSchemaVersion: z.ZodNumber;
                     }, z.core.$strict>>>;
+                    migrationArtifact: z.ZodOptional<z.ZodObject<{
+                        artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                        exportName: z.ZodLiteral<"collectionMigrations">;
+                    }, z.core.$strict>>;
                     identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
                 }, z.core.$strict>;
                 arguments: z.ZodTuple<[
@@ -114529,8 +114275,8 @@ Reached from a published signature; not itself a published export.
 
 ```ts
 const InteractionTerminalStatusV1Schema: z.ZodEnum<{
-    generationRetired: "generationRetired";
     hostRestarted: "hostRestarted";
+    occurrenceRetired: "occurrenceRetired";
     requesterAborted: "requesterAborted";
     sessionEnded: "sessionEnded";
     timedOut: "timedOut";
@@ -114737,8 +114483,8 @@ const InteractionTransientResultV1Schema: z.ZodUnion<readonly [
         requestId: z.ZodString;
         kind: z.ZodLiteral<"questions">;
         status: z.ZodEnum<{
-            generationRetired: "generationRetired";
             hostRestarted: "hostRestarted";
+            occurrenceRetired: "occurrenceRetired";
             requesterAborted: "requesterAborted";
             sessionEnded: "sessionEnded";
             timedOut: "timedOut";
@@ -114764,8 +114510,8 @@ const InteractionTransientResultV1Schema: z.ZodUnion<readonly [
         requestId: z.ZodString;
         kind: z.ZodLiteral<"approval">;
         status: z.ZodEnum<{
-            generationRetired: "generationRetired";
             hostRestarted: "hostRestarted";
+            occurrenceRetired: "occurrenceRetired";
             requesterAborted: "requesterAborted";
             sessionEnded: "sessionEnded";
             timedOut: "timedOut";
@@ -114785,8 +114531,8 @@ const InteractionTransientResultV1Schema: z.ZodUnion<readonly [
         requestId: z.ZodString;
         kind: z.ZodLiteral<"confirmation">;
         status: z.ZodEnum<{
-            generationRetired: "generationRetired";
             hostRestarted: "hostRestarted";
+            occurrenceRetired: "occurrenceRetired";
             requesterAborted: "requesterAborted";
             sessionEnded: "sessionEnded";
             timedOut: "timedOut";
@@ -117180,18 +116926,86 @@ const PluginUiTargetedContributionOperationV1Schema: z.ZodObject<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}>>;
     role: z.ZodString;
     action: z.ZodType<{
@@ -117255,18 +117069,86 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}>>;
             protocol: z.ZodType<{
                 id: string;
@@ -117312,18 +117194,86 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}>>;
                 role: z.ZodString;
                 action: z.ZodType<{
@@ -117370,18 +117320,86 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}>>;
                 role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                 presentation: z.ZodEnum<{
@@ -117428,18 +117446,86 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}>>;
         protocol: z.ZodType<{
             id: string;
@@ -117485,18 +117571,86 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}>>;
             role: z.ZodString;
             action: z.ZodType<{
@@ -117543,18 +117697,86 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}, {
                 pluginId: string;
                 contributionId: string;
                 occurrenceId: string;
+                sourceCustody: ({
+                    kind: "managed";
+                    immutableGenerationId: string;
+                    installSource: "archive" | "localPath" | "npm";
+                } & {}) | ({
+                    kind: "bundled_first_party";
+                    packagedRuntime: ({
+                        kind: "cli_version_root";
+                        versionRootId: string;
+                    } & {}) | ({
+                        kind: "pinned_runner_snapshot";
+                        snapshotId: string;
+                    } & {});
+                } & {}) | ({
+                    kind: "development";
+                    registeredRootId: string;
+                } & {});
             } & {}>>;
             role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
             presentation: z.ZodEnum<{
@@ -117639,18 +117861,86 @@ const PluginUiTargetedContributionSurfaceV1Schema: z.ZodObject<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}>>;
     role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
     presentation: z.ZodEnum<{
@@ -117680,18 +117970,86 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         contributionId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}>>;
     protocol: z.ZodType<{
         id: string;
@@ -117737,18 +118095,86 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}>>;
         role: z.ZodString;
         action: z.ZodType<{
@@ -117795,18 +118221,86 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}, {
             pluginId: string;
             contributionId: string;
             occurrenceId: string;
+            sourceCustody: ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {});
         } & {}>>;
         role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
         presentation: z.ZodEnum<{
@@ -117836,15 +118330,83 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
     target: z.ZodType<{
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}, {
         pluginId: string;
         occurrenceId: string;
+        sourceCustody: ({
+            kind: "managed";
+            immutableGenerationId: string;
+            installSource: "archive" | "localPath" | "npm";
+        } & {}) | ({
+            kind: "bundled_first_party";
+            packagedRuntime: ({
+                kind: "cli_version_root";
+                versionRootId: string;
+            } & {}) | ({
+                kind: "pinned_runner_snapshot";
+                snapshotId: string;
+            } & {});
+        } & {}) | ({
+            kind: "development";
+            registeredRootId: string;
+        } & {});
     } & {}>>;
     points: z.ZodArray<z.ZodObject<{
         pointId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
@@ -117867,18 +118429,86 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
                     occurrenceId: string;
+                    sourceCustody: ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {});
                 } & {}>>;
                 protocol: z.ZodType<{
                     id: string;
@@ -117924,18 +118554,86 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, z.core.$ZodTypeInternals<{
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}>>;
                     role: z.ZodString;
                     action: z.ZodType<{
@@ -117982,18 +118680,86 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, z.core.$ZodTypeInternals<{
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
                         occurrenceId: string;
+                        sourceCustody: ({
+                            kind: "managed";
+                            immutableGenerationId: string;
+                            installSource: "archive" | "localPath" | "npm";
+                        } & {}) | ({
+                            kind: "bundled_first_party";
+                            packagedRuntime: ({
+                                kind: "cli_version_root";
+                                versionRootId: string;
+                            } & {}) | ({
+                                kind: "pinned_runner_snapshot";
+                                snapshotId: string;
+                            } & {});
+                        } & {}) | ({
+                            kind: "development";
+                            registeredRootId: string;
+                        } & {});
                     } & {}>>;
                     role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                     presentation: z.ZodEnum<{
@@ -122534,7 +123300,7 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                 }>>;
             }, z.core.$strict>>;
         }, z.core.$strict>>;
-        managedPurposeBindings: z.ZodOptional<z.ZodObject<{
+        managedPurposeBindings: z.ZodOptional<z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
             v: z.ZodLiteral<1>;
             bindings: z.ZodArray<z.ZodObject<{
                 purpose: z.ZodObject<{
@@ -122601,7 +123367,64 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                     }, z.core.$strict>
                 ], "kind">;
             }, z.core.$strict>>;
-        }, z.core.$strict>>;
+            teamResourceSelections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                purpose: z.ZodObject<{
+                    consumer: z.ZodType<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }, z.core.$ZodTypeInternals<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }>>;
+                    purpose: z.ZodString;
+                }, z.core.$strict>;
+                teamId: z.ZodString;
+                selection: z.ZodUnion<readonly [
+                    z.ZodObject<{
+                        source: z.ZodLiteral<"team_resource">;
+                        resourceId: z.ZodString;
+                        deliveryMode: z.ZodLiteral<"direct">;
+                        disclosedMember: z.ZodType<{
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        }, {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        }, z.core.$ZodTypeInternals<{
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        }, {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        }>>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        source: z.ZodLiteral<"team_resource">;
+                        resourceId: z.ZodString;
+                        deliveryMode: z.ZodLiteral<"brokered">;
+                        disclosedMember: z.ZodOptional<z.ZodNever>;
+                    }, z.core.$strict>
+                ]>;
+            }, z.core.$strict>>>;
+        }, z.core.$strict>>>;
         protocol: z.ZodString;
         materialization: z.ZodEnum<{
             configFile: "configFile";
@@ -122920,7 +123743,7 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                         }, z.core.$strict>>>;
                         endpointTemplateIds: z.ZodArray<z.ZodString>;
                     }, z.core.$strict>;
-                    purposeBindings: z.ZodObject<{
+                    purposeBindings: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
                         v: z.ZodLiteral<1>;
                         bindings: z.ZodArray<z.ZodObject<{
                             purpose: z.ZodObject<{
@@ -122987,7 +123810,64 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                                 }, z.core.$strict>
                             ], "kind">;
                         }, z.core.$strict>>;
-                    }, z.core.$strict>;
+                        teamResourceSelections: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                            purpose: z.ZodObject<{
+                                consumer: z.ZodType<{
+                                    pluginId: string;
+                                    localId: string;
+                                }, {
+                                    pluginId: string;
+                                    localId: string;
+                                }, z.core.$ZodTypeInternals<{
+                                    pluginId: string;
+                                    localId: string;
+                                }, {
+                                    pluginId: string;
+                                    localId: string;
+                                }>>;
+                                purpose: z.ZodString;
+                            }, z.core.$strict>;
+                            teamId: z.ZodString;
+                            selection: z.ZodUnion<readonly [
+                                z.ZodObject<{
+                                    source: z.ZodLiteral<"team_resource">;
+                                    resourceId: z.ZodString;
+                                    deliveryMode: z.ZodLiteral<"direct">;
+                                    disclosedMember: z.ZodType<{
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    }, {
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    }, z.core.$ZodTypeInternals<{
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    }, {
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    }>>;
+                                }, z.core.$strict>,
+                                z.ZodObject<{
+                                    source: z.ZodLiteral<"team_resource">;
+                                    resourceId: z.ZodString;
+                                    deliveryMode: z.ZodLiteral<"brokered">;
+                                    disclosedMember: z.ZodOptional<z.ZodNever>;
+                                }, z.core.$strict>
+                            ]>;
+                        }, z.core.$strict>>>;
+                    }, z.core.$strict>>;
                 }, z.core.$strict>, z.ZodTransform<{
                     kind: "managedLocal";
                     implementationIdentity: {
@@ -123022,6 +123902,33 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                                 groupId: string;
                             };
                         }[];
+                        teamResourceSelections?: {
+                            purpose: {
+                                consumer: {
+                                    pluginId: string;
+                                    localId: string;
+                                };
+                                purpose: string;
+                            };
+                            teamId: string;
+                            selection: {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            };
+                        }[] | undefined;
                     };
                     managedRuntime: Readonly<{
                         kind: 'managed';
@@ -123095,6 +124002,33 @@ const DaemonProviderBindingStatusRequestV1Schema: z.ZodObject<{
                                 groupId: string;
                             };
                         }[];
+                        teamResourceSelections?: {
+                            purpose: {
+                                consumer: {
+                                    pluginId: string;
+                                    localId: string;
+                                };
+                                purpose: string;
+                            };
+                            teamId: string;
+                            selection: {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            };
+                        }[] | undefined;
                     };
                 }>>;
                 endpoint: z.ZodObject<{

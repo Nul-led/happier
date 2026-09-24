@@ -10,11 +10,11 @@ import {
   ConnectedAccountMaterializationRequestSchema,
   ConnectedServiceCredentialRevisionV1Schema,
   PluginCredentialAccessSlotIdSchema,
-  PluginPermissionInstalledGenerationIdSchema,
   PluginPermissionGrantListActionInputV1Schema,
   PluginPermissionGrantListActionOutputV1Schema,
   PluginMachineMaterializationRefV1Schema,
   PluginPermissionSubjectV1Schema,
+  pluginPermissionSubjectsEqualV1,
   QualifiedConnectedAccountRefSchema,
   deriveVoiceCredentialBindingIdentityV1,
   resolveAccountSettingsVoiceCredentialSource,
@@ -41,6 +41,7 @@ import {
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { createSavedSecretMaterializerFromSnapshotV1 } from '@/settings/secrets/savedSecretCatalog';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import { evaluatePluginPermissionGrant } from '@/plugins/runtime/lifecycle/permissions/evaluatePluginPermissionGrant';
 import type { PluginPermissionGrantListReader } from '@/plugins/runtime/lifecycle/permissions/pluginPermissionGrantListReader';
 
@@ -97,9 +98,7 @@ export type PluginRawCredentialMaterializerBinding = Readonly<{
   machineId: string | null;
   /** Exact host-stamped plugin materialization whose runtime is requesting disclosure. */
   materialization?: PluginMachineMaterializationRefV1;
-  /** Immutable registry-owned generation that admitted this exact runtime. */
-  immutableGenerationId: string;
-  /** Host-owned exact admitted-runtime policy, including generation retirement. */
+  /** Host-owned exact admitted-runtime policy, including occurrence retirement. */
   isRuntimeAuthorityCurrent(): boolean;
 }>;
 
@@ -388,7 +387,6 @@ function deriveDeclarationAuthorityUnsafe(
     contribution,
   });
   if (!identity) throw invalidRequest();
-  PluginPermissionInstalledGenerationIdSchema.parse(binding.immutableGenerationId);
   if (!contribution.credentials.sources.some((source) => source.rawGrants?.some((grant) => (
     grant.realm === binding.realm && grant.phase === binding.phase
   )))) {
@@ -503,7 +501,6 @@ async function selectedSourceFromSnapshot(
     ) throw unavailable();
     const selectedAuthority = selectedAuthorityDigest({
       source: 'savedSecret',
-      accountSettingsScopeKey: snapshot.scopeKey ?? null,
       bindingSource: resolved.savedSecret.source,
       secretId: resolved.savedSecret.secretId,
       secretKind: savedSecret.kind,
@@ -584,7 +581,6 @@ async function selectedSourceFromSnapshot(
     savedSecretCustody: null,
     selectedAuthorityDigest: selectedAuthorityDigest({
       source: 'connectedAccount',
-      accountSettingsScopeKey: snapshot.scopeKey ?? null,
       target: resolved.selection.target.kind === 'account'
         ? { kind: 'account', id: resolved.selection.target.account.accountId }
         : { kind: 'group', id: resolved.selection.target.groupId },
@@ -618,7 +614,7 @@ function assertDeclaredTuple(
 
 function sameAuthorization(left: Authorization, right: Authorization): boolean {
   return left.selected.fingerprint === right.selected.fingerprint
-    && JSON.stringify(left.subject) === JSON.stringify(right.subject)
+    && pluginPermissionSubjectsEqualV1(left.subject, right.subject)
     && left.authoritySource.machineId === right.authoritySource.machineId
     && left.authoritySource.installationId === right.authoritySource.installationId;
 }
@@ -781,7 +777,6 @@ function permissionSubject(
   binding: PluginRawCredentialMaterializerBinding,
   authority: DeclarationAuthority,
   selected: SelectedSource,
-  principal: CurrentPluginInstallReviewPrincipal,
   request: VoiceRawCredentialMaterializationRequest,
 ): ReturnType<typeof PluginPermissionSubjectV1Schema.parse> {
   const canonical = canonicalRequest(request);
@@ -806,10 +801,6 @@ function permissionSubject(
     accessDeclarationDigest: exactAccessDeclarationDigest,
     selectedAuthorityDigest: selected.selectedAuthorityDigest,
     selectedRawAccessDigest: exactRawAccessDigest,
-    installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse(
-      binding.immutableGenerationId,
-    ),
-    installReviewPrincipalDigest: principal.digest,
   });
 }
 
@@ -827,39 +818,28 @@ async function inspectCurrentAuthorization(
 ): Promise<CurrentAuthorizationInspection> {
   signal.throwIfAborted();
   assertRuntimeCurrent(input.binding);
-  // The selected source and the install-review principal come from two stores,
-  // so the composite is read inside one selected-source bracket: the principal
-  // is read once, between two reads of the selection that must still agree.
-  // Re-reading the principal itself would bracket nothing — no authorization
-  // step runs between two adjacent reads of the same registry snapshot — and
-  // every effect this inspection feeds is already re-inspected against a fresh
-  // read by `authorize` around the grant list and by `materialize` around the
-  // credential use.
+  // The selected source and the machine-installation authority come from two
+  // owners, so read the latter inside a selected-source bracket. Code custody,
+  // install review and the process-local occurrence are deliberately not part
+  // of the durable credential permission identity.
   const firstSelected = await readSelectedSource(input, authority, signal, allowWarm);
   assertDeclaredTuple(firstSelected, input.binding, request);
   signal.throwIfAborted();
   assertRuntimeCurrent(input.binding);
-  const principal = await input.currentInstallReviewPrincipal.readCurrent({
-    pluginId: input.binding.manifest.id,
-    signal,
-  });
+  const authoritySource = await input.readCurrentGrantAuthoritySource();
   signal.throwIfAborted();
   assertRuntimeCurrent(input.binding);
   const currentSelected = await readSelectedSource(input, authority, signal, false);
   signal.throwIfAborted();
   assertRuntimeCurrent(input.binding);
-  if (!principal || currentSelected.fingerprint !== firstSelected.fingerprint) {
+  if (currentSelected.fingerprint !== firstSelected.fingerprint) {
     throw unavailable();
   }
-  const authoritySource = await input.readCurrentGrantAuthoritySource();
-  signal.throwIfAborted();
-  assertRuntimeCurrent(input.binding);
   if (authoritySource?.kind !== 'machine_installation') throw unavailable();
   const parsedSubject = permissionSubject(
     input.binding,
     authority,
     firstSelected,
-    principal,
     request,
   );
   if (parsedSubject.kind !== 'credential_access_disclosure') throw unavailable();
@@ -942,8 +922,12 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
   getAccountSettingsSnapshotLifetimeToken?: () => number;
   /** Joins the canonical daemon snapshot warm only before initial source admission. */
   ensureAccountSettingsSnapshot?: () => Promise<void>;
+  /** The canonical operation-admission refresh; injectable for tests only. */
+  refreshSavedSecretCatalogForOperation?: typeof refreshSavedSecretCatalogForOperation;
 }>): PluginRawCredentialMaterializer {
   const authority = deriveDeclarationAuthority(input.binding);
+  const refreshForOperation = input.refreshSavedSecretCatalogForOperation
+    ?? refreshSavedSecretCatalogForOperation;
   const getSnapshot = input.getAccountSettingsSnapshot ?? getActiveAccountSettingsSnapshot;
   const getSnapshotLifetimeToken = input.getAccountSettingsSnapshotLifetimeToken
     ?? getActiveAccountSettingsSnapshotLifetimeToken;
@@ -959,6 +943,37 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
       : {}),
   });
   const authorizationInspector = createAuthorizationInspector(authorizationDependencies, authority);
+
+  /**
+   * Admits this materialization against Home-current shared material.
+   *
+   * A hydrated catalog row is not authorization for a *new* operation:
+   * `AccountChange` is only a wake-up hint, so a shared Saved Secret revoked
+   * since hydration would otherwise be handed to the plugin in plaintext. The
+   * batch refresh in `hydrateSavedSecretCatalog` is the single owner of that
+   * decision and returns the cached snapshot untouched for a personal
+   * reference, so a personal-secret materialization still never touches the
+   * network. The refreshed snapshot is read back through the existing
+   * selected-source bracket below, which already refuses a selection that
+   * moved.
+   */
+  const admitSavedSecretOperation = async (
+    custody: NonNullable<SelectedSource['savedSecretCustody']>,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const expectedScopeKey = custody.snapshot.scopeKey;
+    if (expectedScopeKey === undefined || expectedScopeKey.length === 0) return;
+    try {
+      await refreshForOperation({
+        expectedScopeKey,
+        references: [{ ref: custody.secretRef }],
+        signal,
+      });
+    } catch {
+      signal.throwIfAborted();
+      throw unavailable();
+    }
+  };
 
   const authorize = async (
     request: VoiceRawCredentialMaterializationRequest,
@@ -1023,7 +1038,6 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
       targetScope: ACCOUNT_TARGET_SCOPE,
       subject,
       currentAuthoritySource,
-      currentInstallReviewPrincipalDigest: subject.installReviewPrincipalDigest,
     }))) {
       throw unavailable();
     }
@@ -1050,6 +1064,7 @@ export function createPluginRawCredentialMaterializer(input: Readonly<{
       if (before.selected.source.kind === 'savedSecret') {
         const custody = before.selected.savedSecretCustody;
         if (!custody) throw unavailable();
+        await admitSavedSecretOperation(custody, signal);
         callbackCredentialRevision = custody.callbackCredentialRevision;
         if (
           options.credentialRevisionBasis?.expectedCredentialRevision !== null

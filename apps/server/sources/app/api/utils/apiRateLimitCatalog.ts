@@ -50,9 +50,14 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     "auth.pairing.status": { defaultMax: 240, defaultWindow: "1 minute", keyMode: "user" },
     "auth.pairing.consume": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
     "auth.pairing.request": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
-    "auth.accountRequest.poll": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
+    // Joining clients poll once per second. Keep the unauthenticated IP key,
+    // but leave enough burst room for multiple clients behind one NAT or Iroh
+    // loopback endpoint without throttling the product's own happy path.
+    "auth.accountRequest.poll": { defaultMax: 240, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.accountRequest.complete": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
     "auth.entry": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "ip" },
+    // POST /v1/auth/request creates or refreshes one enrollment request. The
+    // high-cadence wait loop uses the separate status bucket below.
     "auth.terminalRequest.poll": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.terminalRequest.status": { defaultMax: 240, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.terminalRequest.claim": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "ip" },
@@ -86,7 +91,6 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     "share.public.read": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "ip" },
     "share.public.messages": { defaultMax: 20, defaultWindow: "1 minute", keyMode: "ip" },
     "share.public.manage": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "user" },
-    "share.session.create": { defaultMax: 20, defaultWindow: "1 minute", keyMode: "user" },
     "liveActivity.hostedRelay": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "ip" },
     // Bearer-only Action ingress is keyed by IP so rate limiting never
     // performs a second PAT verification before the route's onRequest auth.

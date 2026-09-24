@@ -19,8 +19,56 @@ let state: TestState = {
 const patchSessionMetadataWithRetry = vi.fn(async () => {});
 const sessionRename = vi.fn(async () => ({ success: true as const }));
 const sessionStopWithServerScope = vi.fn(async () => ({ success: true as const }));
+// The Account server's versioned Artifact rows. The sync client reads a fresh
+// row with its versions and writes against the cached row it was handed as the
+// CAS basis, exactly as `sync.fetchArtifactWithBody` and
+// `sync.updateArtifactWithHeader` do over `apiArtifacts`; only that HTTP
+// boundary is replaced. A row seeded into `state.artifacts` is also the server
+// row until a write versions it.
+const artifactServer = new Map<string, { header: ArtifactHeader; body: string | null; headerVersion: number; bodyVersion: number }>();
+// One-shot interleaving point: another device's write that lands at this
+// client's next Artifact I/O, i.e. after its earlier read and before its write.
+let beforeNextArtifactIo: (() => Promise<void>) | null = null;
+async function runBeforeNextArtifactIo(): Promise<void> {
+    const hook = beforeNextArtifactIo;
+    beforeNextArtifactIo = null;
+    await hook?.();
+}
+function readServerArtifact(artifactId: string) {
+    const existing = artifactServer.get(artifactId);
+    if (existing) return existing;
+    const seeded = state.artifacts[artifactId];
+    if (!seeded) return null;
+    const row = {
+        header: seeded.header,
+        body: seeded.body ?? null,
+        headerVersion: seeded.headerVersion ?? 1,
+        bodyVersion: seeded.bodyVersion ?? 1,
+    };
+    artifactServer.set(artifactId, row);
+    return row;
+}
+const fetchArtifactWithBody = vi.fn(async (artifactId: string) => {
+    await runBeforeNextArtifactIo();
+    const row = readServerArtifact(artifactId);
+    return row ? { id: artifactId, ...row, isDecrypted: true as const, storageMode: 'plain' as const } : null;
+});
 const updateArtifactWithHeader = vi.fn(
-    async (_artifactId: string, _header: ArtifactHeader, _body: string | null) => {},
+    async (artifactId: string, header: ArtifactHeader, body: string | null) => {
+        await runBeforeNextArtifactIo();
+        // The sync writer takes its CAS basis from the cached row it is handed.
+        const basis = state.artifacts[artifactId];
+        if (!basis) throw new Error(`Artifact ${artifactId} not found`);
+        const basisHeaderVersion = basis.headerVersion ?? 1;
+        const basisBodyVersion = basis.bodyVersion ?? 1;
+        const row = readServerArtifact(artifactId)!;
+        if (row.headerVersion !== basisHeaderVersion || row.bodyVersion !== basisBodyVersion) {
+            throw new Error('Artifact was modified by another client. Please refresh and try again.');
+        }
+        const next = { header, body, headerVersion: row.headerVersion + 1, bodyVersion: row.bodyVersion + 1 };
+        artifactServer.set(artifactId, next);
+        state.artifacts[artifactId] = { ...basis, id: artifactId, ...next };
+    },
 );
 const sessionExecutionRunStart = vi.fn(async () => ({}));
 const reviewCommentExecute = vi.fn(async () => ({ items: [], cursor: null }));
@@ -196,7 +244,7 @@ vi.mock('@/voice/tools/actionImpl/agentCatalogList', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         createArtifactWithHeader: vi.fn(async () => 'artifact-created'),
-        fetchArtifactWithBody: vi.fn(async () => null),
+        fetchArtifactWithBody,
         updateArtifactWithHeader,
         patchSessionMetadataWithRetry,
     },
@@ -235,9 +283,12 @@ vi.mock('@/sync/domains/state/storage', async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
     storage: {
-            getState: () => state,
+            // The real store state carries its own `updateArtifact` action.
+            getState: () => Object.assign(state, {
+                updateArtifact: (artifact: { id: string }) => { state.artifacts[artifact.id] = artifact; },
+            }),
             applySettingsLocal: vi.fn(),
-            updateArtifact: vi.fn(),
+            updateArtifact: vi.fn((artifact: { id: string }) => { state.artifacts[artifact.id] = artifact; }),
         },
 });
 });
@@ -313,6 +364,9 @@ describe('createDefaultActionExecutor approvals', () => {
         };
         sessionRename.mockClear();
         patchSessionMetadataWithRetry.mockClear();
+        artifactServer.clear();
+        beforeNextArtifactIo = null;
+        fetchArtifactWithBody.mockClear();
         updateArtifactWithHeader.mockClear();
         reviewCommentExecute.mockClear();
         pluginPermissionGrantExecute.mockClear();
@@ -821,6 +875,34 @@ describe('createDefaultActionExecutor approvals', () => {
 
         expect(machineRpcWithServerScope).not.toHaveBeenCalled();
         expectTerminalApprovalFailureUpdate('artifact-directory-spawn', 'approval_stale');
+    });
+
+    it('does not let an approval built from a stale open read overwrite a rejection committed before its write', async () => {
+        const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
+        const approver = createDefaultActionExecutor();
+        const rejecter = createDefaultActionExecutor();
+        let rejected: unknown = null;
+        // The approver has already read the open request; another device's
+        // rejection lands (and reaches this client's cache) before its write.
+        beforeNextArtifactIo = async () => {
+            rejected = await rejecter.execute(
+                'approval.request.decide' as any,
+                { artifactId: 'artifact-1', decision: 'reject' },
+                { surface: 'ui' },
+            );
+        };
+
+        const approved = await approver.execute(
+            'approval.request.decide' as any,
+            { artifactId: 'artifact-1', decision: 'approve' },
+            { surface: 'ui' },
+        );
+
+        expect(rejected).toMatchObject({ ok: true, result: { status: 'rejected' } });
+        expect(approved).toMatchObject({ ok: false });
+        const persisted = ApprovalRequestSchema.parse(JSON.parse(String(artifactServer.get('artifact-1')?.body)));
+        expect(persisted).toMatchObject({ status: 'rejected', decision: { kind: 'reject' } });
+        expect(patchSessionMetadataWithRetry).not.toHaveBeenCalled();
     });
 
     it('routes V2 replay by the current profile while carrying stable Home and immutable origin evidence', async () => {

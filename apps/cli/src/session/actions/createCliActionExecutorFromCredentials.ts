@@ -32,7 +32,10 @@ import {
   resolveSessionIdOrPrefixFromSessionList,
   type SessionSelectorListPage,
 } from '@/session/query/resolveSessionId';
-import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
+import {
+  resolveSessionEncryptionContextFromCredentials,
+  type SessionTransportEncryptionMaterial,
+} from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
 import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
@@ -65,7 +68,7 @@ import type {
   ResolveAutomationEventAdoptedDefinitionSetV1,
 } from '@/plugins/runtime/automations/automationEventActionExecutor';
 import type {
-  RevalidatePluginActionCallerImmutableGeneration,
+  RevalidatePluginActionCallerOccurrence,
   RevalidatePluginActionCallerMaterialization,
 } from '@/plugins/runtime/invocation/services/actionCaller';
 import type { ComposerAttachmentSendPreparationRegistryV1 } from '@/session/composer/prepareComposerAttachmentDraftsForSendV1';
@@ -485,6 +488,11 @@ export type CliActionMachineAdmissionTransport = NonNullable<
 
 export function createCliActionExecutorFromCredentials(params: Readonly<{
   credentials: StoredCredentials;
+  /**
+   * Stored-content material this composition already holds for one exact
+   * Session, for a host whose credentials carry no Account encryption material.
+   */
+  resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
   /** Credential-scoped canonical policy shared with pre-execution discovery. */
   actionsSettingsProvider?: RuntimeActionSettingsProvider;
   /** Explicit CLI machine selector for public Action transport. */
@@ -493,7 +501,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   readRegisteredPromptAssetAdapters?: () => ReadonlyMap<string, PromptAssetAdapter>;
   resolveAutomationEventAdoptedDefinitionSet?: ResolveAutomationEventAdoptedDefinitionSetV1;
   revalidatePluginActionCallerMaterialization?: RevalidatePluginActionCallerMaterialization;
-  revalidatePluginActionCallerImmutableGeneration?: RevalidatePluginActionCallerImmutableGeneration;
+  revalidatePluginActionCallerOccurrence?: RevalidatePluginActionCallerOccurrence;
   runtimeActionExecute?: RuntimeActionExecute;
   workflowAction?: ActionExecutorDeps['workflowAction'];
   workflowAcceptedAuthorizationCurrentness?: Parameters<typeof createCliActionExecutor>[0]['workflowAcceptedAuthorizationCurrentness'];
@@ -519,7 +527,6 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   /** The exact daemon external-session RPC owner for host-stamped API requests. */
   hostExternalSessionAction?: ActionExecutorDeps['hostExternalSessionAction'];
   /** Canonical daemon-owned workspace conflict Action execution. */
-  workspaceSyncConflictResolve?: ActionExecutorDeps['workspaceSyncConflictResolve'];
   /** Exact daemon-owned Session spawn transport; never a generic peer forwarder. */
   sessionSpawnDirectTargetTransport?: SessionSpawnDirectTargetTransport;
   /** In-process transport to the current daemon's canonical machine Action handlers. */
@@ -658,6 +665,12 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         serverApiUrl: approvalServerApiUrl,
         resolveServerFeaturesSnapshot,
         ...(params.isAutomationRunCurrent ? { isAutomationRunCurrent: params.isAutomationRunCurrent } : {}),
+        // The same accepted-authorization currentness owner the live Workflow
+        // admission below already consumes; a replayed Workflow origin rechecks
+        // its principal through it instead of a second check.
+        ...(params.workflowAcceptedAuthorizationCurrentness
+          ? { isWorkflowRunAuthorizationCurrent: params.workflowAcceptedAuthorizationCurrentness }
+          : {}),
       });
       return checker ? await checker(args) : false;
     });
@@ -687,6 +700,9 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
     });
     return createCliActionExecutor({
       ...cryptoContext,
+      ...(params.resolveExactSessionEncryptionMaterial
+        ? { resolveExactSessionEncryptionMaterial: params.resolveExactSessionEncryptionMaterial }
+        : {}),
       ...(params.actionsSettingsProvider ? { actionsSettingsProvider: params.actionsSettingsProvider } : {}),
       serverId: approvalServerId,
       ...(params.serverIdentityId ? { serverIdentityId: params.serverIdentityId } : {}),
@@ -750,8 +766,8 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
       ...(params.revalidatePluginActionCallerMaterialization
         ? { revalidatePluginActionCallerMaterialization: params.revalidatePluginActionCallerMaterialization }
         : {}),
-      ...(params.revalidatePluginActionCallerImmutableGeneration
-        ? { revalidatePluginActionCallerImmutableGeneration: params.revalidatePluginActionCallerImmutableGeneration }
+      ...(params.revalidatePluginActionCallerOccurrence
+        ? { revalidatePluginActionCallerOccurrence: params.revalidatePluginActionCallerOccurrence }
         : {}),
       ...(params.sessionActionConfirmation ? { sessionActionConfirmation: params.sessionActionConfirmation } : {}),
       ...(params.runtimeActionExecute
@@ -773,9 +789,6 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         : {}),
       ...(params.hostExternalSessionAction
         ? { hostExternalSessionAction: params.hostExternalSessionAction }
-        : {}),
-      ...(params.workspaceSyncConflictResolve
-        ? { workspaceSyncConflictResolve: params.workspaceSyncConflictResolve }
         : {}),
       ...(params.sessionSpawnDirectTargetTransport
         ? { sessionSpawnDirectTargetTransport: params.sessionSpawnDirectTargetTransport }

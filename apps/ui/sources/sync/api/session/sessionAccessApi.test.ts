@@ -56,7 +56,7 @@ describe('Session access exact Account transport', () => {
         env.request.mockImplementation(async () => new Response(JSON.stringify(result), { status: 200 }));
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration', actionId: 'session.access.context.set',
+            availability: 'available', actionId: 'session.access.context.set',
             input: { sessionId: 'same/id', primaryTeamId: 'team-1' },
         })).resolves.toEqual(result);
         const call = env.request.mock.calls.find(([url]) => url.includes('/access-context/'));
@@ -85,7 +85,7 @@ describe('Session access exact Account transport', () => {
         });
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration', actionId: 'session.access.grant.set',
+            availability: 'available', actionId: 'session.access.grant.set',
             input: { sessionId: 'same/id', ...grant },
         })).resolves.toEqual({ changed: true, grant });
         const call = env.request.mock.calls.find(([url]) => url.includes('/access-grants/'));
@@ -155,7 +155,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set(logicalGrant)).resolves.toMatchObject({ changed: true });
 
         expect(logicalGrant).not.toHaveProperty('accountEnvelopeInput');
@@ -233,7 +233,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set({
             subject: { kind: 'account', accountId: 'recipient' },
             accessLevel: 'edit',
@@ -307,7 +307,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set({
             subject: { kind: 'account', accountId: 'recipient' },
             accessLevel: 'edit',
@@ -380,7 +380,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set({
             subject: { kind: 'account', accountId: 'recipient' },
             accessLevel: 'edit',
@@ -444,7 +444,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set(grant)).resolves.toMatchObject({ changed: true });
 
         expect(physicalBodies).toEqual([{ sessionId: 'same', ...grant }]);
@@ -452,19 +452,19 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set(grant)).rejects.toMatchObject({ code: 'session_data_key_unavailable' });
         retainedTupleState = 'invalid';
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set(grant)).rejects.toMatchObject({ code: 'session_data_key_unavailable' });
         retainedTupleState = 'other_error';
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).set(grant)).rejects.toMatchObject({ code: 'recipient_key_unavailable' });
         expect(physicalBodies).toEqual([
             { sessionId: 'same', ...grant },
@@ -540,21 +540,21 @@ describe('Session access exact Account transport', () => {
 
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.access.grant.set',
             input: { sessionId: 'same/id', ...grant },
         })).resolves.toEqual({ changed: true, grant });
         recipientReadiness = { status: 'unavailable', reason: 'encryption_setup_required' };
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.access.grant.set',
             input: { sessionId: 'same/id', ...grant },
         })).resolves.toEqual({ changed: true, grant });
         recipientReadiness = { status: 'unavailable', reason: 'encryption_inconsistent' };
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.access.grant.set',
             input: { sessionId: 'same/id', ...grant },
         })).resolves.toEqual({ changed: true, grant });
@@ -569,7 +569,7 @@ describe('Session access exact Account transport', () => {
             recipientReadiness = readiness;
             await expect(executeSessionAccessHttpAction({
                 scope: { serverId: env.target.id, accountId: 'target-account' },
-                availability: 'full_collaboration',
+                availability: 'available',
                 actionId: 'session.access.grant.set',
                 input: { sessionId: 'same/id', ...grant },
             })).rejects.toMatchObject({ code });
@@ -578,7 +578,7 @@ describe('Session access exact Account transport', () => {
         recipientRequestFails = true;
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.access.grant.set',
             input: { sessionId: 'same/id', ...grant },
         })).rejects.toMatchObject({ code: 'session_access_request_failed', status: 503 });
@@ -678,7 +678,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
             onPublicLinkBearerIssued: (token) => { issued.push(token); },
         }).createPublicLink({ isConsentRequired: false })).resolves.toMatchObject({ id: 'publication' });
 
@@ -719,7 +719,7 @@ describe('Session access exact Account transport', () => {
         await expect(createSessionAccessClient({
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
-            availability: 'full_collaboration',
+            availability: 'available',
         }).createPublicLink({ isConsentRequired: false })).resolves.toMatchObject({ id: 'publication' });
 
         expect(sessionReads).toBe(1);
@@ -734,7 +734,7 @@ describe('Session access exact Account transport', () => {
         aborted.abort();
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.public_link.remove',
             input: { sessionId: 'same' },
             signal: aborted.signal,
@@ -746,7 +746,7 @@ describe('Session access exact Account transport', () => {
         env.request.mockImplementation(async () => new Response('not json', { status: 200 }));
         await expect(executeSessionAccessHttpAction({
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration',
+            availability: 'available',
             actionId: 'session.public_link.remove',
             input: { sessionId: 'same' },
         })).rejects.toMatchObject({ code: 'outcome_unknown' });
@@ -758,7 +758,7 @@ describe('Session access exact Account transport', () => {
         const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
         const request = {
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration' as const,
+            availability: 'available' as const,
             actionId: 'session.public_link.remove' as const,
             input: { sessionId: 'same' },
         };
@@ -766,7 +766,7 @@ describe('Session access exact Account transport', () => {
         await expect(executeSessionAccessHttpAction(request)).resolves.toEqual({ changed: false });
 
         env.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'not_found' }), { status: 404 }));
-        await expect(executeSessionAccessHttpAction(request)).rejects.toMatchObject({ code: 'unsupported_action' });
+        await expect(executeSessionAccessHttpAction(request)).rejects.toMatchObject({ code: 'session_access_sharing_unavailable' });
 
         env.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'session_access_forbidden' }), { status: 403 }));
         await expect(executeSessionAccessHttpAction(request)).rejects.toMatchObject({ code: 'session_access_forbidden' });
@@ -776,7 +776,7 @@ describe('Session access exact Account transport', () => {
         const env = await setup();
         const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
         const args = { scope: { serverId: env.target.id, accountId: 'wrong-account' },
-            availability: 'full_collaboration' as const, actionId: 'session.access.grants.list' as const,
+            availability: 'available' as const, actionId: 'session.access.grants.list' as const,
             input: { sessionId: 'same' } };
         await expect(executeSessionAccessHttpAction(args)).rejects.toThrow();
         expect(env.request).not.toHaveBeenCalled();
@@ -790,7 +790,7 @@ describe('Session access exact Account transport', () => {
         const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
         const request = {
             scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration' as const,
+            availability: 'available' as const,
             actionId: 'session.access.grants.list' as const,
             input: { sessionId: 'same' },
         };
@@ -799,9 +799,14 @@ describe('Session access exact Account transport', () => {
             JSON.stringify({ error: 'not_found' }),
             { status: 404, headers: { 'Content-Type': 'application/json' } },
         ));
+        // The feature gate withheld the route because this Home's sharing is off.
         await expect(executeSessionAccessHttpAction(request)).rejects.toMatchObject({
-            code: 'unsupported_action',
+            code: 'session_access_sharing_unavailable',
             status: 404,
+        });
+        // The same cause is named before any request when the Home's decision is already known.
+        await expect(executeSessionAccessHttpAction({ ...request, availability: 'unavailable' })).rejects.toMatchObject({
+            code: 'session_access_sharing_unavailable',
         });
 
         env.request.mockResolvedValueOnce(new Response(
@@ -818,7 +823,7 @@ describe('Session access exact Account transport', () => {
         const env = await setup();
         const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
         const args = { scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'full_collaboration' as const, actionId: 'session.access.grant.remove' as const,
+            availability: 'available' as const, actionId: 'session.access.grant.remove' as const,
             input: { sessionId: 'same', subject: { kind: 'account', accountId: 'recipient' } } };
         env.request.mockImplementation(async () => new Response(JSON.stringify({ changed: true, subject: args.input.subject, encryptedDataKey: 'private' })));
         await expect(executeSessionAccessHttpAction(args)).rejects.toThrow();
@@ -827,414 +832,6 @@ describe('Session access exact Account transport', () => {
             return new Response(JSON.stringify({ changed: true, subject: args.input.subject }));
         });
         await expect(executeSessionAccessHttpAction(args)).rejects.toMatchObject({ code: 'session_access_stale_scope' });
-    });
-    it('projects released direct shares and creates a plain grant without encryption material', async () => {
-        const env = await setup();
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const person = { id: 'recipient', username: 'recipient', firstName: 'Recipient', lastName: null, avatar: null };
-        const share = { id: 'share', sharedWithUser: person, accessLevel: 'edit', canApprovePermissions: false, createdAt: 1, updatedAt: 1 };
-        let created = false;
-        env.request.mockImplementation(async (url, init) => {
-            const path = new URL(url).pathname;
-            if (path.includes('/account/encryption')) return new Response(JSON.stringify({ mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 }));
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 1, metadata: '{}',
-                agentStateVersion: 1, agentState: null, share: null,
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path === '/v1/friends') return new Response(JSON.stringify({ friends: [{ ...person, status: 'friend', publicKey: null, bio: null }] }));
-            if (path.endsWith('/shares') && init?.method === 'POST') {
-                expect(JSON.parse(String(init.body))).toEqual({ userId: 'recipient', accessLevel: 'edit', canApprovePermissions: false });
-                created = true;
-                return new Response(JSON.stringify({ share }));
-            }
-            if (path.endsWith('/shares')) return new Response(JSON.stringify({ shares: created ? [share] : [] }));
-            throw new Error(`Unexpected path: ${path}`);
-        });
-        const common = { scope: { serverId: env.target.id, accountId: 'target-account' }, availability: 'direct_only' as const };
-        await expect(executeSessionAccessHttpAction({ ...common, actionId: 'session.access.grant.set', input: {
-            sessionId: 'same', subject: { kind: 'account', accountId: 'recipient' }, accessLevel: 'edit', canApprovePermissions: false,
-        } })).resolves.toMatchObject({ changed: true, grant: { subject: { kind: 'account', accountId: 'recipient' } } });
-        const list = await executeSessionAccessHttpAction({ ...common, actionId: 'session.access.grants.list', input: { sessionId: 'same' } });
-        expect(list).toMatchObject({ visibility: 'complete', primaryTeamId: null, grants: [{ principal: { kind: 'account', accountId: 'recipient' } }] });
-        expect(env.request.mock.calls.every(([url]) => new URL(url).origin === 'https://target.example')).toBe(true);
-    });
-
-    it('projects exactly the released writer transitions for every valid stored grant state', async () => {
-        const env = await setup();
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const person = { id: 'recipient', username: 'recipient', firstName: 'Recipient', lastName: null, avatar: null };
-        const share: {
-            id: string;
-            sharedWithUser: typeof person;
-            accessLevel: 'view' | 'edit' | 'admin';
-            canApprovePermissions: boolean;
-            createdAt: number;
-            updatedAt: number;
-        } = {
-            id: 'share',
-            sharedWithUser: person,
-            accessLevel: 'edit',
-            canApprovePermissions: true,
-            createdAt: 1,
-            updatedAt: 1,
-        };
-        env.request.mockImplementation(async (url) => {
-            const path = new URL(url).pathname;
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 1, metadata: '{}',
-                agentStateVersion: 1, agentState: null,
-                // A released row the caller does not own carries the owner id
-                // (`listing/legacy.ts` projects `owner`/`ownerProfile`); the adapter
-                // has no other source for the Session owner on this transport.
-                owner: 'owner-account',
-                share: { accessLevel: 'admin', canApprovePermissions: false },
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path.endsWith('/shares')) return new Response(JSON.stringify({ shares: [share] }));
-            throw new Error(`Unexpected path: ${path}`);
-        });
-        const cases = [
-            { stored: { accessLevel: 'view', canApprovePermissions: false } as const, accessLevels: ['view', 'edit', 'admin'], canToggle: false },
-            { stored: { accessLevel: 'edit', canApprovePermissions: false } as const, accessLevels: ['view', 'edit', 'admin'], canToggle: false },
-            { stored: { accessLevel: 'edit', canApprovePermissions: true } as const, accessLevels: ['view', 'edit'], canToggle: true },
-            { stored: { accessLevel: 'admin', canApprovePermissions: false } as const, accessLevels: ['view', 'edit', 'admin'], canToggle: false },
-            { stored: { accessLevel: 'admin', canApprovePermissions: true } as const, accessLevels: ['view', 'edit', 'admin'], canToggle: true },
-        ];
-
-        for (const row of cases) {
-            Object.assign(share, row.stored);
-            const result = await executeSessionAccessHttpAction({
-                scope: { serverId: env.target.id, accountId: 'target-account' },
-                availability: 'direct_only',
-                actionId: 'session.access.grants.list',
-                input: { sessionId: 'same' },
-            });
-            expect(result, JSON.stringify(row.stored)).toMatchObject({
-                visibility: 'complete',
-                grants: [{
-                    grant: row.stored,
-                    allowedTransitions: {
-                        accessLevels: row.accessLevels,
-                        canChangePermissionDelegation: row.canToggle,
-                        canRemove: true,
-                    },
-                }],
-            });
-        }
-    });
-
-    it('enforces the complete effective delegation matrix through the released direct writer adapter', async () => {
-        const env = await setup();
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const person = { id: 'recipient', username: 'recipient', firstName: 'Recipient', lastName: null, avatar: null };
-        let stored: {
-            id: string;
-            sharedWithUser: typeof person;
-            accessLevel: 'view' | 'edit' | 'admin';
-            canApprovePermissions: boolean;
-            createdAt: number;
-            updatedAt: number;
-        } | null = { id: 'share', sharedWithUser: person, accessLevel: 'edit', canApprovePermissions: true, createdAt: 1, updatedAt: 1 };
-        env.request.mockImplementation(async (url, init) => {
-            const path = new URL(url).pathname;
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 1, metadata: '{}',
-                agentStateVersion: 1, agentState: null,
-                // A released row the caller does not own carries the owner id
-                // (`listing/legacy.ts` projects `owner`/`ownerProfile`); the adapter
-                // has no other source for the Session owner on this transport.
-                owner: 'owner-account',
-                share: { accessLevel: 'admin', canApprovePermissions: false },
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            // The released update route is `/shares/:shareId`, not `/shares`.
-            if (path.includes('/shares/') && init?.method === 'PATCH') {
-                if (!stored) throw new Error('Cannot PATCH an absent share');
-                const next = JSON.parse(String(init.body)) as Pick<NonNullable<typeof stored>, 'accessLevel' | 'canApprovePermissions'>;
-                stored = { ...stored, ...next };
-                return new Response(JSON.stringify({ share: stored }));
-            }
-            if (path.endsWith('/shares') && init?.method === 'POST') {
-                // The released POST body carries `userId` (and may carry
-                // `encryptedDataKey`); the share row it answers with does not, and
-                // the strict response schema rejects either of them.
-                const next = JSON.parse(String(init.body)) as Pick<NonNullable<typeof stored>, 'accessLevel' | 'canApprovePermissions'>;
-                stored = {
-                    id: 'share', sharedWithUser: person, createdAt: 1, updatedAt: 1,
-                    accessLevel: next.accessLevel, canApprovePermissions: next.canApprovePermissions,
-                };
-                return new Response(JSON.stringify({ share: stored }));
-            }
-            if (path.endsWith('/shares')) return new Response(JSON.stringify({ shares: stored ? [stored] : [] }));
-            if (path === '/v1/friends') return new Response(JSON.stringify({ friends: [{ ...person, status: 'friend', publicKey: null, bio: null }] }));
-            throw new Error(`Unexpected path: ${path}`);
-        });
-        const execute = (accessLevel: 'view' | 'edit' | 'admin', canApprovePermissions: boolean) => executeSessionAccessHttpAction({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only',
-            actionId: 'session.access.grant.set',
-            input: { sessionId: 'same', subject: { kind: 'account', accountId: 'recipient' }, accessLevel, canApprovePermissions },
-        });
-        const nextStates = [
-            ['view', { accessLevel: 'view', canApprovePermissions: false }],
-            ['edit', { accessLevel: 'edit', canApprovePermissions: false }],
-            ['delegated edit', { accessLevel: 'edit', canApprovePermissions: true }],
-            ['admin', { accessLevel: 'admin', canApprovePermissions: false }],
-            ['delegated admin', { accessLevel: 'admin', canApprovePermissions: true }],
-        ] as const;
-        const states = [['absent', null], ...nextStates] as const;
-        const forbidden = new Set([
-            'absent->delegated edit', 'absent->delegated admin',
-            'view->delegated edit', 'view->delegated admin',
-            'edit->delegated edit', 'edit->delegated admin',
-            'delegated edit->delegated admin',
-            'admin->delegated edit', 'admin->delegated admin',
-        ]);
-
-        for (const [previousName, previous] of states) {
-            for (const [nextName, next] of nextStates) {
-                stored = previous === null ? null : {
-                    id: 'share', sharedWithUser: person,
-                    createdAt: 1, updatedAt: 1, ...previous,
-                };
-                const transition = `${previousName}->${nextName}`;
-                const operation = execute(next.accessLevel, next.canApprovePermissions);
-                if (forbidden.has(transition)) {
-                    await expect(operation, transition).rejects.toMatchObject({
-                        code: 'session_access_permission_delegation_forbidden',
-                    });
-                } else {
-                    await expect(operation, transition).resolves.toMatchObject({
-                        changed: previous === null
-                            || previous.accessLevel !== next.accessLevel
-                            || previous.canApprovePermissions !== next.canApprovePermissions,
-                    });
-                }
-            }
-        }
-    });
-
-    it('rejects current-only context changes before any released direct-only request', async () => {
-        const env = await setup();
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-
-        await expect(executeSessionAccessHttpAction({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only',
-            actionId: 'session.access.context.set',
-            input: { sessionId: 'same', primaryTeamId: 'team-1' },
-        })).rejects.toMatchObject({ code: 'unsupported_action' });
-
-        expect(env.request).not.toHaveBeenCalled();
-    });
-
-    it('rejects Team and Group grant mutations before any released direct-only request', async () => {
-        const env = await setup();
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const common = {
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only' as const,
-        };
-
-        await expect(executeSessionAccessHttpAction({
-            ...common,
-            actionId: 'session.access.grant.set',
-            input: {
-                sessionId: 'same',
-                subject: { kind: 'team', teamId: 'team-1' },
-                accessLevel: 'edit',
-                canApprovePermissions: false,
-            },
-        })).rejects.toMatchObject({ code: 'unsupported_action' });
-        await expect(executeSessionAccessHttpAction({
-            ...common,
-            actionId: 'session.access.grant.remove',
-            input: {
-                sessionId: 'same',
-                subject: { kind: 'group', teamId: 'team-1', groupId: 'group-1' },
-            },
-        })).rejects.toMatchObject({ code: 'unsupported_action' });
-
-        expect(env.request).not.toHaveBeenCalled();
-    });
-
-    it('repairs an existing released E2EE direct share through the released POST upsert', async () => {
-        const env = await setup({ accountEncryption: 'e2ee' });
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const { encodeBase64, decodeBase64 } = await import('@/encryption/base64');
-        const { encodeHex } = await import('@/encryption/hex');
-        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
-        const { openEncryptedDataKeyEnvelopeV1, signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol');
-        const sessionDataKey = new Uint8Array(32).fill(23);
-        const callerEnvelope = encryptDataKeyForRecipientV0(
-            sessionDataKey,
-            encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
-        );
-        const recipient = { content: tweetnacl.box.keyPair(), signing: tweetnacl.sign.keyPair() };
-        const person = {
-            id: 'recipient', username: 'recipient', firstName: 'Recipient', lastName: null, avatar: null,
-            status: 'friend', bio: null,
-            publicKey: encodeHex(recipient.signing.publicKey),
-            contentPublicKey: encodeBase64(recipient.content.publicKey, 'base64'),
-            contentPublicKeySig: encodeBase64(signAccountContentKeyBindingV1({
-                accountSigningSecretKey: recipient.signing.secretKey,
-                contentPublicKey: recipient.content.publicKey,
-            }), 'base64'),
-        };
-        // The released share row projects exactly the five-field display profile
-        // (`toShareUserProfile`), not the friend record's key material; the strict
-        // response schema rejects the wider object.
-        const shareProfile = {
-            id: person.id, username: person.username, firstName: person.firstName,
-            lastName: person.lastName, avatar: person.avatar,
-        };
-        const share = {
-            id: 'share', sharedWithUser: shareProfile,
-            accessLevel: 'edit', canApprovePermissions: false, createdAt: 1, updatedAt: 1,
-        };
-        let releasedCreateBody: Record<string, unknown> | null = null;
-        env.request.mockImplementation(async (url, init) => {
-            const path = new URL(url).pathname;
-            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'e2ee', updatedAt: 1 }));
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope,
-                metadataVersion: 1, metadata: 'sealed', agentStateVersion: 1,
-                agentState: null, share: null,
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path === '/v1/friends') return new Response(JSON.stringify({ friends: [person] }));
-            if (path.endsWith('/shares') && init?.method === 'POST') {
-                releasedCreateBody = JSON.parse(String(init.body)) as Record<string, unknown>;
-                return new Response(JSON.stringify({ share }));
-            }
-            if (path.endsWith('/shares')) return new Response(JSON.stringify({ shares: [share] }));
-            throw new Error(`Unexpected path: ${path}`);
-        });
-
-        await expect(executeSessionAccessHttpAction({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only',
-            actionId: 'session.access.grant.set',
-            input: {
-                sessionId: 'same', subject: { kind: 'account', accountId: 'recipient' },
-                accessLevel: 'edit', canApprovePermissions: false,
-            },
-        })).resolves.toMatchObject({ changed: true });
-
-        const encryptedDataKey = (releasedCreateBody as { encryptedDataKey?: string } | null)?.encryptedDataKey;
-        expect(encryptedDataKey).toEqual(expect.any(String));
-        expect(openEncryptedDataKeyEnvelopeV1({
-            envelope: decodeBase64(encryptedDataKey!),
-            recipientSecretKeyOrSeed: recipient.content.secretKey,
-        })).toEqual(sessionDataKey);
-    });
-
-    it('maps a stale released Session snapshot to the canonical access stale-scope error', async () => {
-        const env = await setup();
-        vi.doMock('@/sync/runtime/orchestration/serverScopedRpc/readSessionSnapshotForAuthority', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/runtime/orchestration/serverScopedRpc/readSessionSnapshotForAuthority')>();
-            return {
-                ...actual,
-                readSessionSnapshotForAuthority: async () => {
-                    throw new actual.SessionSnapshotReadError('stale_response');
-                },
-            };
-        });
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-
-        await expect(executeSessionAccessHttpAction({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only',
-            actionId: 'session.access.grants.list',
-            input: { sessionId: 'same' },
-        })).rejects.toMatchObject({ code: 'session_access_stale_scope' });
-    });
-
-    it('does not submit a released direct share after the Account encryption generation changes while opening the Session DEK', async () => {
-        const env = await setup({ accountEncryption: 'e2ee' });
-        const { Encryption } = await import('@/sync/encryption/encryption');
-        const originalDecryptEncryptionKey = Encryption.prototype.decryptEncryptionKey;
-        vi.spyOn(Encryption.prototype, 'decryptEncryptionKey').mockImplementation(async function (this: typeof Encryption.prototype, encrypted, scope) {
-            const opened = await originalDecryptEncryptionKey.call(this, encrypted, scope);
-            const captured = this.getCurrentEncryptionGenerationScope({ serverId: env.target.id });
-            this.configureNativeCryptoWorker({
-                scope: {
-                    accountId: captured.accountId,
-                    serverId: captured.serverId,
-                    generation: captured.generation + 1,
-                },
-            });
-            return opened;
-        });
-        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
-        const { encodeBase64 } = await import('@/encryption/base64');
-        const { encodeHex } = await import('@/encryption/hex');
-        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
-        const { signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol');
-        const sessionDataKey = new Uint8Array(32).fill(19);
-        const callerEnvelope = encryptDataKeyForRecipientV0(
-            sessionDataKey,
-            encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
-        );
-        const recipient = { content: tweetnacl.box.keyPair(), signing: tweetnacl.sign.keyPair() };
-        const person = {
-            id: 'recipient',
-            username: 'recipient',
-            firstName: 'Recipient',
-            lastName: null,
-            avatar: null,
-            status: 'friend',
-            bio: null,
-            publicKey: encodeHex(recipient.signing.publicKey),
-            contentPublicKey: encodeBase64(recipient.content.publicKey, 'base64'),
-            contentPublicKeySig: encodeBase64(signAccountContentKeyBindingV1({
-                accountSigningSecretKey: recipient.signing.secretKey,
-                contentPublicKey: recipient.content.publicKey,
-            }), 'base64'),
-        };
-        let mutationCalls = 0;
-        env.request.mockImplementation(async (url, init) => {
-            const path = new URL(url).pathname;
-            if (path === '/v1/account/encryption') return new Response(JSON.stringify({
-                mode: 'e2ee', updatedAt: 1,
-            }));
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope,
-                metadataVersion: 1, metadata: 'sealed', agentStateVersion: 1,
-                agentState: null, share: null,
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path.endsWith('/shares') && init?.method === 'POST') {
-                mutationCalls += 1;
-                return new Response(JSON.stringify({ share: {
-                    id: 'share', sharedWithUser: person,
-                    accessLevel: 'edit', canApprovePermissions: false,
-                    createdAt: 1, updatedAt: 1,
-                } }));
-            }
-            if (path.endsWith('/shares')) return new Response(JSON.stringify({ shares: [] }));
-            if (path === '/v1/friends') return new Response(JSON.stringify({ friends: [person] }));
-            throw new Error(`Unexpected path: ${path}`);
-        });
-
-        await expect(executeSessionAccessHttpAction({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            availability: 'direct_only',
-            actionId: 'session.access.grant.set',
-            input: {
-                sessionId: 'same',
-                subject: { kind: 'account', accountId: 'recipient' },
-                accessLevel: 'edit',
-                canApprovePermissions: false,
-            },
-        })).rejects.toMatchObject({ code: 'session_access_stale_scope' });
-        expect(mutationCalls).toBe(0);
     });
 
 });

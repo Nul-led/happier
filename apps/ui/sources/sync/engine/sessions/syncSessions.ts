@@ -12,6 +12,7 @@ import { buildSessionListRenderableMetadataComparison } from '@/sync/domains/ses
 import type { ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
 import { storage } from '@/sync/domains/state/storage';
 import { shouldRetireSessionCarrierForServer } from '@/sync/store/domains/sessions';
+import { retireSessionListQueryAddress } from '@/sync/domains/session/listing/sessionListQueryInvalidation';
 import { readRollbackEligibleTurnStarts } from '@/sync/domains/session/rollback/rollbackEligibleTurnStarts';
 import {
     captureEncryptionGenerationCurrentness,
@@ -431,6 +432,8 @@ export function handleDeleteSessionSocketUpdate(params: {
 
     // Remove the addressed Home's row (and, when it owns the carrier, the rest).
     deleteSession(sessionId, serverId);
+    // The mounted filtered lists hold their own applied membership for that exact Home.
+    retireSessionListQueryAddress(serverId ?? null, sessionId);
 
     if (retireActiveCarrier) {
         // Remove encryption keys from memory

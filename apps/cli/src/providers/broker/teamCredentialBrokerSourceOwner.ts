@@ -6,11 +6,13 @@ import {
   TeamCredentialSourceBindingV1Schema,
   type TeamCredentialBrokerPlacementV1,
   type TeamCredentialSourceBindingV1,
+  type TeamCredentialSourceMemberV1,
 } from '@happier-dev/protocol/teams';
 
 import type {
   ManagedProviderEndpointAccessProjection,
 } from '@/plugins/runtime/invocation/services/managedServicesAdapter';
+import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import type { TeamCredentialSourceCurrentness } from './teamCredentialSourceSnapshot';
 
 type ConnectedServicesSource = Extract<
@@ -50,6 +52,18 @@ export function isCLIProxyAPIBrokerApplication(
   return projected !== null
     && projected.implementationIdentity.pluginId === application.implementationIdentity.pluginId
     && projected.implementationIdentity.localId === application.implementationIdentity.localId;
+}
+
+/** A Provider Connection source names its one credential slot exactly, so
+ * its source member needs no selection. */
+export function providerConnectionBrokerSourceMember(
+  source: ProviderConnectionSource,
+): TeamCredentialSourceMemberV1 {
+  return Object.freeze({
+    kind: 'provider_credential_slot' as const,
+    connectionId: source.connectionId,
+    credentialSlotId: source.credentialSlotId,
+  });
 }
 
 export type TeamCredentialBrokerOperation = Readonly<
@@ -100,9 +114,32 @@ export type TeamCredentialBrokerSourceAcquireResult =
     }>;
 
 export type TeamCredentialBrokerSourceOwner = Readonly<{
+  /**
+   * The current source member a request would use, read without starting or
+   * joining managed custody. The Home attributes and admits the request
+   * against it before `acquire` materializes anything (L10/03 request path,
+   * L10/11 BROKER-05); `acquire` re-enters the same selector, and its member
+   * must equal this one for the admitted request to proceed.
+   */
+  selectSourceMemberKey(input: Readonly<{
+    source: TeamCredentialSourceBindingV1;
+    application: ProviderBrokerApplicationBindingV1;
+    signal: AbortSignal;
+  }>): Promise<string | null>;
   acquire(
     input: TeamCredentialBrokerSourceOpenInput,
   ): Promise<TeamCredentialBrokerSourceAcquireResult>;
+  /**
+   * Retires the operation-scoped managed Provider custody named by an already
+   * verified authority, whether or not the caller holds a joined view of it.
+   * The explicit close of a Session/Run broker open arrives on its own stream,
+   * which has acquired nothing, so the operation — not a projection — is what
+   * the request names.
+   */
+  retireOperation(input: Readonly<{
+    operation: TeamCredentialBrokerOperation;
+    application: ProviderBrokerApplicationBindingV1;
+  }>): Promise<void>;
 }>;
 
 type SourceOpenResult = Promise<Readonly<{
@@ -154,6 +191,13 @@ function readsCurrent(projection: ManagedProviderEndpointAccessProjection): bool
  */
 export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
   machineId: string;
+  /** The same managed-Provider custody the source opens acquire through. */
+  custody: Pick<ManagedProviderExplicitStartCustody, 'retire'>;
+  selectConnectedServicesSourceMember(input: Readonly<{
+    source: ConnectedServicesSource;
+    application: ProviderBrokerApplicationBindingV1;
+    signal: AbortSignal;
+  }>): Promise<TeamCredentialSourceMemberV1 | null>;
   openConnectedServicesSource(
     input: ExactSourceOpenInput<ConnectedServicesSource>,
   ): SourceOpenResult;
@@ -162,6 +206,25 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
   ): SourceOpenResult;
 }>): TeamCredentialBrokerSourceOwner {
   return Object.freeze({
+    async selectSourceMemberKey({ source: rawSource, application, signal }) {
+      const source = TeamCredentialSourceBindingV1Schema.safeParse(rawSource);
+      if (!source.success || signal.aborted) return null;
+      const member = source.data.kind === 'provider_connection'
+        ? providerConnectionBrokerSourceMember(source.data)
+        : await input.selectConnectedServicesSourceMember({
+            source: source.data,
+            application,
+            signal,
+          }).catch(() => null);
+      return member ? computeTeamCredentialSourceMemberKeyV1(member) : null;
+    },
+    async retireOperation({ operation, application }) {
+      if (!validOperation(operation)) return;
+      await input.custody.retire({
+        identity: application.implementationIdentity,
+        operationClaim: { kind: 'providerBroker', operation },
+      });
+    },
     async acquire(rawInput) {
       if (
         rawInput.brokerMachineId !== input.machineId
@@ -245,7 +308,11 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
       const { projection, sourceCurrentness } = opened;
       let sourceCurrent = await sourceCurrentness.isCurrent().catch(() => false);
       if (rawInput.signal.aborted || !sourceCurrent || !readsCurrent(projection)) {
-        await opened.retire().catch(() => undefined);
+        // Only a source that is not current retires the operation this open
+        // would have joined; a caller that went away releases nothing shared.
+        if (!sourceCurrent || !readsCurrent(projection)) {
+          await opened.retire().catch(() => undefined);
+        }
         await Promise.resolve(projection.cleanup()).catch(() => undefined);
         return Object.freeze({
           ok: false as const,
@@ -258,8 +325,13 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
       let semanticRetired = false;
       let cleanupInFlight: Promise<void> | null = null;
       let retireInFlight: Promise<void> | null = null;
+      // The caller's signal ends the *caller's* joined view, nothing more.
+      // One operation is joined by every request stream it opens, so retiring
+      // its semantic custody here would let one closed connection tear the
+      // gateway down under the others. Retirement is an explicit act:
+      // `retire()` below, or `retireOperation` from the operation's owner.
       const onAbort = (): void => {
-        void retireAndCleanup().catch(() => undefined);
+        void cleanup().catch(() => undefined);
       };
       const retire = (): Promise<void> => {
         retired = true;
@@ -301,7 +373,7 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
       };
       rawInput.signal.addEventListener('abort', onAbort, { once: true });
       if (rawInput.signal.aborted) {
-        await retireAndCleanup().catch(() => undefined);
+        await cleanup().catch(() => undefined);
         return Object.freeze({
           ok: false as const,
           reasonCode: 'broker_unavailable' as const,
@@ -330,7 +402,11 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
                 || !sourceCurrent
                 || !readsCurrent(projection)
               ) {
-                await retireAndCleanup().catch(() => undefined);
+                // A source that stopped being current invalidates the whole
+                // operation's gateway, so it is retired. A caller that merely
+                // went away releases only its own view.
+                const invalid = !sourceCurrent || !readsCurrent(projection);
+                await (invalid ? retireAndCleanup() : cleanup()).catch(() => undefined);
                 return Object.freeze({
                   ok: false,
                   status: 403,

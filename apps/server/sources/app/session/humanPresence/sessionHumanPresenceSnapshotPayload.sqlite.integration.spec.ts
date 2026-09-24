@@ -1,5 +1,5 @@
 import type { Server, Socket } from "socket.io";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -12,9 +12,14 @@ import {
 } from "@/app/auth/providers/managed/identityProviderInstanceLifecycle";
 import { SESSION_HUMAN_PRESENCE_SNAPSHOT_EVENT } from "@happier-dev/protocol/sessions";
 import {
+    SESSION_HUMAN_PRESENCE_ACCESS_CHANGED_SERVER_EVENT,
     createSessionHumanPresenceService,
     notifySessionHumanPresenceAccessChanged,
+    registerSessionHumanPresenceAccessChangePublisher,
 } from "./sessionHumanPresenceService";
+import { RedisStreamsRoomEmitter } from "@/app/events/createRedisStreamsRoomEmitter";
+import type { Redis } from "ioredis";
+import { deleteSessionAccessGrantInTx, putSessionAccessGrantInTx } from "@/app/session/access/sessionAccessGrantService";
 
 const presenceRoomPrefix = "session-human-presence:";
 
@@ -94,7 +99,6 @@ describe("human presence snapshot is not bounded by the inbound transport limit"
     let harness: LightSqliteHarness;
     beforeAll(async () => {
         harness = await createLightSqliteHarness({ tempDirPrefix: "happier-human-presence-payload-", initAuth: true, initEncrypt: true,
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1" },
         });
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
@@ -137,7 +141,6 @@ describe("human presence snapshot is not bounded by the inbound transport limit"
 
     it("filters two credentials for one Account independently before deduplicating the qualified viewer", async () => {
         harness.resetEnv({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
         });
         const [owner, member] = await Promise.all(["Credential Owner", "Credential Member"].map(firstName =>
@@ -235,8 +238,103 @@ describe("human presence snapshot is not bounded by the inbound transport limit"
         }
     }, 30_000);
 
+    // Deleting a Direct View while a same-level restricted Team View survives leaves
+    // the structural capabilities equal, yet a password socket has just lost its
+    // only qualified read source. The real grant owner must still enqueue the
+    // room recheck, which then evaluates each socket's own credential.
+    it("evicts the unqualified socket when a real Direct grant removal leaves only a restricted Team source", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
+        });
+        // Key-challenge evidence qualifies only an Account that holds a key.
+        const [owner, member] = await Promise.all(["Source Owner", "Source Member"].map(firstName =>
+            db.account.create({ data: { publicKey: crypto.randomUUID(), firstName, encryptionMode: "e2ee" } })));
+        const session = await db.session.create({
+            data: { accountId: owner.id, tag: crypto.randomUUID(), encryptionMode: "plain", metadata: "{}" },
+        });
+        const team = await db.team.create({ data: {
+            name: crypto.randomUUID(),
+            authenticationPolicy: { v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "key_challenge" }] },
+        } });
+        await db.teamMembership.createMany({ data: [
+            { teamId: team.id, accountId: owner.id, role: "owner" },
+            { teamId: team.id, accountId: member.id, role: "member" },
+        ] });
+        const ownerAuthentication = { env: process.env, authority: "present_user" as const, authenticationEvidence: [] };
+        for (const subject of [
+            { kind: "team" as const, teamId: team.id },
+            { kind: "account" as const, accountId: member.id },
+        ]) {
+            expect(await inTx(tx => putSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
+                sessionId: session.id,
+                subject,
+                grant: { accessLevel: "view", canApprovePermissions: false },
+                authentication: ownerAuthentication,
+            }))).toMatchObject({ ok: true });
+        }
+
+        const qualifiedSocket = createAdmittedPresenceSocketFixture({ id: "source-qualified", accountId: member.id, sessionId: session.id });
+        const passwordSocket = createAdmittedPresenceSocketFixture({ id: "source-password", accountId: member.id, sessionId: session.id });
+        setAuthenticationEvidence(qualifiedSocket, [{ kind: "home_method", methodId: "key_challenge" }]);
+        setAuthenticationEvidence(passwordSocket, []);
+        const { io, emissions } = createFixtureIo([qualifiedSocket, passwordSocket]);
+        const presence = createSessionHumanPresenceService({ io });
+        try {
+            expect(await inTx(tx => deleteSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
+                sessionId: session.id,
+                subject: { kind: "account", accountId: member.id },
+                authentication: ownerAuthentication,
+            }))).toMatchObject({ ok: true, changed: true });
+
+            await expect.poll(() => passwordSocket.rooms.has(presenceRoomPrefix + session.id)).toBe(false);
+            expect(qualifiedSocket.rooms.has(presenceRoomPrefix + session.id)).toBe(true);
+            await expect.poll(() => [...(emissions.filter(entry => entry.event === SESSION_HUMAN_PRESENCE_SNAPSHOT_EVENT).at(-1)?.socketIds ?? [])])
+                .toEqual([qualifiedSocket.id]);
+        } finally {
+            presence.close();
+        }
+    }, 30_000);
+
+    // A worker-role process owns no Socket.IO server and no presence service, yet
+    // its directory reconciliation commits real access transitions. The same
+    // transition owner must reach the API nodes through the worker's own Redis
+    // Streams emitter (Redis is the true boundary here).
+    it("publishes a transition committed in a worker-role process to the API nodes' presence owners", async () => {
+        const [owner, member] = await Promise.all(["Worker Owner", "Worker Member"].map(firstName =>
+            db.account.create({ data: { publicKey: crypto.randomUUID(), firstName, encryptionMode: "plain" } })));
+        const session = await db.session.create({
+            data: { accountId: owner.id, tag: crypto.randomUUID(), encryptionMode: "plain", metadata: "{}" },
+        });
+        await db.userRelationship.create({ data: { fromUserId: owner.id, toUserId: member.id, status: "friend" } });
+        const ownerAuthentication = { env: process.env, authority: "present_user" as const, authenticationEvidence: [] };
+        const xadd = vi.fn(async (..._args: Array<string | number>) => "1-0");
+        const emitter = new RedisStreamsRoomEmitter({ xadd } as unknown as Pick<Redis, "xadd">, { maxLen: 100, streamName: "worker-stream" });
+        const unregister = registerSessionHumanPresenceAccessChangePublisher(emitter);
+        try {
+            expect(await inTx(tx => putSessionAccessGrantInTx(tx, {
+                actorAccountId: owner.id,
+                sessionId: session.id,
+                subject: { kind: "account", accountId: member.id },
+                grant: { accessLevel: "view", canApprovePermissions: false },
+                authentication: ownerAuthentication,
+            }))).toMatchObject({ ok: true });
+            await expect.poll(() => xadd.mock.calls.length).toBeGreaterThan(0);
+            const serverSideEvents = xadd.mock.calls.map((args) => {
+                const fields = Object.fromEntries(Array.from({ length: (args.length - 5) / 2 }, (_, index) => [args[5 + index * 2], args[6 + index * 2]]));
+                return fields.type === "9" ? JSON.parse(String(fields.data)).packet : null;
+            }).filter(Boolean);
+            expect(serverSideEvents).toEqual([
+                [SESSION_HUMAN_PRESENCE_ACCESS_CHANGED_SERVER_EVENT, { v: 1, sessionId: session.id }],
+            ]);
+        } finally {
+            unregister();
+        }
+    }, 30_000);
+
     it("rechecks admitted rooms after connection revision, provider security revision, and provider disable", async () => {
-        harness.resetEnv({ HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1" });
+        harness.resetEnv();
         const owner = await db.account.create({ data: {
             publicKey: crypto.randomUUID(), firstName: "Applicability owner", encryptionMode: "plain",
         } });

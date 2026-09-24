@@ -12,8 +12,8 @@ describe('filtered-list Account-change invalidation', () => {
         const invalidateA = vi.fn();
         const invalidateB = vi.fn();
         const dispose = subscribeSessionListQueryHomeInvalidation(() => new Map([
-            ['home-a', { invalidate: invalidateA }],
-            ['home-b', { invalidate: invalidateB }],
+            ['home-a', { invalidate: invalidateA, retire: vi.fn() }],
+            ['home-b', { invalidate: invalidateB, retire: vi.fn() }],
         ]));
 
         invalidateSessionListQueryHome('home-b');
@@ -27,8 +27,8 @@ describe('filtered-list Account-change invalidation', () => {
         const invalidateA = vi.fn();
         const invalidateB = vi.fn();
         const dispose = subscribeSessionListQueryHomeInvalidation(() => new Map([
-            ['home-a', { invalidate: invalidateA }],
-            ['home-b', { invalidate: invalidateB }],
+            ['home-a', { invalidate: invalidateA, retire: vi.fn() }],
+            ['home-b', { invalidate: invalidateB, retire: vi.fn() }],
         ]));
 
         publishHomeAccountChange('home-b', ['session-1']);
@@ -43,7 +43,7 @@ describe('filtered-list Account-change invalidation', () => {
     it('obeys the canonical detailed decision and retains unknown conservative wakes', () => {
         const invalidate = vi.fn();
         const dispose = subscribeSessionListQueryHomeInvalidation(() => new Map([
-            ['home-a', { invalidate }],
+            ['home-a', { invalidate, retire: vi.fn() }],
         ]));
 
         publishHomeAccountChange('home-a', ['self'], { sessionListQueryAffects: false });

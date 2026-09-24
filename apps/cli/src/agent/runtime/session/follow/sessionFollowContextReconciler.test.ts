@@ -987,3 +987,158 @@ describe('Session Follow context reconciler', () => {
     }));
   });
 });
+
+describe('Session Follow wake discovery beyond one transcript page', () => {
+  const PAGE = 500;
+  const humanSeq = PAGE + 1;
+  const wakeDelivered: SessionFollowFrontierV1 = { transcriptSeq: 0, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+  const wakeObserved: SessionFollowFrontierV1 = { transcriptSeq: humanSeq, readyEventSeq: 0, agentStateVersion: 0, turn: null };
+  const wakeAwareness = envelopeFor({ sourceSessionId: 'source', destinationSessionId: 'destination', observed: frontier }).awareness;
+
+  function storedRow(seq: number, withHuman: boolean) {
+    const isHuman = withHuman && seq === humanSeq;
+    return {
+      seq,
+      createdAt: seq,
+      content: { t: 'plain' as const, v: {
+        role: 'user',
+        content: { type: 'text', text: isHuman ? 'human asks for a check' : `automation note ${seq}` },
+        ...(isHuman ? { meta: { happierProvenanceV1: { v: 1, kind: 'cli' } } } : {}),
+      } },
+    };
+  }
+
+  function rowsAfter(afterSeq: number, withHuman: boolean) {
+    const rows = [];
+    for (let seq = afterSeq + 1; seq <= Math.min(afterSeq + PAGE, humanSeq); seq += 1) rows.push(storedRow(seq, withHuman));
+    return { rows, hasMore: afterSeq + PAGE < humanSeq };
+  }
+
+  function createDestination() {
+    const acknowledgeSessionFollow = vi.fn().mockResolvedValue({ ok: true });
+    const session = {
+      sessionId: 'destination',
+      runSessionFollowSourceRequest: <T>(input: Readonly<{ request: () => T }>): T => input.request(),
+      observePendingSessionFollow: vi.fn().mockResolvedValue({
+        ok: true,
+        v: 1,
+        sessionId: 'destination',
+        publisherGeneration: '11',
+        observations: [{
+          sourceSessionId: 'source',
+          destinationSessionId: 'destination',
+          delivered: wakeDelivered,
+          observed: wakeObserved,
+          mode: 'wake_on_human_change',
+        }],
+      }),
+      acknowledgeSessionFollow,
+    } as unknown as ApiSessionClient;
+    return { session, acknowledgeSessionFollow };
+  }
+
+  function accountTransportHydrator(session: ApiSessionClient, withHuman: boolean) {
+    const fetchTranscriptPage = vi.fn(async (input: { afterSeq?: number }) => {
+      const page = rowsAfter(input.afterSeq ?? 0, withHuman);
+      return { messages: page.rows, hasMore: page.hasMore, nextBeforeSeq: null, nextAfterSeq: null };
+    });
+    const hydrate = createSessionFollowSourceHydrator({
+      session,
+      credentials: { token: 'token' } as never,
+      deps: {
+        resolveSourceTransport: (async () => ({
+          ok: true,
+          sessionId: 'source',
+          rawSession: { id: 'source', encryptionMode: 'plain' },
+          accountEncryptionCurrentness: { mode: 'plain' },
+          ctx: null,
+          mode: 'plain',
+        })) as never,
+        fetchTranscriptPage: fetchTranscriptPage as never,
+        projectSourceAwareness: () => wakeAwareness as never,
+      },
+    });
+    return { hydrate, fetchTranscriptPage };
+  }
+
+  function runnerTransportHydrator(session: ApiSessionClient, withHuman: boolean) {
+    const fetchRunnerSourceProjection = vi.fn(async (input: { afterTranscriptSeq: number }) => {
+      const page = rowsAfter(input.afterTranscriptSeq, withHuman);
+      return {
+        v: 1 as const,
+        source: {
+          id: 'source', encryptionMode: 'plain' as const, metadata: null, metadataLayoutVersion: 0,
+          archivedAt: null, createdAt: 1, updatedAt: 2, active: true, activeAt: 2,
+          thinking: false, thinkingAt: null, latestTurnStatus: null, latestTurnStatusObservedAt: null,
+          latestReadyEventSeq: null, latestReadyEventAt: null, meaningfulActivityAt: null, agentStateVersion: 0,
+        },
+        messages: page.rows.map((row) => ({ ...row, accountActor: null })),
+        hasMore: page.hasMore,
+      };
+    });
+    const hydrate = createSessionFollowSourceHydrator({
+      session,
+      credentials: { token: 'runner-token', encryption: null } as never,
+      sourceMaterialResolver: {
+        installPreparedDataKey: () => 'installed',
+        resolveForHydration: () => ({ mode: 'plain' }),
+      },
+      deps: {
+        fetchRunnerSourceProjection: fetchRunnerSourceProjection as never,
+        projectSourceAwareness: () => wakeAwareness as never,
+      },
+    });
+    return { hydrate, fetchRunnerSourceProjection };
+  }
+
+  it.each(['account', 'runner'] as const)(
+    'wakes for protected human ingress beyond a full nonhuman first page on the %s transport and ACKs only the delivered contiguous prefix',
+    async (transport) => {
+      const { session, acknowledgeSessionFollow } = createDestination();
+      const built = transport === 'account'
+        ? accountTransportHydrator(session, true)
+        : runnerTransportHydrator(session, true);
+      const prepared = await createSessionFollowContextReconciler({
+        session,
+        maxFollowContextUtf8Bytes: 1_000_000,
+        hydrateObservation: built.hydrate,
+      })({ signal: new AbortController().signal, deliveryIntent: 'wake' });
+
+      expect(prepared?.wakeEventLocalId).toMatch(/^session-follow-wake:/u);
+      const update = prepared!.updates[0]!;
+      expect(update).toMatchObject({ reason: 'human_changed_source', deliveryIntent: 'wake', truncated: true });
+      // Delivery stays the oldest contiguous page; the discovered human row is not skipped to.
+      expect(update.recentMessages.some((message) => message.seq > PAGE)).toBe(false);
+      expect(update.observed.transcriptSeq).toBeLessThanOrEqual(PAGE);
+      const fetch = transport === 'account'
+        ? (built as ReturnType<typeof accountTransportHydrator>).fetchTranscriptPage
+        : (built as ReturnType<typeof runnerTransportHydrator>).fetchRunnerSourceProjection;
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      prepared!.acknowledgeAccepted({ kind: 'context_only_wake', eventLocalId: prepared!.wakeEventLocalId! });
+      await Promise.resolve();
+      expect(acknowledgeSessionFollow).toHaveBeenCalledOnce();
+      const ack = acknowledgeSessionFollow.mock.calls[0]![0] as { consumed: SessionFollowFrontierV1; observed: SessionFollowFrontierV1 };
+      expect(ack.observed).toEqual(wakeObserved);
+      expect(ack.consumed.transcriptSeq).toBeLessThanOrEqual(PAGE);
+    },
+  );
+
+  it.each(['account', 'runner'] as const)(
+    'does not wake on the %s transport when no protected human ingress exists anywhere in the pending range',
+    async (transport) => {
+      const { session, acknowledgeSessionFollow } = createDestination();
+      const built = transport === 'account'
+        ? accountTransportHydrator(session, false)
+        : runnerTransportHydrator(session, false);
+      const prepared = await createSessionFollowContextReconciler({
+        session,
+        maxFollowContextUtf8Bytes: 1_000_000,
+        hydrateObservation: built.hydrate,
+      })({ signal: new AbortController().signal, deliveryIntent: 'wake' });
+
+      expect(prepared).toBeNull();
+      expect(acknowledgeSessionFollow).not.toHaveBeenCalled();
+    },
+  );
+});

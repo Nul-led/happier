@@ -20,6 +20,7 @@ function encryptedRow(params: { seq: number; createdAt: number; value: unknown }
 describe('decryptTranscriptTextItems', () => {
   it('extracts assistant text from Claude output envelopes', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -50,6 +51,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('extracts tool-use summaries from Claude output envelopes when no text is present', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -90,6 +92,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('extracts tool-result summaries from Claude output envelopes', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -129,6 +132,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('extracts tool-call summaries from ACP envelopes (not only message text)', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -162,6 +166,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('extracts tool-result summaries from ACP envelopes', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -193,6 +198,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('skips ACP thinking envelopes (replay seeds should not include internal reasoning)', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -216,6 +222,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('skips ACP reasoning envelopes (replay seeds should not include chain-of-thought)', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -239,6 +246,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('extracts assistant text and tool summaries from Codex envelopes', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -307,6 +315,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('accepts plaintext transcript rows without encryption materials (no decrypt)', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -321,6 +330,7 @@ describe('decryptTranscriptTextItems', () => {
 
   it('skips memory artifact transcript rows (session_synopsis.v1 + session_summary_shard.v1)', () => {
     const out = decryptTranscriptTextItems({
+      crypto: { mode: 'plain' as const, ctx: null },
       rows: [
         {
           seq: 1,
@@ -366,8 +376,7 @@ describe('decryptTranscriptTextItems', () => {
 
     const out = decryptTranscriptTextItems({
       rows: [a.row, b.row],
-      encryptionKey: a.key,
-      encryptionVariant: 'dataKey',
+      crypto: { mode: 'e2ee' as const, ctx: { encryptionKey: a.key, encryptionVariant: 'dataKey' } },
     });
 
     expect(out.map((v) => v.text)).toEqual(['aaa', 'bbb']);
@@ -383,8 +392,7 @@ describe('decryptTranscriptTextItems', () => {
 
     const out = decryptTranscriptTextItems({
       rows: [a.row],
-      encryptionKey: a.key,
-      encryptionVariant: 'dataKey',
+      crypto: { mode: 'e2ee' as const, ctx: { encryptionKey: a.key, encryptionVariant: 'dataKey' } },
       maxTextChars: 40,
     });
 
@@ -410,8 +418,7 @@ describe('decryptTranscriptTextItems', () => {
             },
           },
         ],
-        encryptionKey: key,
-        encryptionVariant: 'dataKey',
+        crypto: { mode: 'e2ee' as const, ctx: { encryptionKey: key, encryptionVariant: 'dataKey' } },
       });
     }).not.toThrow();
   });

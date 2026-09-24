@@ -33,6 +33,23 @@ export type ExactHomeAccountSettingsResolver =
     (serverId: string | null | undefined) => Partial<AccountSettings> | null;
 
 /**
+ * The one exact-Home Account settings read behind every delivery decision.
+ *
+ * `null` fails closed: an unnamed Account, an unwritten scope, or persistence
+ * that has never held a synchronized version must never fall back to another
+ * Home's policy. Routed (non-React) consumers — the Expo foreground handler —
+ * call this directly with a scope resolved by the credential-scope owner.
+ */
+export function readExactHomeAccountSettings(
+    scope: ServerAccountScope | null | undefined,
+): Partial<AccountSettings> | null {
+    if (!scope || readAccountSettingsPersistenceMutationToken(scope) === null) return null;
+    const persisted = loadAccountSettings(scope);
+    if (persisted.version === null) return null;
+    return accountSettingsParse(persisted.settings);
+}
+
+/**
  * The single exact-Home Account settings subscription shared by local
  * notifications, the iOS Activity surfaces, Live Activity remote enrollment and
  * badge composition. Device/platform overrides stay device-global and are
@@ -66,10 +83,6 @@ export function useExactHomeAccountSettings(
     return React.useCallback((serverId: string | null | undefined) => {
         const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
         if (!normalizedServerId) return null;
-        const scope = audienceScopes?.get(normalizedServerId);
-        if (!scope || readAccountSettingsPersistenceMutationToken(scope) === null) return null;
-        const persisted = loadAccountSettings(scope);
-        if (persisted.version === null) return null;
-        return accountSettingsParse(persisted.settings);
+        return readExactHomeAccountSettings(audienceScopes?.get(normalizedServerId));
     }, [audienceScopes, persistenceSnapshot]);
 }

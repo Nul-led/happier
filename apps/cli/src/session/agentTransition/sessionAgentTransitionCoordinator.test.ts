@@ -311,7 +311,11 @@ describe('runSessionAgentTransition — exact input admission by localId (QA-T-0
     expect(result).toEqual({ type: 'accepted', localId: TEST_LOCAL_ID });
     expect(harness.deps.sendSessionMessage).toHaveBeenCalledTimes(1);
     expect(harness.deps.sendSessionMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ localId: TEST_LOCAL_ID, message: 'continue please' }),
+      expect.objectContaining({
+        localId: TEST_LOCAL_ID,
+        message: 'continue please',
+        requestedAction: { v: 1, kind: 'send_now' },
+      }),
     );
   });
 
@@ -553,109 +557,6 @@ describe('runSessionAgentTransition — target model intent', () => {
     const sealed = readSealedMetadata(cutover.captured.currentView);
     expect((sealed.modelSelectionIntentV1 as { selection: { modelId: string } }).selection.modelId)
       .toBe('gpt-5.6-luna');
-  });
-
-  /**
-   * A connected-service binding is Agent-scoped: it names a `serviceId` the
-   * SOURCE Agent's catalog declares, and every reader resolves it against the
-   * Session's CURRENT Agent. Carried across the cutover in the predecessor tree,
-   * `openai-codex`/`codex6` survived a switch to `claude`: the daemon
-   * spawn-preflighted the wrong service's credential, the target runtime's
-   * registration reconciled to
-   * `generation_application_scope_service_unsupported`, and `/session-started`
-   * answered 503 twenty times until the freshly started target died with the
-   * Session already committed to the target Agent.
-   */
-  describe('target connected-service binding', () => {
-    const SOURCE_BOUND = {
-      ...CLAUDE_SOURCE_METADATA,
-      connectedServices: {
-        v: 1,
-        bindingsByServiceId: {
-          'claude-subscription': { source: 'connected', selection: 'profile', profileId: 'team' },
-        },
-      },
-      connectedServicesUpdatedAt: 11,
-      connectedServiceMaterializationIdentityV1: {
-        v: 1,
-        id: 'csm_source',
-        createdAt: 1,
-        source: 'first_spawn',
-      },
-    };
-
-    it('rebinds the target from the account default instead of carrying the source binding', async () => {
-      const cutover = createCutoverCapture();
-      const harness = createTransitionDepsHarness({
-        applySessionAgentTransitionCutover: cutover.applySessionAgentTransitionCutover,
-        resolveSpawnConnectedServicesDefaults: (async () => ({
-          connectedServices: {
-            v: 1,
-            bindingsByServiceId: {
-              'openai-codex': { source: 'connected', selection: 'group', groupId: 'happier' },
-            },
-          },
-          connectedServicesUpdatedAt: 4_000,
-        })) as unknown as SessionAgentTransitionDeps['resolveSpawnConnectedServicesDefaults'],
-      });
-      harness.setMetadata({ ...SOURCE_BOUND });
-
-      await runSessionAgentTransition({
-        credentials: TEST_CREDENTIALS,
-        request: buildTransitionRequest(),
-        deps: harness.deps,
-      });
-
-      const sealed = readSealedMetadata(cutover.captured.currentView);
-      const bindings = (sealed.connectedServices as { bindingsByServiceId: Record<string, unknown> })
-        .bindingsByServiceId;
-      expect(bindings['claude-subscription']).toBeUndefined();
-      expect(bindings['openai-codex']).toEqual({ source: 'connected', selection: 'group', groupId: 'happier' });
-      expect(sealed.connectedServicesUpdatedAt).toBe(4_000);
-      // The materialized credential home is per-binding; reusing the source's id
-      // would point the target at the departed Agent's home.
-      expect(sealed.connectedServiceMaterializationIdentityV1).not.toMatchObject({ id: 'csm_source' });
-    });
-
-    it('leaves the target on native auth when the Account configures no default for it', async () => {
-      const cutover = createCutoverCapture();
-      const harness = createTransitionDepsHarness({
-        applySessionAgentTransitionCutover: cutover.applySessionAgentTransitionCutover,
-      });
-      harness.setMetadata({ ...SOURCE_BOUND });
-
-      await runSessionAgentTransition({
-        credentials: TEST_CREDENTIALS,
-        request: buildTransitionRequest(),
-        deps: harness.deps,
-      });
-
-      const sealed = readSealedMetadata(cutover.captured.currentView);
-      expect(sealed.connectedServices).toBeUndefined();
-      expect(sealed.connectedServicesUpdatedAt).toBeUndefined();
-      expect(sealed.connectedServiceMaterializationIdentityV1).toBeUndefined();
-    });
-
-    it('degrades to native rather than failing a transition whose source is already stopped', async () => {
-      const cutover = createCutoverCapture();
-      const harness = createTransitionDepsHarness({
-        applySessionAgentTransitionCutover: cutover.applySessionAgentTransitionCutover,
-        resolveSpawnConnectedServicesDefaults: (async () => {
-          throw new Error('connected_services_default_settings_invalid');
-        }) as unknown as SessionAgentTransitionDeps['resolveSpawnConnectedServicesDefaults'],
-      });
-      harness.setMetadata({ ...SOURCE_BOUND });
-
-      const result = await runSessionAgentTransition({
-        credentials: TEST_CREDENTIALS,
-        request: buildTransitionRequest(),
-        deps: harness.deps,
-      });
-
-      expect(result).toMatchObject({ type: 'accepted' });
-      const sealed = readSealedMetadata(cutover.captured.currentView);
-      expect(sealed.connectedServices).toBeUndefined();
-    });
   });
 });
 

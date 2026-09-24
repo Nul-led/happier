@@ -112,6 +112,23 @@ const DANGEROUS_ACTION_APPROVAL_REQUIRED_ACTION_ID_SET: ReadonlySet<ActionId> = 
 const AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_ID_SET: ReadonlySet<ActionId> = new Set(
   AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS,
 );
+
+/**
+ * Dangerous Actions whose product-UI invocation has no direct present-user
+ * confirmation host of its own, so their confirmation IS this policy's default:
+ * required on the present-user UI too, and waivable only through Actions
+ * settings. The present-user UI suppression below assumes a UI-local host; these
+ * rows do not have one, and must not grow one (no picker-local prompt, no
+ * domain approval resolver).
+ *
+ * - `session.responsibility.set`: teams-lane-04/11-responsible-assignment.md
+ *   §7.1 — "Dangerous mutation confirmation is required by default and may be
+ *   explicitly disabled by the user in the canonical Actions policy."
+ */
+const PRESENT_USER_UI_POLICY_CONFIRMED_ACTION_ID_SET: ReadonlySet<ActionId> = new Set<ActionId>([
+  'session.responsibility.set',
+]);
+
 type ActionSurfaceKey = keyof ActionSurfaces;
 type NonAgentActionSurfaceKey = Exclude<ActionSurfaceKey, 'agent'>;
 
@@ -191,13 +208,15 @@ function requiresDefaultApprovalFloor(
   ctx?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null,
 ): boolean {
   const surface = resolveApprovalSurface(ctx);
-  // UI already owns its direct present-user confirmation host. CLI suppresses
-  // the duplicate default only when its host records a completed confirmation
-  // for this exact Action. Explicit settings are evaluated first and still win.
+  // UI owns a direct present-user confirmation host for its ordinary dangerous
+  // Actions, except the rows whose confirmation is this policy's own default.
+  // CLI suppresses the duplicate default only when its host records a completed
+  // confirmation for this exact Action. Explicit settings are evaluated first
+  // and still win.
   if (
     surface.kind === 'non_agent'
     && (
-      surface.surface === 'ui'
+      (surface.surface === 'ui' && !PRESENT_USER_UI_POLICY_CONFIRMED_ACTION_ID_SET.has(actionId))
       || (surface.surface === 'cli' && ctx?.presentUserConfirmation?.actionId === actionId)
     )
     && ctx?.authority === 'present_user'
@@ -271,12 +290,15 @@ export function resolveActionApprovalRouting(args: ResolveActionApprovalRoutingA
   // it cannot retain an HTTP or server-relay request as the blocking waiter.
   // The present-user UI ordinarily has the same lifecycle shape: its mounted
   // continuation follows the Artifact and consumes the replayed typed result,
-  // while the original invocation returns immediately. A live-only result is
-  // the deliberate exception: the exact invocation stays as the blocking
-  // waiter because its raw result must never become durable Artifact custody.
+  // while the original invocation returns immediately. Live-only custody is
+  // the deliberate exception, on either side of the call: the exact invocation
+  // stays as the blocking waiter because its raw result — or its raw
+  // credential-bearing input — must never become durable Artifact custody.
   // Keep required-result metadata for replay/settlement, and leave Agent/CLI/
   // MCP blocking callers unchanged.
-  const mustReturnApprovalCustody = args.spec.approvalResultCustody !== 'live_only'
+  const custodyStaysOnLiveInvocation = args.spec.approvalResultCustody === 'live_only'
+    || args.spec.approvalInputCustody === 'live_only';
+  const mustReturnApprovalCustody = !custodyStaysOnLiveInvocation
     && (
       args.context?.surface === 'api'
       || (

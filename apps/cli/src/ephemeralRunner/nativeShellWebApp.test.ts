@@ -10,6 +10,7 @@ import {
   resolveEphemeralRunnerDirectoryChoicePresentation,
   resolveEphemeralRunnerEndpointPresentation,
   resolveEphemeralRunnerFailureRecoveryPresentation,
+  resolveEphemeralRunnerRegistryProfilePresentation,
   resolveEphemeralRunnerReviewedRuntimeFacts,
   type EphemeralRunnerEndpointPresentation,
 } from './endpointTerminalUi';
@@ -34,15 +35,23 @@ type StubElement = {
   append: (...nodes: StubElement[]) => void;
   replaceChildren: (...nodes: StubElement[]) => void;
   focus: () => void;
+  attributes: Record<string, string>;
+  setAttribute: (name: string, value: string) => void;
 };
 
 type ShellMessage = Readonly<{ v: 1; requestId: string; response: Record<string, unknown> }>
   | Readonly<{ v: 1; event: Record<string, unknown> }>;
 
-function createHarness(commands: Record<string, (args?: Record<string, unknown>) => unknown>) {
+function createHarness(
+  commands: Record<string, (args?: Record<string, unknown>) => unknown>,
+  options: Readonly<{ listenSettles?: Promise<void> }> = {},
+) {
   const focusLog: string[] = [];
   const sent: ShellMessage[] = [];
   const listeners = new Map<string, (event: { payload: string }) => void>();
+  // Tauri's `listen` registers through an asynchronous IPC round trip; events
+  // emitted before it settles are not delivered to this page.
+  const readyAfterListeners: string[][] = [];
 
   const element = (name: string): StubElement => {
     const node: StubElement = {
@@ -56,6 +65,8 @@ function createHarness(commands: Record<string, (args?: Record<string, unknown>)
       // Buttons are told apart by their label, so a focus assertion can name the
       // exact control the plan requires to receive focus.
       focus: () => { focusLog.push(node.textContent || name); },
+      attributes: {},
+      setAttribute: (attribute, value) => { node.attributes[attribute] = value; },
     };
     return node;
   };
@@ -78,6 +89,10 @@ function createHarness(commands: Record<string, (args?: Record<string, unknown>)
       sent.push(JSON.parse(String(args?.line ?? '')) as ShellMessage);
       return undefined;
     }
+    if (name === 'runner_renderer_ready') {
+      readyAfterListeners.push([...listeners.keys()]);
+      return undefined;
+    }
     const command = commands[name];
     if (!command) throw new Error(`unexpected_command:${name}`);
     return command(args);
@@ -97,7 +112,11 @@ function createHarness(commands: Record<string, (args?: Record<string, unknown>)
       core: { invoke },
       event: {
         listen: (name: string, callback: (event: { payload: string }) => void) => {
-          listeners.set(name, callback);
+          const register = () => {
+            listeners.set(name, callback);
+            return () => listeners.delete(name);
+          };
+          return options.listenSettles ? options.listenSettles.then(register) : Promise.resolve(register());
         },
       },
     },
@@ -114,6 +133,7 @@ function createHarness(commands: Record<string, (args?: Record<string, unknown>)
     named,
     sent,
     focusLog,
+    readyAfterListeners,
     emit(value: unknown) {
       listeners.get('runner-core-stdout')?.({ payload: `${JSON.stringify(value)}\n` });
     },
@@ -197,6 +217,29 @@ const failure = Object.freeze({
 });
 
 describe('ephemeral Runner native shell renderer', () => {
+  it('signals readiness only after both core listeners are installed, and only once', async () => {
+    // The shell starts the core on this signal. An event emitted before a
+    // listener exists is dropped, so a first folder question sent early would
+    // leave the endpoint waiting on buttons it never received.
+    let settle!: () => void;
+    const listenSettles = new Promise<void>((resolve) => { settle = resolve; });
+    const harness = createHarness({}, { listenSettles });
+    await Promise.resolve();
+    expect(harness.readyAfterListeners).toEqual([]);
+
+    settle();
+    await vi.waitFor(() => expect(harness.readyAfterListeners).toHaveLength(1));
+    expect(new Set(harness.readyAfterListeners[0])).toEqual(
+      new Set(['runner-core-stdout', 'runner-window-close-requested']),
+    );
+
+    // The first question after readiness reaches the endpoint.
+    harness.emit({ requestId: 'request-1', request: { v: 1, type: 'choose_directory', chooser: resolveEphemeralRunnerDirectoryChoicePresentation() } });
+    expect(harness.labels()).toEqual(['Choose folder', 'Cancel request']);
+    await Promise.resolve();
+    expect(harness.readyAfterListeners).toHaveLength(1);
+  });
+
   it('leaves a cancelled folder dialog unanswered and returns to the same folder choice', async () => {
     // `directory: null` is the endpoint's explicit activation-cancel answer: the
     // core declines the claim on it. A cancelled OS dialog decides nothing, so it
@@ -232,6 +275,81 @@ describe('ephemeral Runner native shell renderer', () => {
       requestId: 'request-1',
       response: { v: 1, type: 'directory_selected', directory: null },
     }]);
+  });
+
+  it('grants only the optional plugin access the endpoint turned on, through Allow', async () => {
+    const optionalHostAccess = [
+      { id: 'clipboard.write', capability: 'clipboard', reason: 'Copies results', authorizationClass: 'hostResourceSelection', normalizedScope: {} },
+      { id: 'network.fetch', capability: 'network', reason: 'Fetches docs', authorizationClass: 'hostResourceSelection', normalizedScope: {} },
+    ];
+    const pluginInstallation = { optionalHostAccess, requiredHostAccess: [], rawCredentialAccess: [], requestInterceptors: [],
+      executableRealms: ['daemon'], pluginId: 'acme.reviewed-external', displayName: 'Reviewed External', version: '1.2.3',
+      packageIdentity: { name: '@acme/reviewed-external', version: '1.2.3' },
+      publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
+      source: { kind: 'npm', locator: '@acme/reviewed-external@1.2.3', integrity: 'sha512-x', integrityBasis: 'expected' },
+      updateChannel: { kind: 'npm', packageName: '@acme/reviewed-external', registryOrigin: 'https://registry.npmjs.org' },
+      signature: { status: 'notProvided' }, provenance: { status: 'notProvided' },
+      curation: { status: 'unreviewed', sourceId: 'marketplace:community-npm' },
+    } as never;
+    const presentation = resolveEphemeralRunnerConsentReviewPresentation({ manifest, directory: '/workspace/exact', pluginInstallation });
+    const harness = createHarness({});
+
+    harness.emit({ requestId: 'request-1', request: { v: 1, type: 'review', review: presentation } });
+    const clipboard = harness.named.actions.children.find((child) => child.textContent.includes('clipboard.write'))!;
+    expect(clipboard.attributes).toEqual({ role: 'switch', 'aria-checked': 'false' });
+    await harness.click(clipboard.textContent);
+    expect(clipboard.attributes['aria-checked']).toBe('true');
+    await harness.click('Allow');
+
+    const answer = harness.sent[0] as Extract<ShellMessage, { requestId: string }>;
+    expect(answer.response).toEqual({ v: 1, type: 'consent_decision', decision: 'allow', optionalSelections: [
+      { accessId: 'clipboard.write', selected: true },
+      { accessId: 'network.fetch', selected: false },
+    ] });
+
+    // The core's adapter turns exactly that answer into the canonical selection.
+    const { createEphemeralRunnerNativeShellUi } = await import('./endpointNativeShellUi');
+    const ui = createEphemeralRunnerNativeShellUi({
+      request: async () => answer.response as never,
+      subscribe: () => () => undefined,
+    });
+    await expect(ui.reviewAndRequestConsent({
+      review: { manifest, directory: '/workspace/exact', launchManifestCommitment: 'l', authoringCommitment: 'a' } as never,
+      pluginInstallation,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ allow: true, optionalSelections: [
+      { accessId: 'clipboard.write', selected: true },
+      { accessId: 'network.fetch', selected: false },
+    ] });
+  });
+
+  it('sends a typed private-registry token only through Sign in, and keeps the question open on an empty token', async () => {
+    const requirement = { registryOrigin: 'https://npm.acme.example.test', packageName: '@acme/agent', registryProfileId: null };
+    const registry = resolveEphemeralRunnerRegistryProfilePresentation({ requirement });
+    const harness = createHarness({});
+
+    harness.emit({ requestId: 'request-1', request: { v: 1, type: 'registry_profile', registry } });
+    expect(harness.named.reviewTitle.textContent).toBe(registry.title);
+    expect(harness.rendered()).toContain('https://npm.acme.example.test');
+    const field = harness.named.actions.children[0]!.children[0]! as unknown as { type: string; value?: string };
+    expect(field.type).toBe('password');
+
+    await harness.click(registry.signInLabel);
+    expect(harness.sent).toEqual([]);
+
+    field.value = '  endpoint-token ';
+    await harness.click(registry.signInLabel);
+    expect(harness.sent).toEqual([{ v: 1, requestId: 'request-1', response: {
+      v: 1, type: 'registry_profile_decision', decision: 'sign_in', token: 'endpoint-token',
+    } }]);
+    expect(field.value).toBe('');
+
+    const declining = createHarness({});
+    declining.emit({ requestId: 'request-2', request: { v: 1, type: 'registry_profile', registry } });
+    await declining.click(registry.declineLabel);
+    expect(declining.sent).toEqual([{ v: 1, requestId: 'request-2', response: {
+      v: 1, type: 'registry_profile_decision', decision: 'decline',
+    } }]);
   });
 
   it('settles activation cancellation only through an explicit decision', async () => {

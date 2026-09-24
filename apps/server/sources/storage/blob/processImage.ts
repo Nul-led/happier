@@ -120,16 +120,25 @@ export async function tryProcessImage(src: Buffer, options: ProcessImageOptions 
     // invented background, and PNG would triple the size of a photograph.
     const transparent = meta.hasAlpha === true;
 
+    // A phone photograph is very often stored unrotated with an EXIF
+    // orientation tag, and re-encoding deliberately drops all source metadata —
+    // so without applying the rotation first, the published image is sideways
+    // while the client's own preview of the source bytes is upright. The
+    // decoder's own oriented dimensions are used for the square crop, because
+    // the shorter edge of a rotated portrait photograph is the other one.
+    const oriented = meta.autoOrient ?? { width: sourceWidth, height: sourceHeight };
+    const coverEdge = Math.min(maxEdge, oriented.width, oriented.height);
+
     const resized = fit === "cover"
         // Never upscale to reach the square: a smaller source is cropped to its
         // own shorter edge instead of being interpolated up to `maxEdge`.
-        ? sharp(src, { limitInputPixels: maxInputPixels }).resize({
-            width: Math.min(maxEdge, sourceWidth, sourceHeight),
-            height: Math.min(maxEdge, sourceWidth, sourceHeight),
+        ? sharp(src, { limitInputPixels: maxInputPixels, autoOrient: true }).resize({
+            width: coverEdge,
+            height: coverEdge,
             fit: "cover",
             position: "centre",
         })
-        : sharp(src, { limitInputPixels: maxInputPixels }).resize({
+        : sharp(src, { limitInputPixels: maxInputPixels, autoOrient: true }).resize({
             width: maxEdge,
             height: maxEdge,
             fit: "inside",

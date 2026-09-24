@@ -15,7 +15,11 @@ import { readIdentityProviderInstancePresentationsByIdsInTx } from "@/app/auth/p
 import { teamIdentityConnectionReferenceKey } from "@/app/teams/identity/teamIdentityConnectionLifecycle";
 import type { Tx } from "@/storage/inTx";
 
-import { resolveTeamAcceptedChoiceAvailability, resolveTeamAuthenticationPolicy } from "./resolveTeamAuthenticationPolicy";
+import {
+    reduceTeamAcceptedChoiceAvailabilities,
+    resolveTeamAcceptedChoiceAvailability,
+    resolveTeamAuthenticationPolicy,
+} from "./resolveTeamAuthenticationPolicy";
 
 export type TeamAuthenticationQualificationV1 =
     | Readonly<{ status: "satisfied"; matched: TeamAcceptedAuthenticationV1 | null }>
@@ -60,11 +64,14 @@ function hasCurrentProviderEvidence(
  * - `authentication_required`: the Home currently offers at least one accepted reference and
  *   the credential proves none of them, so the caller can go and authenticate (consumers
  *   answer `team_authentication_required`, 403, carrying the offered references);
- * - `unavailable`: the policy is malformed, a fact could not be read, or no accepted
- *   reference is currently offered — nothing the caller could present would satisfy it
- *   (consumers answer `team_authentication_unavailable` / `authentication_unavailable`).
+ * - `unavailable`: the policy is malformed, no accepted reference is currently offered,
+ *   or none is offered and a fact could not be read — nothing the caller could present
+ *   would satisfy it (consumers answer `team_authentication_unavailable` /
+ *   `authentication_unavailable`).
  * An accepted reference the Home does not currently offer is not a way in, but it never
- * hides the Team's other accepted alternatives.
+ * hides the Team's other accepted alternatives — including a reference whose own catalog
+ * row is unreadable, which `reduceTeamAcceptedChoiceAvailabilities` only lets decide the
+ * policy when no alternative is usable.
  */
 export async function qualifyTeamAuthenticationInTx(
     tx: Tx,
@@ -191,12 +198,12 @@ export async function qualifyTeamAuthenticationsInTx(
                     descriptorOffered: homeDescriptorById.has(methodId),
                 })] as const;
             });
-            const usable = availability.flatMap(([choice, choiceAvailability]) =>
-                choiceAvailability === "usable" ? [choice] : []);
-            if (availability.some(([, choiceAvailability]) => choiceAvailability === "unreadable") || usable.length === 0) {
+            const reduced = reduceTeamAcceptedChoiceAvailabilities(availability);
+            if (reduced.status === "unreadable" || reduced.usable.length === 0) {
                 results.set(team.id, { status: "unavailable" });
                 continue;
             }
+            const usable = reduced.usable;
 
             let matched: TeamAcceptedAuthenticationV1 | null = null;
             for (const choice of usable) {

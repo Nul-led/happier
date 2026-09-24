@@ -15,6 +15,7 @@ import {
     isPersistedExecutionRunConnectedServicesLaunchIdentityExact,
     normalizePersistedExecutionRunConnectedServicesLaunchV1,
     ExecutionRunConnectedServicesCleanupReceiptV1Schema,
+    pluginSourceCustodyV1Equal,
     type ExecutionRunAgentContributionIdentityV1,
 } from '@happier-dev/protocol';
 
@@ -720,8 +721,10 @@ export function createExecutionRunConnectedServicesBridge(
                     !== launchedAgentContribution.pluginId
                 || currentAgentContribution.localId
                     !== launchedAgentContribution.localId
-                || currentAgentContribution.immutableGenerationId
-                    !== launchedAgentContribution.immutableGenerationId
+                || !pluginSourceCustodyV1Equal(
+                    currentAgentContribution.sourceCustody,
+                    launchedAgentContribution.sourceCustody,
+                )
             ) {
                 return await releaseUnusedLease('current_generation_differs');
             }

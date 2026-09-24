@@ -104,6 +104,47 @@ describe("oidcOAuthProvider", () => {
         });
     });
 
+    it("applies the Team connection's own eligibility rules to the administrator's test", async () => {
+        const instance = {
+            id: "oidc-team-diagnostics",
+            type: "oidc" as const,
+            displayName: "OIDC team diagnostics",
+            issuer: "https://issuer.example.test",
+            clientId: "cid",
+            clientAuthenticationMethod: "client_secret_post" as const,
+            clientSecret: "secret",
+            redirectUrl: "https://home.example.test/v1/oauth/oidc-team-diagnostics/callback",
+            scopes: "openid profile email",
+            httpTimeoutSeconds: 30,
+            claims: { login: "preferred_username", email: "email", groups: "groups" },
+            allow: { usersAllowlist: [], emailDomains: [], groupsAny: ["engineering"], groupsAll: [] },
+            fetchUserInfo: false,
+            storeRefreshToken: false,
+            ui: { buttonColor: null, iconHint: null },
+        };
+        const provider = createOidcOAuthProvider(instance, "team-diagnostics-runtime", undefined, {
+            teamId: "team-1",
+            connectionId: "connection-1",
+            allow: { usersAllowlist: [], emailDomains: [], groupsAny: ["finance"], groupsAll: [] },
+        });
+        const profile = {
+            sub: "private-subject",
+            preferred_username: "alice",
+            email: "alice@example.test",
+            email_verified: true,
+            groups: ["engineering"],
+        };
+
+        // The provider's own rules admit this subject; the Team connection's do not, and the
+        // Team sign-in path refuses it. The diagnostic must report the same answer.
+        expect(await provider.describeIdentityTest?.({ env: process.env, profile })).toMatchObject({
+            eligibility: {
+                status: "ineligible",
+                rules: [{ kind: "groups_any", matched: false }],
+            },
+        });
+    });
+
     it("uses configured scopes when building auth urls", () => {
         const provider = createOidcOAuthProvider({
             id: "okta",

@@ -305,6 +305,120 @@ describe('useSessionBoardNoteEditor', () => {
         expect(upserts).toHaveLength(1);
     });
 
+    it('keeps text typed while a save was outstanding instead of settling over it', async () => {
+        let settle: ((outcome: SessionBoardActionOutcome<SessionBoardMutationResult>) => void) | null = null;
+        const upsertItem: SessionBoardActionsPort['upsertItem'] = vi.fn(async () =>
+            new Promise<SessionBoardActionOutcome<SessionBoardMutationResult>>((resolve) => { settle = resolve; }));
+        const onSaved = vi.fn();
+        const hook = await renderHook(() => useSessionBoardNoteEditor({
+            sessionId: 'session-1', itemId: 'item-1', expectedItemRevision: null,
+            placement: { tabId: 'overview', tabTitle: 'Overview', width: 'medium' },
+            initialTitle: 'Plan', initialBody: 'A', reachable: true,
+            actions: { ...recordingActions().port, upsertItem },
+            onSaved,
+        }));
+        const saving = hook.getCurrent().save();
+        await hook.rerender();
+        // The person keeps typing while the request is outstanding.
+        hook.getCurrent().setBody('A then B');
+        await hook.rerender();
+        settle!({ status: 'ok', value: upsertResult('rev-committed') });
+        // The commit landed, but the draft the person is looking at did not: Save-and-leave
+        // consumes this answer and must keep the editor open.
+        expect(await saving).toBe(false);
+        await hook.rerender();
+
+        expect(hook.getCurrent().body).toBe('A then B');
+        expect(hook.getCurrent().dirty).toBe(true);
+        expect(hook.getCurrent().expectedRevision).toBe('rev-committed');
+        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-committed', false);
+    });
+
+    it('keeps text typed while a deferred approval was outstanding', async () => {
+        const upsertItem: SessionBoardActionsPort['upsertItem'] = vi.fn(async () => ({
+            status: 'pending_approval' as const,
+            approval: {
+                kind: 'approval_request_created' as const,
+                artifactId: 'approval-1',
+                actionId: 'session.board.item.upsert',
+            },
+        }));
+        const continuation = createApprovalCapture();
+        const onSaved = vi.fn();
+        const hook = await renderHook(() => useSessionBoardNoteEditor({
+            sessionId: 'session-1', itemId: 'item-1', expectedItemRevision: null,
+            placement: { tabId: 'overview', tabTitle: 'Overview', width: 'medium' },
+            initialTitle: 'Plan', initialBody: 'A', reachable: true,
+            actions: { ...recordingActions().port, upsertItem },
+            onSaved,
+            requestApprovalContinuation: continuation.request,
+        }));
+        expect(await hook.getCurrent().save()).toBe(false);
+        await hook.rerender();
+        hook.getCurrent().setBody('A then B');
+        await hook.rerender();
+        await continuation.read()?.onSucceeded(upsertResult('rev-approved'));
+        await hook.rerender();
+
+        expect(hook.getCurrent().body).toBe('A then B');
+        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-approved', false);
+    });
+
+    it('applies the reviewed record as the base so a concurrent change to untouched fields survives', async () => {
+        const upserts: SessionBoardItemUpsertInput[] = [];
+        const port = {
+            upsertItem: async (input: SessionBoardItemUpsertInput) => {
+                upserts.push(input);
+                return upserts.length === 1
+                    ? {
+                        status: 'refused' as const,
+                        error: { error: 'session_board_revision_conflict' as const, currentItemRevision: 'rev-2' },
+                    }
+                    : { status: 'ok' as const, value: upsertResult('rev-3') };
+            },
+            removeItem: recordingActions().port.removeItem,
+            updateLayout: recordingActions().port.updateLayout,
+        } satisfies SessionBoardActionsPort;
+        const openedItem = SessionSurfaceItemV1Schema.parse({
+            v: 1, title: 'Plan', frame: 'card', height: { mode: 'auto', fallback: 'regular' },
+            source: { kind: 'declarative', document: createSessionSurfaceNoteDocumentV1('base') },
+        });
+        // Another client changed only the height; the reviewer never saw or edited it.
+        const theirItem = SessionSurfaceItemV1Schema.parse({
+            ...openedItem,
+            height: { mode: 'fixed', size: 'tall' },
+            source: { kind: 'declarative', document: createSessionSurfaceNoteDocumentV1('theirs') },
+        });
+        let latestRevision: string | null = 'rev-1';
+        let latestBody: string | null = 'base';
+        let observation: NonNullable<Parameters<typeof useSessionBoardNoteEditor>[0]['recoveryObservation']> = {
+            state: 'settled', revision: 'rev-1', item: openedItem,
+        };
+        const hook = await renderHook(() => useSessionBoardNoteEditor({
+            sessionId: 'session-1', itemId: 'item-1', expectedItemRevision: 'rev-1',
+            initialTitle: 'Plan', initialBody: 'base', reachable: true, actions: port,
+            baseItem: openedItem, latestRevision, latestBody,
+            recoveryObservation: observation, requestRecoveryRefresh: vi.fn(),
+        }));
+        hook.getCurrent().setBody('mine');
+        await hook.rerender();
+        expect(await hook.getCurrent().save()).toBe(false);
+        await hook.rerender();
+
+        latestRevision = 'rev-2';
+        latestBody = 'theirs';
+        observation = { state: 'settled', revision: 'rev-2', item: theirItem };
+        await hook.rerender();
+        hook.getCurrent().reviewLatest();
+        await hook.rerender();
+        expect(hook.getCurrent().expectedRevision).toBe('rev-2');
+        expect(await hook.getCurrent().save()).toBe(true);
+
+        expect(upserts).toHaveLength(2);
+        expect(upserts[1]?.item.height).toEqual({ mode: 'fixed', size: 'tall' });
+        expect(noteBodyOf(upserts[1]!.item)).toBe('mine');
+    });
+
     it('settles the exact pending approval without replaying the mutation and restores the retained draft on denial', async () => {
         const submitted: SessionBoardItemUpsertInput[] = [];
         const upsertItem: SessionBoardActionsPort['upsertItem'] = vi.fn(async (
@@ -350,7 +464,7 @@ describe('useSessionBoardNoteEditor', () => {
         await hook.rerender();
         await continuation.read()?.onSucceeded(upsertResult('rev-approved'));
         await hook.rerender();
-        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-approved');
+        expect(onSaved).toHaveBeenCalledWith(expect.any(Object), 'rev-approved', true);
         expect(upsertItem).toHaveBeenCalledTimes(2);
         expect(hook.getCurrent().expectedRevision).toBe('rev-approved');
     });
@@ -412,7 +526,7 @@ describe('useSessionBoardNoteEditor', () => {
         };
         await hook.rerender();
 
-        expect(onSaved).toHaveBeenCalledWith(null, 'note-rev-approved');
+        expect(onSaved).toHaveBeenCalledWith(null, 'note-rev-approved', true);
         expect(hook.getCurrent().status).toEqual({ kind: 'editing' });
         expect(hook.getCurrent().expectedRevision).toBe('note-rev-approved');
         expect(hook.getCurrent().dirty).toBe(false);
@@ -507,7 +621,7 @@ describe('useSessionBoardNoteEditor', () => {
         await hook.rerender();
 
         if (expected === 'saved') {
-            expect(onSaved).toHaveBeenCalledWith(null, 'item-2');
+            expect(onSaved).toHaveBeenCalledWith(null, 'item-2', true);
             expect(hook.getCurrent().dirty).toBe(false);
             expect(hook.getCurrent().expectedRevision).toBe('item-2');
         } else if (expected === 'retryable') {

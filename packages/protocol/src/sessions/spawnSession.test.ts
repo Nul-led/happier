@@ -84,6 +84,23 @@ describe('spawn-session error detail contract (D2 structured continuity)', () =>
     }
   });
 
+  it('carries the Home\'s typed initial-access refusal, never an update requirement, as a terminal creation refusal', () => {
+    const detail = {
+      kind: SPAWN_SESSION_ERROR_DETAIL_KINDS.SESSION_CREATION_ACCESS_REFUSED,
+      code: 'session_access_sharing_unavailable',
+    } as const;
+    expect(normalizeSpawnSessionErrorDetail(detail)).toEqual(detail);
+    expect(isSessionCreationTerminalSpawnErrorDetail(detail)).toBe(true);
+    for (const invalid of [
+      { ...detail, code: 'timeout' },
+      { ...detail, code: 'update_required' },
+      { ...detail, rawDiagnostic: '/private/path' },
+    ]) {
+      expect(isSessionCreationTerminalSpawnErrorDetail(invalid)).toBe(false);
+      expect(normalizeSpawnSessionErrorDetail(invalid)).toBeUndefined();
+    }
+  });
+
   it('carries exact terminal Session-creation refusals without widening their codes', () => {
     const detail: SpawnSessionErrorDetail = {
       kind: 'session_creation_organization_invalid',

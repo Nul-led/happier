@@ -328,6 +328,21 @@ type TeamIdentityConnectionMutationResult =
     | Readonly<{ status: "not_found" | "invalid_document" | "provider_not_available" | "not_configured" | "policy_in_use" | "authentication_policy_unavailable" }>
     | Readonly<{ status: "revision_conflict"; connection: TeamIdentityConnectionView | null }>;
 
+/**
+ * Whether a connection's external reference now defines an immutable provider
+ * namespace: it has been enabled at least once, or an AccountIdentity was issued
+ * under its provider. Before that an administrator may still correct a draft;
+ * afterwards recovery is a new provider instance/Team connection beside it
+ * (teams-lane-03/03 §6.3(7)), never a rewrite of this one.
+ */
+export async function isTeamIdentityConnectionNamespaceActivatedInTx(
+    tx: Tx,
+    input: Readonly<{ firstEnabledAt: Date | null; providerInstanceId: string }>,
+): Promise<boolean> {
+    return input.firstEnabledAt !== null
+        || await tx.accountIdentity.count({ where: { provider: input.providerInstanceId } }) > 0;
+}
+
 export async function updateTeamIdentityConnectionInTx(tx: Tx, input: Readonly<{
     id: string;
     teamId: string;
@@ -356,10 +371,10 @@ export async function updateTeamIdentityConnectionInTx(tx: Tx, input: Readonly<{
     if (
         input.externalReference !== undefined
         && JSON.stringify(nextDocuments.value.externalReference) !== JSON.stringify(current.view.externalReference)
-        && (
-            current.row.firstEnabledAt !== null
-            || await tx.accountIdentity.count({ where: { provider: current.provider.id } }) > 0
-        )
+        && await isTeamIdentityConnectionNamespaceActivatedInTx(tx, {
+            firstEnabledAt: current.row.firstEnabledAt,
+            providerInstanceId: current.provider.id,
+        })
     ) return { status: "immutable_external_identity", connection: current.view };
 
     const policyUse = await resolveTeamAuthenticationPolicyUseInTx(tx, input);

@@ -19,7 +19,9 @@ import {
 import { resolveConcreteCompatBackendTargetRefs } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
 import { resolveCurrentExternalSessionAgentRoutingId } from '@/api/session/external/linking/qualifiedLinkIdentityRegistry';
 
-function mapExistingSessionAttachFailureToSpawnError(reason: ExistingSessionAttachContextFailureReason): SpawnSessionResult {
+export function mapExistingSessionAttachFailureToSpawnError(
+  reason: ExistingSessionAttachContextFailureReason,
+): Extract<SpawnSessionResult, { type: 'error' }> {
   switch (reason) {
     case 'missingSessionId':
       return {

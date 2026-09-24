@@ -22,8 +22,6 @@ import {
   isApprovalRequiredByActionsSettings,
   type RuntimeActionIdV1,
   type SessionInputCausalPermissionAuthorityV1,
-  type ExecutionRunTeamCredentialSessionBindingConsentV1,
-  type TeamCredentialProviderModelSelectionV1,
   waitForExecutionRunTerminal,
   withExecutionRunStartFailureDetails,
 } from '@happier-dev/protocol';
@@ -96,10 +94,14 @@ type ExecutionRunRpcFailure = Readonly<{
   errorCode: string;
   details?: unknown;
 }>;
-export type PrepareAttachedTeamCredentialSessionBinding = (input: Readonly<{
+/**
+ * Grants the Team visibility a Session-owned Run's selected resource requires,
+ * through the Session access owner, after the user confirmed it. The Run keeps
+ * its own selection; the parent Session's model and binding are never touched.
+ */
+export type GrantAttachedRunTeamVisibility = (input: Readonly<{
   sessionId: string;
-  selection: TeamCredentialProviderModelSelectionV1;
-  consent?: ExecutionRunTeamCredentialSessionBindingConsentV1;
+  teamId: string;
 }>) => Promise<Readonly<{ ok: true } | ExecutionRunRpcFailure>>;
 // The host bridge owns what a started run reports; this dispatcher only marks
 // the successful case, so it reads that shape back instead of restating it.
@@ -143,11 +145,8 @@ type ExecutionRunRpcActionContext = Readonly<{
   resolveAccountSettings?: () => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
   /** Session-owned Run listing dependency, injected by the runtime principal owner. */
   sessionList?: ActionExecutorDeps['sessionList'];
-  /**
-   * Attached-Session owner that commits the selected Team model, provider slot
-   * binding and any required visibility grant before the Run registry opens.
-   */
-  prepareAttachedTeamCredentialSessionBinding?: PrepareAttachedTeamCredentialSessionBinding;
+  /** Session access owner for a Run's consented Team visibility requirement. */
+  grantAttachedRunTeamVisibility?: GrantAttachedRunTeamVisibility;
 }>;
 
 function executionRunsDisabled(): ExecutionRunRpcFailure {
@@ -442,32 +441,31 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           && parsed.data.teamCredentialSessionBindingConsent.sessionId !== sessionId) {
         return beforeStart(invalidParams());
       }
-      if (sessionId !== null && parsed.data.teamCredentialModel) {
-        const prepareBinding = params.context.prepareAttachedTeamCredentialSessionBinding;
-        if (!prepareBinding) {
+      // The Run's Team selection is its own binding (`PLAN.md` §2.3): it travels
+      // with the Run to its broker open and is never committed to the parent
+      // Session. Only a Team-visibility requirement the user confirmed touches
+      // the parent, and only its access, through the Session access owner.
+      const consent = parsed.data.teamCredentialSessionBindingConsent;
+      if (sessionId !== null && parsed.data.teamCredentialModel && consent) {
+        const grantVisibility = params.context.grantAttachedRunTeamVisibility;
+        if (!grantVisibility) {
           return beforeStart({
             ok: false,
-            error: 'Attached Session Team credential binding owner is unavailable',
+            error: 'Session access owner is unavailable',
             errorCode: 'execution_run_team_session_binding_unavailable',
           });
         }
-        let prepared: Awaited<ReturnType<PrepareAttachedTeamCredentialSessionBinding>>;
+        let granted: Awaited<ReturnType<GrantAttachedRunTeamVisibility>>;
         try {
-          prepared = await prepareBinding({
-            sessionId,
-            selection: parsed.data.teamCredentialModel,
-            ...(parsed.data.teamCredentialSessionBindingConsent
-              ? { consent: parsed.data.teamCredentialSessionBindingConsent }
-              : {}),
-          });
+          granted = await grantVisibility({ sessionId, teamId: consent.teamId });
         } catch (error) {
           return beforeStart({
             ok: false,
-            error: error instanceof Error ? error.message : 'Attached Session Team credential binding failed',
+            error: error instanceof Error ? error.message : 'Team visibility grant failed',
             errorCode: 'execution_run_team_session_binding_rejected',
           });
         }
-        if (!prepared.ok) return beforeStart(prepared);
+        if (!granted.ok) return beforeStart(granted);
       }
       const {
         teamCredentialSessionBindingConsent: _teamCredentialSessionBindingConsent,

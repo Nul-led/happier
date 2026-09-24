@@ -6,7 +6,7 @@ import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/ser
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { useSessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
-import { createSessionAccessClient, SessionAccessApiError } from '@/sync/api/session/sessionAccessApi';
+import { createSessionAccessClient, SessionAccessApiError, SessionAccessApprovalPendingError } from '@/sync/api/session/sessionAccessApi';
 import { readSessionDataKeyEnvelopeCollectionPage, prepareSessionDataKeyEnvelopesDetached } from '@/sync/api/session/sessionDataKeyEnvelopesApi';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors/errors';
@@ -18,9 +18,11 @@ import {
     createSessionAccessEditorState,
     reduceSessionAccessEditorState,
     settledEncryptionFromCollection,
+    type SessionAccessEncryptionReadOrigin,
     settledEncryptionFromOutcome,
 } from './sessionAccessEditorState';
 import { useSessionAccessDirectory, type SessionAccessDirectoryTeamContext } from './useSessionAccessDirectory';
+import { useSessionAccessTeamRecipientLabels } from './useSessionAccessTeamRecipientLabels';
 import type {
     SessionAccessEditorActions,
     SessionAccessEditorController,
@@ -28,11 +30,16 @@ import type {
     SessionAccessUiError,
 } from './sessionAccessEditorTypes';
 import { presentSessionAccessFailure } from './presentSessionAccessFailure';
+import { useSessionAccessApprovalHold } from './useSessionAccessApprovalHold';
+import { migrateSessionForSharing } from './migrateSessionForSharing';
+import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 
 /** Mounted exact-scope grant state; acknowledged server rows remain visible until refreshed. */
 export function useLiveSessionAccessEditorController(input: Readonly<{
     scope: ServerAccountScope;
     sessionId: string;
+    /** The Session's persisted metadata layout as the host's projection knows it; absent when unknown. */
+    metadataLayoutVersion?: number | null;
 }>): SessionAccessEditorController {
     const availability = useSessionCollaborationAvailability(input.scope.serverId);
     const scopeKey = `${serverAccountScopeKeySuffix(input.scope)}:${input.sessionId}:${availability}`;
@@ -49,6 +56,12 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
     }),[availability,input.scope.serverId,input.scope.accountId,input.sessionId,lifetime,scopeKey]);
     const stateRef=React.useRef(state);
     stateRef.current=state;
+    // The one access change the canonical Action policy routed to an approval
+    // Artifact, settled once through the shared continuation owner.
+    const approval=useSessionAccessApprovalHold({scopeKey,scope:input.scope});
+    const approvalHeldRef=approval.heldRef;
+    const holdForApproval=approval.hold;
+    const isScopeCurrent=React.useCallback(()=>lifetime.current&&currentScope.current===scopeKey,[lifetime,scopeKey]);
     const requestRevision=React.useRef(0);
     const refresh=React.useCallback(async()=>{
         if (!lifetime.current || currentScope.current!==scopeKey) return null;
@@ -62,14 +75,14 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             // preparation work. No grant has to be mutated first: an existing Team
             // grant whose member finished setup on another device is exactly the case
             // a mutation-only trigger could never find.
-            if (availability === 'full_collaboration' && snapshot.effectiveAccess.capabilities.manageAccess) {
+            if (availability === 'available' && snapshot.effectiveAccess.capabilities.manageAccess) {
                 try {
                     const page = await readSessionDataKeyEnvelopeCollectionPage({
                         scope: { serverId: input.scope.serverId, accountId: input.scope.accountId }, sessionId: input.sessionId, availability,
                         isCurrent: () => lifetime.current && currentScope.current === scopeKey,
                     });
                     if (lifetime.current && currentScope.current === scopeKey && revision === requestRevision.current) {
-                        dispatch({type:'prepared',scopeKey,preparation:settledEncryptionFromCollection(page.summary)});
+                        dispatch({type:'prepared',scopeKey,origin:'discovery',preparation:settledEncryptionFromCollection(page.summary)});
                         // The same page is the default expansion: the exception rows the
                         // aggregate counts, without a second request or a second owner.
                         dispatch({type:'recipientsPage',scopeKey,view:'exceptions',rows:page.items,nextCursor:page.nextCursor,append:false});
@@ -120,7 +133,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
     // the same authorized collection, so one transport and one summary serve both.
     const recipientPageRevision = React.useRef(0);
     const loadRecipientPage = React.useCallback((view: SessionAccessEncryptionRecipientsView, cursor: string | null) => {
-        if (availability !== 'full_collaboration' || !lifetime.current || currentScope.current !== scopeKey) return;
+        if (availability !== 'available' || !lifetime.current || currentScope.current !== scopeKey) return;
         const revision = ++recipientPageRevision.current;
         dispatch({type:'recipientsLoading',scopeKey,view});
         void readSessionDataKeyEnvelopeCollectionPage({
@@ -132,7 +145,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             // Every page carries the same server summary, so the aggregate above the
             // rows stays consistent with them without a second count owner.
             if (page.summary !== null) {
-                dispatch({type:'prepared',scopeKey,preparation:settledEncryptionFromCollection(page.summary)});
+                dispatch({type:'prepared',scopeKey,origin:'discovery',preparation:settledEncryptionFromCollection(page.summary)});
             }
             dispatch({type:'recipientsPage',scopeKey,view,rows:page.items,nextCursor:page.nextCursor,append:cursor!==null});
         }).catch((error) => {
@@ -157,21 +170,35 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
     // pass is already walking its pages would otherwise be missed by a worklist that
     // was fetched before that recipient existed, so the run re-enters instead of
     // racing itself or dropping the newer audience.
-    const preparationRun=React.useRef<{scopeKey:string;rerun:boolean}|null>(null);
-    const prepareEncryptedAccess=React.useCallback((recipientAccountId?:string)=>{
+    const preparationRun=React.useRef<{
+        scopeKey:string;rerun:boolean;origin:Extract<SessionAccessEncryptionReadOrigin,'pass'|'manual'>;
+    }|null>(null);
+    const prepareEncryptedAccess=React.useCallback((
+        recipientAccountId?:string,
+        // Only a pass that follows a committed grant mutation may tell the manager the
+        // access was saved. The trigger is known here and nowhere else, so it travels
+        // with the observation instead of being inferred from the copy.
+        passOrigin:Extract<SessionAccessEncryptionReadOrigin,'pass'|'manual'>='manual',
+    )=>{
         // Lane 06 owns every key decision, the audience worklist and the sealing
         // itself. This controller only starts that pass for the Session it is already
         // scoped to and renders the Session-scoped aggregate the Home reports back. A
-        // Home without the current collaboration vertical exposes no envelope
-        // collection at all, and its released direct-share adapter carries its own key.
-        if(availability!=='full_collaboration')return;
+        // Home that does not share Sessions exposes no envelope collection at all.
+        if(availability!=='available')return;
         if(!lifetime.current||currentScope.current!==scopeKey)return;
         const active=preparationRun.current;
-        if(active?.scopeKey===scopeKey){if(recipientAccountId===undefined)active.rerun=true;return;}
+        // A grant committed while a pass is already walking its pages re-enters that
+        // run, and the re-entered pass does follow a committed mutation — so it may
+        // say the access was saved even when the manager started the first one.
+        if(active?.scopeKey===scopeKey){
+            if(recipientAccountId===undefined){active.rerun=true;if(passOrigin==='pass')active.origin='pass';}
+            return;
+        }
         // This ref survives a scope-key change. A pass still awaiting Session A
         // must not absorb work for replacement Session B; A's authority guard
         // independently prevents stale writes once it resumes.
-        const run={scopeKey,rerun:false};
+        const run:{scopeKey:string;rerun:boolean;origin:Extract<SessionAccessEncryptionReadOrigin,'pass'|'manual'>}
+            ={scopeKey,rerun:false,origin:passOrigin};
         preparationRun.current=run;
         void(async()=>{
             let selectedRecipient=recipientAccountId;
@@ -195,7 +222,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
                             },
                         });
                         if(!lifetime.current||currentScope.current!==scopeKey)return;
-                        dispatch({type:'prepared',scopeKey,preparation:settledEncryptionFromOutcome(outcome)});
+                        dispatch({type:'prepared',scopeKey,origin:run.origin,preparation:settledEncryptionFromOutcome(outcome)});
                         // The rows beneath the aggregate must say what the Home says now, not
                         // what discovery said before this pass sealed some of them.
                         loadRecipientPage(currentRecipientsView(),null);
@@ -204,7 +231,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
                         // The grant was already acknowledged. Key preparation is a separate
                         // obligation, so its failure stays in this Session-scoped encryption
                         // state and never re-labels that committed mutation as failed.
-                        dispatch({type:'preparationFailed',scopeKey,origin:'pass',error:presentSessionAccessFailure(error)});
+                        dispatch({type:'preparationFailed',scopeKey,origin:run.origin,error:presentSessionAccessFailure(error)});
                     }
                     // A grant added during explicit repair schedules the ordinary audience pass,
                     // not another repair of the previously selected recipient.
@@ -220,62 +247,134 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
      *   grant row. That action, and only that one, consumed the typed query; editing a
      *   live row must not rebuild the candidate list the person is reading.
      */
+    // PA-L2: "Reachable layout-0 Sessions migrate through the canonical owner/tuple
+    // CAS before sharing or other non-owner projection." The host supplies the
+    // Session's persisted layout from the projection it already holds; an unknown
+    // layout claims nothing. Only the owner can split the tuple, so the offer and
+    // the pre-share step are owner-only.
+    const sessionRowLayout=input.metadataLayoutVersion===undefined||input.metadataLayoutVersion===null
+        ?null:readSessionMetadataLayoutVersion(input.metadataLayoutVersion);
+    const [layoutMigration,setLayoutMigration]=React.useState<Readonly<{
+        scopeKey:string;phase:'updating'|'failed'|'migrated';error?:SessionAccessUiError;
+    }>|null>(null);
+    const currentLayoutMigration=layoutMigration?.scopeKey===scopeKey?layoutMigration:null;
+    const viewerOwnsSession=state.scopeKey===scopeKey&&state.snapshot?.effectiveAccess.level==='owner';
+    const historicalLayoutPending=viewerOwnsSession&&sessionRowLayout===0&&currentLayoutMigration?.phase!=='migrated';
+    const historicalLayoutPendingRef=React.useRef(historicalLayoutPending);
+    historicalLayoutPendingRef.current=historicalLayoutPending;
+    const migrateHistoricalLayout=React.useCallback(async():Promise<true|SessionAccessUiError>=>{
+        const isMigrationCurrent=()=>lifetime.current&&currentScope.current===scopeKey;
+        setLayoutMigration({scopeKey,phase:'updating'});
+        try {
+            await migrateSessionForSharing({
+                scope:{serverId:input.scope.serverId,accountId:input.scope.accountId},
+                sessionId:input.sessionId,isCurrent:isMigrationCurrent,
+            });
+            // The list row catches up on its own refresh; this editor already knows.
+            if(isMigrationCurrent()){
+                historicalLayoutPendingRef.current=false;
+                setLayoutMigration({scopeKey,phase:'migrated'});
+            }
+            return true;
+        } catch(error) {
+            const issue=presentSessionAccessFailure(error);
+            if(isMigrationCurrent())setLayoutMigration({scopeKey,phase:'failed',error:issue});
+            return issue;
+        }
+    },[input.scope.accountId,input.scope.serverId,input.sessionId,lifetime,scopeKey]);
+    const updateHistoricalLayout=React.useCallback(()=>{
+        if(!historicalLayoutPendingRef.current||approvalHeldRef.current)return;
+        if(currentLayoutMigration?.phase==='updating')return;
+        void migrateHistoricalLayout();
+    },[currentLayoutMigration?.phase,migrateHistoricalLayout]);
+    /** The one tail for a committed set/remove, whether it answered directly or through its approval. */
+    const settleCommittedMutation=React.useCallback(async(key:string,mutation:SessionGrantMutationV1|null,adds:boolean)=>{
+        // Set responses contain acknowledged values but no allowed transitions or principal summary.
+        // The authoritative list refresh supplies the complete current row before it is rendered.
+        await refresh();
+        if(!lifetime.current||currentScope.current!==scopeKey)return;
+        dispatch({type:'operation',scopeKey,key,operation:{kind:'idle'}});
+        dispatch({type:'confirm',scopeKey,key:null});
+        if(adds)setQuery('');
+        setDirectoryRevision(value=>value+1);
+        // A newly authorized recipient can hold a grant long before it can open
+        // anything, so the key owner's pass starts from the acknowledged audience.
+        // Removing a grant leaves its stored tuple inert at that owner and needs
+        // no pass. This deliberately follows the authoritative refresh: the worklist
+        // is only worth fetching once the Home agrees the grant exists.
+        if(mutation)prepareEncryptedAccess(undefined,'pass');
+    },[lifetime,prepareEncryptedAccess,refresh,scopeKey]);
+    const settleFailedMutation=React.useCallback(async(
+        key:string,mutation:SessionGrantMutationV1|null,subject:PrincipalRefV1,issue:SessionAccessUiError,
+    )=>{
+        dispatch({type:'operation',scopeKey,key,operation:issue.retryable
+            ? {kind:'error',error:issue,reconcileIntent:mutation?{kind:'set',mutation}:{kind:'remove',subject}}
+            : {kind:'error',error:issue}});
+        // A retryable transport/parse failure cannot prove whether the mutation
+        // committed. The authoritative list settles the row only when it proves
+        // this exact set/remove intent; a mismatching row keeps the retryable error.
+        if(issue.retryable)await refresh();
+    },[refresh,scopeKey]);
     const mutate=React.useCallback(async(subject:PrincipalRefV1,mutation:SessionGrantMutationV1|null,adds=false)=>{
         if (!lifetime.current || currentScope.current!==scopeKey) return;
+        // One approval at a time, exactly like the Board: an open approval holds the editor.
+        if (approvalHeldRef.current) return;
         const snapshot=stateRef.current.scopeKey===scopeKey?stateRef.current.snapshot:null;
         if (!snapshot?.effectiveAccess.capabilities.manageAccess) return;
         const key=sessionAccessSubjectKey(subject);
         const previous=stateRef.current.operations[key];
         if(previous?.kind==='saving'||previous?.kind==='removing')return;
         dispatch({type:'operation',scopeKey,key,operation:{kind:mutation?'saving':'removing'}});
+        if(mutation&&historicalLayoutPendingRef.current){
+            // PA-L2: a historical Session is split by its owner before it is shared.
+            const migrated=await migrateHistoricalLayout();
+            if(!lifetime.current||currentScope.current!==scopeKey)return;
+            if(migrated!==true){
+                dispatch({type:'operation',scopeKey,key,operation:{kind:'error',error:migrated}});
+                return;
+            }
+        }
         try {
             if(mutation)await client.set(mutation);else await client.remove(subject);
             if(!lifetime.current||currentScope.current!==scopeKey)return;
-            // Set responses contain acknowledged values but no allowed transitions or principal summary.
-            // The authoritative list refresh supplies the complete current row before it is rendered.
-            await refresh();
-            if(!lifetime.current||currentScope.current!==scopeKey)return;
-            dispatch({type:'operation',scopeKey,key,operation:{kind:'idle'}});
-            dispatch({type:'confirm',scopeKey,key:null});
-            if(adds)setQuery('');
-            setDirectoryRevision(value=>value+1);
-            // A newly authorized recipient can hold a grant long before it can open
-            // anything, so the key owner's pass starts from the acknowledged audience.
-            // Removing a grant leaves its stored tuple inert at that owner and needs
-            // no pass. This deliberately follows the authoritative refresh: the worklist
-            // is only worth fetching once the Home agrees the grant exists.
-            if(mutation)prepareEncryptedAccess();
+            await settleCommittedMutation(key,mutation,adds);
         }catch(error){
             if(!lifetime.current||currentScope.current!==scopeKey)return;
-            const issue=presentSessionAccessFailure(error, { outcomeUnknown: true });
-            dispatch({type:'operation',scopeKey,key,operation:issue.retryable
-                ? {kind:'error',error:issue,reconcileIntent:mutation?{kind:'set',mutation}:{kind:'remove',subject}}
-                : {kind:'error',error:issue}});
-            // A retryable transport/parse failure cannot prove whether the mutation
-            // committed. The authoritative list settles the row only when it proves
-            // this exact set/remove intent; a mismatching row keeps the retryable error.
-            if(issue.retryable)await refresh();
+            if(error instanceof SessionAccessApprovalPendingError){
+                // Routed to an approval: nothing committed, and it is not an unknown outcome.
+                dispatch({type:'operation',scopeKey,key,operation:{kind:'idle'}});
+                dispatch({type:'confirm',scopeKey,key:null});
+                holdForApproval(error,
+                    mutation?'session.access.grant.set':'session.access.grant.remove',
+                    mutation?{sessionId:input.sessionId,...mutation}:{sessionId:input.sessionId,subject},
+                    {
+                        isCurrent:isScopeCurrent,
+                        onSucceeded:()=>settleCommittedMutation(key,mutation,adds),
+                        onFailed:(issue)=>{if(issue)void settleFailedMutation(key,mutation,subject,issue);},
+                    });
+                return;
+            }
+            await settleFailedMutation(key,mutation,subject,presentSessionAccessFailure(error, { outcomeUnknown: true }));
         }
-    },[client,lifetime,prepareEncryptedAccess,refresh,scopeKey]);
+    },[approvalHeldRef,client,holdForApproval,input.sessionId,isScopeCurrent,lifetime,migrateHistoricalLayout,scopeKey,settleCommittedMutation,settleFailedMutation]);
     const [contextOperation, setContextOperation] = React.useState<'idle' | 'saving' | 'error'>('idle');
     const [contextError, setContextError] = React.useState<SessionAccessUiError | undefined>();
     const submitContext = React.useCallback((teamId: string | null) => {
         if (contextOperation === 'saving') return;
         if (!lifetime.current || currentScope.current !== scopeKey) return;
+        if (approvalHeldRef.current) return;
         const snapshot = stateRef.current.scopeKey === scopeKey ? stateRef.current.snapshot : null;
         if (!snapshot?.effectiveAccess.capabilities.manageAccess || snapshot.primaryTeamId === teamId) return;
         setContextOperation('saving');
         setContextError(undefined);
-        void client.setContext(teamId).then(async () => {
-            if (!lifetime.current || currentScope.current !== scopeKey) return;
+        const settleCommittedContext = async () => {
             await refresh();
             if (lifetime.current && currentScope.current === scopeKey) {
                 setContextOperation('idle');
                 setPendingContextTeamId(undefined);
             }
-        }).catch(async (error) => {
-            if (!lifetime.current || currentScope.current !== scopeKey) return;
-            const issue = presentSessionAccessFailure(error, { outcomeUnknown: true });
+        };
+        const settleFailedContext = async (issue: SessionAccessUiError) => {
             setContextError(issue);
             setContextOperation('error');
             // A retryable failure cannot prove whether the transaction committed.
@@ -290,8 +389,29 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
                     setPendingContextTeamId(undefined);
                 }
             }
+        };
+        void client.setContext(teamId).then(async () => {
+            if (!lifetime.current || currentScope.current !== scopeKey) return;
+            await settleCommittedContext();
+        }).catch(async (error) => {
+            if (!lifetime.current || currentScope.current !== scopeKey) return;
+            if (error instanceof SessionAccessApprovalPendingError) {
+                // Routed to an approval: the acknowledged context is still the truth.
+                setContextOperation('idle');
+                holdForApproval(error, 'session.access.context.set', { sessionId: input.sessionId, primaryTeamId: teamId }, {
+                    isCurrent: isScopeCurrent,
+                    onSucceeded: settleCommittedContext,
+                    onFailed: (issue) => {
+                        if (issue) { void settleFailedContext(issue); return; }
+                        // Declined or canceled: nothing changed and the review is over.
+                        setPendingContextTeamId(undefined);
+                    },
+                });
+                return;
+            }
+            await settleFailedContext(presentSessionAccessFailure(error, { outcomeUnknown: true }));
         });
-    }, [client, contextOperation, lifetime, refresh, scopeKey]);
+    }, [approvalHeldRef, client, contextOperation, holdForApproval, input.sessionId, isScopeCurrent, lifetime, refresh, scopeKey]);
     const current=state.scopeKey===scopeKey?state:createSessionAccessEditorState(scopeKey);
     const projection=current.snapshot?projectSessionAccessEditorSnapshot({snapshot:current.snapshot,operations:current.operations,confirmingRemoval:current.confirmingRemoval}):{
         owner:null,grants:[],accessMode:'read_only' as const,summary:{label:t('session.access.title'),accessibilityLabel:t('session.access.title'),requiredByTeamPolicy:false},
@@ -340,6 +460,8 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         if (pendingContextTeamId === undefined) return;
         submitContext(pendingContextTeamId);
     }, [pendingContextTeamId, submitContext]);
+    const currentPendingApproval=approval.pendingApproval;
+    const openPendingApproval=approval.openPendingApproval;
     const actions=React.useMemo<SessionAccessEditorActions>(()=>({
         setQuery,retryContent:()=>{void refresh();},
         retryDirectory:(kind)=>{directory.retry(kind);setDirectoryRevision(value=>value+1);},
@@ -368,19 +490,41 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         // Live access is never a draft; Private is expressed through explicit
         // grant removals and the server-owned Team-policy transition.
         clearAccess:()=>{},
-        prepareAccess:prepareEncryptedAccess,
+        prepareAccess:(recipientAccountId?:string)=>prepareEncryptedAccess(recipientAccountId),
         toggleAllRecipients,
         loadMoreRecipients,
-    }),[confirmContext,directory,loadMoreRecipients,mutate,prepareEncryptedAccess,refresh,scopeKey,setContext,toggleAllRecipients]);
-    // Lane 04's existing projection is the only display-name source: the encryption
+        openPendingApproval,
+        updateHistoricalLayout,
+    }),[confirmContext,directory,loadMoreRecipients,mutate,openPendingApproval,prepareEncryptedAccess,refresh,scopeKey,setContext,toggleAllRecipients,updateHistoricalLayout]);
+    // Lane 04's existing projection names every grant principal; the encryption
     // resource deliberately carries no names, roles or avatars.
-    const displayNameForAccount=React.useCallback((accountId:string)=>{
+    const grantedDisplayNameForAccount=React.useCallback((accountId:string)=>{
         const owner=projection.owner;
         if(owner&&owner.principal.ref.kind==='account'&&owner.principal.ref.accountId===accountId){
             return owner.principal.displayName;
         }
         return projection.grants.find((row)=>row.grant.kind==='account'&&row.grant.accountId===accountId)?.principal.displayName;
     },[projection.grants,projection.owner]);
+    // A recipient reachable only through a Team grant has no grant row at all, so the
+    // Team's own bounded member lookup names the ones currently on screen. Everyone
+    // else — Group-only and out-of-Team recipients — keeps the identifier.
+    const sessionTeamIds=React.useMemo(
+        ()=>current.snapshot?.grants.flatMap((row)=>row.grant.subject.kind==='team'?[row.grant.subject.teamId]:[])??[],
+        [current.snapshot],
+    );
+    const visibleRecipientAccountIds=React.useMemo(
+        ()=>current.recipients.rows.map((row)=>row.recipientAccountId),
+        [current.recipients.rows],
+    );
+    const teamRecipientLabelFor=useSessionAccessTeamRecipientLabels({
+        scope:input.scope,teamIds:sessionTeamIds,visibleRecipientAccountIds,
+        isAlreadyNamed:(accountId)=>grantedDisplayNameForAccount(accountId)!==undefined,
+        enabled:availability==='available'&&current.snapshot?.effectiveAccess.capabilities.manageAccess===true,
+    });
+    const displayNameForAccount=React.useCallback(
+        (accountId:string)=>grantedDisplayNameForAccount(accountId)??teamRecipientLabelFor(accountId),
+        [grantedDisplayNameForAccount,teamRecipientLabelFor],
+    );
     const encryption=projectSessionAccessEncryptionSection({
         preparation:current.preparation,recipients:current.recipients,displayNameForAccount,
     });
@@ -434,7 +578,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             ? { credentialBindings: current.snapshot.credentialBindingConsequences } : {}),
     });
     return {actions,model:{...projection,revision:directoryRevision,
-        ...(current.snapshot && availability === 'full_collaboration' ? { context: { primaryTeamId: current.snapshot.primaryTeamId, options: [{ teamId: null, label: t('session.access.private'),
+        ...(current.snapshot && availability === 'available' ? { context: { primaryTeamId: current.snapshot.primaryTeamId, options: [{ teamId: null, label: t('session.access.private'),
             ...(contextLockedByTeamPolicy ? { blockedReason: { code: 'session_access_team_policy_required', message: t('session.access.required') } }
                 : currentContextPolicyUnavailable ? { blockedReason: { code: 'session_access_context_policy_unavailable', message: t('errors.operationFailed') } } : {}) }, ...contextTeamsForModel, ...currentContextTeam], operation: contextOperation,
             ...(contextError ? { error: contextError } : {}),
@@ -446,5 +590,10 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         content:{phase:current.refreshing?(current.snapshot?'refreshing':'initial'):current.issue?'error':current.snapshot?'ready':'initial',hasLastAcknowledgedSnapshot:current.snapshot!==null,...(current.issue?{issue:current.issue}:{})},
         directory:{query,sections:directory.sections},
         ...(encryption?{encryption}:{}),
+        ...(currentPendingApproval?{pendingApproval:currentPendingApproval}:{}),
+        ...(historicalLayoutPending?{historicalLayout:{
+            updating:currentLayoutMigration?.phase==='updating',
+            ...(currentLayoutMigration?.phase==='failed'&&currentLayoutMigration.error?{error:currentLayoutMigration.error}:{}),
+        }}:{}),
     }};
 }

@@ -5,7 +5,11 @@ import {
     reduceSessionListFilterEditorSelection,
     resolveSessionListFilterEditorSelectionChange,
 } from './sessionListFilterEditorModel';
-import { createSessionListViewFilterDefaults } from './sessionListViewFilters';
+import {
+    buildQualifiedAudienceSelectionKey,
+    buildSessionListFilterQueryHomes,
+    createSessionListViewFilterDefaults,
+} from './sessionListViewFilters';
 
 const labels = {
     search: 'Search filters', show: 'Show', myWork: 'My work', assignedToMe: 'Assigned to me',
@@ -17,6 +21,40 @@ const labels = {
 } as const;
 
 describe('sessionListFilterEditorModel', () => {
+    it('narrows the pinned Team corpus to a chosen Group and restores it when cleared', () => {
+        const team = { serverId: 'home-a', kind: 'team', teamId: 'team-a' } as const;
+        const group = { serverId: 'home-a', kind: 'group', teamId: 'team-a', groupId: 'group-1' } as const;
+        const context = {
+            fixedAudienceKeys: new Set([buildQualifiedAudienceSelectionKey(team)]),
+        };
+        const teamDefaults = createSessionListViewFilterDefaults({
+            scope: 'all_accessible',
+            homeServerIds: ['home-a'],
+            audiences: [team],
+        });
+        const groupOptionId = `audience:${buildQualifiedAudienceSelectionKey(group)}`;
+
+        const narrowed = reduceSessionListFilterEditorSelection(teamDefaults, groupOptionId, context);
+        const queryHomes = buildSessionListFilterQueryHomes(narrowed, {
+            storage: 'active',
+            includeInactive: true,
+            mountedHomeServerIds: ['home-a'],
+        });
+
+        // The wire contract drops a Group subsumed by its own Team, so selecting a
+        // Group must replace the Team selector or the request never narrows.
+        expect(queryHomes[0]?.query.audiences).toEqual([
+            { kind: 'group', teamId: 'team-a', groupId: 'group-1' },
+        ]);
+
+        const restored = reduceSessionListFilterEditorSelection(narrowed, groupOptionId, context);
+        expect(buildSessionListFilterQueryHomes(restored, {
+            storage: 'active',
+            includeInactive: true,
+            mountedHomeServerIds: ['home-a'],
+        })[0]?.query.audiences).toEqual([{ kind: 'team', teamId: 'team-a' }]);
+    });
+
     it('builds one multiple-selection step with unavailable scopes disabled', () => {
         const model = buildSessionListFilterEditorModel({
             filters: createSessionListViewFilterDefaults({

@@ -38,8 +38,9 @@ export function useNavigateToSession() {
         // resolver proves exactly one Home; switching on 0 or >1 candidates would let
         // active-Home focus silently choose a different Session. The unqualified route is
         // the existing owner of that unresolved case — it presents the Which Home? chooser
-        // for several candidates and hydrates from the active Home for none — so the tap
-        // still opens something instead of dying silently.
+        // for several candidates and asks which saved Home to open it on for none (never
+        // the focused Home, Lane 07.1) — so the tap still leads somewhere instead of dying
+        // silently.
         if (targetServerId) {
             void setActiveServerAndSwitch({
                 serverId: targetServerId,

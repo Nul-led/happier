@@ -7,6 +7,8 @@ import {
   sealRunnerMachineContentKeyVerifierFactV1,
   signRunnerMachineContentKeyBindingV1,
 } from '../ephemeralRunner/machineContentKeyBinding.js';
+import { signRunnerClaimV1 } from '../ephemeralRunner/endpoint.js';
+import { signMachineInstallationProof } from './identity/installationIdentity.js';
 import {
   MACHINE_PLAIN_DATA_KEY_MARKER,
   decodePlainMachineStoredContent,
@@ -370,5 +372,219 @@ describe('machineStoredContent', () => {
       openedDataEncryptionKey: null,
       expectedAccountMode: 'e2ee',
     })).toEqual({ status: 'unavailable' });
+  });
+
+  it('never lets the Home-published kind choose the branch for a Machine the reader trusts as a Runner', () => {
+    const substituted = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(31));
+    const homeKnownKey = new Uint8Array(32).fill(41);
+    const accountMode = 'e2ee' as const;
+
+    // A hostile Home relabels a known Runner, drops the binding and publishes an
+    // envelope it sealed to the Account content public key it holds.
+    for (const kind of ['persistent', undefined] as const) {
+      expect(resolvePublishedMachineDataEncryptionKeyV1({
+        machine: {
+          id: 'machine-one',
+          ...(kind === undefined ? {} : { kind }),
+          installationId: 'installation-one',
+          dataEncryptionKey: 'home-substituted-envelope',
+          runnerContentKeyBinding: null,
+        },
+        openedDataEncryptionKey: homeKnownKey,
+        expectedAccountMode: accountMode,
+        trustedMachineKind: 'ephemeral_session_runner',
+        expectedRunnerBinding: {
+          homeServerIdentityId: 'home-one',
+          creatorAccountId: 'account-one',
+          machineId: 'machine-one',
+          accountSigningPublicKeyBase64Url: encodeBase64(substituted.publicKey, 'base64url'),
+        },
+      })).toEqual({ status: 'unavailable' });
+    }
+
+    // The binding the server writes only at Runner materialization is itself a
+    // Runner classification, so the same relabelling with the binding still
+    // present may not take the released persistent fallback either.
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: {
+        id: 'machine-one',
+        kind: 'persistent',
+        installationId: 'installation-one',
+        dataEncryptionKey: 'home-substituted-envelope',
+        runnerContentKeyBinding: { v: 1, tampered: true },
+      },
+      openedDataEncryptionKey: homeKnownKey,
+      expectedAccountMode: accountMode,
+    })).toEqual({ status: 'unavailable' });
+
+    // A genuinely persistent Machine keeps both released behaviours.
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: {
+        id: 'machine-two',
+        kind: 'persistent',
+        dataEncryptionKey: 'ordinary-envelope',
+      },
+      openedDataEncryptionKey: homeKnownKey,
+      expectedAccountMode: accountMode,
+    })).toEqual({ status: 'e2ee', dataKey: homeKnownKey });
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: { id: 'machine-two', dataEncryptionKey: null },
+      openedDataEncryptionKey: null,
+      expectedAccountMode: accountMode,
+    })).toEqual({ status: 'legacy' });
+  });
+
+  it('verifies a trusted Runner through the creator binding even when the Home relabels it persistent', () => {
+    const accountSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+    const dataKey = new Uint8Array(32).fill(11);
+    const payload = {
+      v: 1 as const,
+      purpose: 'happier.ephemeral-runner.machine-content-key' as const,
+      homeServerIdentityId: 'home-one',
+      activationId: '11111111-1111-4111-8111-111111111111',
+      creatorAccountId: 'account-one',
+      machineId: 'machine-one',
+      installationId: 'installation-one',
+      machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
+    };
+    const binding = signRunnerMachineContentKeyBindingV1({
+      payload,
+      activationSigningSecretKey: accountSigning.secretKey,
+    });
+
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: {
+        id: 'machine-one',
+        kind: 'persistent',
+        installationId: 'installation-one',
+        dataEncryptionKey: 'wrapped-runner-key',
+        runnerContentKeyBinding: binding,
+      },
+      openedDataEncryptionKey: dataKey,
+      trustedMachineKind: 'ephemeral_session_runner',
+      expectedRunnerBinding: {
+        homeServerIdentityId: payload.homeServerIdentityId,
+        creatorAccountId: payload.creatorAccountId,
+        machineId: payload.machineId,
+        accountSigningPublicKeyBase64Url: encodeBase64(accountSigning.publicKey, 'base64url'),
+      },
+    })).toEqual({ status: 'e2ee', dataKey });
+
+    // The same relabelled row with a key the binding does not fingerprint must
+    // fail closed: the persistent branch would have accepted it unexamined.
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: {
+        id: 'machine-one',
+        kind: 'persistent',
+        installationId: 'installation-one',
+        dataEncryptionKey: 'wrapped-runner-key',
+        runnerContentKeyBinding: binding,
+      },
+      openedDataEncryptionKey: new Uint8Array(32).fill(12),
+      trustedMachineKind: 'ephemeral_session_runner',
+      expectedRunnerBinding: {
+        homeServerIdentityId: payload.homeServerIdentityId,
+        creatorAccountId: payload.creatorAccountId,
+        machineId: payload.machineId,
+        accountSigningPublicKeyBase64Url: encodeBase64(accountSigning.publicKey, 'base64url'),
+      },
+    })).toEqual({ status: 'unavailable' });
+  });
+
+  it('binds a Session-selected Runner only through its activation-signed claim for that exact Session', () => {
+    const activationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+    const installationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(8));
+    const dataKey = new Uint8Array(32).fill(11);
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(21) };
+    const activationId = '11111111-1111-4111-8111-111111111111';
+    const signingPublicKey = encodeBase64(activationSigning.publicKey, 'base64url');
+    // Every published fact below is exactly what a genuine Runner B carries;
+    // the Home only chooses which Session it says B was activated for.
+    function claimFor(overrides: Readonly<{ sessionId?: string; machineId?: string; signer?: Uint8Array }> = {}) {
+      const machineId = overrides.machineId ?? 'machine-one';
+      return signRunnerClaimV1({
+        activationSecretKey: overrides.signer ?? activationSigning.secretKey,
+        payload: {
+          v: 1,
+          purpose: 'happier.ephemeral-session-runner.claim',
+          binding: {
+            activationId,
+            homeServerIdentityId: 'srv_home_one',
+            creatorAccountId: 'account-one',
+            creatorTokenEpoch: 0,
+            activationExpiresAt: null,
+            workspace: { kind: 'choose_on_endpoint' },
+            sessionId: overrides.sessionId ?? 'session-b',
+            machineId,
+            activationSigningPublicKey: signingPublicKey,
+            authoringCommitment: encodeBase64(new Uint8Array(32).fill(4), 'base64url'),
+            artifact: { product: 'happier-runner', version: '0.3.0', target: 'linux-x64', sha256: 'a'.repeat(64) },
+            endpointFactsRecipient: { mode: 'plain', creatorAccountId: 'account-one' },
+          },
+          runnerBoxPublicKey: encodeBase64(tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(3)).publicKey, 'base64url'),
+          installation: {
+            installationId: 'installation-one',
+            publicKey: encodeBase64(installationSigning.publicKey, 'base64url'),
+            proof: signMachineInstallationProof({
+              payload: { version: 1, installationId: 'installation-one', machineId, accountId: 'account-one' },
+              privateKey: installationSigning.secretKey,
+            }),
+          },
+          protocolEpoch: 1,
+        },
+      });
+    }
+    const binding = {
+      ...signRunnerMachineContentKeyBindingV1({
+        payload: {
+          v: 1,
+          purpose: 'happier.ephemeral-runner.machine-content-key',
+          homeServerIdentityId: 'srv_home_one',
+          activationId,
+          creatorAccountId: 'account-one',
+          machineId: 'machine-one',
+          installationId: 'installation-one',
+          machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
+        },
+        activationSigningSecretKey: activationSigning.secretKey,
+      }),
+      creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+        payload: { v: 1, activationId, machineId: 'machine-one', activationSigningPublicKey: signingPublicKey },
+        material,
+        randomBytes: (length: number) => new Uint8Array(length).fill(3),
+      }),
+    };
+    const resolve = (runnerClaim: unknown, sessionId: string) => resolvePublishedMachineDataEncryptionKeyV1({
+      machine: {
+        id: 'machine-one',
+        kind: 'ephemeral_session_runner',
+        installationId: 'installation-one',
+        dataEncryptionKey: 'wrapped-runner-key',
+        runnerContentKeyBinding: binding,
+        runnerClaim,
+      },
+      openedDataEncryptionKey: dataKey,
+      expectedRunnerBinding: {
+        homeServerIdentityId: 'srv_home_one',
+        creatorAccountId: 'account-one',
+        machineId: 'machine-one',
+        accountScopedMaterial: material,
+        sessionId,
+      },
+    });
+
+    expect(resolve(claimFor(), 'session-b')).toEqual({ status: 'e2ee', dataKey });
+    // An authentic Runner B key is not proof that B holds Session A.
+    expect(resolve(claimFor(), 'session-a')).toEqual({ status: 'unavailable' });
+    expect(resolve(null, 'session-b')).toEqual({ status: 'unavailable' });
+    const genuine = claimFor();
+    expect(resolve({
+      ...genuine,
+      payload: { ...genuine.payload, binding: { ...genuine.payload.binding, sessionId: 'session-a' } },
+    }, 'session-a')).toEqual({ status: 'unavailable' });
+    // A claim signed by another activation identity, or naming another Machine, is not B's.
+    expect(resolve(claimFor({ signer: tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(9)).secretKey }), 'session-b'))
+      .toEqual({ status: 'unavailable' });
+    expect(resolve(claimFor({ machineId: 'machine-two' }), 'session-b')).toEqual({ status: 'unavailable' });
   });
 });

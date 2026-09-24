@@ -109,19 +109,8 @@ export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: 
       try {
         signal.throwIfAborted();
         // The caller's declaration authority is checked before any provider or
-        // Connected Account work: a client running a projection this daemon has
-        // already replaced must never reach materialization, because its
-        // approved operation projection is not the one resolved here.
-        const declarationAuthority = request.data.declarationAuthority;
-        if (declarationAuthority.kind === 'projected') {
-          const cacheIdentity = declarationAuthority.cacheIdentity;
-          if (
-            cacheIdentity.pluginId !== request.data.contribution.pluginId
-            || cacheIdentity.contributionId !== request.data.contribution.localId
-            || cacheIdentity.platform !== request.data.platform
-            || lease.registry.generation !== cacheIdentity.projectionGeneration
-          ) return failure(null);
-        }
+        // Connected Account work. Artifact bytes are digest-bound; live
+        // declaration authority is resolved from the current provider slot.
         const provider = lease.registry.contributes.voiceProviders?.find((candidate) => (
           candidate.identity.pluginId === request.data.contribution.pluginId
           && candidate.identity.localId === request.data.contribution.localId

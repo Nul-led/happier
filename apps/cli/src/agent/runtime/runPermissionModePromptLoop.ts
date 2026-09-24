@@ -1152,6 +1152,9 @@ export async function runPermissionModePromptLoop(opts: {
     let suppressFlushTurnFailure = false;
     let beganTurn = false;
     let handledPreTurnFailure = false;
+    // A context-only wake whose Follow admission was withdrawn at the dispatch
+    // boundary: nothing reached the provider, so no turn, no ACK and no ready.
+    let contextOnlyWakeWithdrawn = false;
     let currentCheckpointMessageId: string | null = null;
     let assistantTextSnapshotScope: AssistantTextSnapshotTurnScope | null = null;
     // Retiring the replay seed belongs to provider ACCEPTANCE of the prompt the seed was
@@ -1502,7 +1505,29 @@ export async function runPermissionModePromptLoop(opts: {
         const requiredProviderContextForBudget = resolvedDispatchContext.structuredInput
           ? `${requiredDispatchPrompt}\n${JSON.stringify(resolvedDispatchContext.structuredInput)}`
           : requiredDispatchPrompt;
-        const preparedSessionFollowContext = message.message.hostContextOnly?.prepared ?? (dispatchProviderNativeCommandVerbatim
+        // The checkpoint hook captures the repository, which is arbitrary-duration
+        // filesystem and Git work. Running it before Follow preparation keeps the
+        // final Follow authorization the last decision before dispatch, instead of
+        // leaving already-hydrated source plaintext waiting behind a long await.
+        // The one production hook reads only `messageId`; the real user input it
+        // describes is `requiredDispatchPrompt`, which optional host context never
+        // changes.
+        await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onBeforePromptDispatch?.({
+          messageId: currentCheckpointMessageId!,
+          prompt: requiredDispatchPrompt,
+        }));
+
+        // A context-only wake was hydrated and admitted before it was queued and before
+        // the checkpoint capture above. Re-enter the same Follow admission here, the
+        // final boundary before the provider sees its source text (09D §6.3); a wake
+        // whose edge, audience, publisher or input authority changed is withdrawn and
+        // never becomes an empty synthetic turn.
+        const hostContextOnly = message.message.hostContextOnly;
+        if (hostContextOnly && !(await hostContextOnly.prepared.recheckAdmission(dispatchAbortSignal))) {
+          contextOnlyWakeWithdrawn = true;
+          return;
+        }
+        const preparedSessionFollowContext = hostContextOnly?.prepared ?? (dispatchProviderNativeCommandVerbatim
           || !localId
           ? null
           : await opts.runtime.prepareSessionFollowContext?.({
@@ -1522,11 +1547,6 @@ export async function runPermissionModePromptLoop(opts: {
                 : {}),
               transformedUserText: transformedDispatchPrompt,
             });
-
-        await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onBeforePromptDispatch?.({
-          messageId: currentCheckpointMessageId!,
-          prompt: dispatchPrompt,
-        }));
 
         if (localIds.length > 0 && opts.readActiveModelSelection && opts.onProviderPromptDispatchPrepared) {
           opts.onProviderPromptDispatchPrepared({
@@ -1730,7 +1750,7 @@ export async function runPermissionModePromptLoop(opts: {
           await opts.sendReady();
         }
         completeAssistantTextSnapshotTurnScope(opts.session, assistantTextSnapshotScope);
-      } else if (handledPreTurnFailure) {
+      } else if (handledPreTurnFailure || contextOnlyWakeWithdrawn) {
         if (currentCheckpointMessageId) {
           await enqueueCheckpointHook(() => opts.checkpointLifecycle?.onTurnAbortedBeforeStart?.({
             messageId: currentCheckpointMessageId!,
@@ -1741,7 +1761,7 @@ export async function runPermissionModePromptLoop(opts: {
         activeCheckpointFinalStatus = 'unknown';
         opts.setThinking(false);
         opts.keepAlive();
-        if (shouldSendReady) {
+        if (handledPreTurnFailure && shouldSendReady) {
           await opts.sendReady();
         }
       }

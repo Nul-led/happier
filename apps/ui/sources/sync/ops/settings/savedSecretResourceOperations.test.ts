@@ -9,7 +9,7 @@ const { requestHomeDomain, readSavedSecretCatalog, mutateAccountSettingsOnce, ru
     readSavedSecretCatalog: vi.fn(),
     mutateAccountSettingsOnce: vi.fn(),
     runTeamAction: vi.fn(),
-    encryptDataKeyForRecipientV0: vi.fn(() => 'wrapped-key'),
+    encryptDataKeyForRecipientV0: vi.fn((_dataKey: Uint8Array, _recipientPublicKey: string) => 'wrapped-key'),
     syncEncryption: { current: null as null | Readonly<{
         contentDataKey: Uint8Array;
         decryptEncryptionKey: (value: string, scope: unknown) => Promise<Uint8Array | null>;
@@ -235,9 +235,9 @@ describe('savedSecretResourceOperations', () => {
         });
     });
 
-    it('holds only promotion that would activate a shared Profile reference', async () => {
+    it('promotes a secret a Profile binds and moves that Profile binding to the shared reference', async () => {
         mutateAccountSettingsOnce.mockImplementationOnce(async (input) => {
-            input.mutate({
+            const mutation = input.mutate({
                 secrets: [{
                     id: 'personal-a', name: 'Provider key', kind: 'apiKey',
                     encryptedValue: { _isSecretValue: true, value: 'personal-value' },
@@ -251,7 +251,16 @@ describe('savedSecretResourceOperations', () => {
                 }],
                 secretBindingsByProfileId: { 'profile-a': { TOKEN: 'personal-a' } },
             });
-            throw new Error('unreachable');
+            const committed = await input.commitPrepared({
+                content: { t: 'plain', v: mutation.settings },
+                expectedSettingsVersion: 7,
+                accountMode: 'plain',
+            });
+            return { ...committed, value: mutation.value };
+        });
+        runTeamAction.mockResolvedValueOnce({
+            kind: 'succeeded',
+            value: { resourceId: 'resource-promoted', settingsVersion: 8 },
         });
 
         const { promotePersonalSavedSecretResource } = await import('./savedSecretResourceOperations');
@@ -264,8 +273,14 @@ describe('savedSecretResourceOperations', () => {
                 createdAt: 1, updatedAt: 4,
             },
             accountGrants: [], teamGrants: [], groupGrants: [],
-        })).resolves.toEqual({ ok: false, reason: 'update_required' });
-        expect(runTeamAction).not.toHaveBeenCalled();
+        })).resolves.toEqual({ ok: true, resourceRef: 'happier:shared-secret:v1:resource-promoted' });
+
+        const request = runTeamAction.mock.calls[0]?.[0];
+        expect(request.actionId).toBe('secrets.shared.promote');
+        expect(request.input.nextSettings.v.secrets).toEqual([]);
+        expect(request.input.nextSettings.v.secretBindingsByProfileId).toEqual({
+            'profile-a': { TOKEN: 'happier:shared-secret:v1:resource-promoted' },
+        });
     });
 
     it('reopens and reseals an E2EE resource for rename without retaining its DEK', async () => {
@@ -303,6 +318,124 @@ describe('savedSecretResourceOperations', () => {
             resourceId: 'resource-a', mode: 'e2ee', resourceDataKey: dataKey, storedContent: input.storedContent,
         })).toEqual({ v: 1, name: 'New name', kind: 'apiKey', value: 'secret-value' });
         expect(openedKey).toEqual(new Uint8Array(32));
+    });
+
+    // Plan 10.08 §18.3(3): the E2EE owner client decrypts locally and submits
+    // the Plain value; the Home never decrypts.
+    it('converts an owned E2EE resource to Plain by opening it on this device and submitting a Plain payload', async () => {
+        const dataKey = new Uint8Array(32).fill(7);
+        readSavedSecretCatalog.mockResolvedValue({
+            ok: true,
+            resources: [{
+                resourceId: 'resource-a', encryptionMode: 'e2ee',
+                entry: {
+                    ref: 'happier:shared-secret:v1:resource-a', source: 'shared_resource', relationship: 'owner',
+                    name: 'Deploy key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 3, materialStatus: 'ready',
+                    capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+                },
+                storedContent: sealSavedSecretResourceStoredContentV1({
+                    resourceId: 'resource-a', mode: 'e2ee', resourceDataKey: dataKey,
+                    content: { v: 1, name: 'Deploy key', kind: 'apiKey', value: 'secret-value' },
+                    randomBytes: (length) => new Uint8Array(length).fill(2),
+                }),
+                recipientEnvelope: { encryptedDataKey: 'opaque', recipientContentPublicKeyFingerprint: 'fingerprint' },
+            }],
+        });
+        runTeamAction.mockResolvedValue({ kind: 'succeeded', value: { resourceId: 'resource-a', revision: 4 } });
+        const openedKey = new Uint8Array(dataKey);
+
+        const { updateSavedSecretResource } = await import('./savedSecretResourceOperations');
+        await expect(updateSavedSecretResource({
+            scope: { serverId: 'home-a', accountId: 'owner-a' }, resourceId: 'resource-a', expectedRevision: 3,
+            toMode: 'plain', decryptDataKeyEnvelope: async () => openedKey,
+        })).resolves.toEqual({ ok: true });
+
+        expect(runTeamAction).toHaveBeenCalledOnce();
+        expect(runTeamAction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            actionId: 'secrets.shared.update',
+            input: {
+                resourceId: 'resource-a',
+                expectedRevision: 3,
+                displayName: 'Deploy key',
+                kind: 'apiKey',
+                toMode: 'plain',
+                storedContent: { t: 'plain', v: { v: 1, name: 'Deploy key', kind: 'apiKey', value: 'secret-value' } },
+            },
+        }));
+        // No envelope census or repair follows: a Plain resource holds none.
+        expect(requestHomeDomain).not.toHaveBeenCalled();
+        expect(openedKey).toEqual(new Uint8Array(32));
+    });
+
+    it('converts an owned Plain resource to E2EE under a fresh data key with the owner envelope, then prepares recipients', async () => {
+        syncEncryption.current = {
+            contentDataKey: new Uint8Array(32).fill(4),
+            decryptEncryptionKey: vi.fn(async () => null),
+        };
+        readSavedSecretCatalog.mockResolvedValue({
+            ok: true,
+            resources: [{
+                resourceId: 'resource-a', encryptionMode: 'plain',
+                entry: {
+                    ref: 'happier:shared-secret:v1:resource-a', source: 'shared_resource', relationship: 'owner',
+                    name: 'Deploy key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 3, materialStatus: 'ready',
+                    capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+                },
+                storedContent: { t: 'plain', v: { v: 1, name: 'Deploy key', kind: 'apiKey', value: 'secret-value' } },
+            }],
+        });
+        runTeamAction.mockResolvedValue({ kind: 'succeeded', value: { resourceId: 'resource-a', revision: 4 } });
+        requestHomeDomain.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                resourceId: 'resource-a',
+                revision: 4,
+                recipients: [{
+                    account: { accountId: 'recipient-b' },
+                    readiness: { status: 'available', contentPublicKey: 'recipient-key', contentPublicKeyFingerprint: 'fp-b' },
+                    envelopeStatus: 'missing',
+                }],
+                nextCursor: null,
+            },
+        }).mockResolvedValueOnce({ ok: true, value: { resourceId: 'resource-a', revision: 4 } });
+
+        const { updateSavedSecretResource } = await import('./savedSecretResourceOperations');
+        await expect(updateSavedSecretResource({
+            scope: { serverId: 'home-a', accountId: 'owner-a' }, resourceId: 'resource-a', expectedRevision: 3,
+            toMode: 'e2ee', decryptDataKeyEnvelope: async () => null,
+        })).resolves.toEqual({ ok: true });
+
+        const input = runTeamAction.mock.calls[0]?.[0]?.input;
+        expect(input).toEqual(expect.objectContaining({
+            resourceId: 'resource-a',
+            expectedRevision: 3,
+            toMode: 'e2ee',
+            keyEnvelopes: [{
+                recipientAccountId: 'owner-a',
+                encryptedDataKey: 'wrapped-key',
+                recipientContentPublicKeyFingerprint: expect.any(String),
+            }],
+        }));
+        expect(input.storedContent.t).toBe('encrypted');
+        expect(JSON.stringify(input)).not.toContain('secret-value');
+        // The fresh data key sealed the content, wrapped the owner envelope,
+        // and prepared the ready recipient at the committed revision.
+        const sealedKey = encryptDataKeyForRecipientV0.mock.calls[0]?.[0];
+        expect(sealedKey).toBeInstanceOf(Uint8Array);
+        expect(requestHomeDomain).toHaveBeenLastCalledWith(expect.objectContaining({
+            path: '/v1/account/saved-secrets/resources/envelopes/repair',
+            input: {
+                resourceId: 'resource-a',
+                expectedRevision: 4,
+                keyEnvelopes: [{
+                    recipientAccountId: 'recipient-b',
+                    encryptedDataKey: 'wrapped-key',
+                    recipientContentPublicKeyFingerprint: 'fp-b',
+                }],
+            },
+        }));
+        // The key never outlives the operation.
+        expect(sealedKey).toEqual(new Uint8Array(32));
     });
 
     it('forwards exact approved update settlement and preserves the pending continuation', async () => {

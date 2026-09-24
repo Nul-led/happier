@@ -161,6 +161,8 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
     const hasConsumeUsageLimitResetCredit = currentOperations.consumeUsageLimitResetCredit !== undefined;
     const hasInterruptPendingInputAndRun =
         currentOperations.interruptPendingInputAndRun !== undefined;
+    const hasPrepareRunTeamCredentialProviderBinding =
+        currentOperations.prepareRunTeamCredentialProviderBinding !== undefined;
     let runtimeClosed = false;
     let runtimeBindingEpoch = 0;
     let stableRuntimeOperations: PluginRuntimeHookOperations | null = null;
@@ -467,6 +469,13 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
                     diagnostic: { code: 'native_usage_limit_recovery_unavailable' },
                     retryable: true,
                 },
+            }
+            : {}),
+        ...(hasPrepareRunTeamCredentialProviderBinding
+            ? {
+                prepareRunTeamCredentialProviderBinding: (
+                    request: Parameters<NonNullable<PluginRuntimeHookOperations['prepareRunTeamCredentialProviderBinding']>>[0],
+                ) => currentOperations.prepareRunTeamCredentialProviderBinding?.(request) ?? Promise.resolve(null),
             }
             : {}),
         async waitForTurnCompletion(opts?: RuntimeTurnCompletionOptions) {

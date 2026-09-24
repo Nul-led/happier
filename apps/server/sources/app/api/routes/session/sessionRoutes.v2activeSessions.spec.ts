@@ -330,7 +330,7 @@ describe("sessionRoutes v2 active sessions listing", () => {
         }));
     });
 
-    it("refuses a released layout-zero shared active-row projection until owner migration", async () => {
+    it("omits the unmigrated layout-zero shared active row instead of refusing the page", async () => {
         const now = new Date(1_000);
         sessionFindMany.mockResolvedValue([{
             ...createSessionAccessProjectionRelations(),
@@ -366,11 +366,15 @@ describe("sessionRoutes v2 active sessions listing", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/active");
         const { reply, response } = await route.invoke({ query: { limit: 1 } });
 
-        expect(reply.statusCode).toBe(409);
-        expect(response).toEqual({
-            error: "Session metadata privacy upgrade required",
-            code: "metadata_privacy_upgrade_required",
-        });
+        // Per-row degradation: the unreadable historical share is dropped and the
+        // refusal stays visible through the count, never a request-wide 409.
+        expect(reply.statusCode).toBe(200);
+        const payload = response as {
+            sessions: ReadonlyArray<{ id: string }>;
+            metadataUpgradeRequiredCount?: number;
+        };
+        expect(payload.sessions).toEqual([]);
+        expect(payload.metadataUpgradeRequiredCount).toBe(1);
     });
 
     it("exposes diagnostic route timing headers only when explicitly requested", async () => {

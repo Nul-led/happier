@@ -11,6 +11,7 @@ import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { resolveSessionAwarenessContentLabel } from '@/sync/domains/session/awareness/sessionAwarenessContentLabels';
 import { t } from '@/text';
+import type { SessionState } from '@/utils/sessions/sessionUtils';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
@@ -64,20 +65,39 @@ const stylesheet = StyleSheet.create((theme) => ({
     staleValue: { opacity: 0.7 },
 }));
 
-function operationalPresentation(value: SessionSummaryCardModel['operational']): Readonly<{
+/**
+ * The pill's own chrome over the canonical presented state. The label and the ordering are
+ * already decided by `presentSessionAwarenessV1`, and a state the canonical owner keeps quiet
+ * (an idle reachable Session, an archived one) gets no pill here either.
+ */
+const SUMMARY_STATUS_PILL_VARIANTS: Readonly<Record<SessionState, StatusPillVariant>> = Object.freeze({
+    failed: 'danger',
+    action_required: 'warning',
+    permission_required: 'warning',
+    thinking: 'info',
+    ready: 'success',
+    pending_input: 'neutral',
+    resuming: 'info',
+    background_active: 'neutral',
+    waiting: 'neutral',
+    disconnected: 'neutral',
+    recoverable_unservable: 'danger',
+    stale: 'neutral',
+    unknown: 'neutral',
+    locked: 'neutral',
+    preparing: 'neutral',
+    repair_needed: 'warning',
+    access_pending: 'neutral',
+    setup_required: 'warning',
+    content_unavailable: 'neutral',
+});
+
+function operationalPresentation(value: SessionSummaryCardModel['status']): Readonly<{
     label: string;
     variant: StatusPillVariant;
 }> | null {
-    switch (value) {
-        case null: return null;
-        case 'failed': return { label: t('status.error'), variant: 'danger' };
-        case 'action_required': return { label: t('status.actionRequired'), variant: 'warning' };
-        case 'permission_required': return { label: t('status.permissionRequired'), variant: 'warning' };
-        case 'working': return { label: t('status.working'), variant: 'info' };
-        case 'ready': return { label: t('status.ready'), variant: 'success' };
-        case 'pending_input': return { label: t('status.queuedInput'), variant: 'neutral' };
-        case 'none': return { label: t('status.online'), variant: 'neutral' };
-    }
+    if (value === null || value.quiet) return null;
+    return { label: value.statusText, variant: SUMMARY_STATUS_PILL_VARIANTS[value.state] };
 }
 
 type RowPresentation = Readonly<{ label: string; value: string | null; stale: boolean }>;
@@ -149,7 +169,7 @@ const SummaryRow = React.memo(function SummaryRow(props: Readonly<{
         if (motion.durationMs > 0) {
             emphasis.value = withTiming(1, {
                 duration: motion.durationMs,
-                easing: motionTokens.easing.emphasized,
+                easing: motionTokens.easing.standard,
             });
         }
     }, [emphasis, props.approvalEmphasisSignal, props.reducedMotion, props.row.kind]);
@@ -230,7 +250,7 @@ export const SessionSummaryCard = React.memo(function SessionSummaryCard(props: 
     // Content/current-realm unavailability is the stronger canonical truth.
     // Do not pair it with an "Online" or work pill inferred from unreadable facts.
     const status = props.model.scope === 'exact' && props.model.availability !== 'locked'
-        ? operationalPresentation(props.model.operational)
+        ? operationalPresentation(props.model.status)
         : null;
     const visible = React.useMemo(
         () => resolveSessionSummaryRows(

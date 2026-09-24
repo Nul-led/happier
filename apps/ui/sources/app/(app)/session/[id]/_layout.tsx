@@ -45,6 +45,13 @@ export default function OrdinarySessionRouteLayout() {
         return <SessionInvalidLinkFallback sessionId={sessionId} candidateServerIds={candidateServerIds} />;
     }
 
+    // A bare link no Home is known to hold resolves only through its origin or one
+    // known address (Lane 07.1); the focused Home never answers it by default. The
+    // person picks the Home instead, and that choice opens the exact qualified route.
+    if (explicitServerId === null && candidateServerIds.length === 0) {
+        return <SessionInvalidLinkFallback sessionId={sessionId} homeChoice="unknown" />;
+    }
+
     if (isVoiceTranscriptHistory) {
         return <SessionInvalidLinkFallback />;
     }

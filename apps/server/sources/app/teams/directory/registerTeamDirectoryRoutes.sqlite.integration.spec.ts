@@ -278,9 +278,10 @@ describe("Team directory routes", () => {
             payload: { v: 1 },
         });
         // Qualification succeeds and the directory owner then applies its
-        // independent sync-health contract.
+        // independent sync contract: this fixture's binding document names no
+        // directory, which the owner reports as its own typed reason.
         expect(allowed.statusCode, allowed.body).toBe(409);
-        expect(allowed.json()).toEqual({ error: "directory_sync_needs_attention" });
+        expect(allowed.json()).toEqual({ error: "directory_source_identity_mismatch" });
 
         await db.teamDirectoryGroup.create({
             data: {

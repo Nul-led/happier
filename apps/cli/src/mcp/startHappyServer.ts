@@ -14,7 +14,7 @@ import { configuration } from "@/configuration";
 import type { StoredCredentials } from '@/persistence';
 import type { AgentCompositionToolSelection } from '@/plugins/runtime/hooks/execution/dispatchAgentTurnHooks';
 import {
-    projectGenerationBoundExecutablePluginToolCatalog,
+    projectOccurrenceBoundExecutablePluginToolCatalog,
     type ProjectedPluginToolCatalogEntry,
 } from '@/plugins/runtime/toolCatalog';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
@@ -75,6 +75,15 @@ export type HappyMcpSessionClient = {
     }> | null | undefined;
     getActiveAgentCompositionToolSelection?(): AgentCompositionToolSelection | null | undefined;
     executionRuns?: HappyMcpExecutionRunService;
+    /**
+     * Stored-content material the live Session client already holds for this
+     * exact Session. A Session-scoped runtime (a Runner) has no Account
+     * material, so this is what opens its own Board and Discussions.
+     */
+    getStoredContentEncryptionContext?(): Readonly<{
+        mode: 'plain' | 'e2ee';
+        ctx?: Readonly<{ encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' }>;
+    }>;
 };
 
 type HappySessionToolRuntimeOptions = Readonly<{
@@ -109,22 +118,22 @@ export function filterPluginToolsForActiveAgentComposition(
     const selectedTurnTools = selection.selectedToolBindings.flatMap((binding) => {
         const separatorIndex = binding.tool.toolId.indexOf('/');
         const pluginId = separatorIndex > 0 ? binding.tool.toolId.slice(0, separatorIndex) : null;
-        const immutableGenerationId = binding.expectedContributorImmutableGenerationId.trim();
+        const occurrenceId = binding.expectedContributorOccurrenceId.trim();
         if (
             pluginId === null
             || !managedPluginIds.has(pluginId)
             || !selectedToolIds.has(binding.tool.toolId)
-            || immutableGenerationId.length === 0
+            || occurrenceId.length === 0
         ) {
             return [];
         }
         return [Object.freeze({
             ...binding.tool,
-            expectedContributorImmutableGenerationId: immutableGenerationId,
+            expectedContributorOccurrenceId: occurrenceId,
         })];
     });
     // The supplied catalog remains the sole current catalog for unmanaged tools.
-    // Managed selections use only the immutable snapshot admitted for this
+    // Managed selections use only the process occurrence admitted for this
     // turn; a missing/invalid binding fails closed instead of rereading a
     // replacement plugin after a reload.
     return Object.freeze([
@@ -139,7 +148,7 @@ async function readCurrentPluginToolCatalog(
 ): Promise<readonly ProjectedPluginToolCatalogEntry[]> {
     if (pluginRuntimeRegistryLease) {
         return filterPluginToolsForActiveAgentComposition(
-            projectGenerationBoundExecutablePluginToolCatalog(
+            projectOccurrenceBoundExecutablePluginToolCatalog(
                 pluginRuntimeRegistryLease.registry,
             ),
             client.getActiveAgentCompositionToolSelection?.() ?? null,

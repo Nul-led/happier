@@ -110,6 +110,7 @@ export async function createTeamCredentialResourceInTx(tx: Tx, input: CreateTeam
                 allMembersDeliveryMode: body.allMembersDeliveryMode,
                 groupGrants: body.groupGrants,
                 memberGrants: body.memberGrants,
+                sessionUsePolicy: body.sessionUsePolicy,
             }),
         });
         if (!validated.ok) {

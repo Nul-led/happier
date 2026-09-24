@@ -648,7 +648,7 @@ dynamically. None of these should be duplicated as a hand-written Action list.
   does not enumerate the entire recipient audience. `assignment` requires `assignResponsibility`;
   `mention` requires `submitAgentInput` plus Lane 05 discussion admission and carries neutral
   identity only. Archived candidates use the same readable admission as the mutation. Both responsibility operations require
-  the server's `sessions.collaboration` feature and return `404` when it is disabled.
+  the server's `sharing.session` feature and return `404` when it is disabled.
 
 Current Session records expose `responsibleAccountId` as an Account ID or explicit `null`, plus the
 paired safe `responsibleAccount` summary (`null` when unassigned, omitted exactly when the id is
@@ -665,11 +665,10 @@ Group grants resolve through this policy; permission delegation must occur on th
 same grant as the required access level. Public links do not become Account grants.
 Unpublished transcripts admit their owner but cannot widen the collaborator audience.
 
-Team and Group access currently requires the canonical `sessions.collaboration`
-server feature, which defaults disabled while the integrated collaboration gates
-remain incomplete. Its existing feature-system binding is
-`HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED`; enabling that binding is not
-evidence that release validation passed. Only a persisted null Team authentication
+Team and Group access is served wherever the Home's `sharing.session` feature is
+enabled (`isSessionCollaborationEnabled()`); there is no separate collaboration bit,
+and a disabled `sharing.session` withholds collective sources without affecting
+direct Account shares. Only a persisted null Team authentication
 policy currently admits evidence-independent membership access. The consumed Team
 credential-proof producer is not yet available, so non-null policies cannot authorize
 Team or Group access; independently valid owner/direct grants remain usable.

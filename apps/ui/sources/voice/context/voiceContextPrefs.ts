@@ -1,6 +1,7 @@
+import { resolveVoiceSourceDisclosureV1 } from '@happier-dev/protocol';
+
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import type { ResolvedVoiceContextFormatterPrefs } from '@/voice/context/contextFormatters';
-import { resolveVoiceSessionUpdatePolicy } from '@/voice/runtime/voiceUpdatePolicy';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 function resolveVoicePrivacySettings(settings: unknown) {
@@ -40,19 +41,17 @@ export function getVoiceContextFormatterPrefs(params: Readonly<{
     };
   }
 
-  const level = resolveVoiceSessionUpdatePolicy({
-    sessionId,
-    sessionAddress: params.sessionAddress,
-    settings: params.settings,
-    includeInVoice: params.includeInVoice,
-    isCurrentAttemptTarget: params.isCurrentAttemptTarget,
-  }).level;
-  const allowSummaries = level === 'summaries' || level === 'snippets';
-  const allowSnippets = level === 'snippets';
+  // One owner decides what a source Session may disclose to a Voice provider;
+  // the daemon Account-Voice Follow path asks the same function.
+  const disclosure = resolveVoiceSourceDisclosureV1({
+    accountSettings: params.settings,
+    ...(params.includeInVoice === undefined ? {} : { includeInVoice: params.includeInVoice }),
+    ...(params.isCurrentAttemptTarget === undefined ? {} : { isCurrentAttemptTarget: params.isCurrentAttemptTarget }),
+  });
 
   return {
-    voiceShareSessionSummary: privacy.shareSessionSummary && allowSummaries,
-    voiceShareRecentMessages: privacy.shareRecentMessages && allowSnippets,
+    voiceShareSessionSummary: disclosure.shareSessionSummary,
+    voiceShareRecentMessages: disclosure.shareRecentMessages,
     voiceRecentMessagesCount: privacy.recentMessagesCount,
     voiceShareToolNames: privacy.shareToolNames,
     voiceShareToolArgs: privacy.shareToolArgs,

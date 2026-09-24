@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { NO_TEAM_CAPABILITIES_V1, type TeamSummaryV1 } from '@happier-dev/protocol/teams';
 
 const serverFetchMock = vi.hoisted(() => vi.fn());
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
-const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: serverFetchMock,
@@ -13,16 +12,20 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: runtimeFetchMock,
 }));
 
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit');
-    return createTokenStorageModuleMock({
-        importOriginal: importOriginal as <T = typeof import('@/auth/storage/tokenStorage')>() => Promise<T>,
-        tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
-    });
-});
+// `@/auth/storage/tokenStorage` is an internal domain owner, not a boundary, and a hoisted
+// `vi.mock` factory for it deadlocks any suite that also imports `@/dev/testkit`: the barrel
+// value-imports `TokenStorage`, so the factory's own dynamic import waits on an evaluation that
+// can never finish, and module evaluation is not covered by any Vitest timeout — the file simply
+// never collects. The rule and its measurement live at
+// `activity/badges/activityBadgeRuntimeTestHelpers.ts#installBadgeHomeIdentities`. The device
+// credential store is spied on instead, which is the one thing here that genuinely leaves the
+// process.
 
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 
+import { act } from 'react-test-renderer';
+
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createRootLayoutFeaturesResponse, renderHook } from '@/dev/testkit';
 import {
     primeServerFeaturesSnapshot,
@@ -79,10 +82,12 @@ async function addHome(name: string, serverUrl: string, teamsEnabled: boolean): 
     return id;
 }
 
+let getCredentialsForServerUrlMock: MockInstance<typeof TokenStorage.getCredentialsForServerUrl>;
+
 beforeEach(() => {
     serverFetchMock.mockReset();
     runtimeFetchMock.mockReset();
-    getCredentialsForServerUrlMock.mockReset();
+    getCredentialsForServerUrlMock = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl');
     getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account') });
     resetServerFeaturesClientForTests();
     resetTeamsSnapshotsForTests();
@@ -93,6 +98,7 @@ afterEach(() => {
     resetTeamsDirectoryEngineForTests();
     resetTeamsSnapshotsForTests();
     resetServerFeaturesClientForTests();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
 });
 
@@ -115,6 +121,41 @@ describe('useTeamsDirectory', () => {
         expect(current.rows[0]?.address).toEqual({ serverId: home, teamId: 't1' });
         expect(current.rows[0]?.homeName).toBe('Home A');
         expect(runtimeFetchMock.mock.calls[0]?.[0]?.url).toBe('https://home-a.example/v1/teams/list');
+        await rendered.unmount();
+    });
+
+    it('settles a Home whose saved credential this device cannot read, and re-reads it on Retry', async () => {
+        const home = await addHome('Home A', 'https://home-a.example', true);
+        await setActiveServerId(home, { scope: 'device' });
+        runtimeFetchMock.mockImplementation(async () => new Response(
+            JSON.stringify({ items: [team('t1', 'Acme')], nextCursor: null }),
+            { status: 200 },
+        ));
+        getCredentialsForServerUrlMock.mockImplementation(async (
+            _serverUrl: string,
+            options?: Readonly<{ storageReadFailure?: 'absent' | 'surface' }>,
+        ) => {
+            if (options?.storageReadFailure === 'surface') throw new Error('secure storage read failed');
+            return null;
+        });
+
+        const rendered = await renderHook(() => useTeamsDirectory());
+        // Neither a spinner that never settles nor a silent sign-out.
+        await vi.waitFor(() => {
+            expect(rendered.getCurrent().unavailableHomes).toEqual([
+                expect.objectContaining({ serverId: home, reason: 'credential_unreadable', retryable: true }),
+            ]);
+        });
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account') });
+        await act(async () => {
+            rendered.getCurrent().refresh();
+        });
+        await vi.waitFor(() => {
+            expect(rendered.getCurrent().rows).toHaveLength(1);
+        });
+        expect(rendered.getCurrent().unavailableHomes).toEqual([]);
         await rendered.unmount();
     });
 
@@ -155,6 +196,48 @@ describe('useTeamsDirectory', () => {
             reason: 'offline',
             retryable: true,
         });
+        await rendered.unmount();
+    });
+
+    it('reads the exact Home a Home-scoped surface named even when the view selection is elsewhere', async () => {
+        // The Home administration Teams list is *about* Home A. Which Home the
+        // person happens to be looking at is a different question, and letting
+        // it decide here is what made that screen claim "no Teams".
+        const administered = await addHome('Home A', 'https://home-a.example', true);
+        const focused = await addHome('Home B', 'https://home-b.example', true);
+        await setActiveServerId(focused, { scope: 'device' });
+        runtimeFetchMock.mockImplementation(async () => new Response(
+            JSON.stringify({ items: [team('t1', 'Acme')], nextCursor: null }),
+            { status: 200 },
+        ));
+
+        const rendered = await renderHook(() => useTeamsDirectory({
+            scope: 'administered',
+            serverIds: [administered],
+        }));
+        await vi.waitFor(() => {
+            expect(rendered.getCurrent().rows).toHaveLength(1);
+        });
+
+        expect(rendered.getCurrent().rows[0]?.address).toEqual({ serverId: administered, teamId: 't1' });
+        // The named Home is the only Home asked; naming one never widens the read.
+        expect(runtimeFetchMock.mock.calls.every(
+            (call) => String(call[0]?.url).startsWith('https://home-a.example/'),
+        )).toBe(true);
+        await rendered.unmount();
+    });
+
+    it('still refuses a named Home whose own feature decision said no', async () => {
+        const named = await addHome('Home A', 'https://home-a.example', false);
+        const focused = await addHome('Home B', 'https://home-b.example', true);
+        await setActiveServerId(focused, { scope: 'device' });
+
+        const rendered = await renderHook(() => useTeamsDirectory({
+            scope: 'administered',
+            serverIds: [named],
+        }));
+        await vi.waitFor(() => expect(rendered.getCurrent().kind).toBe('loading'));
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
         await rendered.unmount();
     });
 

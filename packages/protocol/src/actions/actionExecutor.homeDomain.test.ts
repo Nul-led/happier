@@ -1,11 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalRequestV2Schema, type ApprovalRequest } from '../approvals/approvalRequestV1.js';
+import { decideApprovalRequestTransition } from '../approvals/approvalRequestTransition.js';
 import type { HomeAccountRowV1 } from '../home/governance/accounts.js';
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import { ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES } from '../crypto/encryptedDataKeyEnvelopeFormatV1.js';
 
 const roleSetInput = { accountId: 'account-2', homeRole: 'admin' } as const;
+
+/**
+ * The in-memory approval Artifacts below stand in for the persistence boundary
+ * only: every write still goes through the real Protocol subject/transition
+ * owner both Artifact adapters consume, so a settlement the real stores would
+ * refuse cannot pass here.
+ */
+function transitionStoredApproval(stored: ApprovalRequest | null | undefined, request: ApprovalRequest) {
+  if (!stored) return { ok: false as const, errorCode: 'not_found', error: 'artifact_not_found' };
+  return decideApprovalRequestTransition(stored, request);
+}
 
 function homeAccountRow(): HomeAccountRowV1 {
   return {
@@ -101,6 +113,8 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       },
       approvalsGet: async () => storedRequest,
       approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(storedRequest, request);
+        if (!transition.ok) return transition;
         storedRequest = ApprovalRequestV2Schema.parse(request);
         return { ok: true as const };
       },
@@ -165,7 +179,84 @@ describe('createActionExecutor (Home governance and Teams)', () => {
     }));
     expect(JSON.stringify(observeActionExecution.mock.calls)).not.toContain(input.storedContent.c);
     expect(JSON.stringify(observeActionExecution.mock.calls)).not.toContain(encryptedDataKey);
+
+    // Settled custody: replay has run, so the durable record keeps only this
+    // Action's own observation projection of its input.
+    expect((storedRequest as ApprovalRequest | null)?.status).toBe('executed');
+    expect((storedRequest as ApprovalRequest | null)?.actionArgs).toEqual({
+      resourceId: 'secret-1',
+      displayName: 'CI token',
+      kind: 'token',
+      encryptionMode: 'e2ee',
+      accountGrants: ['account-2'],
+      teamGrants: [],
+      groupGrants: [],
+    });
+    expect(JSON.stringify(storedRequest)).not.toContain(input.storedContent.c);
+    expect(JSON.stringify(storedRequest)).not.toContain(encryptedDataKey);
   });
+
+  it.each(['reject', 'canceled'] as const)(
+    'scrubs a %s blocking approval input to the Action observation projection',
+    async (outcome) => {
+      const privateKey = 'BEGIN-RSA-PRIVATE-KEY-material';
+      const input = {
+        owner: { kind: 'home' as const },
+        githubHost: 'https://github.com',
+        githubAppId: '1234',
+        githubClientId: 'Iv1.client',
+        secrets: { privateKey, clientSecret: 'github-client-secret' },
+      };
+      const persisted: ApprovalRequest[] = [];
+      let stored: ApprovalRequest | null = null;
+      const homeDomainAction = vi.fn(async () => ({}));
+      const executor = createActionExecutor({
+        homeDomainAction,
+        isActionApprovalRequired: (actionId: string) => actionId === 'identity.githubApps.create',
+        approvalsCreate: async ({ request }: { request: ApprovalRequest }) => {
+          stored = ApprovalRequestV2Schema.parse(request);
+          persisted.push(stored);
+          return { artifactId: 'approval-blocking-github-app' };
+        },
+        approvalsGet: async () => stored,
+        approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+          const transition = transitionStoredApproval(stored, request);
+          if (!transition.ok) return transition;
+          stored = ApprovalRequestV2Schema.parse(request);
+          persisted.push(stored);
+          return { ok: true as const };
+        },
+        approvalsWaitForDecision: async ({ request }: { request: ApprovalRequest }) => ({
+          decision: outcome,
+          request,
+        }),
+        isApprovalExecutionOriginCurrent: async () => true,
+      } as unknown as ActionExecutorDeps);
+
+      await expect(executor.execute('identity.githubApps.create', input, {
+        surface: 'cli',
+        authority: 'present_user',
+        serverId: 'home-1',
+        runtimeAccountId: 'account-1',
+        actionRequestId: 'request-blocking-github-app',
+        actionCaller: { kind: 'host' },
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: outcome === 'reject' ? 'approval_rejected' : 'approval_canceled',
+      });
+
+      expect(homeDomainAction).not.toHaveBeenCalled();
+      const settled = persisted.at(-1);
+      expect(settled?.status).toBe(outcome === 'reject' ? 'rejected' : 'canceled');
+      expect(settled?.actionArgs).toEqual({
+        owner: { kind: 'home' },
+        githubHost: 'https://github.com',
+        githubAppId: '1234',
+        githubClientId: 'Iv1.client',
+      });
+      expect(JSON.stringify(settled)).not.toContain(privateKey);
+    },
+  );
 
   it('resolves a token-only invitation through the canonical preview before creating an approvable artifact', async () => {
     const token = 'a'.repeat(43);
@@ -202,6 +293,8 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       },
       approvalsGet: async () => storedRequest,
       approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(storedRequest, request);
+        if (!transition.ok) return transition;
         storedRequest = ApprovalRequestV2Schema.parse(request);
         return { ok: true as const };
       },
@@ -638,12 +731,18 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       {
         outcome: 'ok' as const,
         preview: {
-          home: { serverId: 'home-1', displayName: 'Home', storageMode: 'encrypted' as const },
+          home: {
+            serverId: 'home-1',
+            displayName: 'Home',
+            storageMode: 'encrypted' as const,
+            hosting: null,
+          },
           team: { teamId: 'team-1', name: 'Team', logo: null, accentSeed: 'team-1' },
           role: 'member' as const,
           historyAccess: 'from_membership' as const,
           state: 'active' as const,
           expiresAt: 2,
+          inviterLabel: null,
           recipientEmailMask: null,
         },
       },
@@ -732,6 +831,8 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       },
       approvalsGet: async () => storedRequest,
       approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(storedRequest, request);
+        if (!transition.ok) return transition;
         storedRequest = ApprovalRequestV2Schema.parse(request);
         return { ok: true as const };
       },
@@ -764,6 +865,8 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       },
       approvalsGet: async () => storedRequest,
       approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(storedRequest, request);
+        if (!transition.ok) return transition;
         storedRequest = ApprovalRequestV2Schema.parse(request);
         return { ok: true as const };
       },
@@ -794,5 +897,119 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       errorCode: scenario === 'reject' ? 'approval_rejected' : 'approval_stale',
     });
     expect(homeDomainAction).not.toHaveBeenCalled();
+  });
+  it.each([
+    [
+      'teams.identity.workos.adminPortalLink.create',
+      { v: 1, teamId: 'team-1', connectionId: 'connection-1', intent: 'sso' },
+      { url: 'https://setup.workos.com/portal?token=portal-bearer' },
+      'portal-bearer',
+    ],
+  ] as const)('keeps the present-user one-time %s result on its live invocation and never writes it to the Artifact', async (actionId, input, liveResult, secret) => {
+    const persisted: ApprovalRequest[] = [];
+    const homeDomainAction = vi.fn(async () => liveResult);
+    const executor = createActionExecutor({
+      approvalsCreate: async ({ request }: { request: ApprovalRequest }) => {
+        persisted.push(ApprovalRequestV2Schema.parse(request));
+        return { artifactId: `ui-live-only-${actionId}` };
+      },
+      approvalsGet: async () => persisted.at(-1) ?? null,
+      approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(persisted.at(-1), request);
+        if (!transition.ok) return transition;
+        persisted.push(ApprovalRequestV2Schema.parse(request));
+        return { ok: true as const };
+      },
+      approvalsWaitForDecision: async ({ request }: { request: ApprovalRequest }) => ({
+        decision: 'approve' as const,
+        request,
+      }),
+      isApprovalExecutionOriginCurrent: async () => true,
+      isActionApprovalRequired: () => true,
+      homeDomainAction,
+    } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute(actionId, input, {
+      surface: 'ui',
+      authority: 'present_user',
+      serverId: 'home-1',
+      runtimeAccountId: 'account-1',
+      actionRequestId: `request-ui-${actionId}`,
+      actionCaller: { kind: 'host' },
+    })).resolves.toEqual({ ok: true, result: liveResult });
+
+    expect(homeDomainAction).toHaveBeenCalledOnce();
+    expect(persisted.at(-1)?.execution).toEqual({
+      executedAtMs: expect.any(Number),
+      ok: true,
+      result: { redacted: true },
+    });
+    expect(JSON.stringify(persisted)).not.toContain(secret);
+  });
+
+  it('scrubs a rejected approval input to the Action observation projection', async () => {
+    const clientSecret = 'deferred-client-secret';
+    const input = {
+      owner: { kind: 'home' as const },
+      id: 'provider-1',
+      expectedRevision: 3,
+      clientSecret,
+    };
+    const persisted: ApprovalRequest[] = [];
+    let stored: ApprovalRequest | null = null;
+    const homeDomainAction = vi.fn(async () => ({}));
+    const executor = createActionExecutor({
+      approvalsCreate: async ({ request }: { request: ApprovalRequest }) => {
+        stored = ApprovalRequestV2Schema.parse(request);
+        persisted.push(stored);
+        return { artifactId: 'approval-secret-replace' };
+      },
+      approvalsGet: async () => stored,
+      approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => {
+        const transition = transitionStoredApproval(stored, request);
+        if (!transition.ok) return transition;
+        stored = ApprovalRequestV2Schema.parse(request);
+        persisted.push(stored);
+        return { ok: true as const };
+      },
+      isApprovalExecutionOriginCurrent: async () => true,
+      isActionApprovalRequired: (actionId: string) => actionId === 'identity.providers.secret.replace',
+      homeDomainAction,
+    } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute('identity.providers.secret.replace', input, {
+      surface: 'ui',
+      authority: 'present_user',
+      serverId: 'home-1',
+      runtimeAccountId: 'account-1',
+      actionRequestId: 'request-secret-replace',
+      actionCaller: { kind: 'host' },
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { kind: 'approval_request_created', artifactId: 'approval-secret-replace' },
+    });
+
+    // Deferred replay still needs the raw input while the request is open.
+    expect(persisted.at(-1)?.actionArgs).toMatchObject({ clientSecret });
+
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'approval-secret-replace',
+      decision: 'reject',
+    }, {
+      surface: 'ui',
+      authority: 'present_user',
+      serverId: 'home-1',
+      runtimeAccountId: 'account-1',
+      actionCaller: { kind: 'host' },
+    })).resolves.toMatchObject({ ok: true });
+
+    const settled = persisted.at(-1);
+    expect(settled?.status).toBe('rejected');
+    expect(settled?.actionArgs).toEqual({
+      owner: { kind: 'home' },
+      id: 'provider-1',
+      expectedRevision: 3,
+    });
+    expect(JSON.stringify(settled)).not.toContain(clientSecret);
   });
 });

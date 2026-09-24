@@ -33,7 +33,7 @@ import {
 
 import { observeRpcCall, recordRpcCallFailure, recordRpcRegistration, recordRpcUnregistration } from "@/app/monitoring/metrics/index";
 import { readMachineAvailabilityState } from "@/app/machines/machineStateGuards";
-import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { resolveSessionAccessForOperation, type SessionAccessOperationDecision } from "@/app/session/access/sessionAccess";
 import { readSessionAccessAuthenticationFromSocket } from "@/app/session/access/sessionAccessAuthentication";
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
@@ -225,8 +225,15 @@ function createSessionAccessTargetGuard(params: Readonly<{
                 && (params.authority === "sessionOwner"
                     ? decision.access.level === "owner"
                     : decision.access.capabilities[params.authority]);
-            return admitted
-                ? { status: "current", value: await operation() }
+            if (admitted) return { status: "current", value: await operation() };
+            // Qualification lost between admission and dispatch is still the
+            // same recoverable answer; reporting it as "no target" would send
+            // the caller into availability retry instead of authentication.
+            // Access revoked outright keeps the established "no target" answer:
+            // only the recoverable authentication states change shape here.
+            return decision.status === "authentication_required"
+                || decision.status === "authentication_unavailable"
+                ? { status: "refused", response: buildSessionAccessRpcRefusal(decision.status) }
                 : { status: "unavailable" };
         },
     };
@@ -254,8 +261,10 @@ function composeRpcForwardTargetGuards(
                     readLatestTarget,
                     operation: async () => {
                         const nested = await runGuard(index + 1);
-                        if (nested.status === "unavailable") {
-                            throw new RpcForwardGuardUnavailableError();
+                        if (nested.status !== "current") {
+                            throw new RpcForwardGuardUnavailableError(
+                                nested.status === "refused" ? nested.response : undefined,
+                            );
                         }
                         return nested.value;
                     },
@@ -265,7 +274,9 @@ function composeRpcForwardTargetGuards(
                 return await runGuard(0);
             } catch (error) {
                 if (error instanceof RpcForwardGuardUnavailableError) {
-                    return { status: "unavailable" };
+                    return error.refusal
+                        ? { status: "refused", response: error.refusal }
+                        : { status: "unavailable" };
                 }
                 throw error;
             }
@@ -273,7 +284,13 @@ function composeRpcForwardTargetGuards(
     };
 }
 
-class RpcForwardGuardUnavailableError extends Error {}
+/** Unwinds the nested guard chain, carrying a typed refusal when one guard stated it. */
+class RpcForwardGuardUnavailableError extends Error {
+    constructor(readonly refusal?: Readonly<{ ok: false; error: string; errorCode: string }>) {
+        super("RPC forward guard refused the operation");
+        this.name = "RpcForwardGuardUnavailableError";
+    }
+}
 
 function buildMachineScopedSocketRoom(params: Readonly<{
     userId: string;
@@ -540,6 +557,36 @@ function buildForbiddenRpcResponse(): Readonly<{ ok: false; error: string; error
         error: RPC_ERROR_MESSAGES.FORBIDDEN,
         errorCode: RPC_ERROR_CODES.FORBIDDEN,
     };
+}
+
+/**
+ * The one RPC refusal envelope for a Session access decision.
+ *
+ * `resolveSessionAccessForOperation` deliberately separates a recoverable Team
+ * authentication requirement from an outright refusal, and every HTTP Session
+ * route already preserves that distinction (`team_authentication_required` /
+ * `team_authentication_unavailable`). Socket RPC answers from the same decision,
+ * so it uses this one mapping instead of collapsing the recoverable answers into
+ * `RPC_FORBIDDEN` or `RPC_METHOD_NOT_AVAILABLE`.
+ */
+function buildSessionAccessRpcRefusal(
+    status: Exclude<SessionAccessOperationDecision["status"], "allowed">,
+): Readonly<{ ok: false; error: string; errorCode: string }> {
+    if (status === "authentication_required") {
+        return {
+            ok: false,
+            error: RPC_ERROR_MESSAGES.TEAM_AUTHENTICATION_REQUIRED,
+            errorCode: RPC_ERROR_CODES.TEAM_AUTHENTICATION_REQUIRED,
+        };
+    }
+    if (status === "authentication_unavailable") {
+        return {
+            ok: false,
+            error: RPC_ERROR_MESSAGES.TEAM_AUTHENTICATION_UNAVAILABLE,
+            errorCode: RPC_ERROR_CODES.TEAM_AUTHENTICATION_UNAVAILABLE,
+        };
+    }
+    return buildForbiddenRpcResponse();
 }
 
 async function isMachineScopedRpcMethodAvailable(params: Readonly<{
@@ -1020,7 +1067,9 @@ export function registerSocketRpcHandlers(params: Readonly<{
                         durationMs: Date.now() - startedAt,
                         result: "error",
                     });
-                    callback?.(buildForbiddenRpcResponse());
+                    callback?.(decision.status === "allowed"
+                        ? buildForbiddenRpcResponse()
+                        : buildSessionAccessRpcRefusal(decision.status));
                     return;
                 }
                 if (sessionAuthorization.routeToSessionOwnerDaemon) {

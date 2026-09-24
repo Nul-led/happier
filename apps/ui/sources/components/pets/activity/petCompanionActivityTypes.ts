@@ -26,6 +26,8 @@ export type PetCompanionTrayItem = Readonly<{
     address: SessionAddress;
     sessionId: string;
     contextLine: string | null;
+    /** The canonical privacy-filtered structural context for assistive technology. */
+    accessibilityContext: string | null;
     status: Exclude<PetCompanionActivityStatus, 'idle'>;
     priority: number;
     title: string;

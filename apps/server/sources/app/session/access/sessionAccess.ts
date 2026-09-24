@@ -36,8 +36,14 @@ export function projectSessionEffectiveAccessV1(access: EffectiveSessionAccess):
     };
 }
 export type SessionAccessReader = Pick<Tx, "session">;
+/**
+ * Team and Group access, responsibility and atomic initial access are Session
+ * sharing: they are served wherever `sharing.session` is enabled, with no
+ * separate server-only collaboration switch. Direct Account shares stay
+ * effective either way, so 0.2-created shares remain readable.
+ */
 export function isSessionCollaborationEnabled(): boolean {
-    return isServerFeatureEnabledForRequest("sessions.collaboration", process.env);
+    return isServerFeatureEnabledForRequest("sharing.session", process.env);
 }
 
 /** Lane 01 owns minting the cutoff; this owner alone interprets it. */

@@ -41,6 +41,16 @@ export const RPC_ERROR_CODES = {
   METHOD_NOT_FOUND: 'RPC_METHOD_NOT_FOUND',
   FORBIDDEN: 'RPC_FORBIDDEN',
   SESSION_MACHINE_CONTROL_UNAVAILABLE: 'RPC_SESSION_MACHINE_CONTROL_UNAVAILABLE',
+  /**
+   * The Session is reachable but the caller's Team policy is not satisfied by
+   * the credential it presented. It is the socket-RPC spelling of the HTTP
+   * Session routes' `team_authentication_required` (403), and it exists because
+   * collapsing it into `FORBIDDEN` or `METHOD_NOT_AVAILABLE` hides the one
+   * recovery the caller can perform: go and authenticate for that Team.
+   */
+  TEAM_AUTHENTICATION_REQUIRED: 'RPC_TEAM_AUTHENTICATION_REQUIRED',
+  /** Nothing the caller could present satisfies the policy right now (HTTP 503). */
+  TEAM_AUTHENTICATION_UNAVAILABLE: 'RPC_TEAM_AUTHENTICATION_UNAVAILABLE',
 } as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[keyof typeof RPC_ERROR_CODES];
@@ -50,6 +60,8 @@ export const RPC_ERROR_MESSAGES = {
   METHOD_NOT_FOUND: 'Method not found',
   FORBIDDEN: 'Forbidden',
   SESSION_MACHINE_CONTROL_UNAVAILABLE: 'Session machine control unavailable',
+  TEAM_AUTHENTICATION_REQUIRED: 'Team authentication required',
+  TEAM_AUTHENTICATION_UNAVAILABLE: 'Team authentication unavailable',
 } as const;
 
 // Session-scoped RPC method names (used with `${sessionId}:${method}` over socket RPC).

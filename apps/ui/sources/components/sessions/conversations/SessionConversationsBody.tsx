@@ -11,6 +11,8 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Text } from '@/components/ui/text/Text';
 import { useSessionAgentActivityRoster } from '@/hooks/session/useSessionAgentActivity';
+import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import { isSessionWriteKnownDenied } from '@/utils/sessions/deriveTranscriptInteraction';
 import { createSessionDiscussionClient } from '@/sync/api/session/sessionDiscussionActions';
 import {
     useServerCredentialAccountScopeBindings,
@@ -30,6 +32,7 @@ import {
 } from './sessionDiscussionActivityItems';
 import { useOpenSessionAgentConversation } from './useOpenSessionAgentConversation';
 import { useSessionConversationsAvailability } from './useSessionConversationsAvailability';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
@@ -122,7 +125,7 @@ function SessionConversationsBodyReady(props: Readonly<{
     scope: ServerAccountScope;
     accountLifetime: ServerCredentialAccountScopeBinding;
 }>): React.ReactElement {
-    const client = React.useMemo(() => createSessionDiscussionClient({ session: props.address, availability: 'full_collaboration' }), [props.address]);
+    const client = React.useMemo(() => createSessionDiscussionClient({ session: props.address, availability: 'available' }), [props.address]);
     const repository = React.useMemo(() => getSessionDiscussionRepository({
         scope: props.scope,
         address: props.address,
@@ -136,6 +139,11 @@ function SessionConversationsBodyReady(props: Readonly<{
         sessionId: props.address.sessionId,
         serverId: props.address.serverId,
     });
+    // Only a known refusal annotates the create affordance. An unloaded Session,
+    // a missing access projection or an offline Home leave it enabled with the
+    // server as the authority, so a writer never loses the flow to a slow read.
+    const session = useSessionViewShellSession(props.address.sessionId, props.address.serverId);
+    const createDenied = isSessionWriteKnownDenied(session);
     const [archivedExpanded, setArchivedExpanded] = React.useState(false);
     const active = snapshot.lists.active;
     const archived = snapshot.lists.archived;
@@ -163,7 +171,15 @@ function SessionConversationsBodyReady(props: Readonly<{
             readSubagentForEntry: activity.readSubagentForEntry,
             humanListPending: active.status === 'idle' || (active.status === 'loading' && active.items.length === 0),
         });
-        if (!archivedExpanded) return [...primary, { kind: 'archived_disclosure' }];
+        // The disclosure is a claim that there is something archived to open.
+        // Only a proven-empty answer withdraws it; `unknown` keeps offering it,
+        // because refusing to show it on an unanswered read would state an
+        // emptiness this surface does not know.
+        if (!archivedExpanded) {
+            return snapshot.archivedExistence === 'empty'
+                ? primary
+                : [...primary, { kind: 'archived_disclosure' }];
+        }
         const archivedItems: SessionDiscussionListItem[] = [{ kind: 'archived_disclosure' }];
         if (archived.status === 'loading' && archived.items.length === 0) archivedItems.push({ kind: 'archived_loading' });
         else if ((archived.status === 'error' || archived.status === 'offline' || archived.status === 'revoked') && archived.items.length === 0) archivedItems.push({ kind: 'archived_error' });
@@ -173,7 +189,7 @@ function SessionConversationsBodyReady(props: Readonly<{
             if (archived.nextCursor) archivedItems.push({ kind: 'archived_load_more' });
         }
         return [...primary, ...archivedItems];
-    }, [active.items, active.status, activity.entries, activity.readSubagentForEntry, archived.items, archived.nextCursor, archived.status, archivedExpanded]);
+    }, [active.items, active.status, activity.entries, activity.readSubagentForEntry, archived.items, archived.nextCursor, archived.status, archivedExpanded, snapshot.archivedExistence]);
 
     const humanNotice = readListNotice(active.status);
     const renderItem = React.useCallback(({ item }: Readonly<{ item: SessionDiscussionListItem }>) => {
@@ -193,6 +209,8 @@ function SessionConversationsBodyReady(props: Readonly<{
                             size={36}
                             minimumInteractiveTargetSize={minimumInteractiveTargetSize}
                             accessibilityLabel={t('session.collaboration.discussion.newDiscussion')}
+                            disabled={createDenied}
+                            disabledReason={createDenied ? t('session.collaboration.discussion.postDenied') : undefined}
                             onPress={openNewDiscussion}
                         />
                     </View>
@@ -217,7 +235,7 @@ function SessionConversationsBodyReady(props: Readonly<{
                             testID="session-agent-conversation-new"
                             accessibilityRole="button"
                             accessibilityLabel={t('session.subagents.panel.newAgentConversation')}
-                            style={({ pressed }) => [styles.quietAction, pressed ? { opacity: 0.7 } : null]}
+                            style={({ pressed }) => [styles.quietAction, pressed ? { opacity: motionTokens.press.opacity } : null]}
                             onPress={openNewAgentConversation}
                         >
                             <Text style={styles.quietActionText}>{t('session.subagents.panel.newAgentConversation')}</Text>
@@ -242,7 +260,7 @@ function SessionConversationsBodyReady(props: Readonly<{
                         accessibilityState={{ expanded: archivedExpanded }}
                         accessibilityLabel={t('session.collaboration.discussion.archivedDisclosure')}
                         onPress={toggleArchived}
-                        style={({ pressed }) => [styles.archivedSection, styles.archivedDisclosure, pressed ? { opacity: 0.7 } : null]}
+                        style={({ pressed }) => [styles.archivedSection, styles.archivedDisclosure, pressed ? { opacity: motionTokens.press.opacity } : null]}
                     >
                         <Text style={styles.archivedLabel}>{t('session.collaboration.discussion.archived')}</Text>
                         <Icon name={archivedExpanded ? 'caret-up' : 'caret-down'} size={16} />
@@ -259,7 +277,7 @@ function SessionConversationsBodyReady(props: Readonly<{
             case 'archived_load_more':
                 return <Pressable testID="session-discussion-archived-load-more" style={styles.more} accessibilityRole="button" onPress={() => void repository.loadMoreList('archived')}><Text style={styles.moreText}>{t('session.collaboration.discussion.loadMore')}</Text></Pressable>;
         }
-    }, [active.items.length, active.status, activeDiscussionKey, archived.status, archivedExpanded, openAgentConversation, openDiscussion, openNewAgentConversation, openNewDiscussion, repository, toggleArchived]);
+    }, [active.items.length, active.status, activeDiscussionKey, archived.status, archivedExpanded, createDenied, openAgentConversation, openDiscussion, openNewAgentConversation, openNewDiscussion, repository, toggleArchived]);
 
     return (
         <View style={styles.root} testID="session-discussion-activity-list">

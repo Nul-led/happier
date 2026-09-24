@@ -22,11 +22,15 @@ const routerReplaceSpy = vi.hoisted(() => vi.fn());
 // A cold-start deep link has no history behind it: the safe exit owner must
 // replace to the root instead of issuing a `back` that goes nowhere.
 const routerCanGoBackMock = vi.hoisted(() => vi.fn(() => false));
+// The route reads its link from the router, and Expo Router updates a mounted
+// dynamic route's params IN PLACE. This holder is how a second link arrives.
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, string> }));
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({
         navigation: { setOptions: setOptionsSpy },
         router: { replace: routerReplaceSpy, canGoBack: routerCanGoBackMock },
+        params: () => routeParams.current,
     }).module;
 });
 
@@ -93,8 +97,10 @@ import {
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 import { createTeamInvitationTargetBindingV1 } from '@happier-dev/protocol/teams';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit';
+import { t } from '@/text';
 
 import { TeamJoinScreen } from './TeamJoinScreen';
+import TeamJoinRoute from '@/app/(app)/join/[token]';
 
 const TOKEN = 'a'.repeat(43);
 let restoreWebLockManager: (() => void) | null = null;
@@ -176,6 +182,90 @@ afterEach(async () => {
     restoreWebLockManager = null;
     resetServerFeaturesClientForTests();
     vi.clearAllMocks();
+});
+
+/**
+ * Expo Router updates a mounted dynamic route's params in place, so opening a
+ * second invitation reuses the same mounted screen. Every state that screen
+ * holds — the selected authentication action above all — belongs to ONE
+ * invitation, so the second link must start from the entry surface rather than
+ * inherit the first link's selection.
+ */
+describe('the join route receiving a second invitation link', () => {
+    const SECOND_TOKEN = 'b'.repeat(43);
+
+    it('starts the next link at the entry surface instead of the previous selection', async () => {
+        const home = await addCapableHome('Acme', 'https://acme-home.example');
+        await setServerProfileIdentityForUrl('https://acme-home.example', 'srv_acme_home');
+        await setActiveServerId(home, { scope: 'device' });
+        let authEntryReads = 0;
+        const joinFetch = async (input: string | Readonly<{ url: string }>) => {
+            const path = typeof input === 'string' ? input : input.url;
+            if (path.includes('/v1/team-invitations/preview')) {
+                return new Response(JSON.stringify({
+                    outcome: 'ok',
+                    preview: {
+                        home: { serverId: 'srv_acme_home', displayName: 'Acme', storageMode: null },
+                        team: { teamId: 'team-1', name: 'Acme Team', logo: null, accentSeed: 'team-1' },
+                        role: 'member',
+                        historyAccess: 'from_membership',
+                        state: 'active',
+                        expiresAt: Date.UTC(2030, 0, 1),
+                        recipientEmailMask: 'p\u2022\u2022\u2022@example.test',
+                    },
+                }), { status: 200 });
+            }
+            if (path.includes('/v1/auth/entry')) {
+                authEntryReads += 1;
+                return new Response(JSON.stringify({
+                    v: 1,
+                    state: 'admission_required',
+                    scope: { kind: 'invitation' },
+                    home: { serverId: 'srv_acme_home', displayName: 'Acme', storageMode: null },
+                    team: { teamId: 'team-1', name: 'Acme Team', logo: null },
+                    invitationEmailVerificationRequired: false,
+                    actions: [{
+                        kind: 'authenticate',
+                        methodId: 'email_password',
+                        action: 'login',
+                        mode: 'either',
+                        origin: 'home',
+                        presentation: { displayName: 'Email' },
+                    }, ...(authEntryReads === 1 ? [{ kind: 'switch_account' }] : [])],
+                    ...(authEntryReads === 1
+                        ? { currentAccountRecipientStatus: 'verification_required' }
+                        : {}),
+                    autoRedirect: null,
+                }), { status: 200 });
+            }
+            throw new Error(`Unexpected Team join request: ${path}`);
+        };
+        runtimeFetchMock.mockImplementation(joinFetch);
+        serverFetchMock.mockImplementation(joinFetch);
+
+        routeParams.current = { token: TOKEN, target: 'srv_acme_home' };
+        const rendered = await renderScreen(<TeamJoinRoute />);
+
+        await waitForTestId(rendered, 'team-auth-entry-use-another-account');
+        await rendered.pressByTestIdAsync('team-auth-entry-use-another-account');
+        await waitForTestId(rendered, 'team-auth-entry-action:email_password');
+        await rendered.pressByTestIdAsync('team-auth-entry-action:email_password');
+        const first = await waitForTestId(rendered, 'team-join-account-authentication');
+        expect(first?.props.teamAdmission).toMatchObject({ invitationToken: TOKEN });
+
+        // The second link arrives as an in-place param update, with no remount.
+        routeParams.current = { token: SECOND_TOKEN, target: 'srv_acme_home' };
+        await act(async () => {
+            rendered.tree.update(<TeamJoinRoute />);
+        });
+        await settle();
+
+        // The first invitation's selected authentication must not still be
+        // mounted for the second invitation's bearer.
+        expect(rendered.findByTestId('team-join-account-authentication')).toBeNull();
+        expect(runtimeFetchMock.mock.calls.some((call) => String(call[1] && (call[1] as { body?: string }).body)
+            .includes(SECOND_TOKEN))).toBe(true);
+    });
 });
 
 describe('TeamJoinScreen', () => {
@@ -691,9 +781,74 @@ describe('TeamJoinScreen', () => {
             <TeamJoinScreen token={TOKEN} homeTarget="srv_acme_home" />,
         );
 
-        await waitForTestId(rendered, 'team-join-preview-unavailable');
+        // The Home is reachable and current and has said so: this is an
+        // operator's choice, which is neither an old binary nor an unusable
+        // link. Asking for a new link would not help, so the disabled
+        // explanation is what the person is shown.
+        await waitForTestId(rendered, 'team-join-preview-feature-unavailable');
         expect(rendered.findByTestId('team-join-preview-update-required')).toBeNull();
+        expect(rendered.findByTestId('team-join-preview-unavailable')).toBeNull();
+        expect(rendered.getTextContent()).toContain(t('teams.unavailable.disabled'));
         // Without a readable offer consequence the Join confirmation stays withheld.
         expect(rendered.findByTestId('team-auth-entry-join')).toBeNull();
+    });
+
+    it('never offers sign-in when this device cannot read its saved Home credential', async () => {
+        const home = await addCapableHome('Acme', 'https://acme-home.example');
+        await setServerProfileIdentityForUrl('https://acme-home.example', 'srv_acme_home');
+        await setActiveServerId(home, { scope: 'device' });
+        // Secure storage failed: whether an Account is saved here is unknown,
+        // so authenticating again could replace a credential that still exists.
+        // Mirrors the real owner (serverCredentialAccountScope.test.ts): the failure
+        // surfaces only to a reader that opted in; tolerant readers see no credential.
+        getCredentialsForServerUrlMock.mockImplementation(async (
+            _serverUrl: string,
+            options?: Readonly<{ storageReadFailure?: 'absent' | 'surface' }>,
+        ) => {
+            if (options?.storageReadFailure === 'surface') throw new Error('secure storage read failed');
+            return null;
+        });
+        const joinFetch = async (input: string | Readonly<{ url: string }>) => {
+            const path = typeof input === 'string' ? input : input.url;
+            if (path.includes('/v1/team-invitations/preview')) return new Response(JSON.stringify({
+                outcome: 'ok',
+                preview: {
+                    home: { serverId: 'srv_acme_home', displayName: 'Acme', storageMode: null },
+                    team: { teamId: 'team-1', name: 'Acme Team', logo: null, accentSeed: 'team-1' },
+                    role: 'member', historyAccess: 'from_membership', state: 'active',
+                    expiresAt: Date.UTC(2030, 0, 1), recipientEmailMask: null,
+                },
+            }), { status: 200 });
+            if (path.includes('/v1/auth/entry')) {
+                return new Response(JSON.stringify({
+                    v: 1, state: 'admission_required', scope: { kind: 'invitation' },
+                    home: { serverId: 'srv_acme_home', displayName: 'Acme', storageMode: null },
+                    team: { teamId: 'team-1', name: 'Acme Team', logo: null },
+                    invitationEmailVerificationRequired: false,
+                    actions: [{ kind: 'authenticate', methodId: 'email_password', action: 'provision', mode: 'either', origin: 'home', presentation: { displayName: 'Email' } }],
+                    autoRedirect: null,
+                }), { status: 200 });
+            }
+            throw new Error(`Unexpected Team join request: ${path}`);
+        };
+        runtimeFetchMock.mockImplementation(joinFetch);
+        serverFetchMock.mockImplementation(joinFetch);
+
+        const rendered = await renderScreen(<TeamJoinScreen token={TOKEN} homeTarget="srv_acme_home" />);
+
+        await waitForTestId(rendered, 'team-join-home-unavailable');
+        expect(rendered.findByTestId('team-auth-entry-action:email_password')).toBeNull();
+        // The card names the local cause and keeps the invitation, never a Home outage.
+        expect(rendered.getTextContent()).toContain(t('homeGovernance.credentialUnreadableTitle'));
+        expect(rendered.getTextContent()).toContain(t('homeGovernance.credentialUnreadableInviteBody'));
+        expect(rendered.getTextContent()).not.toContain(t('homeGovernance.unavailableTitle'));
+        expect(rendered.findByTestId('team-join-home-unavailable-secondary-action')).not.toBeNull();
+
+        // Once storage reads again (here: confirmed empty), Retry settles the
+        // screen on the real answer instead of leaving it stranded.
+        getCredentialsForServerUrlMock.mockImplementation(async () => null);
+        await rendered.pressByTestIdAsync('team-join-home-unavailable-action');
+        await waitForTestId(rendered, 'team-auth-entry-action:email_password');
+        expect(rendered.findByTestId('team-join-home-unavailable')).toBeNull();
     });
 });

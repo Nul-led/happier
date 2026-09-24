@@ -84,7 +84,7 @@ export function classifyTeamMemberRecipientEncryptionState(
  */
 export function classifyTeamMemberEncryptionDiscoveryFailure(error: unknown): Extract<EncryptedAccess, { kind: 'unavailable' }> {
     if (error instanceof SessionAccessApiError) {
-        if (error.code === 'unsupported_action') {
+        if (error.code === 'unsupported_action' || error.code === 'session_access_sharing_unavailable') {
             return { kind: 'unavailable', reason: 'unsupported', retryable: false };
         }
         if (error.status === 403 || error.code === 'session_access_forbidden') {
@@ -227,7 +227,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
     }, [request]);
 
     React.useEffect(() => {
-        if (availability !== 'full_collaboration') {
+        if (availability !== 'available') {
             generation.current += 1;
             setState(UNSUPPORTED);
             return;

@@ -2,6 +2,8 @@ import {
     AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1,
     AuthEntryProjectionV1Schema,
     type AuthEntryProjectionV1,
+    type AuthEntryProviderPresentationV1,
+    type AuthEntryProviderUnavailableReasonV1,
     type AuthEntryRequestV1,
     type TeamEntryUnavailableReasonV1,
 } from '@happier-dev/protocol';
@@ -28,6 +30,10 @@ import {
 } from '@/app/teams/actorContext';
 import { isEffectiveTeamMembership } from '@/app/teams/memberships/effectiveMembership';
 import { listTeamIdentityConnectionsInTx } from '@/app/teams/identity/teamIdentityConnectionLifecycle';
+import {
+    isDirectorySourceCompletedEvidenceAllowedInTx,
+    resolveDirectorySourceProviderKind,
+} from '@/app/teams/directory/directorySourcePolicy';
 import { inTx } from '@/storage/inTx';
 import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
 import {
@@ -79,8 +85,8 @@ type HomeActionRequestContext = Readonly<{
 /**
  * Why the three answers are distinct: only a member can be admitted by signing
  * in again, so a `member_unqualified` visitor is offered the Team's accepted
- * methods, while a `non_member` of a directory-provisioned Team cannot be
- * admitted by any sign-in this Home can offer.
+ * methods, while a `non_member` of a directory-provisioned Team can be admitted
+ * only by proving the Team provider identity its directory person is bound by.
  */
 type TeamMembershipAdmissionState = 'admitted' | 'member_unqualified' | 'non_member';
 
@@ -181,9 +187,10 @@ function hasUsableTeamAuthentication(policy: ResolvedTeamAuthenticationPolicyInT
  * The reason a visitor who is already signed in to this Home may be told when a
  * Team refuses entry for its authentication policy alone.
  *
- * A `provisioned` Team takes its membership from a directory, so no sign-in this
- * visitor performs can admit them: `directory_delayed` is the truthful answer,
- * and telling them to use a different method would send them round a loop.
+ * A `provisioned` Team takes its membership from a directory; with no usable
+ * accepted choice there is no Team provider identity this visitor could prove to
+ * bind their directory person, so `directory_delayed` is the truthful answer and
+ * telling them to use a different method would send them round a loop.
  * Otherwise a `restricted` policy with no currently usable choice is the Team
  * insisting on a sign-in this visitor cannot use — exactly what `sso_required`
  * says. An anonymous visitor has proved nothing, and an unresolved policy is not
@@ -207,6 +214,26 @@ function defaultMethodDisplayName(id: string): string {
         .join(' ');
 }
 
+/**
+ * The one mapping from a provider's safe descriptor to its auth-entry
+ * presentation (teams-lane-03/01 §10.2), shared by the Home and Team
+ * projectors so neither can drop a field the other carries.
+ */
+function projectAuthEntryProviderPresentation(input: Readonly<{
+    displayName: string;
+    ui: Readonly<{ iconHint?: string | null; connectButtonColor?: string | null; supportsProfileBadge?: boolean }> | undefined;
+    providerKind: AuthEntryProviderPresentationV1['providerKind'];
+}>): AuthEntryProviderPresentationV1 {
+    const { ui } = input;
+    return {
+        displayName: input.displayName,
+        ...(ui?.iconHint ? { iconHint: ui.iconHint } : {}),
+        ...(input.providerKind ? { providerKind: input.providerKind } : {}),
+        ...(ui?.connectButtonColor ? { connectButtonColor: ui.connectButtonColor } : {}),
+        ...(ui?.supportsProfileBadge !== undefined ? { supportsProfileBadge: ui.supportsProfileBadge } : {}),
+    };
+}
+
 function projectHomeAuthenticationActions(
     homeMethods: Extract<EffectiveHomeAuthMethodsResult, { status: 'ready' }>,
     request: HomeActionRequestContext,
@@ -215,8 +242,13 @@ function projectHomeAuthenticationActions(
     return homeMethods.decisions.flatMap((decision) => {
         const methodId = normalizeAuthMethodId(decision.id);
         if (!methodId || (allowedIds && !allowedIds.has(methodId))) return [];
-        const displayName = decision.ui?.displayName ?? defaultMethodDisplayName(methodId);
-        const iconHint = decision.ui?.iconHint ?? null;
+        const ui = decision.ui;
+        // Native methods have no provider kind, colour or badge.
+        const presentation = projectAuthEntryProviderPresentation({
+            displayName: ui?.displayName ?? defaultMethodDisplayName(methodId),
+            ui,
+            providerKind: ui?.providerKind,
+        });
         return decision.actions.flatMap((action) => {
             if (!action.enabled) return [];
             // `connect` attaches a method to the caller's existing Account; a
@@ -237,10 +269,16 @@ function projectHomeAuthenticationActions(
                 action: action.id,
                 mode: action.mode,
                 origin: 'home' as const,
-                presentation: {
-                    displayName,
-                    ...(iconHint ? { iconHint } : {}),
-                },
+                // The effective-method owner already resolved the Home's
+                // recommended protection for a new Account (deployment default
+                // narrowed by the Home governance document). Carrying it with the
+                // provision action is what stops a chooser from inventing its own
+                // default out of the permitted set; `login`/`connect` act on an
+                // Account that already has a stored mode, so they state nothing.
+                ...(action.id === 'provision' && decision.recommendedProvisionMode
+                    ? { recommendedProvisionMode: decision.recommendedProvisionMode }
+                    : {}),
+                presentation,
             }];
         });
     });
@@ -290,6 +328,127 @@ function projectHomeAuthEntryProjection(
     return AuthEntryProjectionV1Schema.parse(projection);
 }
 
+type TeamConnectionAuthenticateActionV1 = Readonly<{
+    kind: 'authenticate';
+    methodId: string;
+    action: 'connect';
+    mode: 'either';
+    origin: 'team';
+    presentation: AuthEntryProviderPresentationV1;
+}>;
+
+type TeamConnectionUnavailableActionV1 = Readonly<{
+    kind: 'provider_unavailable';
+    methodId: string;
+    origin: 'team';
+    presentation: AuthEntryProviderPresentationV1;
+    reason: AuthEntryProviderUnavailableReasonV1;
+}>;
+
+/**
+ * The one projector of a Team's identity connections into public auth-entry
+ * choices, shared by the Team and invitation scopes (teams-lane-03/01 §10.2).
+ *
+ * Each choice carries the catalog descriptor's safe presentation: provider kind,
+ * display name, icon hint, connect-button colour and profile-badge support. A
+ * connection the Team's restricted policy accepts but that cannot run right now
+ * is shown with its safe reason (TA-R17 "provider unavailable"), never dropped.
+ *
+ * `directoryBindingOnly` serves a signed-in non-member of a directory-provisioned
+ * Team (§8.1, TA-R19): the only proof that can admit them is a Team provider
+ * identity the exact directory binder (inside the provider's `connectInTx`)
+ * matches to an imported person. So only a connection that carries a directory
+ * source whose completed facts are currently admissible is offered; the binder
+ * and the connect finalizer still make every admission decision themselves.
+ */
+async function projectTeamConnectionActionsInTx(
+    tx: Tx,
+    input: Readonly<{
+        env: NodeJS.ProcessEnv;
+        teamId: string;
+        policy: ResolvedTeamAuthenticationPolicyInTx;
+        directoryBindingOnly: boolean;
+    }>,
+): Promise<Readonly<{
+    available: readonly TeamConnectionAuthenticateActionV1[];
+    unavailable: readonly TeamConnectionUnavailableActionV1[];
+}>> {
+    const resolution = input.policy.resolution;
+    const usableConnectionIds = resolution.status === 'restricted'
+        ? new Set(resolution.choices.flatMap((choice) =>
+            choice.availability === 'usable' && choice.reference.kind === 'team_connection'
+                ? [choice.reference.connectionId]
+                : []))
+        : undefined;
+    const acceptedConnectionIds = resolution.status === 'restricted'
+        ? new Set(resolution.choices.flatMap((choice) =>
+            choice.reference.kind === 'team_connection' ? [choice.reference.connectionId] : []))
+        : undefined;
+    const [connections, descriptors] = await Promise.all([
+        listTeamIdentityConnectionsInTx(tx, { teamId: input.teamId }),
+        listProviderDescriptorsInTx(tx, input.env, { kind: 'team', teamId: input.teamId }),
+    ]);
+    const directorySources = input.directoryBindingOnly
+        ? await tx.teamDirectorySource.findMany({
+            where: { teamId: input.teamId },
+            select: { kind: true, state: true, activeReconcileRunId: true, teamIdentityConnectionId: true },
+        })
+        : [];
+    const bindingSources: typeof directorySources = [];
+    for (const source of directorySources) {
+        if (await isDirectorySourceCompletedEvidenceAllowedInTx(tx, source)) bindingSources.push(source);
+    }
+    const canBindDirectoryPerson = (connection: (typeof connections)[number]): boolean =>
+        bindingSources.some((source) => source.kind === 'workos_directory'
+            ? source.teamIdentityConnectionId === connection.id
+            : resolveDirectorySourceProviderKind(source.kind) === connection.providerKind);
+    const descriptorByProviderId = new Map(descriptors.map((descriptor) => [
+        normalizeAuthMethodId(descriptor.reference.id),
+        descriptor,
+    ]));
+    const available: TeamConnectionAuthenticateActionV1[] = [];
+    const unavailable: TeamConnectionUnavailableActionV1[] = [];
+    for (const connection of connections) {
+        if (input.directoryBindingOnly && !canBindDirectoryPerson(connection)) continue;
+        const methodId = normalizeAuthMethodId(connection.providerInstanceId);
+        const provider = descriptorByProviderId.get(methodId);
+        const ui = provider?.descriptor.ui;
+        const presentation = projectAuthEntryProviderPresentation({
+            displayName: ui?.displayName ?? connection.providerDisplayName,
+            ui,
+            providerKind: connection.providerKind,
+        });
+        const runnable = connection.state === 'connected'
+            && provider !== undefined
+            && provider.descriptor.enabled === true
+            && provider.descriptor.configured === true;
+        if (runnable && (!usableConnectionIds || usableConnectionIds.has(connection.id))) {
+            available.push({
+                kind: 'authenticate',
+                methodId: provider.reference.id,
+                action: 'connect',
+                mode: 'either',
+                origin: 'team',
+                presentation,
+            });
+            continue;
+        }
+        if (!acceptedConnectionIds?.has(connection.id) || !methodId) continue;
+        unavailable.push({
+            kind: 'provider_unavailable',
+            methodId,
+            origin: 'team',
+            presentation,
+            reason: connection.state === 'disabled'
+                ? 'provider_disabled'
+                : connection.state === 'setting_up'
+                    ? 'provider_setup_incomplete'
+                    : 'provider_unavailable',
+        });
+    }
+    return { available, unavailable };
+}
+
 async function resolveTeamAuthEntry(
     teamId: string,
     request: HomeActionRequestContext & Readonly<{ emailDeliveryReady: boolean }>,
@@ -337,14 +496,20 @@ async function resolveTeamAuthEntry(
                 autoRedirect: null,
             });
         }
-        // A `provisioned` Team's roster comes from its directory, so a signed-in
-        // stranger cannot join by authenticating again however usable the Team's
-        // policy is. Saying so is the truthful answer; offering sign-in actions
-        // would send them round a loop. A member whose credential merely failed
-        // to qualify keeps those actions, because signing in does admit them.
-        if (admission === 'non_member' && principal !== null && teamContext.admissionMode === 'provisioned') {
-            return unavailableTeamProjection('directory_delayed');
-        }
+        // A `provisioned` Team's roster comes from its directory. A signed-in
+        // Account that is not yet a member may still be the directory person who
+        // was imported before it existed: proving the Team provider identity
+        // through the authenticated connect flow lets the existing exact binder
+        // (inside that provider's `connectInTx`) bind it, and the finalizer then
+        // admits only what the directory proves (teams-lane-03/02 §8.1, TA-R19).
+        // Home methods can never bind a directory person, so they are not offered
+        // here. Only when no connection carries an admissible directory source
+        // (none yet, still initializing, paused or failing) is waiting for the
+        // directory the truthful answer. A member whose credential merely failed
+        // to qualify keeps the ordinary actions below.
+        const provisionedNonMember = admission === 'non_member'
+            && principal !== null
+            && teamContext.admissionMode === 'provisioned';
         if (homeMethods.status !== 'ready') return unavailableTeamProjection('entry_not_available');
 
         const allowedHomeMethodIds = policy.resolution.status === 'restricted'
@@ -353,42 +518,18 @@ async function resolveTeamAuthEntry(
                     ? [normalizeAuthMethodId(choice.reference.methodId)]
                     : []))
             : undefined;
-        const allowedConnectionIds = policy.resolution.status === 'restricted'
-            ? new Set(policy.resolution.choices.flatMap((choice) =>
-                choice.availability === 'usable' && choice.reference.kind === 'team_connection'
-                    ? [choice.reference.connectionId]
-                    : []))
-            : undefined;
-        const homeActions = projectHomeAuthenticationActions(homeMethods, request, allowedHomeMethodIds);
-        const [connections, descriptors] = await Promise.all([
-            listTeamIdentityConnectionsInTx(tx, { teamId }),
-            listProviderDescriptorsInTx(tx, env, { kind: 'team', teamId }),
-        ]);
-        const descriptorByProviderId = new Map(descriptors.map((descriptor) => [
-            normalizeAuthMethodId(descriptor.reference.id),
-            descriptor,
-        ]));
-        const teamActions = connections.flatMap((connection) => {
-            if (
-                connection.state !== 'connected'
-                || (allowedConnectionIds && !allowedConnectionIds.has(connection.id))
-            ) return [];
-            const provider = descriptorByProviderId.get(normalizeAuthMethodId(connection.providerInstanceId));
-            if (!provider || provider.descriptor.enabled !== true || provider.descriptor.configured !== true) return [];
-            const displayName = provider.descriptor.ui?.displayName ?? connection.providerDisplayName;
-            const iconHint = provider.descriptor.ui?.iconHint ?? null;
-            return [{
-                kind: 'authenticate' as const,
-                methodId: provider.reference.id,
-                action: 'connect' as const,
-                mode: 'either' as const,
-                origin: 'team' as const,
-                presentation: {
-                    displayName,
-                    ...(iconHint ? { iconHint } : {}),
-                },
-            }];
+        const homeActions = provisionedNonMember
+            ? []
+            : projectHomeAuthenticationActions(homeMethods, request, allowedHomeMethodIds);
+        const { available: teamActions, unavailable: unavailableTeamChoices } = await projectTeamConnectionActionsInTx(tx, {
+            env,
+            teamId,
+            policy,
+            directoryBindingOnly: provisionedNonMember,
         });
+        if (provisionedNonMember && teamActions.length === 0) {
+            return unavailableTeamProjection('directory_delayed');
+        }
         const projection = {
             v: 1,
             state: 'admission_required',
@@ -403,6 +544,7 @@ async function resolveTeamAuthEntry(
             // visitor gets no such offer, so this cannot become an oracle.
             actions: [
                 ...teamActions,
+                ...unavailableTeamChoices,
                 ...homeActions,
                 ...(principal !== null ? [{ kind: 'switch_account' as const }] : []),
             ],
@@ -480,40 +622,14 @@ async function resolveInvitationAuthEntryInTx(
                 ? [normalizeAuthMethodId(choice.reference.methodId)]
                 : []))
         : undefined;
-    const allowedConnectionIds = policy.resolution.status === 'restricted'
-        ? new Set(policy.resolution.choices.flatMap((choice) =>
-            choice.availability === 'usable' && choice.reference.kind === 'team_connection'
-                ? [choice.reference.connectionId]
-                : []))
-        : undefined;
     // Invitation admission is exempt from the public-signup restriction in every
     // finalizer, so the invitation projection carries no requesting address.
     const homeActions = projectHomeAuthenticationActions(homeMethods, { env, principal }, allowedHomeMethodIds);
-    const [connections, descriptors] = await Promise.all([
-        listTeamIdentityConnectionsInTx(tx, { teamId: invitation.team.teamId }),
-        listProviderDescriptorsInTx(tx, env, { kind: 'team', teamId: invitation.team.teamId }),
-    ]);
-    const descriptorByProviderId = new Map(descriptors.map((descriptor) => [
-        normalizeAuthMethodId(descriptor.reference.id),
-        descriptor,
-    ]));
-    const connectionActions = connections.flatMap((connection) => {
-        if (connection.state !== 'connected'
-            || (allowedConnectionIds && !allowedConnectionIds.has(connection.id))) return [];
-        const provider = descriptorByProviderId.get(normalizeAuthMethodId(connection.providerInstanceId));
-        if (!provider || provider.descriptor.enabled !== true || provider.descriptor.configured !== true) return [];
-        const iconHint = provider.descriptor.ui?.iconHint ?? null;
-        return [{
-            kind: 'authenticate' as const,
-            methodId: provider.reference.id,
-            action: 'connect' as const,
-            mode: 'either' as const,
-            origin: 'team' as const,
-            presentation: {
-                displayName: provider.descriptor.ui?.displayName ?? connection.providerDisplayName,
-                ...(iconHint ? { iconHint } : {}),
-            },
-        }];
+    const connectionActions = await projectTeamConnectionActionsInTx(tx, {
+        env,
+        teamId: invitation.team.teamId,
+        policy,
+        directoryBindingOnly: false,
     });
     const projection = {
         v: 1,
@@ -524,7 +640,8 @@ async function resolveInvitationAuthEntryInTx(
         team: invitation.team,
         invitationEmailVerificationRequired: invitation.recipientEmailNormalized === null,
         actions: [
-            ...connectionActions,
+            ...connectionActions.available,
+            ...connectionActions.unavailable,
             ...homeActions,
             ...(currentAccountRecipientStatus === 'verification_required'
                 ? [{ kind: 'switch_account' as const }]

@@ -9,9 +9,12 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { HomeCredentialUnreadableCard } from '@/components/sessions/access/UnboundSessionHomeScopeCard';
 import { Text } from '@/components/ui/text/Text';
 import { useTeamBinding } from '@/hooks/teams/useTeamBinding';
 import { serverAccountScopedTeamKey } from '@/sync/domains/teams/teamAddress';
+import { presentTeamEntryUnavailableReason } from '@/components/teams/entry/teamAuthenticationFailure';
+import { teamSignInReturnPath } from '@/components/teams/entry/teamSignInHome';
 import { t } from '@/text';
 
 import type { TeamSectionContext } from './teamSectionContext';
@@ -125,10 +128,46 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
         );
     }
 
+    if (binding.kind === 'credential_unreadable') {
+        return (
+            <ItemList>
+                <HomeCredentialUnreadableCard serverId={binding.serverId} testID="team-credential-unreadable" />
+            </ItemList>
+        );
+    }
+
     const { state, homeName, address, refresh } = binding;
 
     if (state.kind === 'unobserved' || state.kind === 'loading') {
         return <TeamMessage title={t('teams.title')} busy testID="team-loading" />;
+    }
+
+    if (state.kind === 'unavailable' && state.error.code === 'team_authentication_required') {
+        // The Home recognised this member but the current sign-in does not
+        // satisfy this Team's authentication. The recovery is the canonical
+        // exact-Home Team entry for this route's own Home (L03/02 §8.2), never a
+        // generic denial and never an automatic retry of the refused read.
+        const presentation = presentTeamEntryUnavailableReason('sso_required');
+        return (
+            <ItemList>
+                <TeamMessage
+                    title={presentation?.title ?? t('homeGovernance.forbiddenTitle')}
+                    body={presentation?.body}
+                    testID="team-authentication-required"
+                />
+                <ItemGroup>
+                    <Item
+                        testID="team-sign-in"
+                        title={t('teams.entry.signInToTeam')}
+                        icon={<Icon name="sign-in" size={29} color={theme.colors.text.secondary} />}
+                        onPress={() => router.push(teamSignInReturnPath({
+                            teamId: props.teamId,
+                            serverId: props.serverId,
+                        }))}
+                    />
+                </ItemGroup>
+            </ItemList>
+        );
     }
 
     if (state.kind === 'unavailable') {
