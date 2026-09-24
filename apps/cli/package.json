@@ -324,13 +324,6 @@
     "@happier-dev/plugins-channel-discord": "0.0.0",
     "@happier-dev/plugins-devin": "0.0.0"
   },
-  "optionalDependencies": {
-    "sherpa-onnx-darwin-arm64": "1.12.38",
-    "sherpa-onnx-darwin-x64": "1.12.38",
-    "sherpa-onnx-linux-arm64": "1.12.38",
-    "sherpa-onnx-linux-x64": "1.12.38",
-    "sherpa-onnx-win-x64": "1.12.38"
-  },
   "devDependencies": {
     "@eslint/compat": "^1",
     "@types/archiver": "^7.0.0",

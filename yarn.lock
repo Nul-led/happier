@@ -20102,35 +20102,20 @@ shelljs@^0.8.5:
     interpret "^1.0.0"
     rechoir "^0.6.2"
 
-sherpa-onnx-darwin-arm64@1.12.38, sherpa-onnx-darwin-arm64@^1.12.38:
+sherpa-onnx-darwin-arm64@^1.12.38:
   version "1.12.38"
   resolved "https://registry.npmjs.org/sherpa-onnx-darwin-arm64/-/sherpa-onnx-darwin-arm64-1.12.38.tgz"
   integrity sha512-UIU8gyA2t0oYRobkf2MGUeo0KMjuNn+rHP3y1xZPoZinEVdo+56rUXIJBUbIWmVX4W6mkdKSOHU/ouRKt138vQ==
-
-sherpa-onnx-darwin-x64@1.12.38:
-  version "1.12.38"
-  resolved "https://registry.npmjs.org/sherpa-onnx-darwin-x64/-/sherpa-onnx-darwin-x64-1.12.38.tgz#b97116e163106141a09c2f13ae330d082a24f721"
-  integrity sha512-+Wa/RmmZys7UzP9nUnaBq9+npj5LrQ73amqFO5cFX5CycYV1h36Dv+X2nyTYYp1nmt7oI/eKg7VPIvv8iMcHxQ==
 
 sherpa-onnx-darwin-x64@^1.12.38:
   version "1.13.4"
   resolved "https://registry.npmjs.org/sherpa-onnx-darwin-x64/-/sherpa-onnx-darwin-x64-1.13.4.tgz#69f99571194e63329a068288bd125c777429b9ed"
   integrity sha512-6RGeis9K9gV/UQWOgd6Rf3iqXr2/YsBQswxHaCR4hrYkHfEIpHMfFmRWLt6nJJCOWgYW2xFxEd9yzjrafAV/Pw==
 
-sherpa-onnx-linux-arm64@1.12.38:
-  version "1.12.38"
-  resolved "https://registry.npmjs.org/sherpa-onnx-linux-arm64/-/sherpa-onnx-linux-arm64-1.12.38.tgz#5598a8a30b7a797635ca6c43892a7f811a4f6121"
-  integrity sha512-sZmH66L6o1QNBh2MYgFFUTsbqEj1q+uwV0ChBIH6nVDHYQBtPyBndbcXv+KmJQSRpTBmRGET10CYZsK5Y+SCpA==
-
 sherpa-onnx-linux-arm64@^1.12.38:
   version "1.13.4"
   resolved "https://registry.npmjs.org/sherpa-onnx-linux-arm64/-/sherpa-onnx-linux-arm64-1.13.4.tgz#2e29bc8aae68712ad0caee7cf56e44f61c27b3a5"
   integrity sha512-RMjMRqT82BgTXypNNGmLe6ZFYhc3WEvnAGl3DdkK7qB/kuXwkL3iHhV31wAecbnWPsnEpUoD+8cFovWSBzsCuw==
-
-sherpa-onnx-linux-x64@1.12.38:
-  version "1.12.38"
-  resolved "https://registry.npmjs.org/sherpa-onnx-linux-x64/-/sherpa-onnx-linux-x64-1.12.38.tgz#ebf185ff18c515cae2eb56ef3f32ede1bf8e8cea"
-  integrity sha512-2kZmoD8kE077gKu5AWYB5P5giqDOjKVd20PvUjdu3+tu6FhFXGiAywP2biTu7ivloWiKtx8nygnih+cCHigx6A==
 
 sherpa-onnx-linux-x64@^1.12.38:
   version "1.13.4"
@@ -20153,11 +20138,6 @@ sherpa-onnx-win-ia32@^1.12.38:
   version "1.13.4"
   resolved "https://registry.npmjs.org/sherpa-onnx-win-ia32/-/sherpa-onnx-win-ia32-1.13.4.tgz#c97da4c6864e5a2d7faf108e8f3a73676471f73a"
   integrity sha512-/JbPjldrfNv+t+uIS3MlkuhfIf5l3FHUGkRC2oRXgjRqOaVmEyP3vLlQ7dTa4J7raG5oB8c3GoPjuSWSqT9GOQ==
-
-sherpa-onnx-win-x64@1.12.38:
-  version "1.12.38"
-  resolved "https://registry.npmjs.org/sherpa-onnx-win-x64/-/sherpa-onnx-win-x64-1.12.38.tgz#57a71411e1430e87d68ebcbb5f852946184a9c98"
-  integrity sha512-D7kimY7oosJID+9gTZI3g/Pc43/3ZYQ6EP8rpBhCGTDlND9DaDXpOS7aUCVqUAVRZU3+w6rZyE0s9LVuWoo/9w==
 
 sherpa-onnx-win-x64@^1.12.38:
   version "1.13.4"
