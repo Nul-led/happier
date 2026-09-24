@@ -1,40 +1,26 @@
 #!/usr/bin/env node
 
 /**
- * Ripgrep runner - executed as a subprocess to run the native module
+ * Ripgrep runner - executed as a subprocess to run the packaged binary
  * This file is intentionally written in CommonJS to avoid ESM complexities
  *
- * Updated with graceful fallback chain for runtime compatibility:
- * - Node.js: Try native addon first, fall back to binary
- * - Bun: Use binary or system ripgrep directly
- * - All runtimes: Cross-platform system detection
+ * Fallback chain:
+ * - Use the packaged target-specific rg executable
+ * - Fall back to system ripgrep when the packaged executable is unavailable
  * - Fallback: Mock implementation with helpful guidance
  */
 
 const path = require('path');
 const fs = require('fs');
-const { withWindowsHide } = require('./childProcessOptions.cjs');
+const { normalizeChildProcessExitCode, withWindowsHide } = require('./childProcessOptions.cjs');
 const { resolvePackagedRipgrepBinaryPath } = require('./ripgrep_runtime_paths.cjs');
-
-// Runtime detection (minimal, focused)
-function detectRuntime() {
-    if (typeof Bun !== 'undefined') return 'bun';
-    if (typeof Deno !== 'undefined') return 'deno';
-    if (process?.versions?.bun) return 'bun';
-    if (process?.versions?.deno) return 'deno';
-    if (process?.versions?.node) return 'node';
-    return 'unknown';
-}
 
 // Find ripgrep in system PATH (cross-platform)
 function findSystemRipgrep() {
     const { execFileSync } = require('child_process');
 
-    // Platform-specific commands to find ripgrep
     const commands = [
-        // Windows: Use where command
         process.platform === 'win32' && { cmd: 'where', args: ['rg'] },
-        // Unix-like: Use which command
         process.platform !== 'win32' && { cmd: 'which', args: ['rg'] }
     ].filter(Boolean);
 
@@ -52,12 +38,10 @@ function findSystemRipgrep() {
                 }
             }
         } catch {
-            // Command failed, try next one
             continue;
         }
     }
 
-    // Fallback: Try common installation paths directly
     const commonPaths = [];
     if (process.platform === 'win32') {
         commonPaths.push(
@@ -86,7 +70,6 @@ function findSystemRipgrep() {
     return null;
 }
 
-// Create wrapper that mimics native addon interface
 function createRipgrepWrapper(binaryPath) {
     return {
         ripgrepMain: (args) => {
@@ -95,14 +78,12 @@ function createRipgrepWrapper(binaryPath) {
                 stdio: 'inherit',
                 cwd: process.cwd()
             }));
-            if (typeof result.status === 'number') return result.status;
-            if (result.signal) return 1;
-            return 0;
+            if (result.error) throw result.error;
+            return normalizeChildProcessExitCode(result.status);
         }
     };
 }
 
-// Create mock that doesn't crash but provides useful feedback
 function createMockRipgrep() {
     return {
         ripgrepMain: (args) => {
@@ -118,38 +99,25 @@ function createMockRipgrep() {
     };
 }
 
-// Load ripgrep with graceful fallback chain
-function loadRipgrepNative() {
-    const runtime = detectRuntime();
-    const toolsDir = path.join(__dirname, '..', 'tools', 'unpacked');
-    const nativePath = path.join(toolsDir, 'ripgrep.node');
-    const binaryPath = resolvePackagedRipgrepBinaryPath(toolsDir);
+function resolvePackagedRipgrepPath(toolsDir, platform = process.platform) {
+    const binaryPath = resolvePackagedRipgrepBinaryPath(toolsDir, platform);
+    return fs.existsSync(binaryPath) ? binaryPath : null;
+}
 
-    // Try Node.js native addon first (preserves existing behavior)
-    if (runtime === 'node') {
-        try {
-            return require(nativePath);
-        } catch (error) {
-            console.warn('Failed to load ripgrep native addon:', error.message);
-            console.warn('Falling back to ripgrep binary...');
-            // Fall through to binary fallback
-        }
+function loadRipgrep() {
+    const toolsDir = path.join(__dirname, '..', 'tools', 'unpacked');
+    const packagedRipgrep = resolvePackagedRipgrepPath(toolsDir);
+    if (packagedRipgrep) {
+        return createRipgrepWrapper(packagedRipgrep);
     }
 
-    // Bun or Node.js fallback: Try system ripgrep
+    // Development and npm layouts can legitimately lack an unpacked tool.
     const systemRipgrep = findSystemRipgrep();
     if (systemRipgrep) {
         console.error(`Using system ripgrep: ${systemRipgrep}`);
         return createRipgrepWrapper(systemRipgrep);
     }
 
-    // Local binary fallback
-    if (fs.existsSync(binaryPath)) {
-        console.error('Using packaged ripgrep binary');
-        return createRipgrepWrapper(binaryPath);
-    }
-
-    // Final fallback: Return mock implementation that provides helpful guidance
     console.warn('\n⚠️  ripgrep not available - search functionality limited');
     console.warn('Install ripgrep for full functionality:');
 
@@ -165,31 +133,38 @@ function loadRipgrepNative() {
     return createMockRipgrep();
 }
 
-// Load ripgrep implementation
-const ripgrepImplementation = loadRipgrepNative();
-
-// Get arguments from command line (skip node and script name)
-const args = process.argv.slice(2);
-
-// Parse the JSON-encoded arguments
-let parsedArgs;
-try {
-    if (!args[0]) {
-        console.error('Missing arguments: expected JSON-encoded argv as the first parameter.');
-        console.error('Example: node scripts/ripgrep_launcher.cjs \'["--version"]\'');
-        process.exit(1);
+function main(argv = process.argv.slice(2)) {
+    let parsedArgs;
+    try {
+        if (!argv[0]) {
+            console.error('Missing arguments: expected JSON-encoded argv as the first parameter.');
+            console.error('Example: node scripts/ripgrep_launcher.cjs \'["--version"]\'');
+            return 1;
+        }
+        parsedArgs = JSON.parse(argv[0]);
+        if (!Array.isArray(parsedArgs) || !parsedArgs.every((arg) => typeof arg === 'string')) {
+            throw new TypeError('expected an array of strings');
+        }
+    } catch (error) {
+        console.error('Failed to parse arguments:', error.message);
+        return 1;
     }
-    parsedArgs = JSON.parse(args[0]);
-} catch (error) {
-    console.error('Failed to parse arguments:', error.message);
-    process.exit(1);
+
+    try {
+        return loadRipgrep().ripgrepMain(parsedArgs);
+    } catch (error) {
+        console.error('Ripgrep error:', error.message);
+        return 1;
+    }
 }
 
-// Run ripgrep using the loaded implementation
-try {
-    const exitCode = ripgrepImplementation.ripgrepMain(parsedArgs);
+module.exports = { main, resolvePackagedRipgrepPath };
+
+if (require.main === module) {
+    const exitCode = main();
+    if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) {
+        console.error(`Ripgrep error: invalid exit code ${exitCode}`);
+        process.exit(1);
+    }
     process.exit(exitCode);
-} catch (error) {
-    console.error('Ripgrep error:', error.message);
-    process.exit(1);
 }

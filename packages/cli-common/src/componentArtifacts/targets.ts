@@ -5,6 +5,21 @@ export type BinaryTarget = {
   exeExt: string;
 };
 
+export function resolveCliToolsPlatformDir(target: BinaryTarget): string {
+  const targetKey = `${target.arch}-${target.os}`;
+  switch (targetKey) {
+    case 'arm64-darwin':
+    case 'x64-darwin':
+    case 'arm64-linux':
+    case 'x64-linux':
+      return targetKey;
+    case 'x64-windows':
+      return 'x64-win32';
+    default:
+      throw new Error(`[component-artifacts] unsupported CLI tools binary target: ${targetKey}`);
+  }
+}
+
 export const CLI_BINARY_TARGETS: BinaryTarget[] = [
   { bunTarget: 'bun-linux-x64-baseline', os: 'linux', arch: 'x64', exeExt: '' },
   { bunTarget: 'bun-linux-arm64', os: 'linux', arch: 'arm64', exeExt: '' },

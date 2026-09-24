@@ -18,11 +18,11 @@ const TOOL_ARCHIVE_MANIFEST = [
     { tool: 'difftastic', platformDir: 'arm64-linux', archiveName: 'difftastic-arm64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'difft', version: '0', licenseName: 'difftastic-LICENSE' },
     { tool: 'difftastic', platformDir: 'x64-linux', archiveName: 'difftastic-x64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'difft', version: '0', licenseName: 'difftastic-LICENSE' },
     { tool: 'difftastic', platformDir: 'x64-win32', archiveName: 'difftastic-x64-win32.tar.gz', archiveType: 'tar.gz', binaryName: 'difft.exe', version: '0', licenseName: 'difftastic-LICENSE' },
-    { tool: 'ripgrep', platformDir: 'arm64-darwin', archiveName: 'ripgrep-arm64-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE', extraBinaries: ['ripgrep.node'] },
-    { tool: 'ripgrep', platformDir: 'x64-darwin', archiveName: 'ripgrep-x64-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE', extraBinaries: ['ripgrep.node'] },
-    { tool: 'ripgrep', platformDir: 'arm64-linux', archiveName: 'ripgrep-arm64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE', extraBinaries: ['ripgrep.node'] },
-    { tool: 'ripgrep', platformDir: 'x64-linux', archiveName: 'ripgrep-x64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE', extraBinaries: ['ripgrep.node'] },
-    { tool: 'ripgrep', platformDir: 'x64-win32', archiveName: 'ripgrep-x64-win32.tar.gz', archiveType: 'tar.gz', binaryName: 'rg.exe', version: '0', licenseName: 'ripgrep-LICENSE', extraBinaries: ['ripgrep.node'] },
+    { tool: 'ripgrep', platformDir: 'arm64-darwin', archiveName: 'ripgrep-arm64-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE' },
+    { tool: 'ripgrep', platformDir: 'x64-darwin', archiveName: 'ripgrep-x64-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE' },
+    { tool: 'ripgrep', platformDir: 'arm64-linux', archiveName: 'ripgrep-arm64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE' },
+    { tool: 'ripgrep', platformDir: 'x64-linux', archiveName: 'ripgrep-x64-linux.tar.gz', archiveType: 'tar.gz', binaryName: 'rg', version: '0', licenseName: 'ripgrep-LICENSE' },
+    { tool: 'ripgrep', platformDir: 'x64-win32', archiveName: 'ripgrep-x64-win32.tar.gz', archiveType: 'tar.gz', binaryName: 'rg.exe', version: '0', licenseName: 'ripgrep-LICENSE' },
     { tool: 'zellij', platformDir: 'arm64-darwin', archiveName: 'zellij-no-web-aarch64-apple-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'zellij', version: '0.44.3', licenseName: 'zellij-LICENSE' },
     { tool: 'zellij', platformDir: 'x64-darwin', archiveName: 'zellij-no-web-x86_64-apple-darwin.tar.gz', archiveType: 'tar.gz', binaryName: 'zellij', version: '0.44.3', licenseName: 'zellij-LICENSE' },
     { tool: 'zellij', platformDir: 'arm64-linux', archiveName: 'zellij-no-web-aarch64-unknown-linux-musl.tar.gz', archiveType: 'tar.gz', binaryName: 'zellij', version: '0.44.3', licenseName: 'zellij-LICENSE' },
@@ -104,8 +104,13 @@ function getToolArchiveManifest() {
     return TOOL_ARCHIVE_MANIFEST.map((entry) => ({ ...entry }));
 }
 
-function getManifestForPlatform(platformDir) {
-    return TOOL_ARCHIVE_MANIFEST.filter((entry) => entry.platformDir === platformDir);
+function getManifestForPlatform(platformDir, tools) {
+    const entries = TOOL_ARCHIVE_MANIFEST.filter((entry) => entry.platformDir === platformDir);
+    if (!tools) return entries;
+    for (const tool of tools) {
+        if (!entries.some((entry) => entry.tool === tool)) throw new Error(`Unsupported tool ${tool} for platform: ${platformDir}`);
+    }
+    return entries.filter((entry) => tools.includes(entry.tool));
 }
 
 function getCliRuntimeAssetArchiveManifest() {
@@ -173,7 +178,7 @@ function expectedFilesForEntry(entry) {
 /**
  * Check if tools are already unpacked for the requested platform.
  */
-function areToolsUnpacked(toolsDir, platformDir = getPlatformDir()) {
+function areToolsUnpacked(toolsDir, platformDir = getPlatformDir(), tools) {
     const unpackedPath = path.join(toolsDir, 'unpacked');
 
     if (!fs.existsSync(unpackedPath)) {
@@ -181,7 +186,7 @@ function areToolsUnpacked(toolsDir, platformDir = getPlatformDir()) {
     }
 
     const entries = [
-        ...getManifestForPlatform(platformDir),
+        ...getManifestForPlatform(platformDir, tools),
         ...getStagedRuntimeAssetsForPlatform(path.join(toolsDir, 'archives'), platformDir),
     ];
     const expectedFiles = entries.flatMap(expectedFilesForEntry);
@@ -436,7 +441,7 @@ async function unpackTools(options = {}) {
         const archivesDir = path.join(toolsDir, 'archives');
         const unpackedPath = path.join(toolsDir, 'unpacked');
 
-        if (areToolsUnpacked(toolsDir, platformDir)) {
+        if (areToolsUnpacked(toolsDir, platformDir, options.tools)) {
             // The extracted bytes are the asset; the build manifest is the record
             // the launch resolver reads. Re-record so an already-extracted tree
             // can never present the wrapper without its integrity entry.
@@ -451,7 +456,7 @@ async function unpackTools(options = {}) {
             fs.mkdirSync(unpackedPath, { recursive: true });
         }
 
-        const entries = getManifestForPlatform(platformDir);
+        const entries = getManifestForPlatform(platformDir, options.tools);
         if (entries.length === 0) {
             throw new Error(`Unsupported platform: ${platformDir}`);
         }

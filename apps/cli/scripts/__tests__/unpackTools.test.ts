@@ -49,9 +49,9 @@ type UnpackToolsModule = Readonly<{
   getToolsDir: () => string;
   getToolArchiveManifest: () => readonly ToolArchiveManifestEntry[];
   getCliRuntimeAssetArchiveManifest: () => readonly CliRuntimeAssetArchiveManifestEntry[];
-  areToolsUnpacked: (toolsDir: string, platformDir?: string) => boolean;
+  areToolsUnpacked: (toolsDir: string, platformDir?: string, tools?: readonly string[]) => boolean;
   unpackArchive: (archivePath: string, destDir: string) => Promise<void>;
-  unpackTools: (options?: { platformDir?: string; toolsDir?: string }) => Promise<{ success: boolean; alreadyUnpacked: boolean }>;
+  unpackTools: (options?: { platformDir?: string; toolsDir?: string; tools?: readonly string[] }) => Promise<{ success: boolean; alreadyUnpacked: boolean }>;
   readChecksumManifest: (manifestPath: string) => Map<string, string>;
   readArchiveChecksums: (archivesDir: string) => Map<string, string>;
   verifyArchiveChecksum: (archivePath: string, manifestPath?: string) => void;
@@ -96,9 +96,29 @@ async function writeRuntimeAssetChecksums(archivesDir: string, checksums: Record
 }
 
 describe('unpack-tools script', () => {
-  it('manifest includes explicit zellij archive mappings including Windows zip', () => {
+  it('extracts and reuses only the selected optional tool while retaining checksum verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-optional-tool-'));
+    const archives = join(root, 'archives');
+    const staging = join(root, 'staging');
+    await mkdir(archives, { recursive: true });
+    await mkdir(staging);
+    await writeFile(join(staging, 'difft'), 'difft');
+    await writeFile(join(archives, 'difftastic-LICENSE'), 'license');
+    const archive = join(archives, 'difftastic-x64-linux.tar.gz');
+    await createTarGz(staging, archive, ['difft']);
+    await writeManifestChecksums(archives, { 'difftastic-x64-linux.tar.gz': await sha256(archive) });
+    const unpacker = require('../unpack-tools.cjs') as UnpackToolsModule;
+    const options = { toolsDir: root, platformDir: 'x64-linux', tools: ['difftastic'] };
+    await expect(unpacker.unpackTools(options)).resolves.toEqual({ success: true, alreadyUnpacked: false });
+    expect(await readFile(join(root, 'unpacked/difft'), 'utf8')).toBe('difft');
+    expect(unpacker.areToolsUnpacked(root, 'x64-linux')).toBe(false);
+    await expect(unpacker.unpackTools(options)).resolves.toEqual({ success: true, alreadyUnpacked: true });
+    await expect(unpacker.unpackTools({ ...options, tools: ['unknown'] })).rejects.toThrow('Unsupported tool');
+  });
+  it('manifest treats rg as the ripgrep runtime and retains zellij on every supported target', () => {
     const unpackTools = require('../unpack-tools.cjs') as UnpackToolsModule;
-    expect(unpackTools.getToolArchiveManifest()).toEqual(
+    const manifest = unpackTools.getToolArchiveManifest();
+    expect(manifest).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           tool: 'zellij',
@@ -120,6 +140,15 @@ describe('unpack-tools script', () => {
         }),
       ]),
     );
+    expect(manifest.filter((entry) => entry.tool === 'ripgrep')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ platformDir: 'x64-win32', binaryName: 'rg.exe' }),
+        expect.objectContaining({ platformDir: 'arm64-darwin', binaryName: 'rg' }),
+        expect.objectContaining({ platformDir: 'x64-linux', binaryName: 'rg' }),
+      ]),
+    );
+    expect(manifest.filter((entry) => entry.tool === 'ripgrep'))
+      .toEqual(expect.not.arrayContaining([expect.objectContaining({ extraBinaries: ['ripgrep.node'] })]));
   });
 
   it('does not treat rg and difftastic alone as fully unpacked for zellij platforms', async () => {
