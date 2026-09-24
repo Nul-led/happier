@@ -14,6 +14,8 @@ import {
   resolveFirstPartyComponentPublicReleaseVariant,
 } from './componentCatalog.js';
 import { extractReleasePayloadRootFromArchive } from './extractReleasePayloadRootFromArchive.js';
+import { FirstPartyAcquisitionError, readAcquisitionFailureCause, type FirstPartyAcquisitionOptions } from './acquisitionProgress.js';
+import type { CliAcquisitionProgress } from '@happier-dev/protocol';
 import { prepareMutagenEnginePayloadFromGitHubRelease } from './prepareMutagenEnginePayloadFromGitHubRelease.js';
 import { MutagenEngineArtifactError } from './mutagenEngineArtifact.js';
 
@@ -48,9 +50,10 @@ function normalizeReleaseAssetArch(value: unknown): 'x64' | 'arm64' {
   throw new Error(`Unsupported first-party release architecture: ${normalized}`);
 }
 
-export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params: Readonly<{
+export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params: FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   channel: PublicReleaseRingId;
+  versionId?: string;
   os?: string;
   arch?: string;
   engineVersion?: string;
@@ -78,27 +81,40 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
     componentId: params.componentId,
     channel: params.channel,
   });
+  const versionId = params.versionId?.trim();
+  if (params.versionId !== undefined && (!versionId || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(versionId))) {
+    throw new Error('[first-party-release] versionId must be an exact release version');
+  }
+  const releaseTag = versionId ? `${component.rollingReleasePrefix}-v${versionId}` : variant.releaseTag;
   const os = normalizeReleaseAssetOs(params.os);
   const arch = normalizeReleaseAssetArch(params.arch);
   const source = resolveFirstPartyReleaseArtifactSource(params);
   const githubRepo = source.githubRepo;
   const githubToken = source.githubToken;
   const userAgent = source.userAgent;
+  params.signal?.throwIfAborted();
+  let phase: CliAcquisitionProgress['phase'] = 'resolvingRelease';
+  const report = (progress: CliAcquisitionProgress) => {
+    phase = progress.phase;
+    params.onProgress?.(progress);
+  };
+  report({ phase });
   const scratchRoot = await mkdtemp(join(tmpdir(), `happier-first-party-${params.componentId}-`));
 
   try {
     const release = await fetchGitHubReleaseByTag({
       githubRepo,
-      tag: variant.releaseTag,
+      tag: releaseTag,
       githubToken,
       userAgent,
+      signal: params.signal,
     }).catch((error) => {
       throw wrapFirstPartyReleaseSourceError({
         componentId: params.componentId,
         channel: params.channel,
         stage: 'resolve release tag',
         githubRepo,
-        releaseTag: variant.releaseTag,
+        releaseTag,
         githubToken,
         error,
       });
@@ -115,38 +131,45 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
         channel: params.channel,
         stage: 'resolve release assets',
         githubRepo,
-        releaseTag: variant.releaseTag,
+        releaseTag,
         githubToken,
         error,
       });
     });
+    if (versionId && bundle.version !== versionId) {
+      throw new Error(`[first-party-release] Expected version ${versionId} for ${params.componentId}, received ${bundle.version}`);
+    }
     const downloaded = await downloadVerifiedReleaseAssetBundle({
       bundle,
       destDir: join(scratchRoot, 'download'),
       pubkeyFile: String(params.minisignPubkeyFile ?? '').trim() || DEFAULT_MINISIGN_PUBLIC_KEY,
       userAgent,
+      signal: params.signal,
+      onProgress: report,
     }).catch((error) => {
       throw wrapFirstPartyReleaseSourceError({
         componentId: params.componentId,
         channel: params.channel,
         stage: 'download release assets',
         githubRepo,
-        releaseTag: variant.releaseTag,
+        releaseTag,
         githubToken,
         error,
       });
     });
+    report({ phase: 'unpacking' });
     const payloadRoot = await extractReleasePayloadRootFromArchive({
       archivePath: downloaded.archivePath,
       archiveName: downloaded.archiveName,
       extractDir: join(scratchRoot, 'extract'),
+      signal: params.signal,
     }).catch((error) => {
       throw wrapFirstPartyReleaseSourceError({
         componentId: params.componentId,
         channel: params.channel,
         stage: 'extract release payload',
         githubRepo,
-        releaseTag: variant.releaseTag,
+        releaseTag,
         githubToken,
         error,
       });
@@ -164,7 +187,8 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
     };
   } catch (error) {
     await rm(scratchRoot, { recursive: true, force: true });
-    throw error;
+    params.signal?.throwIfAborted();
+    throw new FirstPartyAcquisitionError(phase, readAcquisitionFailureCause(error), error);
   }
 }
 
@@ -226,9 +250,14 @@ function wrapFirstPartyReleaseSourceError(params: Readonly<{
   const rawMessage = params.error instanceof Error && params.error.message.trim()
     ? params.error.message.trim()
     : String(params.error ?? '').trim();
-  const tokenHint = params.githubToken
-    ? 'Verify the repository, release tag, and release assets.'
-    : 'No GitHub token was configured; if the release repository is private, set HAPPIER_FIRST_PARTY_RELEASE_TOKEN, HAPPIER_GITHUB_TOKEN, or GH_TOKEN.';
+  const shouldSuggestToken = !params.githubToken && (
+    status === 401
+    || status === 403
+    || (status === 404 && params.stage === 'resolve release tag')
+  );
+  const tokenHint = shouldSuggestToken
+    ? 'No GitHub token was configured; if the release repository is private, set HAPPIER_FIRST_PARTY_RELEASE_TOKEN, HAPPIER_GITHUB_TOKEN, or GH_TOKEN.'
+    : 'Verify the repository, release tag, and release assets.';
   const statusHint =
     status === 404
       ? 'GitHub returned 404, which usually means the repository is private, the tag is missing, or the token does not have release access.'
@@ -243,11 +272,11 @@ function wrapFirstPartyReleaseSourceError(params: Readonly<{
   ]
     .filter(Boolean)
     .join(' ');
-  return createStatusAwareError(message, status);
+  return createStatusAwareError(message, status, params.error);
 }
 
-function createStatusAwareError(message: string, status: number | null): Error {
-  const error = new Error(message);
+function createStatusAwareError(message: string, status: number | null, cause: unknown): Error {
+  const error = new Error(message, { cause });
   if (status != null) {
     Reflect.set(error, 'status', status);
   }

@@ -51,6 +51,31 @@ function createInMemoryWorkerChannel(runtime: VoiceInferenceRuntime): VoiceInfer
 }
 
 describe('forked voice inference runtime loader', () => {
+  it('prepares the managed runtime once before exposing or spawning the forked engine', async () => {
+    const observations: string[] = [];
+    const runtime: VoiceInferenceRuntime = {
+      synthesizeTts: async () => ({ bytes: Buffer.from('x'), output: { codec: 'wav', mimeType: 'audio/wav' }, name: 'x.wav' }),
+      transcribeAudio: async () => ({ text: '', language: null }),
+    };
+    const handle = createForkedVoiceInferenceRuntimeHandle({
+      prepareRuntime: async () => { observations.push('prepared'); },
+      channelFactory: async () => {
+        observations.push('spawned');
+        return createInMemoryWorkerChannel(runtime);
+      },
+    });
+
+    const first = await handle.runtimeLoader();
+    const second = await handle.runtimeLoader();
+    expect(first).toBe(second);
+    expect(observations).toEqual(['prepared']);
+    await first?.synthesizeTts({
+      requestId: 'prepare-once', text: 'hi', packId: 'pack-1', packDir: '/tmp/pack-1', manifest, voiceId: null, speed: null, output: { codec: 'wav', mimeType: 'audio/wav' },
+    });
+    expect(observations).toEqual(['prepared', 'spawned']);
+    await handle.dispose();
+  });
+
   it('force-terminates and awaits the exact spawned child when its observer throws', async () => {
     let forceTerminateCalls = 0;
     let waitForTerminationCalls = 0;
@@ -80,6 +105,7 @@ describe('forked voice inference runtime loader', () => {
       },
     };
     const handle = createForkedVoiceInferenceRuntimeHandle({
+      prepareRuntime: async () => {},
       channelFactory: async () => channel,
       onWorkerProcess: () => {
         markObserverEntered();
@@ -119,6 +145,7 @@ describe('forked voice inference runtime loader', () => {
       transcribeAudio: async () => ({ text: '', language: null }),
     };
     const handle = createForkedVoiceInferenceRuntimeHandle({
+      prepareRuntime: async () => {},
       channelFactory: async () => createInMemoryWorkerChannel(runtime),
       onWorkerProcess: (observation) => observations.push(observation),
     });
@@ -146,6 +173,7 @@ describe('forked voice inference runtime loader', () => {
     };
 
     const handle = createForkedVoiceInferenceRuntimeHandle({
+      prepareRuntime: async () => {},
       channelFactory: async () => createInMemoryWorkerChannel(runtime),
       onSnapshot: (snapshot) => snapshots.push(`${snapshot.packId}:${snapshot.runtimeState}`),
     });
@@ -178,6 +206,7 @@ describe('forked voice inference runtime loader', () => {
       transcribeAudio: async () => ({ text: '', language: null }),
     };
     const handle = createForkedVoiceInferenceRuntimeHandle({
+      prepareRuntime: async () => {},
       channelFactory: async () => createInMemoryWorkerChannel(runtime),
     });
     const a = await handle.runtimeLoader();

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import type { MemoryEmbeddingsLocalTransformersConfig } from '@happier-dev/protocol';
+import { INSTALLABLE_KEYS, type MemoryEmbeddingsLocalTransformersConfig } from '@happier-dev/protocol';
 
 import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import {
@@ -25,11 +25,9 @@ type ImportTransformersModuleDependencies = Readonly<{
   runtimeAssetExists: (path: string) => boolean;
 }>;
 
-type CreateFeatureExtractionPipelineDependencies = Partial<ImportTransformersModuleDependencies>;
-
 function isTransformersModuleResolutionFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  if (message.includes("Cannot find module '@huggingface/transformers'")) {
+  if (message.includes("Cannot find module '@huggingface/transformers'") || message.includes("Cannot find package '@huggingface/transformers'")) {
     return true;
   }
 
@@ -72,9 +70,10 @@ function resolveRuntimeTransformersImportUrls(runtimeAssetExists: (path: string)
     .map((candidate) => pathToFileURL(candidate).href);
 }
 
-function createTransformersModuleLoader(
+function createTransformersModuleLoader<T>(
+  consumeModule: (mod: TransformersModule) => Promise<T>,
   deps?: Partial<ImportTransformersModuleDependencies>,
-): InferenceRuntimeLoader<TransformersModule> {
+): InferenceRuntimeLoader<T> {
   const packageImport = deps?.packageImport ?? (async () => await import('@huggingface/transformers'));
   const runtimeImport =
     deps?.runtimeImport ??
@@ -82,44 +81,25 @@ function createTransformersModuleLoader(
   const runtimeAssetExists = deps?.runtimeAssetExists ?? existsSync;
   const runtimeImportUrls = resolveRuntimeTransformersImportUrls(runtimeAssetExists);
 
-  return createInferenceRuntimeLoader<TransformersModule>({
+  return createInferenceRuntimeLoader<T>({
     resolveCandidates: () => [
-      async () => await packageImport(),
+      async () => await consumeModule(await packageImport()),
       ...runtimeImportUrls.map((moduleUrl) => async () =>
-        await importRuntimeTransformersModule({
-          runtimeImport,
-          runtimeImportUrls: [moduleUrl],
-          originalError: new Error(`Failed to import runtime transformers module: ${moduleUrl}`),
-        })),
+        await consumeModule(await runtimeImport(moduleUrl))),
     ],
     isRecoverableLoadError: isRecoverableTransformersRuntimeFailure,
+    onRecoverableExhaustion: async () => {
+      const { ensureOptionalRuntime } = await import('@/packagedRuntime/installables/optionalRuntimes');
+      const managedModule = await ensureOptionalRuntime(INSTALLABLE_KEYS.LOCAL_EMBEDDINGS);
+      return await consumeModule(await runtimeImport(pathToFileURL(managedModule).href));
+    },
   });
-}
-
-async function importRuntimeTransformersModule(params: Readonly<{
-  runtimeImport: (moduleUrl: string) => Promise<TransformersModule>;
-  runtimeImportUrls: readonly string[];
-  originalError: unknown;
-}>): Promise<TransformersModule> {
-  let lastError = params.originalError;
-  for (const moduleUrl of params.runtimeImportUrls) {
-    try {
-      return await params.runtimeImport(moduleUrl);
-    } catch (error) {
-      lastError = error;
-      if (!isRecoverableTransformersRuntimeFailure(error)) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
 }
 
 export async function importTransformersModuleWithFallback(
   deps?: Partial<ImportTransformersModuleDependencies>,
 ): Promise<TransformersModule> {
-  return await createTransformersModuleLoader(deps).load('huggingface-transformers');
+  return await createTransformersModuleLoader(async (mod) => mod, deps).load('huggingface-transformers');
 }
 
 function applyCacheDir(env: unknown, cacheDir: string): void {
@@ -165,33 +145,6 @@ async function createFeatureExtractionPipelineFromModule(params: Readonly<{
   }
 }
 
-async function createFeatureExtractionPipelineFromRuntimeCandidates(params: Readonly<{
-  runtimeImport: (moduleUrl: string) => Promise<TransformersModule>;
-  runtimeImportUrls: readonly string[];
-  modelId: string;
-  cacheDir: string;
-  originalError: unknown;
-}>): Promise<any> {
-  let lastError = params.originalError;
-  for (const moduleUrl of params.runtimeImportUrls) {
-    try {
-      const runtimeModule = await params.runtimeImport(moduleUrl);
-      return await createFeatureExtractionPipelineFromModule({
-        mod: runtimeModule,
-        modelId: params.modelId,
-        cacheDir: params.cacheDir,
-      });
-    } catch (error) {
-      lastError = error;
-      if (!isRecoverableTransformersRuntimeFailure(error)) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
-}
-
 export async function createFeatureExtractionPipelineWithFallback(params: Readonly<{
   modelId: string;
   cacheDir: string;
@@ -199,33 +152,14 @@ export async function createFeatureExtractionPipelineWithFallback(params: Readon
   runtimeImport?: (moduleUrl: string) => Promise<TransformersModule>;
   runtimeAssetExists?: (path: string) => boolean;
 }>): Promise<any> {
-  const runtimeImport =
-    params.runtimeImport ??
-    (async (moduleUrl: string) => await new Function('moduleUrl', 'return import(moduleUrl)')(moduleUrl));
-  const runtimeAssetExists = params.runtimeAssetExists ?? existsSync;
-  const runtimeImportUrls = resolveRuntimeTransformersImportUrls(runtimeAssetExists);
-
-  try {
-    const mod = await importTransformersModuleWithFallback({
-      ...(params.packageImport ? { packageImport: params.packageImport } : {}),
-      ...(params.runtimeImport ? { runtimeImport } : {}),
-      ...(params.runtimeAssetExists ? { runtimeAssetExists } : {}),
-    });
-    return await createFeatureExtractionPipelineFromModule({
+  return await createTransformersModuleLoader(
+    async (mod) => await createFeatureExtractionPipelineFromModule({
       mod,
       modelId: params.modelId,
       cacheDir: params.cacheDir,
-    });
-  } catch (error) {
-    if (!isRecoverableTransformersRuntimeFailure(error) || runtimeImportUrls.length === 0) throw error;
-    return await createFeatureExtractionPipelineFromRuntimeCandidates({
-      runtimeImport,
-      runtimeImportUrls,
-      modelId: params.modelId,
-      cacheDir: params.cacheDir,
-      originalError: error,
-    });
-  }
+    }),
+    params,
+  ).load('huggingface-transformers');
 }
 
 function applyPrefix(text: string, prefix: string | null | undefined): string {

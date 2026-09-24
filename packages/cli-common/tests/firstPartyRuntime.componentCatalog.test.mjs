@@ -9,7 +9,7 @@ import {
 
 test('first-party runtime catalog exposes the expected component identities', () => {
   const ids = listFirstPartyComponentCatalogEntries().map((entry) => entry.id);
-  assert.deepEqual(ids, ['happier-cli', 'happier-daemon', 'happier-server', 'hstack', 'mutagen-engine']);
+  assert.deepEqual(ids, ['happier-cli', 'happier-daemon', 'happier-server', 'hstack', 'mutagen-engine', 'happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']);
 });
 
 test('mutagen engine uses the managed binary layout without a user-facing shim', () => {

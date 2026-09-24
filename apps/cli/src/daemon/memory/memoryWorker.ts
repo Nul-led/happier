@@ -1,11 +1,18 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 
-import type { SessionSummaryShardV1 } from '@happier-dev/protocol';
+import {
+  INSTALLABLE_KEYS,
+  type SessionSummaryShardV1,
+} from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
 import { DEFAULT_MEMORY_SETTINGS, readMemorySettingsFromDisk, type MemorySettingsV1 } from '@/settings/memorySettings';
 import { configuration } from '@/configuration';
+import { subscribeOptionalRuntimeInstallSuccess } from '@/packagedRuntime/installables/optionalRuntimes';
+import {
+  subscribeActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
 import { resolveMemoryIndexPaths } from './memoryIndexPaths';
 import { openSummaryShardIndexDb, type SummaryShardIndexDbHandle } from './summaryShardIndexDb';
@@ -107,6 +114,21 @@ function logMemoryWorkerServerEndpointFailure(operation: string, error: unknown)
   });
 }
 
+async function awaitEmbeddingsResolutionEpoch(
+  promise: Promise<EmbeddingsProviderResolution | null>,
+  signal?: AbortSignal,
+): Promise<EmbeddingsProviderResolution | null> {
+  if (!signal) return await promise;
+  signal.throwIfAborted();
+  return await new Promise<EmbeddingsProviderResolution | null>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
 export async function startMemoryWorker(params: Readonly<{
   credentials: StoredCredentials;
   machineId: string;
@@ -142,6 +164,12 @@ export async function startMemoryWorker(params: Readonly<{
   const sessionCryptoContextCache = new Map<string, SessionStoredContentCryptoContext>();
   const settingsSecretsReadKeys = deriveSettingsSecretsReadKeysForCredentials(params.credentials);
   const embeddingsProviderCache = createEmbeddingsProviderCache();
+  let embeddingsResolutionEpoch: Readonly<{
+    settings: MemorySettingsV1;
+    promise: Promise<EmbeddingsProviderResolution | null>;
+  }> | null = null;
+  let unsubscribeOptionalRuntimeInstallSuccess = () => {};
+  let unsubscribeAccountSettingsSnapshot = () => {};
   let embeddingsDiagnostics: OperationalMemoryEmbeddingsDiagnostics =
     buildUnavailableMemoryEmbeddingsDiagnostics(DEFAULT_MEMORY_SETTINGS.embeddings);
   let workerStatus: ReturnType<MemoryWorkerHandle['getWorkerStatus']> = {
@@ -187,12 +215,25 @@ export async function startMemoryWorker(params: Readonly<{
     return resolved;
   };
 
-  const refreshEmbeddingsDiagnostics = async (signal?: AbortSignal): Promise<EmbeddingsProviderResolution | null> => {
-    signal?.throwIfAborted();
-    const embeddings = resolveOperationalMemoryEmbeddingsSettings(settings.embeddings);
+  const resolveEmbeddingsDiagnosticsForSettings = async (
+    requestedSettings: MemorySettingsV1,
+  ): Promise<EmbeddingsProviderResolution | null> => {
+    const embeddings = resolveOperationalMemoryEmbeddingsSettings(requestedSettings.embeddings);
     if (!embeddings?.enabled || !embeddings.providerConfig || !embeddings.providerKind || !embeddings.modelId) {
-      embeddingsDiagnostics = buildUnavailableMemoryEmbeddingsDiagnostics(settings.embeddings);
+      embeddingsDiagnostics = buildUnavailableMemoryEmbeddingsDiagnostics(requestedSettings.embeddings);
       return null;
+    }
+
+    if (embeddings.providerKind === 'local_transformers') {
+      embeddingsDiagnostics = {
+        mode: embeddings.mode,
+        presetId: embeddings.presetId,
+        providerKind: embeddings.providerKind,
+        modelId: embeddings.modelId,
+        runtimeState: 'downloading',
+        usingFallback: true,
+        lastError: null,
+      };
     }
 
     const cacheDir = resolveInferenceCacheDir({
@@ -206,9 +247,14 @@ export async function startMemoryWorker(params: Readonly<{
       cacheDir,
       settingsSecretsReadKeys,
       cache: embeddingsProviderCache,
-      ...(signal ? { signal } : {}),
     });
-    signal?.throwIfAborted();
+    if (stopped) return null;
+    if (settings !== requestedSettings) {
+      // Model initialization can finish writing after disable removed its cache.
+      // Reuse disabled-settings cleanup without restoring obsolete diagnostics.
+      if (!settings.enabled && settings.deleteOnDisable) await applySettings(settings);
+      return null;
+    }
     embeddingsDiagnostics = {
       mode: resolution.mode,
       presetId: resolution.presetId,
@@ -220,6 +266,50 @@ export async function startMemoryWorker(params: Readonly<{
     };
     return resolution;
   };
+
+  const refreshEmbeddingsDiagnostics = (
+    signal?: AbortSignal,
+  ): Promise<EmbeddingsProviderResolution | null> => {
+    const requestedSettings = settings;
+    // A loaded memory-settings object is one provider-resolution epoch. Periodic
+    // indexing reuses its settled failure; explicit use/reload and owner events
+    // below are the deliberate retry boundaries.
+    if (embeddingsResolutionEpoch?.settings !== requestedSettings) {
+      embeddingsResolutionEpoch = {
+        settings: requestedSettings,
+        promise: resolveEmbeddingsDiagnosticsForSettings(requestedSettings),
+      };
+    }
+    return awaitEmbeddingsResolutionEpoch(embeddingsResolutionEpoch.promise, signal);
+  };
+
+  const retryEmbeddingsAfterExternalStateChange = (failureMessage: string): void => {
+    if (stopped) return;
+    embeddingsResolutionEpoch = null;
+    void refreshEmbeddingsDiagnostics().catch((error: unknown) => {
+      if (stopped) return;
+      logger.warn(failureMessage, {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  unsubscribeAccountSettingsSnapshot = subscribeActiveAccountSettingsSnapshot((previous, next) => {
+    if (!settings.enabled) return;
+    if (resolveOperationalMemoryEmbeddingsSettings(settings.embeddings)?.providerKind !== 'local_transformers') return;
+    // Saved-secret catalog and Connected Services projection publications reuse
+    // the incumbent settings object. Only the actual settings/source cut forms
+    // a provider retry boundary.
+    if (previous?.source === next?.source && previous?.settings === next?.settings) return;
+    retryEmbeddingsAfterExternalStateChange('[memoryWorker] Embeddings initialization after account-settings refresh failed');
+  });
+
+  unsubscribeOptionalRuntimeInstallSuccess = subscribeOptionalRuntimeInstallSuccess((key) => {
+    if (key !== INSTALLABLE_KEYS.LOCAL_EMBEDDINGS || stopped) return;
+    if (!settings.enabled) return;
+    if (resolveOperationalMemoryEmbeddingsSettings(settings.embeddings)?.providerKind !== 'local_transformers') return;
+    retryEmbeddingsAfterExternalStateChange('[memoryWorker] Embeddings initialization after runtime installation failed');
+  });
 
   const deps: NonNullable<typeof params.deps> =
     params.deps ??
@@ -308,6 +398,9 @@ export async function startMemoryWorker(params: Readonly<{
       }
       deep = null;
       embeddingsProviderCache.clear();
+      embeddingsResolutionEpoch = null;
+      unsubscribeOptionalRuntimeInstallSuccess();
+      unsubscribeAccountSettingsSnapshot();
     })();
     return stopPromise;
   };
@@ -1006,7 +1099,14 @@ export async function startMemoryWorker(params: Readonly<{
       deep = null;
     }
 
-    await refreshEmbeddingsDiagnostics(signal);
+    // Provider resolution shares initialization through the worker-owned cache.
+    // Daemon RPC registration and settings responses must not wait for downloads.
+    void refreshEmbeddingsDiagnostics().catch((error: unknown) => {
+      if (stopped || settings !== next) return;
+      const message = error instanceof Error ? error.message : String(error);
+      embeddingsDiagnostics = { ...embeddingsDiagnostics, runtimeState: 'error', usingFallback: true, lastError: message };
+      logger.warn('[memoryWorker] Embeddings initialization failed; using keyword-search fallback', { message });
+    });
     await applyArchivedEligibility(signal);
 
     if (policyChanged && tier1) {

@@ -2,6 +2,7 @@ import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRi
 
 import type { FirstPartyComponentId } from './componentCatalog.js';
 import { installVersionedPayload } from './installVersionedPayload.js';
+import { resolveFirstPartyVersionInstallPath } from './installLayout.js';
 import { prepareFirstPartyComponentPayloadFromGitHubRelease } from './prepareFirstPartyComponentPayloadFromGitHubRelease.js';
 import {
   resolveInstalledFirstPartyComponentPaths,
@@ -25,8 +26,9 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
   componentId: FirstPartyComponentId;
   channel: PublicReleaseRingId;
   versionId: string;
+  exactVersion?: boolean;
   processEnv?: NodeJS.ProcessEnv;
-  validatePayload(payloadRoot: string): void;
+  validatePayload(payloadRoot: string): unknown;
 }>, overrides: Partial<EnsureInstalledFirstPartyComponentDependencies> = {}): Promise<InstalledFirstPartyComponentPaths> {
   const deps: EnsureInstalledFirstPartyComponentDependencies = {
     preparePayload: prepareFirstPartyComponentPayloadFromGitHubRelease,
@@ -34,19 +36,21 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
     resolveInstalled: resolveInstalledFirstPartyComponentPaths,
     ...overrides,
   };
-  const resolveAndValidate = (): InstalledFirstPartyComponentPaths => {
+  const resolveAndValidate = async (): Promise<InstalledFirstPartyComponentPaths> => {
     const installed = deps.resolveInstalled({
       componentId: params.componentId,
       releaseRing: params.channel,
       processEnv: params.processEnv,
     });
-    const payloadRoot = installed.resolvedCurrentPath ?? installed.currentPath;
-    params.validatePayload(payloadRoot);
+    const payloadRoot = params.exactVersion
+      ? resolveFirstPartyVersionInstallPath(params)
+      : installed.resolvedCurrentPath ?? installed.currentPath;
+    await params.validatePayload(payloadRoot);
     return installed;
   };
 
   try {
-    return resolveAndValidate();
+    return await resolveAndValidate();
   } catch {
     // The desired immutable version below owns recovery from missing, stale,
     // or invalid current payloads.
@@ -64,6 +68,7 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
       const prepared = await deps.preparePayload({
         componentId: params.componentId,
         channel: params.channel,
+        ...(params.exactVersion ? { versionId: params.versionId } : {}),
         ...(params.componentId === 'mutagen-engine' ? { engineVersion: params.versionId } : {}),
       });
       try {
@@ -72,6 +77,7 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
             `Prepared ${params.componentId} payload version '${prepared.versionId}' does not match requested immutable version '${params.versionId}'.`,
           );
         }
+        await params.validatePayload(prepared.payloadRoot);
         await deps.installPayload({
           componentId: params.componentId,
           releaseRing: params.channel,
@@ -80,7 +86,7 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
           payloadRoot: prepared.payloadRoot,
         });
       } finally {
-        await prepared.cleanup().catch(() => undefined);
+        await prepared.cleanup();
       }
     })();
     pendingInstalls.set(key, pending);
@@ -89,5 +95,5 @@ export async function ensureInstalledFirstPartyComponent(params: Readonly<{
     }).catch(() => undefined);
   }
   await pending;
-  return resolveAndValidate();
+  return await resolveAndValidate();
 }

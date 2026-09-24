@@ -108,8 +108,22 @@ const ONLINE_DECODE_EVENT_LOOP_YIELD_INTERVAL = 4;
 const cachedTtsRuntimes = new Map<string, CachedTtsRuntime>();
 const cachedSttRuntimes = new Map<string, CachedSttRuntime>();
 let sherpaOnnxModulePromise: Promise<SherpaOnnxModule> | null = null;
+let sherpaOnnxImportSpecifier = 'sherpa-onnx-node';
 async function dynamicImportModule(specifier: string): Promise<unknown> {
     return await import(specifier);
+}
+
+export function configurePackagedVoiceInferenceRuntime(params: Readonly<{
+    sherpaOnnxImportSpecifier: string;
+}>): void {
+    const specifier = params.sherpaOnnxImportSpecifier.trim();
+    if (!specifier) {
+        throw new Error('voice_inference_sherpa_import_specifier_missing');
+    }
+    if (sherpaOnnxModulePromise && specifier !== sherpaOnnxImportSpecifier) {
+        throw new Error('voice_inference_sherpa_runtime_already_loaded');
+    }
+    sherpaOnnxImportSpecifier = specifier;
 }
 
 function throwIfAborted(signal?: AbortSignal | null): void {
@@ -200,7 +214,7 @@ function normalizeSherpaOnnxModule(value: unknown): SherpaOnnxModule {
 
 async function importSherpaOnnxModule(): Promise<SherpaOnnxModule> {
     if (!sherpaOnnxModulePromise) {
-        sherpaOnnxModulePromise = dynamicImportModule('sherpa-onnx-node').then(
+        sherpaOnnxModulePromise = dynamicImportModule(sherpaOnnxImportSpecifier).then(
             normalizeSherpaOnnxModule,
         ).catch((error: unknown) => {
             sherpaOnnxModulePromise = null;

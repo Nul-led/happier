@@ -3,8 +3,11 @@ import { rm } from 'node:fs/promises';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { INSTALLABLE_KEYS } from '@happier-dev/protocol';
+
 import { createInferenceRuntimeLoader } from '@/daemon/inference/inferenceRuntimeLoader';
 import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
+import { ensureOptionalRuntime } from '@/packagedRuntime/installables/optionalRuntimes';
 
 import type {
   VoiceInferenceRuntime,
@@ -54,13 +57,6 @@ function isModuleResolutionFailure(error: unknown): boolean {
 }
 
 function resolvePackagedVoiceInferenceImportSpecifiers(): string[] {
-  const bootstrapRuntimePath = resolveCliRuntimeAssetPath('scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
-  if (existsSync(bootstrapRuntimePath)) {
-    // If the bootstrap script exists, it is the canonical deferred-runtime gate. Do not bypass it
-    // by importing the packaged runtime module directly.
-    return [pathToFileURL(bootstrapRuntimePath).href];
-  }
-
   const directRuntimePath = resolveCliRuntimeAssetPath(
     'package-dist',
     'daemon',
@@ -73,6 +69,19 @@ function resolvePackagedVoiceInferenceImportSpecifiers(): string[] {
   }
 
   return [];
+}
+
+function configurePackagedVoiceInferenceModule(
+  moduleExports: unknown,
+  sherpaOnnxImportSpecifier: string,
+): void {
+  const configure = (moduleExports as {
+    configurePackagedVoiceInferenceRuntime?: unknown;
+  } | null)?.configurePackagedVoiceInferenceRuntime;
+  if (typeof configure !== 'function') {
+    throw createVoiceInferenceError('runtime_invalid', 'voice_inference_runtime_invalid');
+  }
+  configure({ sherpaOnnxImportSpecifier });
 }
 
 async function importPackagedVoiceInferenceModule(): Promise<unknown | null> {
@@ -220,6 +229,13 @@ function createRuntimeFromEngine(engine: VoiceInferenceRuntimeEngine): VoiceInfe
 export async function loadDefaultVoiceInferenceRuntime(): Promise<VoiceInferenceRuntime | null> {
   const configuredModuleExports = await importConfiguredVoiceInferenceModule();
   const packagedModuleExports = configuredModuleExports ? null : await importPackagedVoiceInferenceModule();
+  if (packagedModuleExports) {
+    const sherpaOnnxModulePath = await ensureOptionalRuntime(INSTALLABLE_KEYS.LOCAL_VOICE_RUNTIME);
+    configurePackagedVoiceInferenceModule(
+      packagedModuleExports,
+      pathToFileURL(sherpaOnnxModulePath).href,
+    );
+  }
   const moduleExports = configuredModuleExports ?? packagedModuleExports;
   if (!moduleExports) {
     return null;

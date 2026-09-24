@@ -2424,14 +2424,15 @@ describe('voiceInferenceWorker', () => {
         });
 
         const runtimeRoot = join(homeDir, 'runtime-root');
-        const runtimeModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const runtimeModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
         const decodedCompressedBytes = createMonoPcm16WavBuffer(8, 16_000);
-        await mkdir(join(runtimeRoot, 'scripts', 'runtime'), { recursive: true });
+        await mkdir(join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime'), { recursive: true });
         await writeFile(
             runtimeModulePath,
             [
                 "import { readFile, writeFile } from 'node:fs/promises';",
                 `const decodedCompressedBase64 = '${decodedCompressedBytes.toString('base64')}';`,
+                'export const configurePackagedVoiceInferenceRuntime = () => {};',
                 'export const voiceInferenceRuntimeEngine = {',
                 '    warmModel: async () => {},',
                 "    synthesizeTts: async () => ({ bytes: Buffer.from('unused'), output: { codec: 'wav', mimeType: 'audio/wav' }, name: 'unused.wav' }),",
@@ -2451,6 +2452,9 @@ describe('voiceInferenceWorker', () => {
         );
         vi.doMock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath', () => ({
             resolveCliRuntimeAssetPath: (...segments: string[]) => join(runtimeRoot, ...segments),
+        }));
+        vi.doMock('@/packagedRuntime/installables/optionalRuntimes', () => ({
+            ensureOptionalRuntime: async () => join(runtimeRoot, 'node_modules', 'sherpa-onnx-node', 'sherpa-onnx.js'),
         }));
 
         const { startVoiceInferenceWorker } = await importWorkerModuleForHome(homeDir);

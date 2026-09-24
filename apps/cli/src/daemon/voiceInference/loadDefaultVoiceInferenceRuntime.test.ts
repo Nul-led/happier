@@ -1,11 +1,9 @@
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as tar from 'tar';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
@@ -33,24 +31,18 @@ function createMonoPcm16WavBuffer(sampleCount = 4, sampleRate = 16_000): Buffer 
     return buffer;
 }
 
-function normalizeNodePlatform(platform: string): string {
-    return platform === 'win32' ? 'windows' : platform;
-}
+const optionalRuntimeBoundary = vi.hoisted(() => ({
+    ensureOptionalRuntime: vi.fn(async () => '/managed/voice-runtime/node_modules/sherpa-onnx-node/sherpa-onnx.js'),
+}));
+
+vi.mock('@/packagedRuntime/installables/optionalRuntimes', () => ({
+    ensureOptionalRuntime: optionalRuntimeBoundary.ensureOptionalRuntime,
+}));
 
 describe('loadDefaultVoiceInferenceRuntime', () => {
     const envKeys = ['HAPPIER_VOICE_INFERENCE_RUNTIME_MODULE'] as const;
     let envScope = createEnvKeyScope(envKeys);
     const tempDirs: string[] = [];
-    const voiceRuntimeLoaderSourcePath = fileURLToPath(new URL('../../../scripts/runtime/loadVoiceInferenceRuntime.mjs', import.meta.url));
-    const deferredVoiceRuntimePackagesModulePath = fileURLToPath(
-        new URL(
-            '../../../../../packages/cli-common/dist/componentArtifacts/deferredVoiceRuntimePackages.js',
-            import.meta.url,
-        ),
-    );
-    const releaseRuntimeArchiveExtractionModulePath = fileURLToPath(
-        new URL('../../../../../packages/release-runtime/dist/archiveExtraction.js', import.meta.url),
-    );
 
     async function createTempDir(): Promise<string> {
         const dir = await mkdtemp(join(tmpdir(), 'happier-load-default-voice-runtime-'));
@@ -67,6 +59,7 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
             params.filePath,
             [
                 `const transcribeText = ${JSON.stringify(params.transcribeText)};`,
+                'export const configurePackagedVoiceInferenceRuntime = ({ sherpaOnnxImportSpecifier }) => { globalThis.__voiceInferenceSherpaSpecifier = sherpaOnnxImportSpecifier; };',
                 'export const voiceInferenceRuntimeEngine = {',
                 '    warmModel: async () => {},',
                 "    synthesizeTts: async () => ({ bytes: Buffer.from('unused'), output: { codec: 'wav', mimeType: 'audio/wav' }, name: 'unused.wav' }),",
@@ -74,23 +67,6 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
                 '};',
                 '',
             ].join('\n'),
-            'utf8',
-        );
-    }
-
-    async function createPackagedVoiceRuntimeLoader(filePath: string): Promise<void> {
-        await mkdir(dirname(filePath), { recursive: true });
-        await writeFile(
-            filePath,
-            (await readFile(voiceRuntimeLoaderSourcePath, 'utf8'))
-                .replace(
-                    "from '@happier-dev/cli-common/componentArtifacts/deferredVoiceRuntimePackages';",
-                    `from ${JSON.stringify(pathToFileURL(deferredVoiceRuntimePackagesModulePath).href)};`,
-                )
-                .replace(
-                    "from '@happier-dev/release-runtime/archiveExtraction';",
-                    `from ${JSON.stringify(pathToFileURL(releaseRuntimeArchiveExtractionModulePath).href)};`,
-                ),
             'utf8',
         );
     }
@@ -128,6 +104,8 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
     afterEach(async () => {
         envScope.restore();
         envScope = createEnvKeyScope(envKeys);
+        optionalRuntimeBoundary.ensureOptionalRuntime.mockClear();
+        delete (globalThis as { __voiceInferenceSherpaSpecifier?: string }).__voiceInferenceSherpaSpecifier;
         vi.resetModules();
         vi.doUnmock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath');
         await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }).catch(() => undefined)));
@@ -136,7 +114,7 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
     it('prefers the env override module before the packaged runtime asset loader when explicitly configured', async () => {
         const runtimeRoot = await createTempDir();
         const overrideRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
         const overrideModulePath = join(overrideRoot, 'voiceInferenceOverride.mjs');
 
         await createRuntimeModule({ filePath: packagedModulePath, transcribeText: 'packaged-runtime' });
@@ -154,6 +132,7 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
             text: 'env-override-runtime',
             language: 'en',
         });
+        expect(optionalRuntimeBoundary.ensureOptionalRuntime).not.toHaveBeenCalled();
     });
 
     it('falls back to the env override module when the packaged runtime asset is absent', async () => {
@@ -179,7 +158,7 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
 
     it('falls back to the packaged runtime when the configured override module is missing', async () => {
         const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
 
         await createRuntimeModule({ filePath: packagedModulePath, transcribeText: 'packaged-runtime' });
         process.env.HAPPIER_VOICE_INFERENCE_RUNTIME_MODULE = pathToFileURL(
@@ -201,13 +180,14 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
 
     it('forwards releaseModel through the default runtime engine wrapper', async () => {
         const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
 
         await mkdir(dirname(packagedModulePath), { recursive: true });
         await writeFile(
             packagedModulePath,
             [
                 'globalThis.__voiceInferenceReleasedPackIds = [];',
+                'export const configurePackagedVoiceInferenceRuntime = () => {};',
                 'export const voiceInferenceRuntimeEngine = {',
                 '    warmModel: async () => {},',
                 '    releaseModel: async ({ packId }) => {',
@@ -246,13 +226,14 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
 
     it('forwards optional streaming transcription sessions through the default runtime engine wrapper', async () => {
         const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
 
         await mkdir(dirname(packagedModulePath), { recursive: true });
         await writeFile(
             packagedModulePath,
             [
                 'globalThis.__voiceInferenceStreamingSessionInputs = [];',
+                'export const configurePackagedVoiceInferenceRuntime = () => {};',
                 'export const voiceInferenceRuntimeEngine = {',
                 '    warmModel: async () => {},',
                 "    synthesizeTts: async () => ({ bytes: Buffer.from('unused'), output: { codec: 'wav', mimeType: 'audio/wav' }, name: 'unused.wav' }),",
@@ -371,7 +352,7 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
 
     it('reports runtime_unavailable when the packaged runtime asset exists but its native closure is broken', async () => {
         const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
 
         await mkdir(dirname(packagedModulePath), { recursive: true });
         await writeFile(
@@ -394,41 +375,13 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
         });
     });
 
-    it('unpacks the deferred packaged runtime archive on first use when the native closure is not installed yet', async () => {
+    it('acquires the exact managed voice runtime and projects its entrypoint into the packaged engine', async () => {
         const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
-        const archivePath = join(
-            runtimeRoot,
-            'tools',
-            'archives',
-            `voice-inference-runtime-${normalizeNodePlatform(process.platform)}-${process.arch}.tar.gz`,
-        );
-        const payloadRoot = join(runtimeRoot, 'archive-payload');
-        const sherpaNodeDir = join(payloadRoot, 'node_modules', 'sherpa-onnx-node');
-
-        await createPackagedVoiceRuntimeLoader(packagedModulePath);
+        const packagedModulePath = join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs');
         await createRuntimeModule({
-            filePath: join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'),
+            filePath: packagedModulePath,
             transcribeText: 'packaged-runtime',
         });
-        await mkdir(sherpaNodeDir, { recursive: true });
-        await writeFile(
-            join(sherpaNodeDir, 'package.json'),
-            JSON.stringify({
-                name: 'sherpa-onnx-node',
-                version: '1.0.0',
-                main: './index.js',
-            }, null, 2),
-            'utf8',
-        );
-        await writeFile(join(sherpaNodeDir, 'index.js'), 'module.exports = { version: "1.0.0" };\n', 'utf8');
-        await mkdir(dirname(archivePath), { recursive: true });
-        await tar.c({
-            gzip: true,
-            file: archivePath,
-            cwd: payloadRoot,
-            portable: true,
-        }, ['node_modules']);
         vi.doMock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath', () => ({
             resolveCliRuntimeAssetPath: (...segments: string[]) => join(runtimeRoot, ...segments),
         }));
@@ -437,172 +390,11 @@ describe('loadDefaultVoiceInferenceRuntime', () => {
         const runtime = await loadDefaultVoiceInferenceRuntime();
         const input = await createInputFixture(runtimeRoot);
 
-        await expect(runtime?.transcribeAudio(input)).resolves.toMatchObject({
-            text: 'packaged-runtime',
-            language: 'en',
-        });
-        expect(existsSync(join(runtimeRoot, 'node_modules', 'sherpa-onnx-node', 'index.js'))).toBe(true);
+        await expect(runtime?.transcribeAudio(input)).resolves.toMatchObject({ text: 'packaged-runtime' });
+        expect(optionalRuntimeBoundary.ensureOptionalRuntime).toHaveBeenCalledWith('local-voice-runtime');
+        expect((globalThis as { __voiceInferenceSherpaSpecifier?: string }).__voiceInferenceSherpaSpecifier).toBe(
+            pathToFileURL('/managed/voice-runtime/node_modules/sherpa-onnx-node/sherpa-onnx.js').href,
+        );
     });
 
-    it('rejects a highly compressed deferred runtime archive without publishing partial output', async () => {
-        const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
-        const archivePath = join(
-            runtimeRoot,
-            'tools',
-            'archives',
-            `voice-inference-runtime-${normalizeNodePlatform(process.platform)}-${process.arch}.tar.gz`,
-        );
-        const payloadRoot = join(runtimeRoot, 'archive-payload');
-        const sherpaNodeDir = join(payloadRoot, 'node_modules', 'sherpa-onnx-node');
-
-        await createPackagedVoiceRuntimeLoader(packagedModulePath);
-        await createRuntimeModule({
-            filePath: join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'),
-            transcribeText: 'packaged-runtime',
-        });
-        await mkdir(sherpaNodeDir, { recursive: true });
-        await writeFile(
-            join(sherpaNodeDir, 'package.json'),
-            JSON.stringify({
-                name: 'sherpa-onnx-node',
-                version: '1.0.0',
-                main: './index.js',
-            }, null, 2),
-            'utf8',
-        );
-        await writeFile(join(sherpaNodeDir, 'index.js'), 'module.exports = { version: "1.0.0" };\n', 'utf8');
-        await writeFile(join(sherpaNodeDir, 'highly-compressible.bin'), Buffer.alloc(2 * 1024 * 1024));
-        await mkdir(dirname(archivePath), { recursive: true });
-        await tar.c({
-            gzip: true,
-            file: archivePath,
-            cwd: payloadRoot,
-            portable: true,
-        }, ['node_modules']);
-        vi.doMock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath', () => ({
-            resolveCliRuntimeAssetPath: (...segments: string[]) => join(runtimeRoot, ...segments),
-        }));
-
-        const { loadDefaultVoiceInferenceRuntime } = await importLoaderModule();
-
-        await expect(loadDefaultVoiceInferenceRuntime()).rejects.toMatchObject({
-            code: 'runtime_unavailable',
-        });
-        expect(existsSync(join(runtimeRoot, 'node_modules', 'sherpa-onnx-node'))).toBe(false);
-    });
-
-    it('rejects deferred runtime package promotion through a pre-existing scoped-package symlink', async () => {
-        const runtimeRoot = await createTempDir();
-        const outsideRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
-        const archivePath = join(
-            runtimeRoot,
-            'tools',
-            'archives',
-            `voice-inference-runtime-${normalizeNodePlatform(process.platform)}-${process.arch}.tar.gz`,
-        );
-        const payloadRoot = join(runtimeRoot, 'archive-payload');
-        const transformersDir = join(payloadRoot, 'node_modules', '@huggingface', 'transformers');
-        const sherpaNodeDir = join(payloadRoot, 'node_modules', 'sherpa-onnx-node');
-
-        await createPackagedVoiceRuntimeLoader(packagedModulePath);
-        await createRuntimeModule({
-            filePath: join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'),
-            transcribeText: 'packaged-runtime',
-        });
-        await mkdir(transformersDir, { recursive: true });
-        await writeFile(
-            join(transformersDir, 'package.json'),
-            JSON.stringify({ name: '@huggingface/transformers', version: '1.0.0' }),
-            'utf8',
-        );
-        await mkdir(sherpaNodeDir, { recursive: true });
-        await writeFile(
-            join(sherpaNodeDir, 'package.json'),
-            JSON.stringify({
-                name: 'sherpa-onnx-node',
-                version: '1.0.0',
-                main: './index.js',
-            }, null, 2),
-            'utf8',
-        );
-        await writeFile(join(sherpaNodeDir, 'index.js'), 'module.exports = { version: "1.0.0" };\n', 'utf8');
-        await mkdir(dirname(archivePath), { recursive: true });
-        await tar.c({
-            gzip: true,
-            file: archivePath,
-            cwd: payloadRoot,
-            portable: true,
-        }, ['node_modules']);
-        await mkdir(join(runtimeRoot, 'node_modules'), { recursive: true });
-        await symlink(
-            outsideRoot,
-            join(runtimeRoot, 'node_modules', '@huggingface'),
-            process.platform === 'win32' ? 'junction' : 'dir',
-        );
-        vi.doMock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath', () => ({
-            resolveCliRuntimeAssetPath: (...segments: string[]) => join(runtimeRoot, ...segments),
-        }));
-
-        const { loadDefaultVoiceInferenceRuntime } = await importLoaderModule();
-
-        await expect(loadDefaultVoiceInferenceRuntime()).rejects.toMatchObject({
-            code: 'runtime_unavailable',
-        });
-        expect(existsSync(join(outsideRoot, 'transformers'))).toBe(false);
-        expect(existsSync(join(runtimeRoot, 'node_modules', 'sherpa-onnx-node'))).toBe(false);
-    });
-
-    it('rejects deferred runtime archives that attempt to install unsafe entries (symlinks/path traversal)', async () => {
-        const runtimeRoot = await createTempDir();
-        const packagedModulePath = join(runtimeRoot, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs');
-        const archivePath = join(
-            runtimeRoot,
-            'tools',
-            'archives',
-            `voice-inference-runtime-${normalizeNodePlatform(process.platform)}-${process.arch}.tar.gz`,
-        );
-        const payloadRoot = join(runtimeRoot, 'archive-payload');
-        const nodeModulesDir = join(payloadRoot, 'node_modules');
-        const symlinkPath = join(nodeModulesDir, 'sherpa-onnx-node');
-        const sherpaTargetDir = join(payloadRoot, 'sherpa-target');
-
-        await createPackagedVoiceRuntimeLoader(packagedModulePath);
-        await createRuntimeModule({
-            filePath: join(runtimeRoot, 'package-dist', 'daemon', 'voiceInference', 'runtime', 'packagedVoiceInferenceRuntime.mjs'),
-            transcribeText: 'packaged-runtime',
-        });
-
-        await mkdir(nodeModulesDir, { recursive: true });
-        await mkdir(sherpaTargetDir, { recursive: true });
-        await writeFile(
-            join(sherpaTargetDir, 'package.json'),
-            JSON.stringify({
-                name: 'sherpa-onnx-node',
-                version: '1.0.0',
-                main: './index.js',
-            }, null, 2),
-            'utf8',
-        );
-        await writeFile(join(sherpaTargetDir, 'index.js'), 'module.exports = { version: "1.0.0" };\n', 'utf8');
-        await symlink('../sherpa-target', symlinkPath);
-
-        await mkdir(dirname(archivePath), { recursive: true });
-        await tar.c({
-            gzip: true,
-            file: archivePath,
-            cwd: payloadRoot,
-            portable: true,
-        }, ['node_modules', 'sherpa-target']);
-
-        vi.doMock('@/packagedRuntime/assets/resolveCliRuntimeAssetPath', () => ({
-            resolveCliRuntimeAssetPath: (...segments: string[]) => join(runtimeRoot, ...segments),
-        }));
-
-        const { loadDefaultVoiceInferenceRuntime } = await importLoaderModule();
-        await expect(loadDefaultVoiceInferenceRuntime()).rejects.toMatchObject({
-            code: 'runtime_unavailable',
-        });
-    });
 });

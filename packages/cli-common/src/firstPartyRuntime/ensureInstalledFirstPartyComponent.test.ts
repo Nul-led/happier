@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { accessSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import type { InstalledFirstPartyComponentPaths } from './resolveInstalledComponentPaths.js';
 import { ensureInstalledFirstPartyComponent } from './ensureInstalledFirstPartyComponent.js';
+import { installVersionedPayload } from './installVersionedPayload.js';
+import { resolveFirstPartyVersionInstallPath } from './installLayout.js';
 
 function createPaths(payloadRoot: string): InstalledFirstPartyComponentPaths {
   return {
@@ -19,6 +25,42 @@ function createPaths(payloadRoot: string): InstalledFirstPartyComponentPaths {
 }
 
 describe('ensureInstalledFirstPartyComponent', () => {
+  it('reuses an exact installed version without following or changing a newer current runtime', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-exact-optional-runtime-'));
+    const processEnv = { HAPPIER_HOME_DIR: home };
+    const componentId = 'happier-memory-runtime' as const;
+    const entry = 'node_modules/@huggingface/transformers/dist/transformers.node.mjs';
+    try {
+      for (const versionId of ['1.0.0', '2.0.0']) {
+        const payloadRoot = join(home, 'fixture', versionId);
+        await mkdir(dirname(join(payloadRoot, entry)), { recursive: true });
+        await writeFile(join(payloadRoot, entry), `export const version = '${versionId}';\n`);
+        await installVersionedPayload({ componentId, versionId, channel: 'stable', payloadRoot, processEnv });
+      }
+      const validationRoots: string[] = [];
+      const result = await ensureInstalledFirstPartyComponent({
+        componentId,
+        versionId: '1.0.0',
+        channel: 'stable',
+        processEnv,
+        exactVersion: true,
+        validatePayload: (root) => {
+          validationRoots.push(root);
+          accessSync(join(root, entry));
+        },
+      });
+      const expectedVersionRoot = resolveFirstPartyVersionInstallPath({
+        componentId, versionId: '1.0.0', channel: 'stable', processEnv,
+      });
+      expect(validationRoots).toEqual([expectedVersionRoot]);
+      expect(result.resolvedCurrentPath).toBe(resolveFirstPartyVersionInstallPath({
+        componentId, versionId: '2.0.0', channel: 'stable', processEnv,
+      }));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('deduplicates concurrent acquisition and validates the installed immutable version', async () => {
     let installed = false;
     const cleanup = vi.fn(async () => undefined);
@@ -26,7 +68,7 @@ describe('ensureInstalledFirstPartyComponent', () => {
       componentId: 'mutagen-engine' as const,
       channel: 'stable' as const,
       versionId: '0.18.1',
-      payloadRoot: '/prepared/mutagen-engine',
+      payloadRoot: '/prepared/0.18.1',
       source: 'test',
       cleanup,
     }));

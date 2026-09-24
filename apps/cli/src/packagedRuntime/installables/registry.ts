@@ -79,6 +79,12 @@ export async function getRuntimeInstallableAdapter(
   }
   const descriptor = contribution.descriptor;
 
+  if (descriptor.source.kind === 'first_party_runtime') {
+    const { getOptionalRuntimeInstallableAdapter } = await import('./optionalRuntimes');
+    const adapter = getOptionalRuntimeInstallableAdapter(descriptor);
+    if (adapter) return adapter;
+  }
+
   if (descriptor.source.kind === 'github_release_binary') {
     const adapter = await getGitHubReleaseBinaryRuntimeInstallableAdapter(descriptor);
     if (adapter) {

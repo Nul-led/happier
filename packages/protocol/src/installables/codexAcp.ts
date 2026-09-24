@@ -4,6 +4,9 @@ export const INSTALLABLE_KEYS = {
   CODEX_ACP: 'codex-acp',
   GH: 'gh',
   AZ: 'az',
+  LOCAL_EMBEDDINGS: 'local-embeddings',
+  LOCAL_VOICE_RUNTIME: 'local-voice-runtime',
+  DIFFTASTIC: 'difftastic',
 } as const;
 
 export type InstallableKey = string;

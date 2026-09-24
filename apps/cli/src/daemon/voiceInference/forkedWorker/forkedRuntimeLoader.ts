@@ -10,7 +10,12 @@
  * no inference child process is leaked when the daemon shuts down.
  */
 
+import { INSTALLABLE_KEYS } from '@happier-dev/protocol';
+
+import { ensureOptionalRuntime } from '@/packagedRuntime/installables/optionalRuntimes';
+
 import type { RuntimeLoader } from '../voiceInferenceWorker.shared';
+import { readVoiceInferenceRuntimeModuleOverride } from '../voiceInferenceWorkerConfig';
 import {
   createForkedVoiceInferenceRuntimeClient,
   type ForkedVoiceInferenceRuntimeClient,
@@ -36,6 +41,8 @@ export type CreateForkedVoiceInferenceRuntimeHandleParams = Readonly<{
   channelFactory?: VoiceInferenceWorkerChannelFactory;
   onSnapshot?: (snapshot: ForkedVoiceInferenceRuntimeSnapshot) => void;
   loggerDebug?: (message: string, payload?: unknown) => void;
+  /** Test seam around the managed-installable boundary; production acquires the exact CLI voice component. */
+  prepareRuntime?: () => Promise<unknown>;
   /** Observe only the exact child owned by this runtime; intended for process-lifecycle tests. */
   onWorkerProcess?: (process: ForkedVoiceInferenceWorkerProcessObservation) => void;
 }>;
@@ -45,6 +52,12 @@ export function createForkedVoiceInferenceRuntimeHandle(
 ): ForkedVoiceInferenceRuntimeHandle {
   const createChannel: VoiceInferenceWorkerChannelFactory =
     params?.channelFactory ?? (async () => spawnVoiceInferenceWorkerChannel());
+  const prepareRuntime = params?.prepareRuntime
+    ?? (async () => {
+      if (!readVoiceInferenceRuntimeModuleOverride()) {
+        await ensureOptionalRuntime(INSTALLABLE_KEYS.LOCAL_VOICE_RUNTIME);
+      }
+    });
   const channelFactory: VoiceInferenceWorkerChannelFactory = async () => {
     const channel = await createChannel();
     try {
@@ -67,6 +80,21 @@ export function createForkedVoiceInferenceRuntimeHandle(
   };
 
   let client: ForkedVoiceInferenceRuntimeClient | null = null;
+  let runtimePrepared = false;
+  let preparation: Promise<void> | null = null;
+
+  async function ensureRuntimePrepared(): Promise<void> {
+    if (runtimePrepared) return;
+    if (!preparation) {
+      preparation = (async () => {
+        await prepareRuntime();
+        runtimePrepared = true;
+      })().finally(() => {
+        preparation = null;
+      });
+    }
+    await preparation;
+  }
 
   function ensureClient(): ForkedVoiceInferenceRuntimeClient {
     if (!client) {
@@ -82,7 +110,10 @@ export function createForkedVoiceInferenceRuntimeHandle(
   return {
     // The loader always returns the same supervised client; the manager treats it as the
     // engine. Lazy spawn happens on first engine call inside the client.
-    runtimeLoader: async () => ensureClient(),
+    runtimeLoader: async () => {
+      await ensureRuntimePrepared();
+      return ensureClient();
+    },
     dispose: async () => {
       const current = client;
       client = null;
