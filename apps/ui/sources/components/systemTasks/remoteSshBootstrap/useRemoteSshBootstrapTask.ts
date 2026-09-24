@@ -9,7 +9,11 @@ import {
 } from '@happier-dev/protocol';
 
 import { getDefaultSystemTaskRunner } from '@/components/systemTasks';
-import { resolveBackgroundServiceReplacementPrompt } from '@/components/systemTasks/prompts/resolveBackgroundServiceSetupPrompt';
+import {
+    resolveBackgroundServiceReplacementPrompt,
+    resolveReleaseChannelSwitchSetupPrompt,
+    type ReleaseChannelSwitchSetupPrompt,
+} from '@/components/systemTasks/prompts/resolveBackgroundServiceSetupPrompt';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
@@ -34,6 +38,7 @@ export type RemoteSshBootstrapPrompt =
         message: string;
         publicKey: string | null;
     }>
+    | ReleaseChannelSwitchSetupPrompt
     | (Readonly<{
         kind: 'daemon.replaceRemoteBackgroundServices';
         message: string;
@@ -87,6 +92,10 @@ function resolveRemotePrompt(snapshot: SystemTaskRunState | null): RemoteSshBoot
         return parsed?.kind === 'daemon.replaceRemoteBackgroundServices'
             ? parsed
             : null;
+    }
+
+    if (kind === 'releaseChannel.switchDefaultForSetup') {
+        return resolveReleaseChannelSwitchSetupPrompt(prompt);
     }
 
     if (kind === 'ssh.password') {
@@ -178,6 +187,14 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
             await runner.respond(activeTaskId, { replaceExistingServices: true });
             return activeTaskId;
         }
+        if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {
+            if (!activeTaskId) {
+                throw new Error('No remote release-channel prompt task is active.');
+            }
+            latestFormStateRef.current = params;
+            await runner.respond(activeTaskId, { switchDefaultReleaseChannel: true });
+            return activeTaskId;
+        }
 
         latestFormStateRef.current = params;
 
@@ -239,13 +256,16 @@ export function useRemoteSshBootstrapTask(options: Readonly<{
     }, [activeTaskId, runner]);
 
     const declinePrompt = React.useCallback(async () => {
-        if (!prompt || prompt.kind !== 'daemon.replaceRemoteBackgroundServices') {
-            throw new Error('No remote background service replacement prompt is waiting for a response.');
+        if (!prompt || (prompt.kind !== 'daemon.replaceRemoteBackgroundServices'
+            && prompt.kind !== 'releaseChannel.switchDefaultForSetup')) {
+            throw new Error('No remote service or release-channel prompt is waiting for a response.');
         }
         if (!activeTaskId) {
             throw new Error('No remote background service replacement task is active.');
         }
-        await runner.respond(activeTaskId, { replaceExistingServices: false });
+        await runner.respond(activeTaskId, prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+            ? { replaceExistingServices: false }
+            : { switchDefaultReleaseChannel: false });
     }, [activeTaskId, prompt, runner]);
 
     const dismissPrompt = React.useCallback(() => {

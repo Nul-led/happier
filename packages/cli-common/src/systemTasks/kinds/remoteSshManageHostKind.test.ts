@@ -6,7 +6,9 @@ import type { SystemTaskJsonObject } from '@happier-dev/protocol';
 import {
   createRemoteSshManageHostTaskKind,
   parseRemotePersonalHomeApprovalInput,
+  releaseChannelSwitchDeclinedMessage,
 } from './remoteSshManageHostKind.js';
+import { SERVICE_RECONCILIATION_DECLINED_MESSAGE } from './remoteSshBootstrapMachineKind.js';
 
 async function waitForPendingPrompt(
   runner: ReturnType<typeof createSystemTasksRunner>,
@@ -207,22 +209,40 @@ describe('createRemoteSshManageHostTaskKind', () => {
       revision: 3,
       endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] }],
     };
-    const runPersonalHomeCommand = vi.fn(async () => ({
-      v: 1,
-      ok: true,
-      kind: 'personal_home_create',
-      data: {
-        status: 'complete',
-        profileId: 'remote-profile',
-        homeServerIdentityId: 'srv_remote_home',
-        canonicalServerUrl: 'http://127.0.0.1:43123',
-        accountCreated: true,
-        channel: 'preview',
-        mode: 'system',
-        descriptor,
-        accountServiceLink: { kind: 'not_requested' },
-      },
-    }));
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      if (args[0] === 'service') return {
+          ok: true,
+          data: {
+            services: [{
+              serviceType: 'daemon',
+              label: 'happier-daemon.stable',
+              ring: 'stable',
+              targetMode: 'pinned',
+              running: true,
+            }],
+          },
+        };
+      if (args[0] === 'self') return {
+        ok: true,
+        data: { defaultReleaseChannel: 'stable', managedReleaseChannels: [] },
+      };
+      return {
+          v: 1,
+          ok: true,
+          kind: 'personal_home_create',
+          data: {
+            status: 'complete',
+            profileId: 'remote-profile',
+            homeServerIdentityId: 'srv_remote_home',
+            canonicalServerUrl: 'http://127.0.0.1:43123',
+            accountCreated: true,
+            channel: 'preview',
+            mode: 'system',
+            descriptor,
+            accountServiceLink: { kind: 'not_requested' },
+          },
+        };
+    });
     const runPersonalHomePairDevice = vi.fn(async () => ({ kind: 'completed' as const, requestedDeviceLabel: null }));
     const enrollInvokingClient = vi.fn(async () => ({ kind: 'enrolled' as const }));
     const kind = createRemoteSshManageHostTaskKind({
@@ -236,6 +256,7 @@ describe('createRemoteSshManageHostTaskKind', () => {
       enrollInvokingClient,
     });
 
+    const promptKinds: string[] = [];
     const result = await kind.run({
       params: {
         action: 'personalHome.create',
@@ -247,15 +268,30 @@ describe('createRemoteSshManageHostTaskKind', () => {
       },
       signal: controller.signal,
       emit: () => undefined,
-      prompt: async () => ({}),
+      prompt: async (prompt) => {
+        promptKinds.push(prompt.kind);
+        if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
+          expect(prompt.data).toMatchObject({ targetReleaseChannel: 'preview' });
+          return { replaceExistingServices: true };
+        }
+        expect(prompt).toMatchObject({
+          kind: 'releaseChannel.switchDefaultForSetup',
+          data: { targetReleaseChannel: 'preview', currentDefaultReleaseChannel: 'stable' },
+        });
+        return { switchDefaultReleaseChannel: true };
+      },
     });
 
     expect(runPersonalHomeCommand).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'preview',
       mode: 'system',
-      args: ['home', 'create', '--yes', '--json', '--link-account', 'never', '--channel', 'preview', '--mode', 'system'],
+      args: ['home', 'create', '--yes', '--json', '--link-account', 'never', '--channel', 'preview', '--mode', 'system', '--replace-services', '--switch-channel'],
       signal: controller.signal,
     }));
+    expect(promptKinds).toEqual([
+      'daemon.replaceRemoteBackgroundServices',
+      'releaseChannel.switchDefaultForSetup',
+    ]);
     expect(runPersonalHomePairDevice).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'preview',
       mode: 'system',
@@ -281,6 +317,104 @@ describe('createRemoteSshManageHostTaskKind', () => {
       },
     });
     expect(JSON.stringify(result)).not.toMatch(/profileId|accessToken|credential|secret/i);
+  });
+
+  it('keeps remote service replacement and release-channel switching as separate decisions', async () => {
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      if (args[0] === 'service') {
+        return {
+          ok: true,
+          data: {
+            services: [{
+              serviceType: 'daemon', label: 'happier-daemon.stable', ring: 'stable',
+              targetMode: 'pinned', running: true,
+            }],
+          },
+        };
+      }
+      if (args[0] === 'self') {
+        return { ok: true, data: { defaultReleaseChannel: 'stable', managedReleaseChannels: [] } };
+      }
+      throw new Error('Home creation must not start after the channel decision is declined.');
+    });
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      testConnection: async () => {},
+      installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {},
+      runRelayRuntimeCommand: async () => {},
+      runPersonalHomeCommand,
+    });
+
+    const promptKinds: string[] = [];
+    await expect(kind.run({
+      params: {
+        action: 'personalHome.create',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'user' },
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+      emit: () => undefined,
+      prompt: async (prompt) => {
+        promptKinds.push(prompt.kind);
+        return prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+          ? { replaceExistingServices: true }
+          : { switchDefaultReleaseChannel: false };
+      },
+    })).rejects.toMatchObject({
+      code: 'release_channel_switch_declined',
+      // Host-neutral remedy: the app's prompt cannot pass CLI flags.
+      message: releaseChannelSwitchDeclinedMessage({ currentDefaultReleaseChannel: 'stable', targetReleaseChannel: 'preview' }),
+    });
+
+    expect(promptKinds).toEqual([
+      'daemon.replaceRemoteBackgroundServices',
+      'releaseChannel.switchDefaultForSetup',
+    ]);
+    expect(runPersonalHomeCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not replace remote services for Home creation without the existing prompt approval', async () => {
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => ({
+      ok: true,
+      data: args[0] === 'service'
+        ? {
+            services: [{
+              serviceType: 'daemon', label: 'happier-daemon.stable', ring: 'stable',
+              targetMode: 'pinned', running: true,
+            }],
+          }
+        : {},
+    }));
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      testConnection: async () => {},
+      installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {},
+      runRelayRuntimeCommand: async () => {},
+      runPersonalHomeCommand,
+    });
+
+    await expect(kind.run({
+      params: {
+        action: 'personalHome.create',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'user' },
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+      },
+      emit: () => undefined,
+      prompt: async () => ({ replaceExistingServices: false }),
+    })).rejects.toMatchObject({
+      code: 'service_reconciliation_declined',
+      // One host-neutral remedy for one code: the same sentence the machine
+      // bootstrap refusal uses, true in the CLI and in the app.
+      message: SERVICE_RECONCILIATION_DECLINED_MESSAGE,
+    });
+
+    expect(runPersonalHomeCommand).toHaveBeenCalledOnce();
+    expect(runPersonalHomeCommand).toHaveBeenCalledWith(expect.objectContaining({
+      args: ['service', 'list', '--json'],
+    }));
   });
 
   it('preserves durable Home completion when optional pairing and invoking-client enrollment throw', async () => {

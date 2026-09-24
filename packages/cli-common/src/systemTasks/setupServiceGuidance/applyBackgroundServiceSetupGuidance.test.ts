@@ -45,7 +45,7 @@ describe('applyBackgroundServiceSetupGuidance', () => {
     expect(replaceExistingServices).toHaveBeenCalledTimes(1);
   });
 
-  it('stops after the first declined prompt', async () => {
+  it('keeps setup moving on the current default channel when the optional switch is declined', async () => {
     const switchDefaultReleaseChannel = vi.fn(async () => undefined);
     const replaceExistingServices = vi.fn(async () => undefined);
 
@@ -61,14 +61,14 @@ describe('applyBackgroundServiceSetupGuidance', () => {
     });
 
     expect(result).toEqual({
-      cancelled: true,
-      cancellationReason: 'declined_release_channel_switch',
+      cancelled: false,
+      cancellationReason: null,
       switchedDefaultReleaseChannel: false,
       tookOverManualRelayRuntime: false,
-      replacedExistingServices: false,
+      replacedExistingServices: true,
     });
     expect(switchDefaultReleaseChannel).not.toHaveBeenCalled();
-    expect(replaceExistingServices).not.toHaveBeenCalled();
+    expect(replaceExistingServices).toHaveBeenCalledTimes(1);
   });
 
   it('cancels without changing the default release channel when service replacement is declined', async () => {

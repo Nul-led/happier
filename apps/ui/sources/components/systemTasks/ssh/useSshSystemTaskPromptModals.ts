@@ -214,15 +214,27 @@ export function useSshSystemTaskPromptModals(params: Readonly<{
         if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
             void (async () => {
                 const accepted = await Modal.confirm(
-                    prompt.message || t('common.info'),
+                    t('machine.backgroundServicePrompt.replaceTitle'),
                     undefined,
-                    { confirmText: t('common.continue'), cancelText: t('common.cancel') },
+                    { confirmText: t('settings.machineSetupRemotePromptReplaceServicesAction'), cancelText: t('common.cancel') },
                 );
                 if (!accepted) {
                     await params.runner.respond(taskId, { replaceExistingServices: false }).catch(() => {});
                     return;
                 }
                 await params.runner.respond(taskId, { replaceExistingServices: true });
+            })();
+            return;
+        }
+
+        if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {
+            void (async () => {
+                const accepted = await Modal.confirm(
+                    prompt.message || t('common.info'),
+                    undefined,
+                    { confirmText: t('common.continue'), cancelText: t('common.cancel') },
+                );
+                await params.runner.respond(taskId, { switchDefaultReleaseChannel: accepted });
             })();
         }
     }, [params.runner, params.prompt, params.snapshot?.result, params.taskId]);

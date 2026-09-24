@@ -51,12 +51,6 @@ type CommandDiagnostics = Readonly<{
 function createBackgroundServiceSetupCancellationError(
   cancellationReason: BackgroundServiceSetupGuidanceCancellationReason | null,
 ): SystemTaskExecutionError {
-  if (cancellationReason === 'declined_release_channel_switch') {
-    return new SystemTaskExecutionError(
-      'background_service_release_channel_switch_declined',
-      'Setup was cancelled because the default release channel was kept unchanged.',
-    );
-  }
   if (cancellationReason === 'declined_manual_relay_takeover') {
     return new SystemTaskExecutionError(
       'background_service_manual_relay_takeover_declined',

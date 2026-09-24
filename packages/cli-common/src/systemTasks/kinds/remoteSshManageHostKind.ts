@@ -13,6 +13,7 @@ import { SystemTaskExecutionError } from '../runSystemTask.js';
 import { redactSensitiveSystemTaskJsonValue, type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
 import { parseSystemTaskSshConfig, type SystemTaskSshConnectionConfig } from './relayRuntimeKinds.js';
 import type { RemoteHostTrustResolution } from './remoteSshBootstrapMachineKind.js';
+import { preflightRemoteBackgroundServiceReplacement } from './remoteSshBootstrapMachineKind.js';
 import { materializeSshIdentityPrivateKeyToTempFile } from '../ssh/materializeSshIdentityPrivateKeyToTempFile.js';
 import {
   PersonalHomeRelocationTransferCleanupError,
@@ -24,6 +25,19 @@ import {
   type PersonalHomeRelocationDestinationOwner,
   type PersonalHomeRelocationDestinationStageInput,
 } from '../../firstPartyRuntime/personalHome/relocationDestination.js';
+
+/**
+ * The one remedy for `release_channel_switch_declined`. Like the service
+ * refusal, it names no CLI flag or app control so it stays true on every host.
+ */
+export function releaseChannelSwitchDeclinedMessage(
+  params: Readonly<{
+    currentDefaultReleaseChannel: 'stable' | 'preview' | 'dev';
+    targetReleaseChannel: 'stable' | 'preview' | 'dev';
+  }>,
+): string {
+  return `The remote default release channel stayed ${params.currentDefaultReleaseChannel}, so the ${params.targetReleaseChannel} Home was not created. Start again and choose to switch the channel.`;
+}
 
 export type RemoteSshManageHostAction =
   | 'testConnection'
@@ -501,6 +515,68 @@ export function createRemoteSshManageHostTaskKind(
           const runtimeMode = parsed.relayRuntime.mode ?? 'user';
           ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
           await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel, ...(ctx.signal ? { signal: ctx.signal } : {}) });
+          const replaceServices = parsed.replaceServices || await preflightRemoteBackgroundServiceReplacement({
+            ctx,
+            listServices: async () => unwrapRemoteCliJsonData(await deps.runPersonalHomeCommand!({
+              ssh: parsed.ssh,
+              auth,
+              knownHostsMode,
+              channel: parsed.channel,
+              mode: runtimeMode,
+              args: ['service', 'list', '--json'],
+              ...(ctx.signal ? { signal: ctx.signal } : {}),
+            })),
+            targetReleaseChannel: runtimeChannel,
+            targetServerUrl: null,
+            mode: runtimeMode,
+            stepId: 'personal_home.service_preflight',
+          });
+          let switchChannel = parsed.switchChannel;
+          if (!switchChannel) {
+            let currentDefaultReleaseChannel: 'stable' | 'preview' | 'dev' | null = null;
+            let managedReleaseChannels: SystemTaskJsonValue[] = [];
+            try {
+              const releaseStatus = unwrapRemoteCliJsonData(await deps.runPersonalHomeCommand({
+                ssh: parsed.ssh,
+                auth,
+                knownHostsMode,
+                channel: parsed.channel,
+                mode: runtimeMode,
+                args: ['self', 'release-channel', 'status', '--json'],
+                ...(ctx.signal ? { signal: ctx.signal } : {}),
+              }));
+              currentDefaultReleaseChannel = normalizePublicReleaseRingLabel(releaseStatus.defaultReleaseChannel) || null;
+              managedReleaseChannels = Array.isArray(releaseStatus.managedReleaseChannels)
+                ? releaseStatus.managedReleaseChannels
+                : [];
+            } catch {
+              // The destination's canonical setup owner will return its typed
+              // channel remedy if this older CLI cannot report the status.
+            }
+            if (currentDefaultReleaseChannel && currentDefaultReleaseChannel !== runtimeChannel) {
+              const answer = await ctx.prompt({
+                kind: 'releaseChannel.switchDefaultForSetup',
+                stepId: 'personal_home.release_channel_preflight',
+                message: `Switch the remote default release channel from ${currentDefaultReleaseChannel} to ${runtimeChannel} for this Personal Home?`,
+                data: {
+                  targetReleaseChannel: runtimeChannel,
+                  currentDefaultReleaseChannel,
+                  targetServerUrl: null,
+                  managedReleaseChannels,
+                },
+              }) as { switchDefaultReleaseChannel?: boolean };
+              if (answer.switchDefaultReleaseChannel !== true) {
+                throw new SystemTaskExecutionError(
+                  'release_channel_switch_declined',
+                  releaseChannelSwitchDeclinedMessage({
+                    currentDefaultReleaseChannel,
+                    targetReleaseChannel: runtimeChannel,
+                  }),
+                );
+              }
+              switchChannel = true;
+            }
+          }
           ctx.emit({ type: 'progress', stepId: 'personal_home.create', message: 'Creating the remote Personal Home' });
           const raw = await deps.runPersonalHomeCommand({
             ssh: parsed.ssh,
@@ -508,7 +584,12 @@ export function createRemoteSshManageHostTaskKind(
             knownHostsMode,
             channel: parsed.channel,
             mode: runtimeMode,
-            args: ['home', 'create', '--yes', '--json', '--link-account', 'never', '--channel', runtimeChannel, '--mode', runtimeMode],
+            args: [
+              'home', 'create', '--yes', '--json', '--link-account', 'never',
+              '--channel', runtimeChannel, '--mode', runtimeMode,
+              ...(replaceServices ? ['--replace-services'] : []),
+              ...(switchChannel ? ['--switch-channel'] : []),
+            ],
             resultContract: 'create',
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
@@ -965,6 +1046,8 @@ type RemoteSshManageHostParams = Readonly<{
   personalHomeOperation?: Readonly<{ archivePath?: string; outputPath?: string }>;
   pairDevice: boolean;
   enrollInvokingClient: boolean;
+  replaceServices: boolean;
+  switchChannel: boolean;
 }>;
 
 function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostParams {
@@ -993,6 +1076,12 @@ function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostPar
   }
   if (record.enrollInvokingClient !== undefined && typeof record.enrollInvokingClient !== 'boolean') {
     throw new SystemTaskExecutionError('invalid_params', 'enrollInvokingClient must be a boolean.');
+  }
+  if (record.replaceServices !== undefined && typeof record.replaceServices !== 'boolean') {
+    throw new SystemTaskExecutionError('invalid_params', 'replaceServices must be a boolean.');
+  }
+  if (record.switchChannel !== undefined && typeof record.switchChannel !== 'boolean') {
+    throw new SystemTaskExecutionError('invalid_params', 'switchChannel must be a boolean.');
   }
   const relayRuntimeRecord = record.relayRuntime && typeof record.relayRuntime === 'object' && !Array.isArray(record.relayRuntime)
     ? record.relayRuntime as Record<string, unknown>
@@ -1032,6 +1121,8 @@ function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostPar
     serviceMode,
     pairDevice: record.pairDevice === true,
     enrollInvokingClient: record.enrollInvokingClient === true,
+    replaceServices: record.replaceServices === true,
+    switchChannel: record.switchChannel === true,
     ...(relayRuntime ? { relayRuntime } : {}),
     ...(personalHomeRelocation ? { personalHomeRelocation } : {}),
     ...(personalHomeOperation ? { personalHomeOperation } : {}),
@@ -1381,6 +1472,10 @@ function parseRelocationDescriptorPromptAnswer(
 
 function isJsonObject(value: SystemTaskJsonValue | undefined): value is SystemTaskJsonObject {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function unwrapRemoteCliJsonData(value: SystemTaskJsonObject): SystemTaskJsonObject {
+  return value.ok === true && isJsonObject(value.data) ? value.data : value;
 }
 
 function parseRelayRuntimeOptions(value: Record<string, unknown>): NonNullable<RemoteSshManageHostParams['relayRuntime']> {

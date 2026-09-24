@@ -982,7 +982,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     expect(invocations).toEqual([]);
   });
 
-  it('fails with a release-channel specific error when the user keeps the current default release channel', async () => {
+  it('keeps the current default release channel and completes setup when the optional switch is declined', async () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
       exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
@@ -1051,11 +1051,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     expect(finalPoll.result).toEqual({
       protocolVersion: 1,
       taskId: 'setup-task-release-channel-decline',
-      ok: false,
-      error: {
-        code: 'background_service_release_channel_switch_declined',
-        message: 'Setup was cancelled because the default release channel was kept unchanged.',
-      },
+      ok: true,
+      data: { machineId: 'machine-1' },
     });
   });
 });

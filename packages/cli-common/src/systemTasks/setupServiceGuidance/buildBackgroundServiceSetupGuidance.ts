@@ -111,7 +111,7 @@ function normalizeServiceSummary(service: HappierService): BackgroundServiceSetu
   };
 }
 
-function resolveDaemonServiceBackend(platform: HappierServicePlatform, mode: 'user' | 'system'): HappierServiceBackend {
+export function resolveDaemonServiceBackend(platform: HappierServicePlatform, mode: 'user' | 'system'): HappierServiceBackend {
   if (platform === 'darwin') return 'launchd';
   if (platform === 'win32') return mode === 'system' ? 'schtasks-system' : 'schtasks-user';
   return mode === 'system' ? 'systemd-system' : 'systemd-user';

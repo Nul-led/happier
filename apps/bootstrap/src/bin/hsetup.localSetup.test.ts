@@ -508,7 +508,7 @@ describe('hsetup local setup and repair dispatch', () => {
     });
   });
 
-  it('answers the guided release-channel switch prompt for setup.thisComputer.v1 over stdin', async () => {
+  it('keeps setup on the current default release channel when the guided switch is declined', async () => {
     await withFakeHappierCli({}, async (fakeCli) => {
       const switches: string[] = [];
       const run = await runHsetup({
@@ -542,9 +542,17 @@ describe('hsetup local setup and repair dispatch', () => {
         stepId: 'setup.thisComputer.preflight.releaseChannel',
         message: 'Make preview the default release-channel before installing the default background service targeting https://relay.example.test?',
       }));
-      expect(run.result).toMatchObject({ ok: false, error: { code: 'background_service_release_channel_switch_declined' } });
+      expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-local-1' } });
       expect(switches).toEqual([]);
-      expect(fakeCli.readInvocations()).not.toContainEqual(expect.arrayContaining(['server', 'set']));
+      expect(fakeCli.readInvocations()).toContainEqual([
+        'server',
+        'set',
+        '--server-url',
+        'https://relay.example.test',
+        '--webapp-url',
+        'https://app.example.test',
+        '--json',
+      ]);
     });
   });
 

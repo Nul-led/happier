@@ -43,10 +43,18 @@ export const RemoteSshChecklistPromptCard = React.memo(function RemoteSshCheckli
 
     return (
         <View style={styles.promptCard}>
-            <Text style={styles.promptTitle}>{props.prompt.message}</Text>
+            <Text style={styles.promptTitle}>
+                {props.prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+                    ? t('machine.backgroundServicePrompt.replaceTitle')
+                    : props.prompt.message}
+            </Text>
             <Text style={styles.promptBody}>
                 {props.prompt.kind === 'auth.approveRemoteProvisioning'
                     ? props.prompt.publicKey ?? ''
+                    : props.prompt.kind === 'releaseChannel.switchDefaultForSetup'
+                        ? props.prompt.currentDefaultReleaseChannel
+                            ? `${props.prompt.currentDefaultReleaseChannel} → ${props.prompt.targetReleaseChannel}`
+                            : props.prompt.targetReleaseChannel
                     : props.prompt.kind === 'daemon.replaceRemoteBackgroundServices'
                         ? buildBackgroundServiceReplacementPromptBody({
                             targetServerUrl: props.prompt.targetServerUrl,
@@ -54,12 +62,12 @@ export const RemoteSshChecklistPromptCard = React.memo(function RemoteSshCheckli
                             services: props.prompt.services,
                             format: 'detailed',
                         }) ?? ''
-                    : [
+                    : 'host' in props.prompt ? [
                         props.prompt.host,
                         props.prompt.keyType,
                         props.prompt.fingerprint,
                         props.prompt.kind === 'ssh.replaceHostKey' ? props.prompt.existingFingerprint : null,
-                    ].filter(Boolean).join('\n')}
+                    ].filter(Boolean).join('\n') : ''}
             </Text>
         </View>
     );

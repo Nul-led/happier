@@ -45,6 +45,31 @@ vi.mock('./styles', () => ({
 }));
 
 describe('RemoteSshChecklistPromptCard', () => {
+    it('presents the requested release-channel switch during remote setup', async () => {
+        const { RemoteSshChecklistPromptCard } = await import('./RemoteSshChecklistPromptCard');
+
+        const screen = await renderScreen(
+            React.createElement(RemoteSshChecklistPromptCard, {
+                testID: 'remote-ssh-prompt',
+                password: '',
+                isStarting: false,
+                onChangePassword: () => undefined,
+                prompt: {
+                    kind: 'releaseChannel.switchDefaultForSetup',
+                    message: 'Switch the default release channel?',
+                    currentDefaultReleaseChannel: 'stable',
+                    targetReleaseChannel: 'preview',
+                    targetServerUrl: null,
+                    managedReleaseChannels: [],
+                },
+            }),
+        );
+
+        const textNodes = screen.tree.findAllByType('Text');
+        const body = textNodes.map((node) => node.props.children).filter((value: unknown) => typeof value === 'string').join('\n');
+        expect(body).toContain('stable → preview');
+    });
+
     it('humanizes conflicting background service modes for remote replacement prompts', async () => {
         const { RemoteSshChecklistPromptCard } = await import('./RemoteSshChecklistPromptCard');
 
@@ -69,8 +94,10 @@ describe('RemoteSshChecklistPromptCard', () => {
             }),
         );
 
-        const textNodes = screen.tree.findAllByType('Text' as any);
-        const body = textNodes.map((node: any) => node.props.children).filter((value: unknown) => typeof value === 'string').join('\n');
+        const textNodes = screen.tree.findAllByType('Text');
+        const body = textNodes.map((node) => node.props.children).filter((value: unknown) => typeof value === 'string').join('\n');
+        expect(body).toContain('machine.backgroundServicePrompt.replaceTitle');
+        expect(body).not.toContain('Replace existing remote background services?');
         expect(body).toContain('Serveur cible: https://relay.example.test');
         expect(body).toContain('Canal cible: preview');
         expect(body).toContain('Services existants :');

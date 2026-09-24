@@ -1305,12 +1305,84 @@ describe('RemoteSshChecklistStep', () => {
         });
 
         expect(screen.findByTestId('remote-ssh-step-prompt-password')).toBeTruthy();
-        expect(requireSkip().label).toBe('Skip');
+        // Declining stops setup, so the secondary says Cancel like both modals do.
+        expect(requireSkip().label).toBe('Cancel');
+        expect(requirePrimary().label).toBe('Replace services');
 
         await act(async () => {
             await (requirePrimary().onPress as any)?.();
         });
 
         expect(runnerHarness.respondSpy).toHaveBeenCalledWith(expect.any(String), { replaceExistingServices: true });
+    });
+
+    it('answers a declined remote release-channel switch instead of cancelling the task', async () => {
+        const { RemoteSshChecklistStep } = await import('./RemoteSshChecklistStep');
+        const runnerHarness = createRunner({
+            snapshot: {
+                status: 'running',
+                currentStepId: 'personal_home.release_channel_preflight',
+                latestMessage: 'Switch the remote default release channel?',
+                awaitingInput: true,
+                events: [{
+                    type: 'prompt',
+                    stepId: 'personal_home.release_channel_preflight',
+                    message: 'Switch the remote default release channel?',
+                    data: {
+                        kind: 'releaseChannel.switchDefaultForSetup',
+                        targetReleaseChannel: 'preview',
+                        currentDefaultReleaseChannel: 'stable',
+                        targetServerUrl: null,
+                        managedReleaseChannels: [],
+                    },
+                }],
+                result: null,
+            } as any,
+        });
+
+        let primary: { label?: string; onPress: (() => void) | (() => Promise<void>); disabled: boolean } | null = null;
+        let skip: { label?: React.ReactNode; hidden?: boolean; disabled?: boolean; onPress?: () => void } | null = null;
+        await renderScreen(React.createElement(RemoteSshChecklistStep, {
+            testID: 'remote-ssh-step',
+            mode: 'remoteRelayHost',
+            relayUrl: 'https://relay.example.test',
+            runner: runnerHarness.runner,
+            initialDraft: { username: 'dev', host: 'example.test' },
+            onWizardPrimaryChange: (state) => { primary = state as any; },
+            onWizardSkipChange: (state) => { skip = state as any; },
+        }));
+
+        const requirePrimary = () => {
+            if (!primary) throw new Error('Expected wizard primary override');
+            return primary;
+        };
+        const requireSkip = () => {
+            if (!skip) throw new Error('Expected wizard skip override');
+            return skip;
+        };
+
+        await act(async () => {
+            await (requirePrimary().onPress as any)?.();
+        });
+        await flushHookEffects({ cycles: 3, turns: 3 });
+        await act(async () => {
+            await (requirePrimary().onPress as any)?.();
+        });
+
+        expect(requirePrimary().label).toBe('Continue');
+        expect(requireSkip().label).toBe('Cancel');
+
+        await act(async () => {
+            await (requirePrimary().onPress as any)?.();
+        });
+        expect(runnerHarness.respondSpy).toHaveBeenCalledWith(expect.any(String), { switchDefaultReleaseChannel: true });
+        runnerHarness.respondSpy.mockClear();
+
+        await act(async () => {
+            requireSkip().onPress?.();
+        });
+
+        expect(runnerHarness.respondSpy).toHaveBeenCalledWith(expect.any(String), { switchDefaultReleaseChannel: false });
+        expect(runnerHarness.cancelSpy).not.toHaveBeenCalled();
     });
 });

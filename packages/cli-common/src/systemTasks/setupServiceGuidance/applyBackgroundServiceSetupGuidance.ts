@@ -1,7 +1,6 @@
 import type { BackgroundServiceSetupGuidance } from './buildBackgroundServiceSetupGuidance.js';
 
 export type BackgroundServiceSetupGuidanceCancellationReason =
-  | 'declined_release_channel_switch'
   | 'declined_manual_relay_takeover'
   | 'declined_service_replacement';
 
@@ -34,16 +33,6 @@ export async function resolveBackgroundServiceSetupGuidance(
   const shouldSwitchDefaultReleaseChannel = params.guidance.shouldOfferDefaultReleaseChannelSwitch
     ? await params.promptSwitchDefaultReleaseChannel()
     : false;
-
-  if (params.guidance.shouldOfferDefaultReleaseChannelSwitch && !shouldSwitchDefaultReleaseChannel) {
-    return {
-      cancelled: true,
-      cancellationReason: 'declined_release_channel_switch',
-      shouldSwitchDefaultReleaseChannel: false,
-      shouldTakeOverManualRelayRuntime: false,
-      shouldReplaceExistingServices: false,
-    };
-  }
 
   const shouldTakeOverManualRelayRuntime = params.guidance.shouldPromptForManualRelayTakeover
     ? await params.promptTakeOverManualRelayRuntime()

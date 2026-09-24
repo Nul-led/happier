@@ -176,7 +176,7 @@ describe('useThisComputerSetupPromptModals', () => {
         expect(confirmCalls[0]?.[1]).not.toContain('default-following');
         expect(confirmCalls[0]?.[1]).not.toContain(' • pinned');
         expect(confirmCalls[0]?.[2]).toEqual({
-            confirmText: 'common.continue',
+            confirmText: 'settings.machineSetupRemotePromptReplaceServicesAction',
             cancelText: 'common.cancel',
         });
         expect(respond).toHaveBeenCalledWith(taskId, { replaceExistingServices: false });

@@ -64,7 +64,12 @@ export function useThisComputerSetupPromptModals(params: Readonly<{
                 parsedPrompt.message,
                 buildPromptBody(parsedPrompt),
                 {
-                    confirmText: t('common.continue'),
+                    // The service-replacement prompt names its action so the
+                    // "replace them" remedy of a declined setup matches a real control.
+                    confirmText: parsedPrompt.kind === 'releaseChannel.switchDefaultForSetup'
+                        || parsedPrompt.kind === 'daemon.takeOverManualRelayRuntimeForSetup'
+                        ? t('common.continue')
+                        : t('settings.machineSetupRemotePromptReplaceServicesAction'),
                     cancelText: t('common.cancel'),
                 },
             );

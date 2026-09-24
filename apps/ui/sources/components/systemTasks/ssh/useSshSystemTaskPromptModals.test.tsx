@@ -89,6 +89,35 @@ afterEach(() => {
 });
 
 describe('useSshSystemTaskPromptModals', () => {
+    it('keeps remote service replacement and release-channel switching as separate prompt answers', async () => {
+        modalSpies.confirm.mockResolvedValueOnce(true);
+        const servicePrompt = await renderPrompt({
+            kind: 'daemon.replaceRemoteBackgroundServices',
+            message: 'Replace existing services?',
+            data: { targetReleaseChannel: 'preview', targetServerUrl: null, services: [] },
+        });
+        // The title is app copy, not the daemon's English prompt sentence.
+        expect(modalSpies.confirm).toHaveBeenLastCalledWith(
+            'machine.backgroundServicePrompt.replaceTitle',
+            undefined,
+            expect.objectContaining({ confirmText: 'settings.machineSetupRemotePromptReplaceServicesAction' }),
+        );
+        expect(servicePrompt.respond).toHaveBeenCalledWith(servicePrompt.taskId, { replaceExistingServices: true });
+
+        modalSpies.confirm.mockResolvedValueOnce(false);
+        const channelPrompt = await renderPrompt({
+            kind: 'releaseChannel.switchDefaultForSetup',
+            message: 'Switch the default release channel?',
+            data: {
+                targetReleaseChannel: 'preview',
+                currentDefaultReleaseChannel: 'stable',
+                targetServerUrl: null,
+                managedReleaseChannels: [],
+            },
+        });
+        expect(channelPrompt.respond).toHaveBeenCalledWith(channelPrompt.taskId, { switchDefaultReleaseChannel: false });
+    });
+
     it('shows exact inspected Personal Home erase facts and forwards the destructive decision', async () => {
         modalSpies.confirm.mockResolvedValueOnce(true);
 

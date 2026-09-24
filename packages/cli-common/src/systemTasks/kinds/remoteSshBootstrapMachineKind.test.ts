@@ -6,6 +6,8 @@ import { resolveHomeTargetFromDescriptor } from '../../homeTarget/homeTarget.js'
 import {
   createRemoteSshBootstrapMachineTaskKind as createProductionRemoteSshBootstrapMachineTaskKind,
   parseRemoteBootstrapMachineParams,
+  preflightRemoteBackgroundServiceReplacement,
+  SERVICE_RECONCILIATION_DECLINED_MESSAGE,
   type RemoteSshBootstrapMachineDeps,
 } from './remoteSshBootstrapMachineKind.js';
 
@@ -1487,7 +1489,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
       ok: false,
       error: {
         code: 'service_reconciliation_declined',
-        message: 'Remote background services must be reconciled before setup can continue.',
+        message: SERVICE_RECONCILIATION_DECLINED_MESSAGE,
       },
     });
     expect(invocations).toEqual([
@@ -2412,5 +2414,95 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     const finalPoll = await waitForResult(runner, { taskId: 'ssh-task-password', cursor: 0 });
     expect(finalPoll.result?.ok).toBe(true);
     expect(new Set(observedAuthModes)).toEqual(new Set(['agent']));
+  });
+});
+
+describe('preflightRemoteBackgroundServiceReplacement', () => {
+  function createPromptContext(answer: unknown) {
+    const prompts: Array<Readonly<{ kind: string; stepId?: string; data: unknown }>> = [];
+    return {
+      prompts,
+      ctx: {
+        prompt: async (prompt: Readonly<{ kind: string; stepId?: string; message: string; data: unknown }>) => {
+          prompts.push({ kind: prompt.kind, stepId: prompt.stepId, data: prompt.data });
+          return answer;
+        },
+      },
+    };
+  }
+
+  function listing(...services: Record<string, unknown>[]) {
+    return async () => ({ services, entries: [] });
+  }
+
+  it('does not prompt when the only remote service is already the exact install target', async () => {
+    const { ctx, prompts } = createPromptContext({ replaceExistingServices: true });
+    await expect(preflightRemoteBackgroundServiceReplacement({
+      ctx,
+      listServices: listing({
+        serviceType: 'daemon', platform: 'linux', mode: 'user', label: 'happier-daemon.dev',
+        ring: 'publicdev', targetMode: 'default-following', serverId: 'cloud', running: true,
+      }),
+      targetReleaseChannel: 'dev',
+      targetServerUrl: null,
+      mode: 'user',
+      stepId: 'daemon.service.preflight',
+    })).resolves.toBe(false);
+    expect(prompts).toEqual([]);
+  });
+
+  it('prompts for a single same-channel service the canonical conflict plan says competes', async () => {
+    const { ctx, prompts } = createPromptContext({ replaceExistingServices: true });
+    await expect(preflightRemoteBackgroundServiceReplacement({
+      ctx,
+      listServices: listing({
+        serviceType: 'daemon', platform: 'linux', mode: 'user', label: 'happier-daemon.stable.pinned',
+        ring: 'stable', targetMode: 'pinned', serverId: 'srv_a', running: false,
+      }),
+      targetReleaseChannel: 'stable',
+      targetServerUrl: 'https://relay.example.test',
+      mode: 'user',
+      stepId: 'daemon.service.preflight',
+    })).resolves.toBe(true);
+    expect(prompts).toEqual([{
+      kind: 'daemon.replaceRemoteBackgroundServices',
+      stepId: 'daemon.service.preflight',
+      data: {
+        targetServerUrl: 'https://relay.example.test',
+        targetReleaseChannel: 'stable',
+        services: [{ label: 'happier-daemon.stable.pinned', releaseChannel: 'stable', targetMode: 'pinned', running: false }],
+      },
+    }]);
+  });
+
+  it('refuses with the typed reconciliation error when replacement is declined', async () => {
+    const { ctx } = createPromptContext({ replaceExistingServices: false });
+    await expect(preflightRemoteBackgroundServiceReplacement({
+      ctx,
+      listServices: listing({
+        serviceType: 'daemon', platform: 'linux', mode: 'user', label: 'happier-daemon.preview',
+        ring: 'preview', targetMode: 'default-following', running: true,
+      }),
+      targetReleaseChannel: 'stable',
+      targetServerUrl: null,
+      mode: 'user',
+      stepId: 'personal_home.service_preflight',
+    })).rejects.toMatchObject({
+      code: 'service_reconciliation_declined',
+      message: SERVICE_RECONCILIATION_DECLINED_MESSAGE,
+    });
+  });
+
+  it('stays quiet when the remote service list cannot be read', async () => {
+    const { ctx, prompts } = createPromptContext({ replaceExistingServices: true });
+    await expect(preflightRemoteBackgroundServiceReplacement({
+      ctx,
+      listServices: async () => { throw new Error('older remote CLI'); },
+      targetReleaseChannel: 'stable',
+      targetServerUrl: null,
+      mode: 'user',
+      stepId: 'daemon.service.preflight',
+    })).resolves.toBe(false);
+    expect(prompts).toEqual([]);
   });
 });

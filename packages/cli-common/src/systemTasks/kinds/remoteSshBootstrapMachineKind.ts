@@ -11,8 +11,15 @@ import {
   type ResolvedHomeTarget,
 } from '../../homeTarget/homeTarget.js';
 import type { HappierJsonExecutor } from '../executors/happierJsonExecutor.js';
+import { resolveDaemonServiceInstallConflictPlan } from '../../happierRuntime/daemonInstallConflict.js';
+import type { HappierService, HappierServicePlatform } from '../../happierRuntime/types.js';
+import { resolveDaemonServiceBackend } from '../setupServiceGuidance/buildBackgroundServiceSetupGuidance.js';
 import { SystemTaskExecutionError } from '../runSystemTask.js';
-import { redactSensitiveSystemTaskJsonValue, type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
+import {
+  redactSensitiveSystemTaskJsonValue,
+  type InteractiveSystemTaskContext,
+  type InteractiveSystemTaskKind,
+} from '../interactiveTaskKinds.js';
 import {
   resolveSetupMachineReadiness,
   runSetupMachineRecipe,
@@ -34,7 +41,7 @@ type RemoteCommandResult = Readonly<{
   data: Record<string, unknown>;
 }>;
 
-type RemoteBootstrapExistingDaemonServiceSummary = Readonly<{
+export type RemoteBootstrapExistingDaemonServiceSummary = Readonly<{
   label: string;
   releaseChannel: 'stable' | 'preview' | 'dev' | null;
   targetMode: 'default-following' | 'pinned' | null;
@@ -107,7 +114,7 @@ function shouldIgnoreLocalApprovalError(error: unknown): boolean {
   return /not authenticated/i.test(message);
 }
 
-function summarizeDiscoveredRemoteDaemonServices(data: Record<string, unknown>): RemoteBootstrapExistingDaemonServiceSummary[] {
+export function summarizeDiscoveredRemoteDaemonServices(data: Record<string, unknown>): RemoteBootstrapExistingDaemonServiceSummary[] {
   const rawServices = Array.isArray(data.services) ? data.services : [];
   return rawServices.flatMap((entry) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -121,10 +128,7 @@ function summarizeDiscoveredRemoteDaemonServices(data: Record<string, unknown>):
     if (!label) {
       return [];
     }
-    const releaseChannel =
-      record.ring === 'stable' || record.ring === 'preview' || record.ring === 'dev'
-        ? record.ring
-        : null;
+    const releaseChannel = normalizePublicReleaseRingLabel(record.ring) || null;
     const targetMode =
       record.targetMode === 'default-following' || record.targetMode === 'pinned'
         ? record.targetMode
@@ -138,20 +142,117 @@ function summarizeDiscoveredRemoteDaemonServices(data: Record<string, unknown>):
   });
 }
 
-function shouldPromptForRemoteDaemonServiceReplacement(
-  params: Readonly<{
-    services: readonly RemoteBootstrapExistingDaemonServiceSummary[];
-    targetReleaseChannel: 'stable' | 'preview' | 'dev';
-  }>,
-): boolean {
-  if (params.services.length === 0) {
+/**
+ * The one remedy for `service_reconciliation_declined`, shared by machine setup
+ * and Home creation. It names no host-specific control or flag, so it stays
+ * true in the CLI prompt and in the app's replace prompt alike.
+ */
+export const SERVICE_RECONCILIATION_DECLINED_MESSAGE =
+  'Existing background services on the remote host were left unchanged, so setup stopped. Start again and choose to replace them.';
+
+function readRemoteServicePlatform(value: unknown): HappierServicePlatform | null {
+  return value === 'darwin' || value === 'linux' || value === 'win32' ? value : null;
+}
+
+/**
+ * Whether the remote host's installed daemon services conflict with the service
+ * this setup is about to install, decided by the one canonical install conflict
+ * plan over the remote `service list --json` inventory. Every listed service
+ * lives on the same remote host, so an entry that omits its platform shares
+ * the host platform. The inventory carries no Happier home directory, so
+ * foreign-home detection stays with the remote CLI's own install/setup owner.
+ */
+function remoteDaemonServicesConflictWithInstallTarget(params: Readonly<{
+  data: Record<string, unknown>;
+  targetReleaseChannel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+}>): boolean {
+  const entries = (Array.isArray(params.data.services) ? params.data.services : [])
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    .filter((entry) => entry.serviceType === 'daemon');
+  if (entries.length === 0) return false;
+  const platform = entries.map((entry) => readRemoteServicePlatform(entry.platform)).find((value) => value !== null) ?? 'linux';
+  const services = entries.map((entry, index): HappierService => {
+    const mode = entry.mode === 'system' ? 'system' : 'user';
+    const path = typeof entry.path === 'string' ? entry.path : '';
+    const relayUrl = typeof entry.relayUrl === 'string' && entry.relayUrl.trim() ? entry.relayUrl.trim() : null;
+    return {
+      id: path || `remote-daemon-service-${index}`,
+      serviceType: 'daemon',
+      platform,
+      backend: resolveDaemonServiceBackend(platform, mode),
+      label: typeof entry.label === 'string' ? entry.label : '',
+      ...(entry.targetMode === 'default-following' || entry.targetMode === 'pinned' ? { targetMode: entry.targetMode } : {}),
+      verification: 'verified',
+      ring: normalizePublicReleaseRingLabel(entry.ring) || null,
+      instanceId: typeof entry.serverId === 'string' && entry.serverId.trim() ? entry.serverId.trim() : null,
+      scope: mode,
+      definitionPath: path,
+      executablePath: null,
+      serverUrl: relayUrl,
+      publicServerUrl: relayUrl,
+      installed: true,
+      running: entry.running === true,
+    };
+  });
+  return resolveDaemonServiceInstallConflictPlan({
+    target: {
+      platform,
+      backend: resolveDaemonServiceBackend(platform, params.mode),
+      targetMode: 'default-following',
+      ring: params.targetReleaseChannel,
+      instanceId: null,
+      serverUrl: null,
+      happierHomeDir: null,
+    },
+    strategy: 'require-explicit',
+    services,
+  }).competingServices.length > 0;
+}
+
+/**
+ * The single remote background-service replacement preflight shared by machine
+ * setup and remote Home creation: read the remote inventory (tolerating an older
+ * or failing `service list`), decide through the canonical conflict plan, ask
+ * once, and refuse with the typed reconciliation error when declined. Returns
+ * whether the caller must apply the accepted replacement.
+ */
+export async function preflightRemoteBackgroundServiceReplacement(params: Readonly<{
+  ctx: Pick<InteractiveSystemTaskContext, 'prompt'>;
+  listServices: () => Promise<Record<string, unknown>>;
+  targetReleaseChannel: 'stable' | 'preview' | 'dev';
+  targetServerUrl: string | null;
+  mode: 'user' | 'system';
+  stepId: string;
+}>): Promise<boolean> {
+  let data: Record<string, unknown>;
+  try {
+    data = await params.listServices();
+  } catch {
+    // The remote install/setup owner still returns its exact typed failure.
     return false;
   }
-  if (params.services.length > 1) {
-    return true;
+  if (!remoteDaemonServicesConflictWithInstallTarget({
+    data,
+    targetReleaseChannel: params.targetReleaseChannel,
+    mode: params.mode,
+  })) {
+    return false;
   }
-  const [existing] = params.services;
-  return existing?.releaseChannel !== params.targetReleaseChannel;
+  const answer = await params.ctx.prompt({
+    kind: 'daemon.replaceRemoteBackgroundServices',
+    stepId: params.stepId,
+    message: 'Remote machine already has Happier background services. Replace them with the selected release channel?',
+    data: {
+      targetServerUrl: params.targetServerUrl,
+      targetReleaseChannel: params.targetReleaseChannel,
+      services: summarizeDiscoveredRemoteDaemonServices(data),
+    },
+  }) as { replaceExistingServices?: boolean } | null;
+  if (answer?.replaceExistingServices !== true) {
+    throw new SystemTaskExecutionError('service_reconciliation_declined', SERVICE_RECONCILIATION_DECLINED_MESSAGE);
+  }
+  return true;
 }
 
 export interface RemoteBootstrapMachineParams {
@@ -490,47 +591,24 @@ export function createRemoteSshBootstrapMachineTaskKind(
         },
       };
 
-      let shouldManageService = (parsedRemote.serviceMode ?? 'user') !== 'none';
-      if (shouldManageService) {
-        let discoveredServices: RemoteBootstrapExistingDaemonServiceSummary[] | null = null;
-        try {
-          discoveredServices = summarizeDiscoveredRemoteDaemonServices(
-            requireOk(
-              await remoteHappierExecutor.runHappierJson({ args: ['service', 'list', '--json'] }),
-              'daemon.service.list',
-            ),
-          );
-        } catch {
-          discoveredServices = null;
-        }
-        if (discoveredServices) {
-          if (shouldPromptForRemoteDaemonServiceReplacement({
-            services: discoveredServices,
-            targetReleaseChannel: parsedRemote.channel ?? 'stable',
-          })) {
-            const answer = await ctx.prompt({
-              kind: 'daemon.replaceRemoteBackgroundServices',
-              stepId: 'daemon.service.preflight',
-              message: 'Remote machine already has Happier background services. Replace them with the selected release channel?',
-              data: {
-                targetServerUrl: relayProfile.serverUrl,
-                targetReleaseChannel: parsedRemote.channel ?? 'stable',
-                services: discoveredServices,
-              },
-            }) as { replaceExistingServices?: boolean };
-            if (answer.replaceExistingServices === true) {
-              requireOk(
-                await remoteHappierExecutor.runHappierJson({ args: ['service', 'uninstall', '--all', '--yes', '--json'] }),
-                'daemon.service.uninstallAll',
-              );
-            } else {
-              throw new SystemTaskExecutionError(
-                'service_reconciliation_declined',
-                'Remote background services must be reconciled before setup can continue.',
-              );
-            }
-          }
-        }
+      const shouldManageService = (parsedRemote.serviceMode ?? 'user') !== 'none';
+      if (shouldManageService && await preflightRemoteBackgroundServiceReplacement({
+        ctx,
+        listServices: async () => requireOk(
+          await remoteHappierExecutor.runHappierJson({ args: ['service', 'list', '--json'] }),
+          'daemon.service.list',
+        ),
+        targetReleaseChannel: parsedRemote.channel ?? 'stable',
+        targetServerUrl: relayProfile.serverUrl,
+        mode: 'user',
+        stepId: 'daemon.service.preflight',
+      })) {
+        // The remote CLI has no per-service uninstall; replacement removes every
+        // remote daemon service, exactly as the canonical setup owner does.
+        requireOk(
+          await remoteHappierExecutor.runHappierJson({ args: ['service', 'uninstall', '--all', '--yes', '--json'] }),
+          'daemon.service.uninstallAll',
+        );
       }
 
       const recipeResult = await runSetupMachineRecipe({

@@ -639,12 +639,13 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         if (prompt) {
             props.onWizardSkipChange?.({
                 hidden: false,
-                label: prompt.kind === 'daemon.replaceRemoteBackgroundServices'
-                    ? t('common.skip')
-                    : t('common.cancel'),
+                // Declining either setup decision stops setup, so it is a
+                // Cancel here exactly as in the SSH and this-computer modals.
+                label: t('common.cancel'),
                 disabled: isStarting,
                 onPress: () => {
-                    if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
+                    if (prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+                        || prompt.kind === 'releaseChannel.switchDefaultForSetup') {
                         void declinePrompt().catch((error) => {
                             setStartErrorMessage(error instanceof Error ? error.message : t('setupOnboarding.remoteSshChecklist.continueFailed'));
                         });
@@ -658,8 +659,10 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
                 ? t('common.continue')
                 : prompt.kind === 'auth.approveRemoteProvisioning'
                     ? t('settings.machineSetupRemotePromptApproveAction')
-                    : prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+                    : prompt.kind === 'releaseChannel.switchDefaultForSetup'
                         ? t('common.continue')
+                    : prompt.kind === 'daemon.replaceRemoteBackgroundServices'
+                        ? t('settings.machineSetupRemotePromptReplaceServicesAction')
                     : prompt.kind === 'ssh.replaceHostKey'
                         ? t('settings.machineSetupRemotePromptReplaceAction')
                         : t('settings.machineSetupRemotePromptTrustAction');
