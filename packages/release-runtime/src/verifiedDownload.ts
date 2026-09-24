@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { requestBytes, requestText } from './http.js';
+import { requestBytes, requestText, type DownloadProgress } from './http.js';
 import {
   resolveVerifiedReleaseArtifactDigest,
   verifyReleaseArtifactDigest,
@@ -17,13 +17,11 @@ export type ReleaseAssetBundle = Readonly<{
   checksumsSig: ReleaseAsset;
 }>;
 
-async function fetchText(url: string, { userAgent = 'happier-release-runtime' } = {}) {
-  return await requestText({ url, headers: { 'user-agent': userAgent } });
-}
-
-async function fetchBytes(url: string, { userAgent = 'happier-release-runtime' } = {}) {
-  return await requestBytes({ url, headers: { 'user-agent': userAgent } });
-}
+export type ReleaseDownloadProgress = Readonly<{
+  phase: 'downloading' | 'verifying';
+  receivedBytes?: number;
+  totalBytes?: number;
+}>;
 
 function sha256Hex(bytes: Uint8Array) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -34,6 +32,8 @@ export async function downloadVerifiedReleaseAssetBundle(params: Readonly<{
   destDir: string;
   pubkeyFile: string;
   userAgent?: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: ReleaseDownloadProgress) => void;
 }>): Promise<Readonly<{
   version: string;
   archiveName: string;
@@ -46,6 +46,7 @@ export async function downloadVerifiedReleaseAssetBundle(params: Readonly<{
   const userAgent = String(params.userAgent ?? '').trim() || 'happier-release-runtime';
   if (!destDir) throw new Error('[download] destDir is required');
   if (!pubkeyFile.trim()) throw new Error('[download] pubkeyFile is required');
+  params.signal?.throwIfAborted();
 
   await mkdir(destDir, { recursive: true });
 
@@ -53,8 +54,12 @@ export async function downloadVerifiedReleaseAssetBundle(params: Readonly<{
   // checksum and digest decision belongs to the shared cross-runtime core. The
   // trusted digest is established before the archive is fetched, so an unsigned
   // or unknown asset is never downloaded on an untrusted list's say-so.
-  const checksumsText = await fetchText(bundle.checksums.url, { userAgent });
-  const sigFile = await fetchText(bundle.checksumsSig.url, { userAgent });
+  const requestOptions = { headers: { 'user-agent': userAgent }, signal: params.signal };
+  params.onProgress?.({ phase: 'downloading' });
+  const checksumsText = await requestText({ url: bundle.checksums.url, ...requestOptions });
+  const sigFile = await requestText({ url: bundle.checksumsSig.url, ...requestOptions });
+  params.signal?.throwIfAborted();
+  params.onProgress?.({ phase: 'verifying' });
   const resolved = resolveVerifiedReleaseArtifactDigest({
     artifactName: bundle.archive.name,
     checksumsText,
@@ -68,7 +73,14 @@ export async function downloadVerifiedReleaseAssetBundle(params: Readonly<{
     throw new Error(`[checksums] sha256 not found for ${resolved.artifactName}`);
   }
 
-  const bytes = await fetchBytes(bundle.archive.url, { userAgent });
+  params.onProgress?.({ phase: 'downloading' });
+  const bytes = await requestBytes({
+    url: bundle.archive.url,
+    ...requestOptions,
+    onProgress: (progress: DownloadProgress) => params.onProgress?.({ phase: 'downloading', ...progress }),
+  });
+  params.signal?.throwIfAborted();
+  params.onProgress?.({ phase: 'verifying' });
   const verified = verifyReleaseArtifactDigest({
     artifactName: resolved.artifactName,
     expectedSha256: resolved.sha256,

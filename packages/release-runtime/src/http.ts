@@ -11,6 +11,17 @@ const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'
 
 type HeaderMap = Readonly<Record<string, string>>;
 
+export type DownloadProgress = Readonly<{ receivedBytes: number; totalBytes?: number }>;
+type RequestOptions = Readonly<{
+  url: string;
+  headers?: HeaderMap;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onProgress?: (progress: DownloadProgress) => void;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+}>;
+
 const CROSS_ORIGIN_SENSITIVE_HEADERS = new Set(['authorization', 'proxy-authorization']);
 
 function decodeDataUrl(url: string): Buffer {
@@ -63,6 +74,7 @@ function resolveRedirectHeaders(params: Readonly<{
 function createHttpError(url: string, statusCode: number): Error {
   const error = new Error(`[http] request failed: ${url} (${statusCode})`);
   (error as Error & { statusCode: number }).statusCode = statusCode;
+  Object.assign(error, { status: statusCode, code: `HTTP_${statusCode}` });
   return error;
 }
 
@@ -91,12 +103,8 @@ function isRetryableRequestError(error: unknown): boolean {
   return /timed out|socket hang up/i.test(message);
 }
 
-async function requestBufferWithNode(params: Readonly<{
-  url: string;
-  headers?: HeaderMap;
+async function requestBufferWithNode(params: RequestOptions & Readonly<{
   redirectCount?: number;
-  timeoutMs?: number;
-  signal?: AbortSignal;
 }>): Promise<Buffer> {
   const redirectCount = params.redirectCount ?? 0;
   if (redirectCount > MAX_REDIRECTS) {
@@ -131,6 +139,7 @@ async function requestBufferWithNode(params: Readonly<{
             redirectCount: redirectCount + 1,
             timeoutMs: params.timeoutMs,
             signal: params.signal,
+            onProgress: params.onProgress,
           }).then(resolve, reject);
           return;
         }
@@ -142,8 +151,16 @@ async function requestBufferWithNode(params: Readonly<{
         }
 
         const chunks: Buffer[] = [];
+        let receivedBytes = 0;
+        const contentLength = Number(res.headers['content-length']);
+        const total = Number.isSafeInteger(contentLength) && contentLength > 0
+          ? { totalBytes: contentLength }
+          : {};
         res.on('data', (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          chunks.push(bytes);
+          receivedBytes += bytes.length;
+          params.onProgress?.({ receivedBytes, ...total });
         });
         res.on('end', () => resolve(Buffer.concat(chunks)));
         res.on('error', reject);
@@ -151,26 +168,23 @@ async function requestBufferWithNode(params: Readonly<{
     );
 
     req.setTimeout(params.timeoutMs ?? DEFAULT_TIMEOUT_MS, () => {
-      req.destroy(new Error(`[http] request timed out: ${params.url}`));
+      const error = new Error(`[http] request timed out: ${params.url}`);
+      Object.assign(error, { code: 'ETIMEDOUT' });
+      req.destroy(error);
     });
     req.on('error', reject);
     req.end();
   });
 }
 
-export async function requestBytes(params: Readonly<{
-  url: string;
-  headers?: HeaderMap;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  retryAttempts?: number;
-  retryDelayMs?: number;
-}>): Promise<Buffer> {
+export async function requestBytes(params: RequestOptions): Promise<Buffer> {
   params.signal?.throwIfAborted();
   const url = String(params.url ?? '').trim();
   if (!url) throw new Error('[http] url is required');
   if (url.startsWith('data:')) {
-    return decodeDataUrl(url);
+    const bytes = decodeDataUrl(url);
+    params.onProgress?.({ receivedBytes: bytes.length, ...(bytes.length > 0 ? { totalBytes: bytes.length } : {}) });
+    return bytes;
   }
   const retryAttempts = Math.max(1, Math.floor(params.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS));
   const retryDelayMs = Math.max(0, Math.floor(params.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS));
@@ -181,6 +195,7 @@ export async function requestBytes(params: Readonly<{
         headers: params.headers,
         timeoutMs: params.timeoutMs,
         signal: params.signal,
+        onProgress: params.onProgress,
       });
     } catch (error) {
       params.signal?.throwIfAborted();
@@ -195,25 +210,11 @@ export async function requestBytes(params: Readonly<{
   throw new Error(`[http] request failed: ${url}`);
 }
 
-export async function requestText(params: Readonly<{
-  url: string;
-  headers?: HeaderMap;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  retryAttempts?: number;
-  retryDelayMs?: number;
-}>): Promise<string> {
+export async function requestText(params: RequestOptions): Promise<string> {
   const bytes = await requestBytes(params);
   return bytes.toString('utf8');
 }
 
-export async function requestJson<T>(params: Readonly<{
-  url: string;
-  headers?: HeaderMap;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  retryAttempts?: number;
-  retryDelayMs?: number;
-}>): Promise<T> {
+export async function requestJson<T>(params: RequestOptions): Promise<T> {
   return JSON.parse(await requestText(params)) as T;
 }

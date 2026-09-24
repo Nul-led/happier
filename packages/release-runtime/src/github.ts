@@ -17,8 +17,8 @@ function buildGitHubLatestReleaseUrl(githubRepo: string) {
   return `https://api.github.com/repos/${repo}/releases/latest`;
 }
 
-function createHttpError(message: string, status: number) {
-  const err = new Error(message);
+function createHttpError(message: string, status: number, cause?: unknown) {
+  const err = new Error(message, { cause });
   (err as Error & { status: number }).status = status;
   return err;
 }
@@ -48,7 +48,7 @@ function normalizeGitHubRequestError(params: Readonly<{
 }>): Error {
   const status = readGitHubReleaseHttpStatus(params.error) ?? 500;
   const message = params.error instanceof Error ? params.error.message : String(params.error);
-  return createHttpError(`${params.context}: ${message}`, status);
+  return createHttpError(`${params.context}: ${message}`, status, params.error);
 }
 
 export async function fetchGitHubReleaseByTag(params: Readonly<{
