@@ -6262,6 +6262,16 @@ export {
   type ServerHttpRequestBodyItemBudgetV1,
 } from './server/http/requestBodyBoundsV1.js';
 export {
+  CLI_ACQUISITION_PROGRESS_EVENT,
+  CliAcquisitionPhaseSchema,
+  CliAcquisitionProgressSchema,
+  parseCliAcquisitionProgress,
+  readCliAcquisitionFailurePhase,
+  type CliAcquisitionPhase,
+  type CliAcquisitionProgress,
+} from './system/tasks/acquisitionProgress.js';
+
+export {
   SYSTEM_TASK_PROTOCOL_VERSION,
   SystemTaskEventSchema,
   SystemTaskJsonValueSchema,

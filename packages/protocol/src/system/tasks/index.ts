@@ -1,4 +1,14 @@
 export {
+  CLI_ACQUISITION_PROGRESS_EVENT,
+  CliAcquisitionPhaseSchema,
+  CliAcquisitionProgressSchema,
+  parseCliAcquisitionProgress,
+  readCliAcquisitionFailurePhase,
+  type CliAcquisitionPhase,
+  type CliAcquisitionProgress,
+} from './acquisitionProgress.js';
+
+export {
   SYSTEM_TASK_PROTOCOL_VERSION,
   SystemTaskEventSchema,
   SystemTaskJsonValueSchema,
