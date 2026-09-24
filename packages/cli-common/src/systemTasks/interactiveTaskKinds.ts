@@ -173,7 +173,9 @@ export function createSystemTasksRunner(params: Readonly<{
             error: {
               code: error instanceof SystemTaskExecutionError
                 ? error.code
-                : 'system_task_failed',
+                : state.abortController.signal.aborted
+                  ? 'cancelled'
+                  : 'system_task_failed',
               message: error instanceof Error ? error.message : 'System task failed',
             },
           };

@@ -178,7 +178,12 @@ describe('PersonalHomeBootstrapGate', () => {
                 awaitingInput: false,
                 cancelRequested: false,
                 events: [],
-                result: null,
+                result: {
+                    protocolVersion: 1,
+                    taskId: 'prepare-computer-test',
+                    ok: false,
+                    error: { code: 'daemon_not_ready', message: 'Background service did not reach a ready state.' },
+                },
             },
         };
         const readFacts = vi.fn<(facts?: unknown) => Promise<PersonalHomeFacts>>()
@@ -192,6 +197,7 @@ describe('PersonalHomeBootstrapGate', () => {
                 isDesktopHost
                 isDesktopMainWindow
                 readFacts={readFacts}
+                activeTask={null}
                 operations={{ 'prepare-computer': prepareComputer }}
             >
                 <View testID="normal-shell" />
@@ -211,6 +217,7 @@ describe('PersonalHomeBootstrapGate', () => {
         expect(screen.root.findAll((node) => node.props.children === 'Background service did not reach a ready state.')).toHaveLength(0);
         await screen.pressByTestIdAsync('personal-home-recovery-details');
         expect(screen.findByTestId('personal-home-recovery-details-panel')).not.toBeNull();
+        expect(screen.findByTestId('system-task-progress-card')).not.toBeNull();
         const recoveryStrip = screen.findAllHostsByTestId('personal-home-recovery-strip')[0];
         expect(recoveryStrip?.props.accessibilityLiveRegion).toBe('polite');
         expect(recoveryStrip?.props.accessibilityRole).not.toBe('alert');

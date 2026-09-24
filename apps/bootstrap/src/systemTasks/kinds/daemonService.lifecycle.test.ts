@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SystemTaskExecutionRunner } from '@happier-dev/cli-common/systemTasks';
 
 const localDaemonCliMock = vi.hoisted(() => ({
   readDaemonStatus: vi.fn(),
@@ -15,11 +16,11 @@ import {
 } from './daemonService.js';
 
 async function collectResult(
-  handler: (params: unknown, context: Readonly<{ taskId: string; signal: AbortSignal; now: () => number }>) => AsyncGenerator<unknown, unknown, void>,
+  handler: SystemTaskExecutionRunner,
   params: unknown,
 ) {
-  const iterator = handler(params, { taskId: 'test-task', signal: new AbortController().signal, now: Date.now });
   const events: unknown[] = [];
+  const iterator = handler(params, { taskId: 'test-task', signal: new AbortController().signal, now: Date.now, emit: (event) => events.push(event) });
   for (;;) {
     const next = await iterator.next();
     if (next.done) {

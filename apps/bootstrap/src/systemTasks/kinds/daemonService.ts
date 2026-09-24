@@ -1,5 +1,7 @@
 import { systemTasks } from '@happier-dev/cli-common';
+import type { DaemonServiceKindDeps } from '@happier-dev/cli-common/systemTasks';
 import { normalizeBootstrapChannel } from '../taskRuntime.js';
+import { reportCliAcquisitionProgress } from '../cliAcquisitionProgress.js';
 
 import {
   readDaemonStatus,
@@ -14,42 +16,33 @@ function resolveReleaseRingFromChannel(channel: unknown) {
   return normalizeBootstrapChannel(normalized).releaseChannel;
 }
 
+const daemonServiceDeps: DaemonServiceKindDeps = {
+  readStatus: async (params, context) => await readDaemonStatus({
+    releaseRing: resolveReleaseRingFromChannel(params.channel),
+    signal: context?.signal,
+    onProgress: context ? reportCliAcquisitionProgress(context.emit) : undefined,
+  }),
+  startService: async (params) => await startService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
+  stopService: async (params) => await stopService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
+  restartService: async (params) => await restartService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
+};
+
 export function createDaemonServiceStatusHandler() {
-  const kind = systemTasks.createDaemonServiceStatusTaskKind({
-    readStatus: async (params) => await readDaemonStatus({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    startService: async (params) => await startService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    stopService: async (params) => await stopService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    restartService: async (params) => await restartService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-  });
+  const kind = systemTasks.createDaemonServiceStatusTaskKind(daemonServiceDeps);
   return systemTasks.createExecutionRunnerFromKind(kind);
 }
 
 export function createDaemonServiceStartHandler() {
-  const kind = systemTasks.createDaemonServiceStartTaskKind({
-    readStatus: async (params) => await readDaemonStatus({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    startService: async (params) => await startService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    stopService: async (params) => await stopService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    restartService: async (params) => await restartService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-  });
+  const kind = systemTasks.createDaemonServiceStartTaskKind(daemonServiceDeps);
   return systemTasks.createExecutionRunnerFromKind(kind);
 }
 
 export function createDaemonServiceStopHandler() {
-  const kind = systemTasks.createDaemonServiceStopTaskKind({
-    readStatus: async (params) => await readDaemonStatus({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    startService: async (params) => await startService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    stopService: async (params) => await stopService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    restartService: async (params) => await restartService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-  });
+  const kind = systemTasks.createDaemonServiceStopTaskKind(daemonServiceDeps);
   return systemTasks.createExecutionRunnerFromKind(kind);
 }
 
 export function createDaemonServiceRestartHandler() {
-  const kind = systemTasks.createDaemonServiceRestartTaskKind({
-    readStatus: async (params) => await readDaemonStatus({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    startService: async (params) => await startService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    stopService: async (params) => await stopService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-    restartService: async (params) => await restartService({ releaseRing: resolveReleaseRingFromChannel(params.channel) }),
-  });
+  const kind = systemTasks.createDaemonServiceRestartTaskKind(daemonServiceDeps);
   return systemTasks.createExecutionRunnerFromKind(kind);
 }

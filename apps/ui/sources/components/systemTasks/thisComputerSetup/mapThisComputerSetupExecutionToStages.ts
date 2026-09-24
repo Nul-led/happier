@@ -1,5 +1,6 @@
 import { resolveSystemTaskStepLabel } from '@/components/systemTasks/resolveSystemTaskStepLabel';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import { resolveSystemTaskFailureMessage } from '../resolveSystemTaskFailureMessage';
 import {
     createPlanChecklistLogEntryFromSystemTaskEvent,
     resolveSystemTaskEventStepId,
@@ -114,7 +115,7 @@ function resolveFailureMessage(snapshot: SystemTaskRunState): string | undefined
     if (!snapshot.result || snapshot.result.ok) {
         return undefined;
     }
-    const explicit = snapshot.result.error.message.trim();
+    const explicit = resolveSystemTaskFailureMessage(snapshot.result.error) ?? '';
     if (explicit.length > 0) {
         return explicit;
     }

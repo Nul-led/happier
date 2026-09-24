@@ -8,6 +8,8 @@ import { t } from '@/text';
 import { isDesktopHost, invokeDesktopHost } from '@/utils/platform/desktopHost';
 
 import type { SystemTaskRunState } from './types';
+import { presentActiveCliAcquisition, presentCliAcquisitionEvent } from './cliAcquisitionPresentation';
+import { resolveSystemTaskFailureMessage } from './resolveSystemTaskFailureMessage';
 import { resolveSystemTaskStepLabel } from './resolveSystemTaskStepLabel';
 import { readLatestSystemTaskPrompt } from './prompts/readLatestSystemTaskPrompt';
 import {
@@ -52,7 +54,7 @@ function buildChecklistSteps(snapshot: SystemTaskRunState): readonly ChecklistSt
             continue;
         }
         const ts = typeof (event as { tsMs?: unknown }).tsMs === 'number' ? (event as { tsMs: number }).tsMs : Number.POSITIVE_INFINITY;
-        const message = typeof event.message === 'string' ? event.message : null;
+        const message = presentCliAcquisitionEvent(event)?.status ?? (typeof event.message === 'string' ? event.message : null);
         const existing = byStepId.get(stepId);
         if (!existing) {
             byStepId.set(stepId, {
@@ -175,7 +177,10 @@ export const SystemTaskProgressCard = React.memo(function SystemTaskProgressCard
     const showOpenLogs = props.showOpenLogs ?? true;
     const canCancel = Boolean(props.onCancel) && (props.snapshot.status === 'running' || props.snapshot.status === 'canceling');
     const stepLabel = resolveSystemTaskStepLabel(props.snapshot.currentStepId);
-    const latestMessage = props.snapshot.latestMessage;
+    const acquisition = presentActiveCliAcquisition(props.snapshot);
+    const latestMessage = props.snapshot.result && !props.snapshot.result.ok
+        ? resolveSystemTaskFailureMessage(props.snapshot.result.error) ?? props.snapshot.latestMessage
+        : acquisition?.status ?? props.snapshot.latestMessage;
     const checklistSteps = React.useMemo(() => buildChecklistSteps(props.snapshot), [props.snapshot]);
     const presentedChecklistSteps = React.useMemo<readonly ProgressChecklistStep[]>(() => (
         checklistSteps.map((step) => ({
@@ -234,6 +239,15 @@ export const SystemTaskProgressCard = React.memo(function SystemTaskProgressCard
                             mode="info"
                         />
                     </>
+                ) : null}
+                {acquisition && (variant === 'checklistOnly' || acquisition.downloadProgress) ? (
+                    <Item
+                        testID="system-task-acquisition-progress"
+                        title={variant === 'checklistOnly' ? acquisition.status : acquisition.downloadProgress!}
+                        subtitle={variant === 'checklistOnly' ? acquisition.downloadProgress : undefined}
+                        showChevron={false}
+                        mode="info"
+                    />
                 ) : null}
                 <ProgressChecklist
                     steps={presentedChecklistSteps}

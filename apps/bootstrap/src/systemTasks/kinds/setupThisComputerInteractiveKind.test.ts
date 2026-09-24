@@ -72,7 +72,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
       exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
-      ensureLocalHappierTools: async ({ releaseChannel }) => {
+      ensureLocalHappierTools: async ({ releaseChannel, onProgress }) => {
+        onProgress?.({ phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 });
         invocations.push(`ensureLocalHappierTools:${releaseChannel}`);
         return MANAGED_CLI;
       },
@@ -122,6 +123,11 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
 
     const finalPoll = await waitForResult(runner, { taskId: 'setup-task-tools', cursor: 0 });
     expect(finalPoll.result?.ok).toBe(true);
+    expect(finalPoll.events).toContainEqual(expect.objectContaining({
+      type: 'cli.acquisition.progress',
+      stepId: 'setup.thisComputer.ensureCli',
+      data: { phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 },
+    }));
     expect(invocations).toEqual([
       'ensureLocalHappierTools:preview',
       'configureRelay',

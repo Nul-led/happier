@@ -54,6 +54,45 @@ function createManualBridge() {
 }
 
 describe('createSystemTaskRunner', () => {
+    it('does not replay a prompt when its subscriber synchronously changes task state', async () => {
+        const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        const runner = createSystemTaskRunner({ bridge: manual.bridge });
+        const taskId = await runner.start(createSpec());
+        const seen: string[] = [];
+        runner.subscribe(taskId, (event) => {
+            seen.push(event.type);
+            if (event.type === 'prompt') void runner.cancel(taskId);
+        }, () => {});
+        manual.emitEvent(taskId, { protocolVersion: 1, taskId, tsMs: 1, type: 'prompt' });
+        expect(seen).toEqual(['prompt']);
+        expect(runner.getSnapshot(taskId)?.status).toBe('canceling');
+    });
+
+    it('retains current acquisition byte samples and milestones when older events are replayed', async () => {
+        const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        const runner = createSystemTaskRunner({ bridge: manual.bridge });
+        const taskId = await runner.start(createSpec());
+        const emit = (tsMs: number, phase: string, receivedBytes?: number) => manual.emitEvent(taskId, {
+            protocolVersion: 1, taskId, tsMs, type: 'cli.acquisition.progress',
+            stepId: 'setup.thisComputer.ensureCli', data: { phase, ...(receivedBytes === undefined ? {} : { receivedBytes }) },
+        });
+        emit(1, 'resolvingRelease');
+        emit(2, 'downloading');
+        for (let index = 3; index <= 1000; index++) emit(index, 'downloading', index);
+        manual.emitEvent(taskId, { protocolVersion: 1, taskId, tsMs: 1001, type: 'prompt', stepId: 'consent' });
+        emit(1002, 'verifying');
+        const events: SystemTaskEvent[] = [];
+        runner.subscribe(taskId, (event) => events.push(event), () => {});
+        expect(events.map((event) => event.data ?? event.type)).toEqual([
+            { phase: 'resolvingRelease' }, { phase: 'downloading' }, { phase: 'downloading', receivedBytes: 1000 }, 'prompt', { phase: 'verifying' },
+        ]);
+        emit(3, 'downloading', 3);
+        expect(runner.getSnapshot(taskId)?.events).toHaveLength(5);
+        expect(runner.getSnapshot(taskId)?.events[2]?.data).toEqual({ phase: 'downloading', receivedBytes: 1000 });
+    });
+
     it('waits for the terminal result of a started task, including an already-completed task', async () => {
         const { createSystemTaskRunner, waitForSystemTaskResult } = await import('./createSystemTaskRunner');
         const manual = createManualBridge();

@@ -1,18 +1,118 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
+import { syncBuiltinESMExports } from 'node:module';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installVersionedPayload, resolveInstalledFirstPartyComponentPaths } from '../../firstPartyRuntime/index.js';
 import {
   DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
+  createLocalHappierJsonExecutor,
   ensureLocalFirstPartyComponentCommand,
   resolveExplicitOrInstalledLocalFirstPartyCommand,
 } from '../index.js';
 
 afterEach(() => {
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
+});
+
+describe('local command acquisition lifecycle', () => {
+  it.each(['release', 'download', 'cancel'] as const)('preserves %s failure or cancellation through the executor', async (outcome) => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'cli-common-acquisition-failure-'));
+    const controller = new AbortController();
+    let requests = 0;
+    let baseUrl = '';
+    const server = http.createServer((req, res) => {
+      requests += 1;
+      if (outcome === 'download' && req.url?.startsWith('/repos/')) {
+        const os = process.platform === 'win32' ? 'windows' : process.platform;
+        const archive = `happier-v0.3.0-${os}-${process.arch}.tar.gz`;
+        const checksums = 'checksums-happier-v0.3.0.txt';
+        res.end(JSON.stringify({ assets: [archive, checksums, `${checksums}.minisig`].map((name) => ({
+          name, browser_download_url: `${baseUrl.replace('http://', 'http://fixture-user:fixture-password@')}/${name}?token=fixture-secret`,
+        })) }));
+        return;
+      }
+      if (outcome === 'cancel' && requests === 1) controller.abort();
+      res.writeHead(403).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing HTTP fixture address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    // Only the external HTTP boundary is redirected; acquisition and executor logic stay real.
+    vi.spyOn(https, 'request').mockImplementation((url, options, callback) => {
+      const parsed = new URL(String(url));
+      if (parsed.hostname !== 'api.github.com') throw new Error(`Unexpected request: ${parsed.origin}`);
+      return http.request(`http://127.0.0.1:${address.port}${parsed.pathname}`, options, callback);
+    });
+    syncBuiltinESMExports();
+    const progress: unknown[] = [];
+    try {
+      const options = {
+        processEnv: { HAPPIER_HOME_DIR: join(rootDir, 'home'), HAPPIER_STACK_REPO_DIR: rootDir },
+        signal: outcome === 'cancel' ? undefined : controller.signal,
+        onProgress: (event: Readonly<{ phase: string }>) => { progress.push(event); },
+        onCommandReady: () => { progress.push({ phase: 'checkingDaemon' }); },
+      };
+      const executor = createLocalHappierJsonExecutor(options);
+      const error: unknown = await executor.runHappierJson(['doctor', '--json'], { signal: controller.signal }).catch((error: unknown) => error);
+      const phase = outcome === 'download' ? 'downloading' : 'resolvingRelease';
+      expect(error).toMatchObject(outcome === 'cancel' ? { name: 'AbortError' } : { code: `cli_acquisition_${phase}_failed` });
+      expect(progress).toContainEqual({ phase: 'resolvingRelease' });
+      expect(progress).not.toContainEqual({ phase: 'checkingDaemon' });
+      if (outcome !== 'cancel') {
+        expect(progress).toContainEqual({ phase, failure: { cause: 'HTTP_403' } });
+        expect(String(error)).toContain('403');
+        expect(JSON.stringify({ message: String(error), progress })).not.toMatch(/fixture-secret|fixture-password/u);
+      } else {
+        expect(progress).toEqual([{ phase: 'resolvingRelease' }]);
+        await expect(executor.runHappierJson(['doctor', '--json'])).rejects.toMatchObject({
+          code: 'cli_acquisition_resolvingRelease_failed',
+        });
+        expect(requests).toBe(2);
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors cancellation before attempting an explicit command', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let commandReady = false;
+    const options = {
+      processEnv: { HAPPIER_BOOTSTRAP_CLI_PATH: '/missing-happier-command' },
+      signal: controller.signal,
+      onCommandReady: () => { commandReady = true; },
+    };
+    const executor = createLocalHappierJsonExecutor(options);
+    await expect(executor.runHappierText(['--version'])).rejects.toMatchObject({ name: 'AbortError' });
+    expect(commandReady).toBe(false);
+  });
+
+  it('reports command readiness before the resolved executable starts', async () => {
+    const processEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      HAPPIER_BOOTSTRAP_CLI_PATH: process.execPath,
+      HAPPIER_TEST_COMMAND_PHASE: 'pending',
+    };
+    const options = {
+      processEnv,
+      onCommandReady: () => { processEnv.HAPPIER_TEST_COMMAND_PHASE = 'checkingDaemon'; },
+    };
+    const executor = createLocalHappierJsonExecutor(options);
+    // Run a real process boundary so readiness must precede spawning the command.
+    await expect(executor.runHappierJson([
+      '-e', 'console.log(JSON.stringify({ phase: process.env.HAPPIER_TEST_COMMAND_PHASE }))',
+    ])).resolves.toEqual({ phase: 'checkingDaemon' });
+  });
 });
 
 describe('ensureLocalFirstPartyComponentCommand', () => {
@@ -68,8 +168,8 @@ describe('ensureLocalFirstPartyComponentCommand', () => {
         {
           componentId: 'happier-cli',
           processEnv: {
-            ...process.env,
             HAPPIER_HOME_DIR: happyHomeDir,
+            HAPPIER_STACK_REPO_DIR: rootDir,
           },
           envVarNames: DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
           releaseRing: 'stable',
@@ -83,8 +183,8 @@ describe('ensureLocalFirstPartyComponentCommand', () => {
       const expected = resolveInstalledFirstPartyComponentPaths({
         componentId: 'happier-cli',
         processEnv: {
-          ...process.env,
           HAPPIER_HOME_DIR: happyHomeDir,
+          HAPPIER_STACK_REPO_DIR: rootDir,
         },
         releaseRing: 'stable',
       }).binaryPath;

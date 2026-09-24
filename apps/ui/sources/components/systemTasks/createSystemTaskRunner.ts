@@ -1,4 +1,6 @@
 import {
+    CLI_ACQUISITION_PROGRESS_EVENT,
+    parseCliAcquisitionProgress,
     SystemTaskEventSchema,
     SystemTaskResultSchema,
     SystemTaskSpecSchema,
@@ -54,12 +56,25 @@ function insertEventInChronologicalOrder(
 
     const nextEvents = [...events];
     const insertIndex = nextEvents.findIndex((event) => nextEvent.tsMs < event.tsMs);
-    if (insertIndex === -1) {
-        nextEvents.push(nextEvent);
-        return nextEvents;
+    nextEvents.splice(insertIndex === -1 ? nextEvents.length : insertIndex, 0, nextEvent);
+    // Retain phase milestones and prompts while replacing transfer byte samples.
+    // Sorting first also prevents a bridge replay from replacing a newer sample.
+    const retained: SystemTaskEvent[] = [];
+    let previousProgress: SystemTaskEvent | null = null;
+    for (const event of nextEvents) {
+        const progress = event.type === CLI_ACQUISITION_PROGRESS_EVENT ? parseCliAcquisitionProgress(event.data) : null;
+        if (progress) {
+            const previous = previousProgress ? parseCliAcquisitionProgress(previousProgress.data) : null;
+            if (previousProgress && previous?.phase === progress.phase && !previous.failure && !progress.failure
+                && previous.receivedBytes !== undefined && progress.receivedBytes !== undefined
+                && previousProgress.stepId === event.stepId) {
+                retained.splice(retained.indexOf(previousProgress), 1);
+            }
+            previousProgress = event;
+        }
+        retained.push(event);
     }
-    nextEvents.splice(insertIndex, 0, nextEvent);
-    return nextEvents;
+    return retained;
 }
 
 function createInitialTaskState(taskId: string): SystemTaskRunState {
@@ -307,17 +322,20 @@ export function createSystemTaskRunner(options: Readonly<{
             }
             if (typeof onResult === 'function') {
                 const onEvent = listenerOrOnEvent as ((event: SystemTaskEvent) => void) | undefined;
-                const seenEventSignatures = new Set<string>();
+                let seenEventSignatures = new Set<string>();
                 let sawResult = false;
                 const replay = () => {
                     const snapshot = record.state;
                     if (onEvent) {
+                        const previousSignatures = seenEventSignatures;
+                        // Update before callbacks, which can synchronously notify the runner.
+                        // Compacted byte samples must not accumulate in subscriber memory.
+                        seenEventSignatures = new Set(snapshot.events.map(getEventSignature));
                         for (const event of snapshot.events) {
                             const signature = getEventSignature(event);
-                            if (seenEventSignatures.has(signature)) {
+                            if (previousSignatures.has(signature)) {
                                 continue;
                             }
-                            seenEventSignatures.add(signature);
                             onEvent(event);
                         }
                     }

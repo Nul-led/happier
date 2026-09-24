@@ -35,7 +35,7 @@ describe('createSystemTasksRunner', () => {
     });
   });
 
-  it('retains an explicitly non-cancellable prompt after cancellation', async () => {
+  it.each([true, false])('retains an explicitly non-cancellable prompt and its outcome after cancellation (success: %s)', async (succeeds) => {
     const runner = createSystemTasksRunner({
       kinds: {
         'test.prompt-finalize.v1': {
@@ -46,7 +46,8 @@ describe('createSystemTasksRunner', () => {
               data: {},
               nonCancellable: true,
             }) as { committed?: boolean };
-            return { committed: answer.committed === true };
+            if (answer.committed !== true) throw new SystemTaskExecutionError('finalization_failed', 'Finalization failed');
+            return { committed: true };
           },
         },
       },
@@ -59,14 +60,16 @@ describe('createSystemTasksRunner', () => {
       kind: 'test.finalize.v1',
     });
 
-    await runner.respond({ taskId: 'task-prompt-finalize', answer: { committed: true } });
+    await runner.respond({ taskId: 'task-prompt-finalize', answer: { committed: succeeds } });
     expect(await runner.poll({ taskId: 'task-prompt-finalize', cursor: 0 })).toMatchObject({
       pendingPrompt: null,
-      result: { ok: true, data: { committed: true } },
+      result: succeeds
+        ? { ok: true, data: { committed: true } }
+        : { ok: false, error: { code: 'finalization_failed' } },
     });
   });
 
-  it('delivers cancellation through the task context and publishes one terminal cancelled result', async () => {
+  it.each(['named', 'native'] as const)('delivers cancellation through the task context and publishes one terminal cancelled result (%s)', async (failure) => {
     let observedSignal: AbortSignal | undefined;
     const runner = createSystemTasksRunner({
       kinds: {
@@ -76,6 +79,7 @@ describe('createSystemTasksRunner', () => {
             await new Promise<void>((resolve) => {
               ctx.signal?.addEventListener('abort', () => resolve(), { once: true });
             });
+            if (failure === 'native') ctx.signal?.throwIfAborted();
             throw new SystemTaskExecutionError('cancelled', 'cancelled by owner');
           },
         },

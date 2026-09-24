@@ -71,6 +71,13 @@ export type PersonalHomeBootstrapSnapshot = Readonly<{
     phase: PersonalHomeBootstrapPhase;
     daemonState: 'not-started' | 'pending' | 'ready' | 'blocked';
     action: 'none' | 'retry' | 'choose-existing-runtime' | 'use-another-home' | 'open-details';
+    /** Facts already proven by the bootstrap owner; presentation may only count these. */
+    progressMilestones?: Readonly<{
+        runtimeHealthy: boolean;
+        identityVerified: boolean;
+        authenticated: boolean;
+        signupClosed: boolean;
+    }>;
     detail?: NormalizedSetupDetail;
 }>;
 

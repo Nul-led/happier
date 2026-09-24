@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { FirstPartyAcquisitionOptions } from './acquisitionProgress.js';
 import { lstat, rename } from 'node:fs/promises';
 
 import type { FirstPartyComponentId } from './componentCatalog.js';
@@ -163,7 +164,7 @@ async function resolveWindowsRetryPayloadRoot(params: Readonly<{
   return params.payloadRoot;
 }
 
-export async function installVersionedPayload(params: Readonly<{
+export async function installVersionedPayload(params: FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   versionId: string;
   payloadRoot: string;
@@ -172,6 +173,7 @@ export async function installVersionedPayload(params: Readonly<{
   releaseRing?: PublicReleaseRingId;
   processEnv?: NodeJS.ProcessEnv;
 }>): Promise<FirstPartyPayloadPromotionResult> {
+  params.signal?.throwIfAborted();
   const layout = resolveFirstPartyInstallLayout({
     componentId: params.componentId,
     channel: params.channel,
@@ -185,7 +187,7 @@ export async function installVersionedPayload(params: Readonly<{
 }
 
 async function installVersionedPayloadWithLockHeld(
-  params: Readonly<{
+  params: FirstPartyAcquisitionOptions & Readonly<{
     componentId: FirstPartyComponentId;
     versionId: string;
     payloadRoot: string;
@@ -196,6 +198,8 @@ async function installVersionedPayloadWithLockHeld(
   }>,
   layout: FirstPartyInstallLayout,
 ): Promise<FirstPartyPayloadPromotionResult> {
+  // Cancellation while waiting for the mutation lock must not start promotion.
+  params.signal?.throwIfAborted();
   try {
     return await installVersionedPayloadOnce(params);
   } catch (error) {
@@ -216,7 +220,7 @@ async function installVersionedPayloadWithLockHeld(
   }
 }
 
-async function installVersionedPayloadOnce(params: Readonly<{
+async function installVersionedPayloadOnce(params: FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   versionId: string;
   payloadRoot: string;
@@ -225,6 +229,8 @@ async function installVersionedPayloadOnce(params: Readonly<{
   releaseRing?: PublicReleaseRingId;
   processEnv?: NodeJS.ProcessEnv;
 }>): Promise<FirstPartyPayloadPromotionResult> {
+  // Once promotion starts, finish its shims and markers as one locked operation.
+  params.onProgress?.({ phase: 'installing' });
   const promotion = await promoteVersionedPayloadWithoutLock({
     componentId: params.componentId,
     versionId: params.versionId,
@@ -235,6 +241,7 @@ async function installVersionedPayloadOnce(params: Readonly<{
     processEnv: params.processEnv,
   });
 
+  params.onProgress?.({ phase: 'finalizing' });
   const releaseChannel = params.channel ?? params.releaseRing ?? 'stable';
 
   await syncInstalledFirstPartyShims({

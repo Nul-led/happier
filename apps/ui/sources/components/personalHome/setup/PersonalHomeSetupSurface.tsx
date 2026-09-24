@@ -3,6 +3,7 @@ import { Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import { presentActiveCliAcquisition, resolveCliAcquisitionFailureMessage } from '@/components/systemTasks/cliAcquisitionPresentation';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t, tLoose } from '@/text';
@@ -60,6 +61,8 @@ const styles = StyleSheet.create((theme) => ({
 function blockedStatusCopy(snapshot: PersonalHomeBootstrapSnapshot): string | null {
     const code = snapshot.detail?.code?.trim();
     if (!code) return null;
+    const acquisitionFailure = resolveCliAcquisitionFailureMessage(code);
+    if (acquisitionFailure) return acquisitionFailure;
     const key = `personalHome.bootstrap.blocked.${code}`;
     const value = tLoose(key);
     return typeof value === 'string' && value !== key ? value : null;
@@ -117,6 +120,12 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     const focusedRecoveryStateRef = React.useRef<string | null>(null);
     const progress = derivePersonalHomeSetupProgress(props.snapshot);
     const hasFailure = props.snapshot.phase === 'blocked';
+    const acquisition = progress.working ? presentActiveCliAcquisition(props.activeTask) : null;
+    const failedTask = props.activeTask?.result;
+    const acquisitionFailure = hasFailure && props.snapshot.detail?.code === 'bootstrap_operation_failed'
+        && failedTask && !failedTask.ok
+        ? resolveCliAcquisitionFailureMessage(failedTask.error.code)
+        : undefined;
     const showExistingDecision = props.snapshot.action === 'choose-existing-runtime';
     const showFailure = hasFailure && (!showExistingDecision || props.snapshot.detail?.retryable === true);
     // The status line above already names the reason. The card body stays the generic
@@ -189,8 +198,13 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                             accessibilityLiveRegion="polite"
                             style={styles.status}
                         >
-                            {phaseCopy(props.snapshot)}
+                            {acquisitionFailure ?? acquisition?.status ?? phaseCopy(props.snapshot)}
                         </Text>
+                        {acquisition?.downloadProgress ? (
+                            <Text testID="personal-home-bootstrap-download-progress" style={styles.status}>
+                                {acquisition.downloadProgress}
+                            </Text>
+                        ) : null}
                     </View>
 
                     {showExistingDecision && props.onUseExisting && props.onUseAnotherHome ? (

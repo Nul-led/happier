@@ -189,6 +189,7 @@ async function probeAnonymousSignupRefused(endpoint: string): Promise<boolean> {
 
 export type PersonalHomeBootstrapRuntime = Readonly<{
     readFacts: () => Promise<PersonalHomeFacts>;
+    activeTask: SystemTaskRunState | null;
     operations: Partial<Record<PersonalHomeBootstrapOperation, PersonalHomeBootstrapOperationRunner>>;
     useExistingRuntime: PersonalHomeBootstrapOperationRunner;
     localServerUrl: string;
@@ -225,7 +226,15 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         } : {}),
     });
     const startSetupTask = setupTask.start;
-    const setupTaskActiveSnapshot = setupTask.activeTaskSnapshot;
+    const activeTask = relay.activeTaskSnapshot
+        ?? daemon.activeTaskSnapshot
+        ?? (daemon.statusTaskSnapshot?.result ? null : daemon.statusTaskSnapshot)
+        ?? setupTask.activeTaskSnapshot
+        ?? null;
+    // Progress is subscribed independently of authoritative fact reads. Reading the latest
+    // snapshot after awaiting status must not restart those reads for every byte event.
+    const activeTaskRef = React.useRef(activeTask);
+    activeTaskRef.current = activeTask;
     // Daemon status is read through the daemon-control owner: one parser, one status state.
     const readDaemonStatus = daemon.readStatus;
     const readRelayStatus = relay.readStatus;
@@ -324,10 +333,6 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                     && accountMatches === true,
             };
         }
-        const activeTask: SystemTaskRunState | null = relay.activeTaskSnapshot
-            ?? daemon.activeTaskSnapshot
-            ?? setupTaskActiveSnapshot
-            ?? null;
         return createPersonalHomeBootstrapFacts({
             hostIsDesktop: true,
             isDesktopMainWindow: true,
@@ -340,15 +345,12 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
             localHomeAuth,
             anonymousSignup,
             daemon: daemonFacts,
-            activeTask,
+            activeTask: activeTaskRef.current,
         });
     }, [
-        daemon.activeTaskSnapshot,
         readDaemonStatus,
         readRelayStatus,
-        relay.activeTaskSnapshot,
         relay.lastErrorMessage,
-        setupTaskActiveSnapshot,
     ]);
 
     const runRelayTaskAndWait = relay.runTaskAndWait;
@@ -659,6 +661,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
 
     return {
         readFacts,
+        activeTask,
         operations,
         useExistingRuntime,
         localServerUrl: resolveLocalUrl(),
@@ -714,6 +717,7 @@ function PersonalHomeBootstrapRuntimeInner(props: Readonly<{
         <PersonalHomeBootstrapGate
             bypass={false}
             readFacts={runtime.readFacts}
+            activeTask={runtime.activeTask}
             operations={runtime.operations}
             initialFacts={props.initialFacts}
             useExistingRuntimeOperation={useExistingRuntime}

@@ -8,6 +8,7 @@ import { PersonalHomeSetupSurface } from './PersonalHomeSetupSurface';
 import { derivePersonalHomeSetupProgress } from './personalHomeSetupProgress';
 import { sanitizePersonalHomeDiagnosticMessage } from './PersonalHomeDiagnosticDetails';
 import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBootstrapTypes';
+import type { SystemTaskRunState } from '@/components/systemTasks/types';
 
 const snapshot: PersonalHomeBootstrapSnapshot = {
     shouldGateShell: true,
@@ -19,6 +20,40 @@ const snapshot: PersonalHomeBootstrapSnapshot = {
 };
 
 describe('PersonalHomeSetupSurface', () => {
+    it('names acquisition failure from the task when bootstrap uses a generic operation failure', async () => {
+        const screen = await renderScreen(<PersonalHomeSetupSurface
+            snapshot={{ ...snapshot, phase: 'blocked', action: 'retry', detail: {
+                code: 'bootstrap_operation_failed', message: 'diagnostic URL', retryable: true,
+            } }}
+            activeTask={{ taskId: 'acquire', status: 'failed', currentStepId: null, latestMessage: null,
+                awaitingInput: false, cancelRequested: false, events: [], result: {
+                    protocolVersion: 1, taskId: 'acquire', ok: false,
+                    error: { code: 'cli_acquisition_verifying_failed', message: 'diagnostic URL' },
+                } }}
+        />);
+        expect(screen.findByTestId('personal-home-bootstrap-phase')?.props.children)
+            .toBe(tLoose('cliAcquisitionProgress.acquisitionVerificationFailed'));
+        expect(screen.getTextContent()).not.toContain('diagnostic URL');
+    });
+
+    it('shows acquisition bytes without advancing readiness milestones, and clears them after completion', async () => {
+        const activeTask: SystemTaskRunState = {
+            taskId: 'acquire', status: 'running', currentStepId: 'setup.thisComputer.ensureCli',
+            latestMessage: null, awaitingInput: false, cancelRequested: false, result: null,
+            events: [{ protocolVersion: 1, taskId: 'acquire', tsMs: 1, type: 'cli.acquisition.progress',
+                data: { phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 } }],
+        };
+        const screen = await renderScreen(<PersonalHomeSetupSurface snapshot={snapshot} activeTask={activeTask} />);
+        expect(screen.findByTestId('personal-home-bootstrap-download-progress')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('1.0 KB');
+        expect(screen.getTextContent()).toContain('2.0 KB');
+        expect(screen.findByTestId('personal-home-bootstrap-progress')).toBeNull();
+        await screen.update(<PersonalHomeSetupSurface snapshot={snapshot} activeTask={{
+            ...activeTask, status: 'succeeded', result: { protocolVersion: 1, taskId: 'acquire', ok: true },
+        }} />);
+        expect(screen.findByTestId('personal-home-bootstrap-download-progress')).toBeNull();
+    });
+
     it('redacts explicit secrets without hiding ordinary custody and credential failure prose', () => {
         expect(sanitizePersonalHomeDiagnosticMessage('seed custody is unavailable')).toBe('seed custody is unavailable');
         expect(sanitizePersonalHomeDiagnosticMessage('credential persistence failed')).toBe('credential persistence failed');

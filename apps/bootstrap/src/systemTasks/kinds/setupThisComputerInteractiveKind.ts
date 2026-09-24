@@ -20,6 +20,7 @@ import {
   syncInstalledFirstPartyShims,
   writeDefaultManagedReleaseChannel,
   type HappierCliPathExposureResult,
+  type FirstPartyAcquisitionOptions,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   resolveCliInvokerNameForPublicRing,
@@ -27,6 +28,7 @@ import {
 } from '@happier-dev/release-runtime/releaseRings';
 
 import { normalizeBootstrapChannel } from '../taskRuntime.js';
+import { reportCliAcquisitionProgress } from '../cliAcquisitionProgress.js';
 
 import {
   createLocalSetupRecipeExecutor,
@@ -259,7 +261,7 @@ export type SetupThisComputerInteractiveDeps = Readonly<{
    * `managed` acquisition is approved for pairing without asking (R13); any other provenance is
    * confirmed by a human who is shown the resolved command (R8).
    */
-  ensureLocalHappierTools: (params: Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<LocalSetupCliAcquisition>;
+  ensureLocalHappierTools: (params: FirstPartyAcquisitionOptions & Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<LocalSetupCliAcquisition>;
   readActiveRelayProfile: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<SetupThisComputerRelayProfile>;
   createRecipeExecutor: (params: Readonly<{
     releaseRing?: PublicReleaseRingId;
@@ -312,7 +314,12 @@ export function createSetupThisComputerInteractiveTaskKind(
         stepId: 'setup.thisComputer.ensureCli',
         message: 'Installing Happier tools',
       });
-      const cli = await deps.ensureLocalHappierTools({ releaseChannel: releaseRing });
+      const cli = await deps.ensureLocalHappierTools({
+        releaseChannel: releaseRing,
+        signal: ctx.signal,
+        onProgress: reportCliAcquisitionProgress(ctx.emit),
+      });
+      ctx.signal?.throwIfAborted();
       ctx.emit({
         type: 'progress',
         stepId: 'setup.thisComputer.resolveRelay',
@@ -679,11 +686,13 @@ export function createProductionSetupThisComputerInteractiveDeps(): Pick<
   MutatingSetupThisComputerDepName
 > {
   return {
-    ensureLocalHappierTools: async ({ releaseChannel }) => {
+    ensureLocalHappierTools: async ({ releaseChannel, signal, onProgress }) => {
       await ensureLocalFirstPartyComponentCommand({
         componentId: 'happier-cli',
         processEnv: process.env,
         releaseRing: releaseChannel,
+        signal,
+        onProgress,
       });
       await syncInstalledFirstPartyShims({
         componentId: 'happier-cli',

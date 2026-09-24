@@ -76,6 +76,12 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
     const authReady = (facts.localHomeAuth === 'present' && facts.localHomeReachability === 'reachable') || alreadyCompleted;
     const signupClosed = facts.anonymousSignup === 'disabled' || alreadyCompleted;
     const daemonReady = daemonIsReady(facts);
+    const progressMilestones = {
+        runtimeHealthy: runtimeReady,
+        identityVerified: identityReady,
+        authenticated: authReady,
+        signupClosed,
+    } as const;
 
     const installedPurpose = facts.relayRuntime?.purpose ?? null;
     const installedRuntimeNeedsExplicitChoice = !alreadyCompleted
@@ -92,6 +98,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: 'blocked',
             daemonState: daemonState(facts),
             action: 'choose-existing-runtime',
+            progressMilestones,
             detail: {
                 message: 'An existing local Home needs a choice before setup can continue.',
                 code: 'existing_runtime',
@@ -116,6 +123,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: 'blocked',
             daemonState: daemonState(facts),
             action: 'retry',
+            progressMilestones,
             detail: {
                 message: 'Your Personal Home was erased. Try again to create a new one.',
                 code: 'personal_home_erased',
@@ -133,6 +141,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: detail ? 'blocked' : 'ensuring-home',
             daemonState: daemonState(facts),
             action: detail ? 'retry' : 'none',
+            progressMilestones,
             ...(detail ? { detail: { ...detail, retryable: true } } : {}),
         };
     }
@@ -146,6 +155,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: detail ? 'blocked' : 'ensuring-home',
             daemonState: daemonState(facts),
             action: detail ? 'retry' : 'none',
+            progressMilestones,
             ...(detail ? { detail: { ...detail, retryable: true } } : {}),
         };
     }
@@ -159,6 +169,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: detail ? 'blocked' : 'ensuring-home',
             daemonState: daemonState(facts),
             action: detail ? 'retry' : 'none',
+            progressMilestones,
             ...(detail ? { detail: { ...detail, retryable: true } } : {}),
         };
     }
@@ -178,6 +189,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: 'ensuring-home',
             daemonState: daemonState(facts),
             action: 'none',
+            progressMilestones,
         };
     }
 
@@ -192,6 +204,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
             phase: 'ensuring-home',
             daemonState: daemonState(facts),
             action: 'retry',
+            progressMilestones,
         };
     }
 
@@ -202,5 +215,6 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
         phase: daemonReady ? 'ready' : 'preparing-computer',
         daemonState: daemonState(facts),
         action: 'none',
+        progressMilestones,
     };
 }

@@ -106,6 +106,11 @@ declarations remain available for plugin authoring; isolated inference component
 unused declarations. Executable source maps remain available for Bun and Node diagnostics.
 Runtime JSON, JS, licenses, and docs stay.
 
+First-party acquisition reports phases and actual transferred bytes through the
+existing system-task events. These samples are presentation data, not install
+authority: unknown or malformed samples fall back to the normal task display.
+This describes current development source, not a published-release guarantee.
+
 The release verifier checks each optional component's signed checksum envelope and
 uses the managed first-party extractor and catalog to validate entrypoints on every
 target, including with `--skip-smoke`. Existing archive topology, metadata, and privacy

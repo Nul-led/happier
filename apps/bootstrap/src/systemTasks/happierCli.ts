@@ -1,4 +1,5 @@
 import { systemTasks } from '@happier-dev/cli-common';
+import type { FirstPartyAcquisitionOptions } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
   DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
   ensureLocalFirstPartyComponentCommand,
@@ -23,12 +24,13 @@ export function resolveLocalHappierCommand(params: Readonly<{
   return 'happier';
 }
 
-export async function runLocalHappierJsonCommand(params: Readonly<{
+export async function runLocalHappierJsonCommand(params: FirstPartyAcquisitionOptions & Readonly<{
   args: readonly string[];
   processEnv?: NodeJS.ProcessEnv;
   allowJsonFailure?: boolean;
   releaseRing?: PublicReleaseRingId;
   stdinText?: string;
+  onCommandReady?: () => void;
 }>): Promise<unknown> {
   const processEnv = params.processEnv ?? process.env;
   const command = await ensureLocalFirstPartyComponentCommand({
@@ -36,14 +38,20 @@ export async function runLocalHappierJsonCommand(params: Readonly<{
     processEnv,
     envVarNames: DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
     releaseRing: params.releaseRing,
+    signal: params.signal,
+    onProgress: params.onProgress,
   });
 
+  params.signal?.throwIfAborted();
+  params.onCommandReady?.();
   const result = await runCommandCapture({
     command,
     args: params.args,
     env: processEnv,
     stdinText: params.stdinText,
+    signal: params.signal,
   }).catch((error: unknown) => {
+    params.signal?.throwIfAborted();
     const message = error instanceof Error && error.message.trim()
       ? error.message.trim()
       : 'Failed to spawn Happier CLI.';

@@ -5,12 +5,16 @@ import { spawn } from 'node:child_process';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import {
+  FirstPartyAcquisitionError,
   installVersionedPayload,
+  readAcquisitionFailureCause,
+  redactAcquisitionDiagnostic,
   prepareFirstPartyComponentPayloadFromGitHubRelease,
   readInstalledVersionMarkersSync,
   resolveFirstPartyInstallLayout,
   resolveInstalledFirstPartyComponentPaths,
   type FirstPartyComponentId,
+  type FirstPartyAcquisitionOptions,
   type PreparedFirstPartyComponentPayload,
 } from '../../firstPartyRuntime/index.js';
 import { resolveWindowsCommandInvocation } from '../../process/index.js';
@@ -340,16 +344,17 @@ function resolveInstalledLocalFirstPartyCommand(params: Readonly<{
 type PreparedPayload = Pick<PreparedFirstPartyComponentPayload, 'versionId' | 'payloadRoot' | 'cleanup'>;
 
 type EnsureLocalFirstPartyCommandDeps = Readonly<{
-  preparePayload: (params: Readonly<{ componentId: FirstPartyComponentId; channel: PublicReleaseRingId }>) => Promise<PreparedPayload>;
+  preparePayload: (params: FirstPartyAcquisitionOptions & Readonly<{ componentId: FirstPartyComponentId; channel: PublicReleaseRingId }>) => Promise<PreparedPayload>;
   installPayload: typeof installVersionedPayload;
 }>;
 
-export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
+export async function ensureLocalFirstPartyComponentCommand(params: FirstPartyAcquisitionOptions & Readonly<{
   componentId: FirstPartyComponentId;
   processEnv: NodeJS.ProcessEnv;
   envVarNames?: readonly string[];
   releaseRing?: PublicReleaseRingId;
 }>, overrides: Partial<EnsureLocalFirstPartyCommandDeps> = {}): Promise<string> {
+  params.signal?.throwIfAborted();
   const releaseRing = params.releaseRing ?? 'stable';
   const resolved = resolveExplicitOrInstalledLocalFirstPartyCommand(params);
   if (resolved) {
@@ -363,10 +368,17 @@ export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
   };
 
   let prepared: PreparedPayload | null = null;
+  let phase: Parameters<NonNullable<FirstPartyAcquisitionOptions['onProgress']>>[0]['phase'] = 'resolvingRelease';
+  const onProgress: NonNullable<FirstPartyAcquisitionOptions['onProgress']> = (progress) => {
+    phase = progress.phase;
+    if (!params.signal?.aborted) params.onProgress?.(progress);
+  };
   try {
     prepared = await deps.preparePayload({
       componentId: params.componentId,
       channel: releaseRing,
+      signal: params.signal,
+      onProgress,
     });
 
     await deps.installPayload({
@@ -375,18 +387,26 @@ export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
       releaseRing,
       versionId: prepared.versionId,
       payloadRoot: prepared.payloadRoot,
+      signal: params.signal,
+      onProgress,
     });
   } catch (error) {
+    params.signal?.throwIfAborted();
+    if (error instanceof SystemTaskExecutionError) throw error;
     const message = error instanceof Error && error.message.trim()
       ? error.message.trim()
       : `Failed to acquire ${params.componentId}.`;
-    throw new SystemTaskExecutionError('first_party_component_install_failed', message);
+    const failurePhase = error instanceof FirstPartyAcquisitionError ? error.phase : phase;
+    const failureCause = error instanceof FirstPartyAcquisitionError ? error.failureCause : readAcquisitionFailureCause(error);
+    onProgress({ phase: failurePhase, failure: { cause: failureCause } });
+    throw new SystemTaskExecutionError(`cli_acquisition_${failurePhase}_failed`, redactAcquisitionDiagnostic(message));
   } finally {
     if (prepared) {
       await prepared.cleanup().catch(() => undefined);
     }
   }
 
+  params.signal?.throwIfAborted();
   const installed = resolveExplicitOrInstalledLocalFirstPartyCommand({
     componentId: params.componentId,
     processEnv: params.processEnv,
@@ -397,23 +417,27 @@ export async function ensureLocalFirstPartyComponentCommand(params: Readonly<{
     return installed.command;
   }
 
+  onProgress({ phase: 'finalizing', failure: { cause: 'managed_command_unavailable' } });
   throw new SystemTaskExecutionError(
-    'first_party_component_install_failed',
+    'cli_acquisition_finalizing_failed',
     `Installed ${params.componentId} but could not resolve it.`,
   );
 }
 
-export function createLocalHappierJsonExecutor(params: Readonly<{
+export function createLocalHappierJsonExecutor(params: FirstPartyAcquisitionOptions & Readonly<{
   processEnv?: NodeJS.ProcessEnv;
   envVarNames?: readonly string[];
   releaseRing?: PublicReleaseRingId;
+  /** Reports that acquisition completed and the command is about to run. */
+  onCommandReady?: () => void;
 }> = {}): HappierJsonExecutor {
   const defaultProcessEnv = params.processEnv ?? process.env;
   const envVarNames = params.envVarNames ?? DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES;
   const releaseRing = params.releaseRing;
 
   let installPromise: Promise<void> | null = null;
-  const ensureCommand = async (processEnv: NodeJS.ProcessEnv): Promise<string> => {
+  const ensureCommand = async (processEnv: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> => {
+    signal?.throwIfAborted();
     const resolved = resolveExplicitOrInstalledLocalFirstPartyCommand({
       componentId: 'happier-cli',
       processEnv,
@@ -430,9 +454,12 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
         processEnv,
         envVarNames,
         releaseRing,
-      }).then(() => undefined);
+        signal,
+        onProgress: params.onProgress,
+      }).then(() => undefined).finally(() => { installPromise = null; });
     }
     await installPromise;
+    signal?.throwIfAborted();
 
     const installed = resolveExplicitOrInstalledLocalFirstPartyCommand({
       componentId: 'happier-cli',
@@ -445,7 +472,7 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
     }
 
     throw new SystemTaskExecutionError(
-      'first_party_component_install_failed',
+      'cli_acquisition_finalizing_failed',
       'Installed happier-cli but could not resolve it.',
     );
   };
@@ -453,18 +480,24 @@ export function createLocalHappierJsonExecutor(params: Readonly<{
   return {
     async runHappierText(args, opts) {
       const processEnv = opts?.env ?? defaultProcessEnv;
-      const command = await ensureCommand(processEnv);
+      const signal = opts?.signal && params.signal && opts.signal !== params.signal
+        ? AbortSignal.any([opts.signal, params.signal])
+        : opts?.signal ?? params.signal;
+      const command = await ensureCommand(processEnv, signal);
+      signal?.throwIfAborted();
+      params.onCommandReady?.();
       const scopedEnv = applyPublicReleaseRingScopeToEnv(processEnv, releaseRing ?? null);
       const result = await runCommandCapture({
         command,
         args,
         env: scopedEnv,
         cwd: opts?.cwd,
-        signal: opts?.signal,
+        signal,
         timeoutMs: opts?.timeoutMs,
         input: opts?.input,
         onStdoutChunk: opts?.onStdoutChunk,
       }).catch((error: unknown) => {
+        signal?.throwIfAborted();
         const message = error instanceof Error && error.message.trim()
           ? error.message.trim()
           : 'Failed to spawn Happier CLI.';

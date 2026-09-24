@@ -24,12 +24,13 @@ afterEach(async () => {
 });
 
 async function collectResult(handler: SystemTaskExecutionRunner, params: unknown) {
+  const events: unknown[] = [];
   const iterator = handler(params, {
     taskId: 'task_cli_path_exposure',
     signal: new AbortController().signal,
     now: () => 1700000000000,
+    emit: (event) => events.push(event),
   });
-  const events: unknown[] = [];
   for (;;) {
     const next = await iterator.next();
     if (next.done) {

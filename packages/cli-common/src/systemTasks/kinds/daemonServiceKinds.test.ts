@@ -48,7 +48,10 @@ describe('daemonServiceKinds', () => {
     };
 
     const kind = createDaemonServiceStatusTaskKind({
-      readStatus: async () => snapshot,
+      readStatus: async (_params, context) => {
+        context?.emit({ type: 'cli.acquisition.progress', data: { phase: 'downloading', receivedBytes: 1024 } });
+        return snapshot;
+      },
       startService: async () => undefined,
       stopService: async () => undefined,
       restartService: async () => undefined,
@@ -70,6 +73,9 @@ describe('daemonServiceKinds', () => {
     });
 
     const finalPoll = await waitForResult(runner, { taskId: 'daemon-status', cursor: 0 });
+    expect(finalPoll.events).toContainEqual(expect.objectContaining({
+      type: 'cli.acquisition.progress', data: { phase: 'downloading', receivedBytes: 1024 },
+    }));
     expect(finalPoll.result).toEqual({
       protocolVersion: 1,
       taskId: 'daemon-status',

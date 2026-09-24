@@ -1,4 +1,5 @@
 import { systemTasks } from '@happier-dev/cli-common';
+import type { FirstPartyAcquisitionOptions } from '@happier-dev/cli-common/firstPartyRuntime';
 import { createLocalHappierJsonExecutor } from '@happier-dev/cli-common/systemTasks';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
@@ -15,22 +16,30 @@ export type DaemonStatusSnapshot = Readonly<{
   daemonMachineRegistered: boolean | null;
 }>;
 
-type LocalDaemonCliOptions = Readonly<{
+type LocalDaemonCliOptions = FirstPartyAcquisitionOptions & Readonly<{
   releaseRing?: PublicReleaseRingId;
 }>;
 
 async function runScopedLocalHappierJsonCommand(
   args: readonly string[],
-  options: LocalDaemonCliOptions & Readonly<{ allowJsonFailure?: boolean }> = {},
+  options: LocalDaemonCliOptions & Readonly<{ allowJsonFailure?: boolean; onCommandReady?: () => void }> = {},
 ): Promise<unknown> {
   if (!options.releaseRing) {
     return await runLocalHappierJsonCommand({
       args,
+      signal: options.signal,
+      onProgress: options.onProgress,
+      onCommandReady: options.onCommandReady,
       ...(typeof options.allowJsonFailure === 'boolean' ? { allowJsonFailure: options.allowJsonFailure } : {}),
     });
   }
 
-  const executor = createLocalHappierJsonExecutor({ releaseRing: options.releaseRing });
+  const executor = createLocalHappierJsonExecutor({
+    releaseRing: options.releaseRing,
+    signal: options.signal,
+    onProgress: options.onProgress,
+    onCommandReady: options.onCommandReady,
+  });
   return await executor.runHappierJson(args, {
     ...(typeof options.allowJsonFailure === 'boolean' ? { allowJsonFailure: options.allowJsonFailure } : {}),
   });
@@ -49,7 +58,10 @@ export async function restartService(options: LocalDaemonCliOptions = {}): Promi
 }
 
 export async function readDaemonStatus(options: LocalDaemonCliOptions = {}): Promise<DaemonStatusSnapshot> {
-  const parsed = await runScopedLocalHappierJsonCommand(['daemon', 'status', '--json'], options);
+  const parsed = await runScopedLocalHappierJsonCommand(['daemon', 'status', '--json'], {
+    ...options,
+    onCommandReady: () => options.onProgress?.({ phase: 'checkingDaemon' }),
+  });
   if (!parsed || typeof parsed !== 'object') {
     throw new systemTasks.SystemTaskExecutionError(
       'invalid_cli_response',

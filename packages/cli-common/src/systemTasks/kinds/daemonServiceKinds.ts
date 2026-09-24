@@ -1,5 +1,5 @@
 import { SystemTaskExecutionError } from '../runSystemTask.js';
-import { type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
+import { type InteractiveSystemTaskContext, type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
 
 export type DaemonServiceTaskParams = Readonly<{
   target: Readonly<{
@@ -24,7 +24,7 @@ export type DaemonServiceStatusSnapshot = Readonly<{
 export type DaemonServiceTaskResult = DaemonServiceStatusSnapshot;
 
 export type DaemonServiceKindDeps = Readonly<{
-  readStatus: (params: DaemonServiceTaskParams) => Promise<DaemonServiceStatusSnapshot>;
+  readStatus: (params: DaemonServiceTaskParams, context?: Pick<InteractiveSystemTaskContext, 'signal' | 'emit'>) => Promise<DaemonServiceStatusSnapshot>;
   startService: (params: DaemonServiceTaskParams) => Promise<void>;
   stopService: (params: DaemonServiceTaskParams) => Promise<void>;
   restartService: (params: DaemonServiceTaskParams) => Promise<void>;
@@ -121,7 +121,7 @@ export function createDaemonServiceStatusTaskKind(deps: DaemonServiceKindDeps): 
   return {
     async run(ctx) {
       const parsed = parseDaemonServiceTaskParams(ctx.params);
-      return await deps.readStatus(parsed);
+      return await deps.readStatus(parsed, ctx);
     },
   };
 }
@@ -137,7 +137,7 @@ export function createDaemonServiceStartTaskKind(deps: DaemonServiceKindDeps): I
         message: 'Inspect background service',
       });
 
-      const currentStatus = await deps.readStatus(parsed);
+      const currentStatus = await deps.readStatus(parsed, ctx);
       assertDaemonReady(currentStatus);
 
       ctx.emit({
@@ -149,7 +149,7 @@ export function createDaemonServiceStartTaskKind(deps: DaemonServiceKindDeps): I
       await deps.startService(parsed);
 
       const readyStatus = await waitForReadyDaemon({
-        readStatus: async () => await deps.readStatus(parsed),
+        readStatus: async () => await deps.readStatus(parsed, ctx),
         signal: ctx.signal,
       });
       if (!readyStatus.serviceInstalled || !readyStatus.daemonRunning || readyStatus.needsAuth) {
@@ -181,7 +181,7 @@ export function createDaemonServiceStopTaskKind(deps: DaemonServiceKindDeps): In
         message: 'Inspect background service',
       });
 
-      const currentStatus = await deps.readStatus(parsed);
+      const currentStatus = await deps.readStatus(parsed, ctx);
       assertDaemonInstalled(currentStatus);
 
       ctx.emit({
@@ -192,7 +192,7 @@ export function createDaemonServiceStopTaskKind(deps: DaemonServiceKindDeps): In
 
       await deps.stopService(parsed);
 
-      const stoppedStatus = await deps.readStatus(parsed);
+      const stoppedStatus = await deps.readStatus(parsed, ctx);
       if (stoppedStatus.daemonRunning) {
         throw new SystemTaskExecutionError(
           'daemon_service_not_stopped',
@@ -222,7 +222,7 @@ export function createDaemonServiceRestartTaskKind(deps: DaemonServiceKindDeps):
         message: 'Inspect background service',
       });
 
-      const currentStatus = await deps.readStatus(parsed);
+      const currentStatus = await deps.readStatus(parsed, ctx);
       assertDaemonInstalled(currentStatus);
 
       ctx.emit({
@@ -234,7 +234,7 @@ export function createDaemonServiceRestartTaskKind(deps: DaemonServiceKindDeps):
       await deps.restartService(parsed);
 
       const readyStatus = await waitForReadyDaemon({
-        readStatus: async () => await deps.readStatus(parsed),
+        readStatus: async () => await deps.readStatus(parsed, ctx),
         signal: ctx.signal,
       });
       if (!readyStatus.serviceInstalled || !readyStatus.daemonRunning || readyStatus.needsAuth) {

@@ -21,6 +21,8 @@ export type PersonalHomeBootstrapGateProps = Readonly<{
     children: React.ReactNode;
     /** Fact collection is supplied by the runtime/profile/auth owners. */
     readFacts?: () => Promise<PersonalHomeFacts>;
+    /** Live progress can arrive before the first authoritative facts read settles. */
+    activeTask?: PersonalHomeFacts['activeTask'];
     operations?: Partial<Record<PersonalHomeBootstrapOperation, PersonalHomeBootstrapOperationRunner>>;
     initialFacts?: PersonalHomeFacts | null;
     isDesktopHost?: boolean;
@@ -97,9 +99,13 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         setRevealSnapshot(departing);
     }, [controller.snapshot, gating, reducedMotion]);
 
+    const factTask = controller.facts?.activeTask ?? null;
+    // Keep completed task diagnostics after live work ends, but never revive stale progress
+    // from an earlier facts read when the subscribed runtime explicitly reports no task.
+    const activeTask = props.activeTask ?? (props.activeTask === undefined || factTask?.result ? factTask : null);
     const setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface> = {
         snapshot: gating ? controller.snapshot : revealSnapshot ?? controller.snapshot,
-        activeTask: controller.facts?.activeTask ?? null,
+        activeTask,
         onRetry: controller.retry,
         onOpenDetails: props.onOpenDetails,
         onUseExisting: props.useExistingRuntimeOperation || props.onUseExisting
@@ -136,7 +142,7 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
                 {showPostShellRecovery ? (
                     <PersonalHomeRecoveryStrip
                         kind={controller.facts?.completedPersonalHomeProfile ? 'computer' : 'profile'}
-                        activeTask={controller.facts?.activeTask ?? null}
+                        activeTask={activeTask}
                         detail={controller.snapshot.detail}
                         onOpenDetails={props.onOpenDetails}
                         onRetry={controller.retry}

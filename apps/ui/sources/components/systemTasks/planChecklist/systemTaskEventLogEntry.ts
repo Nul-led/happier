@@ -1,5 +1,6 @@
 import type { SystemTaskRunState } from '../types';
 import type { PlanChecklistLogEntry } from './types';
+import { presentCliAcquisitionEvent } from '../cliAcquisitionPresentation';
 
 function normalizeStepId(stepId: unknown): string | null {
     if (typeof stepId !== 'string') {
@@ -91,9 +92,10 @@ export function createPlanChecklistLogEntryFromSystemTaskEvent(
         return null;
     }
 
-    const message = typeof event.message === 'string' && event.message.trim().length > 0
+    const acquisition = presentCliAcquisitionEvent(event);
+    const message = acquisition?.status ?? (typeof event.message === 'string' && event.message.trim().length > 0
         ? event.message.trim()
-        : (resolveStepLabel(stepId) ?? stepId).trim();
+        : (resolveStepLabel(stepId) ?? stepId).trim());
     if (message.length === 0) {
         return null;
     }
@@ -102,7 +104,7 @@ export function createPlanChecklistLogEntryFromSystemTaskEvent(
         ts: normalizeTimestamp(event as { tsMs?: unknown }, index),
         level: normalizeLogLevel((event as { type?: unknown }).type),
         message,
-        details: formatEventDetails((event as { data?: unknown }).data),
+        details: acquisition?.downloadProgress ?? formatEventDetails((event as { data?: unknown }).data),
     };
 }
 

@@ -1,3 +1,4 @@
+import { resolveSystemTaskFailureMessage } from '@/components/systemTasks/resolveSystemTaskFailureMessage';
 import { resolveSystemTaskStepLabel } from '@/components/systemTasks/resolveSystemTaskStepLabel';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import {
@@ -76,7 +77,7 @@ export function mapRemoteSshTaskToChecklistExecution(params: Readonly<{
                 status = 'error';
                 error = {
                     title: params.errorTitle,
-                    message: snapshot.result.error.message ?? snapshot.result.error.code ?? undefined,
+                    message: resolveSystemTaskFailureMessage(snapshot.result.error) ?? snapshot.result.error.code ?? undefined,
                     raw: snapshot.result.error,
                 };
             } else if (currentIndex >= 0 && index < currentIndex) {
