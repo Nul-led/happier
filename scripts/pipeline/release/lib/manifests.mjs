@@ -1,5 +1,6 @@
 import { listPublicReleaseRingCatalogEntries } from '@happier-dev/release-runtime/releaseRings';
 import { RELEASE_PRODUCTS, getReleaseProductArchiveFormat } from '@happier-dev/release-runtime/releaseProducts';
+import { CLI_OPTIONAL_COMPONENT_PRODUCTS } from '../publishing/product-specs.mjs';
 
 export const MANIFEST_SCHEMA_VERSION = 'v1';
 
@@ -14,7 +15,7 @@ export { RELEASE_PRODUCTS };
 
 const PRODUCT_NAMES = new Set(RELEASE_PRODUCTS);
 // Longest first so a product name that prefixes another cannot claim its artifacts.
-const PRODUCT_PATTERN = [...RELEASE_PRODUCTS]
+const PRODUCT_PATTERN = [...RELEASE_PRODUCTS, ...CLI_OPTIONAL_COMPONENT_PRODUCTS]
   .sort((left, right) => right.length - left.length)
   .join('|');
 const ARTIFACT_FILENAME_PATTERN = new RegExp(`^(${PRODUCT_PATTERN})-v(.+)-([a-z]+)-(x64|arm64)\\.(tar\\.gz|zip)$`);
@@ -31,7 +32,8 @@ export function parseArtifactFilename(name) {
   const match = ARTIFACT_FILENAME_PATTERN.exec(raw);
   if (!match) return null;
   const [, product, version, os, arch, archiveFormat] = match;
-  if (getReleaseProductArchiveFormat(product) !== archiveFormat) return null;
+  const expectedFormat = CLI_OPTIONAL_COMPONENT_PRODUCTS.includes(product) ? 'tar.gz' : getReleaseProductArchiveFormat(product);
+  if (expectedFormat !== archiveFormat) return null;
   return { product, version, os, arch, filename: raw };
 }
 

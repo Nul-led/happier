@@ -20,6 +20,7 @@ const {
   SERVER_BINARY_DEFAULT_EXTERNALS,
   SERVER_BINARY_TARGETS,
   buildCliBinaryArtifactPayload,
+  buildCliOptionalComponentArtifactPayload,
   buildServerBinaryArtifactPayload,
   commandExists,
   compileBunBinary,
@@ -36,6 +37,7 @@ const {
 
 export {
   buildCliBinaryArtifactPayload,
+  buildCliOptionalComponentArtifactPayload,
   buildServerBinaryArtifactPayload,
   commandExists,
   compileBunBinary,

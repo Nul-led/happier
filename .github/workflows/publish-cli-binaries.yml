@@ -546,7 +546,7 @@ jobs:
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
         uses: ./.github/actions/install-yarn-dependencies
         with:
-          args: --frozen-lockfile --ignore-engines
+          args: --frozen-lockfile --ignore-engines --ignore-platform
 
       - name: Build and load the target Iroh lifecycle addon
         shell: bash
@@ -643,6 +643,21 @@ jobs:
             --version "$RELEASE_VERSION" \
             --targets "$CLI_TARGET" \
             --cliproxyapi-managed-runtime-executable "${WRAPPER_PATH}"
+
+      - name: Smoke-test exact native CLI archives
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          CLI_TARGET: ${{ matrix.cli_target }}
+        run: |
+          set -euo pipefail
+          for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            ARCHIVE="${GITHUB_WORKSPACE}/dist/release-assets/cli/${PRODUCT}-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz"
+            node --input-type=module -e '
+              import { smokeTestArchive } from "./scripts/pipeline/release/verify-artifacts.mjs";
+              await smokeTestArchive({ archivePath: process.argv[1] });
+            ' "$ARCHIVE"
+          done
 
       - name: Run retained conformance harness against the packaged wrapper
         shell: bash
@@ -742,6 +757,9 @@ jobs:
           name: cli-native-${{ matrix.platform_key }}-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
           path: |
             dist/release-assets/cli/happier-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/release-assets/cli/happier-memory-runtime-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/release-assets/cli/happier-voice-runtime-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/release-assets/cli/happier-difftastic-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
             dist/provenance/${{ matrix.platform_key }}.module-graph.txt
             dist/provenance/${{ matrix.platform_key }}.module-list.txt
             dist/provenance/${{ matrix.platform_key }}.binary-build-info.txt
@@ -795,20 +813,26 @@ jobs:
           CLI_TARGET: ${{ matrix.cli_target }}
         run: |
           set -euo pipefail
-          archive="happier-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz"
-          matches=()
-          while IFS= read -r match; do matches+=("$match"); done < <(
-            find "$CANDIDATE_DATA_DIR" -type f -name "$archive" -print
-          )
-          test "${#matches[@]}" = "1"
           mkdir -p dist/attestation-leaf
-          cp "${matches[0]}" "dist/attestation-leaf/$archive"
-          test "$(find dist/attestation-leaf -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "1"
+          for product in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            archive="${product}-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz"
+            matches=()
+            while IFS= read -r match; do matches+=("$match"); done < <(
+              find "$CANDIDATE_DATA_DIR" -type f -name "$archive" -print
+            )
+            test "${#matches[@]}" = "1"
+            cp "${matches[0]}" "dist/attestation-leaf/$archive"
+          done
+          test "$(find dist/attestation-leaf -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "4"
 
       - name: Attest exact unsigned native archive from trusted control
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          subject-path: dist/attestation-leaf/happier-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+          subject-path: |
+            dist/attestation-leaf/happier-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/attestation-leaf/happier-memory-runtime-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/attestation-leaf/happier-voice-runtime-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
+            dist/attestation-leaf/happier-difftastic-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz
 
   finalize_darwin:
     if: ${{ inputs.retry_version == '' && inputs.resume_version == '' && inputs.candidate_run_id == '' }}
@@ -860,7 +884,9 @@ jobs:
           args: --frozen-lockfile --ignore-engines --ignore-scripts
 
       - name: Build trusted release archive runtime
-        run: yarn workspace @happier-dev/release-runtime build
+        run: |
+          yarn workspace @happier-dev/release-runtime build
+          node scripts/workspaces/ensureWorkspacePackagesBuiltCli.mjs @happier-dev/cli-common
 
       - name: Require Apple signing and notarization credentials
         env:
@@ -903,34 +929,38 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ steps.apple_id.outputs.identity }}
         run: |
           set -euo pipefail
-          archive_name="happier-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz"
-          matches=()
-          while IFS= read -r match; do matches+=("$match"); done < <(
-            find "$CANDIDATE_DATA_DIR" -type f -name "$archive_name" -print
-          )
-          test "${#matches[@]}" = "1"
           mkdir -p "${GITHUB_WORKSPACE}/dist/release-assets/cli" "${GITHUB_WORKSPACE}/dist/notary"
-          ARCHIVE="${GITHUB_WORKSPACE}/dist/release-assets/cli/${archive_name}"
-          cp "${matches[0]}" "$ARCHIVE"
-          PAYLOAD="happier-v${RELEASE_VERSION}-${CLI_TARGET}"
-          EVIDENCE="${GITHUB_WORKSPACE}/dist/notary/${PLATFORM_KEY}.cli.json"
-          node scripts/pipeline/release/notarize-standalone-binary.mjs \
-            --archive "$ARCHIVE" \
-            --expected-payload "$PAYLOAD" \
-            --identity "$APPLE_SIGNING_IDENTITY" \
-            --out "$EVIDENCE" \
-            --refresh-cli-runtime-asset-manifest
-          VERIFY_DIR="${RUNNER_TEMP}/cli-verify-${PLATFORM_KEY}"
-          node scripts/pipeline/release/node-archive.mjs \
-            --extract-archive-path "$ARCHIVE" \
-            --extract-dir "$VERIFY_DIR"
-          node scripts/pipeline/release/notarize-standalone-binary.mjs \
-            --verify-evidence \
-            --payload "${VERIFY_DIR}/${PAYLOAD}" \
-            --evidence "$EVIDENCE"
-          CLI_BIN="${VERIFY_DIR}/${PAYLOAD}/happier"
-          test -x "$CLI_BIN"
-          "$CLI_BIN" --version
+          for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            archive_name="${PRODUCT}-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz"
+            matches=()
+            while IFS= read -r match; do matches+=("$match"); done < <(
+              find "$CANDIDATE_DATA_DIR" -type f -name "$archive_name" -print
+            )
+            test "${#matches[@]}" = "1"
+            ARCHIVE="${GITHUB_WORKSPACE}/dist/release-assets/cli/${archive_name}"
+            cp "${matches[0]}" "$ARCHIVE"
+            PAYLOAD="${PRODUCT}-v${RELEASE_VERSION}-${CLI_TARGET}"
+            SUFFIX="$PRODUCT"
+            if [ "$PRODUCT" = happier ]; then SUFFIX=cli; fi
+            EVIDENCE="${GITHUB_WORKSPACE}/dist/notary/${PLATFORM_KEY}.${SUFFIX}.json"
+            NOTARIZE_ARGS=(--archive "$ARCHIVE" --expected-payload "$PAYLOAD" --identity "$APPLE_SIGNING_IDENTITY" --out "$EVIDENCE")
+            if [ "$PRODUCT" = happier ]; then
+              NOTARIZE_ARGS+=(--refresh-cli-runtime-asset-manifest)
+            fi
+            node scripts/pipeline/release/notarize-standalone-binary.mjs "${NOTARIZE_ARGS[@]}"
+            VERIFY_DIR="${RUNNER_TEMP}/${PRODUCT}-verify-${PLATFORM_KEY}"
+            node scripts/pipeline/release/node-archive.mjs \
+              --extract-archive-path "$ARCHIVE" \
+              --extract-dir "$VERIFY_DIR"
+            node scripts/pipeline/release/notarize-standalone-binary.mjs \
+              --verify-evidence \
+              --payload "${VERIFY_DIR}/${PAYLOAD}" \
+              --evidence "$EVIDENCE"
+            node --input-type=module -e '
+              import { smokeTestArchive } from "./scripts/pipeline/release/verify-artifacts.mjs";
+              await smokeTestArchive({ archivePath: process.argv[1] });
+            ' "$ARCHIVE"
+          done
 
       - name: Clean Apple signing material
         if: always()
@@ -951,10 +981,14 @@ jobs:
           set -euo pipefail
           rm -rf dist/signed-leaf
           mkdir -p dist/signed-leaf
-          cp "dist/release-assets/cli/happier-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz" dist/signed-leaf/
-          cp "dist/notary/${PLATFORM_KEY}.cli.json" dist/signed-leaf/
-          cp "dist/notary/${PLATFORM_KEY}.cli.json.notary-log.json" dist/signed-leaf/
-          test "$(find dist/signed-leaf -maxdepth 1 -type f | wc -l | tr -d ' ')" = "3"
+          for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            SUFFIX="$PRODUCT"
+            if [ "$PRODUCT" = happier ]; then SUFFIX=cli; fi
+            cp "dist/release-assets/cli/${PRODUCT}-v${RELEASE_VERSION}-${CLI_TARGET}.tar.gz" dist/signed-leaf/
+            cp "dist/notary/${PLATFORM_KEY}.${SUFFIX}.json" dist/signed-leaf/
+            cp "dist/notary/${PLATFORM_KEY}.${SUFFIX}.json.notary-log.json" dist/signed-leaf/
+          done
+          test "$(find dist/signed-leaf -maxdepth 1 -type f | wc -l | tr -d ' ')" = "12"
 
       - name: Upload exact signed Darwin leaf and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1032,35 +1066,33 @@ jobs:
           ARTIFACTS_DIR="${GITHUB_WORKSPACE}/dist/release-assets/cli"
           rm -rf "$ARTIFACTS_DIR"
           mkdir -p "$ARTIFACTS_DIR"
-          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
-            archive="happier-v${RELEASE_VERSION}-${target}.tar.gz"
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$UNSIGNED_DATA_DIR" -type f -name "$archive" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
+          for product in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            suffix="$product"
+            if [ "$product" = happier ]; then suffix=cli; fi
+            for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
+              data_dir="$UNSIGNED_DATA_DIR"
+              case "$target" in darwin-*) data_dir="$SIGNED_DATA_DIR" ;; esac
+              archive="${product}-v${RELEASE_VERSION}-${target}.tar.gz"
+              matches=()
+              while IFS= read -r match; do matches+=("$match"); done < <(
+                find "$data_dir" -type f -name "$archive" -print
+              )
+              test "${#matches[@]}" = "1"
+              cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
+            done
+            for target in darwin-x64 darwin-arm64; do
+              evidence="${target}.${suffix}.json"
+              matches=()
+              while IFS= read -r match; do matches+=("$match"); done < <(
+                find "$SIGNED_DATA_DIR" -type f -name "$evidence" -print
+              )
+              test "${#matches[@]}" = "1"
+              cp "${matches[0]}" "$ARTIFACTS_DIR/$evidence"
+            done
           done
-          for evidence in darwin-x64.cli.json darwin-arm64.cli.json; do
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$SIGNED_DATA_DIR" -type f -name "$evidence" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$evidence"
-          done
-          for target in darwin-x64 darwin-arm64; do
-            archive="happier-v${RELEASE_VERSION}-${target}.tar.gz"
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$SIGNED_DATA_DIR" -type f -name "$archive" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
-          done
-          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "5"
-          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.cli.json' | wc -l | tr -d ' ')" = "2"
-          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "7"
+          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "20"
+          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = "8"
+          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "28"
 
       - name: Finalize and verify signed candidate-native matrix
         env:
@@ -1078,11 +1110,12 @@ jobs:
             --artifacts-dir "${GITHUB_WORKSPACE}/dist/release-assets/cli"
           node scripts/pipeline/release/verify-artifacts.mjs \
             --artifacts-dir "${GITHUB_WORKSPACE}/dist/release-assets/cli" \
+            --checksums "${GITHUB_WORKSPACE}/dist/release-assets/cli/checksums-happier-v${RELEASE_VERSION}.txt" \
             --public-key apps/website/public/happier-release.pub \
             --require-all-artifacts-checksummed \
             --require-signature \
             --skip-smoke
-          test "$(find "${GITHUB_WORKSPACE}/dist/release-assets/cli" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "9"
+          test "$(find "${GITHUB_WORKSPACE}/dist/release-assets/cli" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "36"
 
       - name: Upload one signed candidate-native matrix
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1218,35 +1251,33 @@ jobs:
           ARTIFACTS_DIR="${GITHUB_WORKSPACE}/dist/release-assets/cli"
           rm -rf "$ARTIFACTS_DIR"
           mkdir -p "$ARTIFACTS_DIR"
-          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
-            archive="happier-v${RELEASE_VERSION}-${target}.tar.gz"
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$UNSIGNED_DATA_DIR" -type f -name "$archive" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
+          for product in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do
+            suffix="$product"
+            if [ "$product" = happier ]; then suffix=cli; fi
+            for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
+              data_dir="$UNSIGNED_DATA_DIR"
+              case "$target" in darwin-*) data_dir="$SIGNED_DATA_DIR" ;; esac
+              archive="${product}-v${RELEASE_VERSION}-${target}.tar.gz"
+              matches=()
+              while IFS= read -r match; do matches+=("$match"); done < <(
+                find "$data_dir" -type f -name "$archive" -print
+              )
+              test "${#matches[@]}" = "1"
+              cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
+            done
+            for target in darwin-x64 darwin-arm64; do
+              evidence="${target}.${suffix}.json"
+              matches=()
+              while IFS= read -r match; do matches+=("$match"); done < <(
+                find "$SIGNED_DATA_DIR" -type f -name "$evidence" -print
+              )
+              test "${#matches[@]}" = "1"
+              cp "${matches[0]}" "$ARTIFACTS_DIR/$evidence"
+            done
           done
-          for evidence in darwin-x64.cli.json darwin-arm64.cli.json; do
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$SIGNED_DATA_DIR" -type f -name "$evidence" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$evidence"
-          done
-          for target in darwin-x64 darwin-arm64; do
-            archive="happier-v${RELEASE_VERSION}-${target}.tar.gz"
-            matches=()
-            while IFS= read -r match; do matches+=("$match"); done < <(
-              find "$SIGNED_DATA_DIR" -type f -name "$archive" -print
-            )
-            test "${#matches[@]}" = "1"
-            cp "${matches[0]}" "$ARTIFACTS_DIR/$archive"
-          done
-          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "5"
-          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.cli.json' | wc -l | tr -d ' ')" = "2"
-          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "7"
+          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "20"
+          test "$(find "$ARTIFACTS_DIR" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = "8"
+          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "28"
 
       - name: Download exact signed candidate-native matrix
         if: inputs.candidate_run_id != ''
@@ -1264,14 +1295,16 @@ jobs:
         shell: bash
         env:
           CANDIDATE_DATA_DIR: ${{ runner.temp }}/cli-promoted-candidate
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "5"
-          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.cli.json' | wc -l | tr -d ' ')" = "2"
-          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "9"
+          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" = "20"
+          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = "8"
+          test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "36"
           test "$(find "$CANDIDATE_DATA_DIR" -mindepth 1 -maxdepth 1 ! -type f | wc -l | tr -d ' ')" = "0"
           node scripts/pipeline/release/verify-artifacts.mjs \
             --artifacts-dir "$CANDIDATE_DATA_DIR" \
+            --checksums "$CANDIDATE_DATA_DIR/checksums-happier-v${RELEASE_VERSION}.txt" \
             --public-key apps/website/public/happier-release.pub \
             --require-all-artifacts-checksummed \
             --require-signature \
@@ -1288,7 +1321,7 @@ jobs:
           rm -rf "$ARTIFACTS_DIR"
           mkdir -p "$ARTIFACTS_DIR"
           cp -a "$CANDIDATE_DATA_DIR/." "$ARTIFACTS_DIR/"
-          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "9"
+          test "$(find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "36"
 
       - name: Create GitHub App token
         id: app_token

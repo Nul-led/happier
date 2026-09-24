@@ -6,14 +6,18 @@ import { createReadStream, existsSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { resolveReleaseAssetBundle } from '@happier-dev/release-runtime/assets';
+import { lookupSha256 } from '@happier-dev/release-runtime/checksums';
+import { verifyMinisign } from '@happier-dev/release-runtime/minisign';
 
 import { fileSha256, parseArtifactChecksums } from './lib/artifact-checksums.mjs';
 import { parseArtifactFilename } from './lib/manifests.mjs';
 import { parseArgs } from './lib/release-script-arguments.mjs';
 import { isRunnerTargetEligibleForPublication, resolveRunnerPackageLayout } from './lib/runner-packaging.mjs';
 import { shouldSmokeTestReleaseArtifact } from './publishing/artifact-smoke-compatibility.mjs';
+import { CLI_OPTIONAL_COMPONENT_PRODUCTS } from './publishing/product-specs.mjs';
 import { terminateProcessTreeByPid } from '../../testing/process/processTree.mjs';
 
 const DEFAULT_BINARY_SMOKE_TIMEOUT_MS = 20_000;
@@ -26,8 +30,10 @@ const UTF16_DECODERS = Object.freeze([
 const CANONICAL_DIRECTORY_MODES = new Set([0o755]);
 const CANONICAL_NATIVE_FILE_MODES = new Set([0o644, 0o755]);
 const CANONICAL_UI_WEB_FILE_MODES = new Set([0o644]);
-const RELEASE_ARCHIVE_NAME_PATTERN =
-  /^(?<stem>(?<product>happier-ui-web|happier-server|happier-runner|happier|hstack)-v.+-(?<platform>darwin|linux|windows|web)-(?<arch>x64|arm64|any))\.(?:tar\.gz|zip)$/u;
+const RELEASE_ARCHIVE_NAME_PATTERN = new RegExp(
+  `^(?<stem>(?<product>happier-ui-web|happier-server|happier-runner|${CLI_OPTIONAL_COMPONENT_PRODUCTS.join('|')}|happier|hstack)-v.+-(?<platform>darwin|linux|windows|web)-(?<arch>x64|arm64|any))\\.(?:tar\\.gz|zip)$`,
+  'u',
+);
 // These are deliberately bounded, high-confidence ASCII signatures. Generic
 // words such as "token" or "private key", public certificates, and entropy
 // heuristics are excluded to keep binaries and license text admissible.
@@ -362,42 +368,156 @@ function resolveArtifactSmokeTimeoutMs({ serverBinary }) {
     : readTimeoutOverride(process.env.HAPPIER_RELEASE_BINARY_SMOKE_TIMEOUT_MS, DEFAULT_BINARY_SMOKE_TIMEOUT_MS);
 }
 
-/**
- * @param {string} command
- * @param {string[]} args
- * @param {{
- *   cwd?: string;
- *   stdio?: 'inherit' | 'ignore' | 'pipe';
- *   missingCommandMessage?: string;
- * }} [options]
- */
-function runCheckedCommand(
-  command,
-  args,
-  { cwd = process.cwd(), stdio = 'inherit', missingCommandMessage } = {},
-) {
-  const result = spawnSync(command, args, {
-    cwd,
-    stdio,
-    encoding: 'utf-8',
-  });
-  if (result.error) {
-    const code = result.error && typeof result.error === 'object' && 'code' in result.error
-      ? String(result.error.code ?? '')
-      : '';
-    if (code === 'ENOENT' && missingCommandMessage) {
-      throw new Error(missingCommandMessage);
+function createBaseCliRuntimeSmokeSource({ root, targetOs }) {
+  return `
+    import { createRequire } from 'node:module';
+    import { join } from 'node:path';
+
+    const root = ${JSON.stringify(root)};
+    const targetOs = ${JSON.stringify(targetOs)};
+    const runtimeRequire = createRequire(join(root, 'runtime-smoke.cjs'));
+
+    const cjsMcp = runtimeRequire('@modelcontextprotocol/sdk/client/index.js');
+    const { McpServer } = runtimeRequire('@modelcontextprotocol/sdk/server/mcp.js');
+    const { InMemoryTransport } = runtimeRequire('@modelcontextprotocol/sdk/inMemory.js');
+    if (
+      typeof cjsMcp.Client !== 'function'
+      || typeof McpServer !== 'function'
+      || typeof InMemoryTransport?.createLinkedPair !== 'function'
+    ) {
+      throw new Error('MCP SDK CommonJS exports are unavailable');
     }
-    throw result.error;
-  }
-  if ((result.status ?? 1) !== 0) {
-    const output = [String(result.stdout ?? '').trim(), String(result.stderr ?? '').trim()]
-      .filter(Boolean)
-      .join('\n');
-    throw new Error(
-      `[release] ${command} exited with status ${result.status ?? 1}${output ? `: ${output}` : ''}`,
+    const { z } = runtimeRequire('zod');
+    const mcpServer = new McpServer({ name: 'release-runtime-smoke', version: '1.0.0' });
+    mcpServer.registerTool(
+      'runtime_echo',
+      {
+        description: 'Echoes the release runtime smoke value',
+        inputSchema: { value: z.string() },
+      },
+      async ({ value }) => ({ content: [{ type: 'text', text: value }] }),
     );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new cjsMcp.Client({ name: 'release-runtime-smoke', version: '1.0.0' }, { capabilities: {} });
+    try {
+      await Promise.all([mcpServer.connect(serverTransport), mcpClient.connect(clientTransport)]);
+      await mcpClient.ping();
+      const tools = await mcpClient.listTools();
+      if (!tools.tools?.some((entry) => entry.name === 'runtime_echo')) {
+        throw new Error('MCP server tool was not listed by the root MCP client');
+      }
+      const called = await mcpClient.callTool({ name: 'runtime_echo', arguments: { value: 'mcp-ok' } });
+      if (!called.content?.some((entry) => entry.type === 'text' && entry.text === 'mcp-ok')) {
+        throw new Error('MCP server tool call did not cross the root in-memory transport');
+      }
+    } finally {
+      await mcpClient.close();
+      await mcpServer.close();
+    }
+
+    const sharp = runtimeRequire('sharp');
+    const png = await sharp({
+      create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    }).png().toBuffer();
+    const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    if (png.length < pngSignature.length || !png.subarray(0, pngSignature.length).equals(pngSignature)) {
+      throw new Error('sharp did not encode a 1x1 PNG');
+    }
+
+    if (targetOs === 'linux') {
+      const homebridgePty = runtimeRequire('@homebridge/node-pty-prebuilt-multiarch');
+      if (typeof homebridgePty.spawn !== 'function') throw new Error('Homebridge PTY package did not load');
+    }
+
+    const nodePty = runtimeRequire('node-pty');
+    const command = targetOs === 'windows' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
+    const args = targetOs === 'windows'
+      ? ['/d', '/s', '/c', '<nul set /p "=pty-ok"']
+      : ['-c', 'printf pty-ok'];
+    const ptyOutput = await new Promise((resolvePromise, rejectPromise) => {
+      let output = '';
+      let pty;
+      try {
+        pty = nodePty.spawn(command, args, {
+          name: 'xterm-color',
+          cols: 80,
+          rows: 24,
+          cwd: root,
+          env: process.env,
+        });
+      } catch (error) {
+        rejectPromise(error);
+        return;
+      }
+      pty.onData((chunk) => { output += chunk; });
+      pty.onExit(({ exitCode, signal }) => {
+        if (exitCode !== 0) {
+          rejectPromise(new Error('node-pty child failed with exit ' + exitCode + ' signal ' + signal));
+          return;
+        }
+        resolvePromise(output);
+      });
+    });
+    if (!ptyOutput.includes('pty-ok')) throw new Error('node-pty did not carry subprocess output');
+  `;
+}
+
+async function assertPathsAbsent(paths, message) {
+  const present = (await Promise.all(paths.map(async (path) => {
+    try {
+      await stat(path);
+      return path;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }
+  }))).filter(Boolean);
+  if (present.length > 0) throw new Error(`${message}: ${present.join(', ')}`);
+}
+
+async function assertBaseCliProjection({ root, targetOs, targetArch }) {
+  await assertPathsAbsent(
+    [
+      join(root, 'node_modules', '@huggingface', 'transformers'),
+      join(root, 'node_modules', 'sherpa-onnx-node'),
+      ...['darwin', 'linux', 'win'].flatMap((os) => ['arm64', 'x64'].map((arch) => join(root, 'node_modules', `sherpa-onnx-${os}-${arch}`))),
+      join(root, 'tools', 'archives', `voice-inference-runtime-${targetOs}-${targetArch}.tar.gz`),
+      join(root, 'scripts', 'runtime', 'loadVoiceInferenceRuntime.mjs'),
+    ],
+    'optional inference runtime survived base CLI projection',
+  );
+  await assertPathsAbsent(
+    [join(root, 'tools', 'unpacked', 'ripgrep.node')],
+    'unused ripgrep native addon survived projection',
+  );
+  if (targetOs === 'windows') {
+    await assertPathsAbsent(
+      [
+        join(root, 'tools', 'unpacked', 'zellij'),
+        join(root, 'tools', 'unpacked', 'zellij.exe'),
+      ],
+      'zellij survived Windows base CLI projection',
+    );
+    return;
   }
+  const ptyRoots = [
+    join(root, 'node_modules', 'node-pty'),
+    join(root, 'node_modules', '@homebridge', 'node-pty-prebuilt-multiarch'),
+  ];
+  await assertPathsAbsent(
+    ptyRoots.flatMap((packageRoot) => ['third_party/conpty', 'deps/winpty', 'src/win']
+      .map((relativePath) => join(packageRoot, relativePath))),
+    'Windows-only PTY input survived non-Windows projection',
+  );
+}
+
+async function verifyChecksumSignature({ checksumsPath, pubkeyFile }) {
+  const message = await readFile(checksumsPath);
+  const sigFile = await readFile(`${checksumsPath}.minisig`, 'utf8');
+  if (!verifyMinisign({ message, sigFile, pubkeyFile })) {
+    throw new Error(`[release] signature verification failed for ${checksumsPath}`);
+  }
+  return message.toString('utf8');
 }
 
 async function runSmokeCommand({ command, args, cwd, env, timeoutMs }) {
@@ -486,7 +606,123 @@ async function runSmokeCommand({ command, args, cwd, env, timeoutMs }) {
   });
 }
 
-export async function smokeTestArchive({ archivePath, signal }) {
+async function runBaseCliRuntimeSmoke({ root, scratch, artifact, archivePath, env }) {
+  const timeoutMs = resolveArtifactSmokeTimeoutMs({ serverBinary: false });
+  // Version dispatch can succeed before the command catalog and its packaged
+  // metadata load. Exercise that native startup path before accepting a CLI.
+  const nativeHelp = await runSmokeCommand({
+    command: join(root, artifact.os === 'windows' ? 'happier.exe' : 'happier'),
+    args: ['--help'],
+    cwd: root,
+    env,
+    timeoutMs,
+  });
+  if (nativeHelp.timedOut === true) {
+    throw new Error(`[release] native CLI help smoke timed out for ${archivePath}: ${formatSmokeOutput(nativeHelp)}`);
+  }
+  if ((nativeHelp.status ?? 1) !== 0) {
+    throw new Error(`[release] native CLI help smoke failed for ${archivePath}: ${formatSmokeOutput(nativeHelp)}`);
+  }
+  const packageDistEntrypoint = join(root, 'package-dist', 'index.mjs');
+  try {
+    if (!(await stat(packageDistEntrypoint)).isFile()) {
+      throw new Error(`[release] missing base CLI package-dist entrypoint in ${archivePath}`);
+    }
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(`[release] missing base CLI package-dist entrypoint in ${archivePath}`);
+    }
+    throw error;
+  }
+  const packageDistVersion = await runSmokeCommand({
+    command: process.execPath,
+    args: [packageDistEntrypoint, '--version'],
+    cwd: root,
+    env,
+    timeoutMs,
+  });
+  if (packageDistVersion.timedOut === true) {
+    throw new Error(`[release] package-dist version smoke timed out for ${archivePath}: ${formatSmokeOutput(packageDistVersion)}`);
+  }
+  if ((packageDistVersion.status ?? 1) !== 0) {
+    throw new Error(`[release] package-dist version smoke failed for ${archivePath}: ${formatSmokeOutput(packageDistVersion)}`);
+  }
+  const actualPackageDistVersion = String(packageDistVersion.stdout ?? '').trim();
+  if (actualPackageDistVersion !== artifact.version) {
+    throw new Error(
+      `[release] package-dist version mismatch for ${archivePath}: expected ${artifact.version}, got ${actualPackageDistVersion || '<empty>'}`,
+    );
+  }
+
+  const runRequiredTool = async ({ label, command, args, expectedOutput }) => {
+    try {
+      if (!(await stat(command)).isFile()) {
+        throw new Error(`[release] missing packaged ${label} in ${archivePath}`);
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new Error(`[release] missing packaged ${label} in ${archivePath}`);
+      }
+      throw error;
+    }
+    const result = await runSmokeCommand({ command, args, cwd: root, env, timeoutMs });
+    if (result.timedOut === true) {
+      throw new Error(`[release] packaged ${label} smoke timed out for ${archivePath}: ${formatSmokeOutput(result)}`);
+    }
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`[release] packaged ${label} smoke failed for ${archivePath}: ${formatSmokeOutput(result)}`);
+    }
+    const output = formatSmokeOutput(result);
+    if (!output.includes(expectedOutput)) {
+      throw new Error(`[release] packaged ${label} smoke returned unexpected output for ${archivePath}: ${output || '<empty>'}`);
+    }
+  };
+
+  const rgPath = join(root, 'tools', 'unpacked', artifact.os === 'windows' ? 'rg.exe' : 'rg');
+  await runRequiredTool({
+    label: 'rg --version',
+    command: rgPath,
+    args: ['--version'],
+    expectedOutput: 'ripgrep',
+  });
+  const rgNeedle = 'happier-release-rg-smoke';
+  const rgFixturePath = join(scratch, 'rg-smoke.txt');
+  await writeFile(rgFixturePath, `${rgNeedle}\n`);
+  await runRequiredTool({
+    label: 'rg search',
+    command: rgPath,
+    args: ['--fixed-strings', rgNeedle, rgFixturePath],
+    expectedOutput: rgNeedle,
+  });
+  if (artifact.os !== 'windows') {
+    await runRequiredTool({
+      label: 'zellij --version',
+      command: join(root, 'tools', 'unpacked', 'zellij'),
+      args: ['--version'],
+      expectedOutput: 'zellij',
+    });
+  }
+
+  const runtime = await runSmokeCommand({
+    command: process.execPath,
+    args: [
+      '--input-type=module',
+      '-e',
+      createBaseCliRuntimeSmokeSource({ root, targetOs: artifact.os }),
+    ],
+    cwd: root,
+    env,
+    timeoutMs,
+  });
+  if (runtime.timedOut === true) {
+    throw new Error(`[release] base CLI runtime smoke timed out for ${archivePath}: ${formatSmokeOutput(runtime)}`);
+  }
+  if ((runtime.status ?? 1) !== 0) {
+    throw new Error(`[release] base CLI runtime smoke failed for ${archivePath}: ${formatSmokeOutput(runtime)}`);
+  }
+}
+
+export async function smokeTestArchive({ archivePath, signal, execute = true }) {
   const artifact = parseArtifactFilename(basename(archivePath));
   const {
     extractArchivePayloadToDirectory,
@@ -500,41 +736,57 @@ export async function smokeTestArchive({ archivePath, signal }) {
     const closedZipLayout = runnerLayout
       ? await readRunnerClosedZipLayout({ archivePath, archiveName, layout: runnerLayout, signal })
       : undefined;
-    await extractArchivePayloadToDirectory({
-      archivePath,
-      archiveName,
-      ...(closedZipLayout ? { closedZipLayout } : {}),
-      extractDir: scratch,
-      signal,
-    });
-    const roots = await readdir(scratch);
-    if (roots.length === 0) {
-      throw new Error(`[release] extracted archive is empty: ${archivePath}`);
+    const firstPartyRuntime = !runnerLayout ? await import('@happier-dev/cli-common/firstPartyRuntime') : null;
+    const component = firstPartyRuntime?.getFirstPartyComponentCatalogEntry(artifact.product === 'happier' ? 'happier-cli' : artifact.product);
+    let root;
+    if (firstPartyRuntime) {
+      root = await firstPartyRuntime.extractReleasePayloadRootFromArchive({ archivePath, archiveName, extractDir: scratch, signal });
+    } else {
+      await extractArchivePayloadToDirectory({
+        archivePath,
+        archiveName,
+        ...(closedZipLayout ? { closedZipLayout } : {}),
+        extractDir: scratch,
+        signal,
+      });
+      // Runner's closed layout declares whether the executable is at the root
+      // or in its portable product directory.
+      root = runnerLayout.sidecarPath ? join(scratch, runnerLayout.payloadRootName) : scratch;
     }
-    const firstRootPath = join(scratch, roots[0]);
-    const firstRootStat = await stat(firstRootPath);
-    // Runner ZIPs intentionally contain the immutable executable at the archive
-    // root; existing CLI/server tarballs retain their product directory.
-    const root = firstRootStat.isDirectory() ? firstRootPath : scratch;
-    const entries = await readdir(root, { withFileTypes: true });
     // The Runner's entry point comes from its canonical package layout, never
     // from a name heuristic: a portable payload holds two executables and only
     // the shell is the product the endpoint launches.
     const candidate = runnerLayout
       ? basename(runnerLayout.executablePath)
-      : entries
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name)
-        .find((name) => !name.endsWith('.txt') && !name.endsWith('.json'));
-    if (!candidate) {
-      throw new Error(`[release] no executable found in archive: ${archivePath}`);
+      : component.binaryRelativePath
+        ? `${component.binaryRelativePath}${artifact.os === 'windows' ? '.exe' : ''}`
+        : component.nodeEntrypointRelativePath;
+    if (!candidate || !(await stat(join(root, candidate))).isFile()) {
+      throw new Error(`[release] missing component entrypoint ${candidate} in ${archivePath}`);
     }
+    if (artifact?.product === 'happier') {
+      await assertBaseCliProjection({ root, targetOs: artifact.os, targetArch: artifact.arch });
+    }
+    if (!execute || (!runnerLayout && !shouldSmokeTestReleaseArtifact({ archiveName }))) return;
     if (candidate.endsWith('.exe') && process.platform !== 'win32') {
       return;
     }
     const binPath = runnerLayout ? join(scratch, runnerLayout.executablePath) : join(root, candidate);
     const serverBinary = isServerBinaryCandidate(candidate);
-    const args = serverBinary ? [] : ['--version'];
+    const memoryRuntime = artifact.product === 'happier-memory-runtime';
+    const voiceRuntime = artifact.product === 'happier-voice-runtime';
+    const args = memoryRuntime ? ['--input-type=module', '-e', `
+      const { Tensor, env } = await import(${JSON.stringify(pathToFileURL(binPath).href)});
+      env.allowRemoteModels = false;
+      const tensor = new Tensor('float32', new Float32Array([1, 2]), [2]);
+      if (tensor.data[1] !== 2 || tensor.dims[0] !== 2) throw new Error('Invalid Transformers/ONNX tensor');
+    `] : voiceRuntime ? ['--input-type=module', '-e', `
+      const imported = await import(${JSON.stringify(pathToFileURL(binPath).href)});
+      const sherpa = imported.default ?? imported;
+      if (!['OfflineRecognizer', 'OnlineRecognizer', 'OfflineTts'].some((name) => typeof sherpa[name] === 'function')) {
+        throw new Error('Invalid Sherpa native runtime exports');
+      }
+    `] : serverBinary ? [] : ['--version'];
     // The Runner payload is an AppImage, which self-mounts through FUSE. Asking
     // it to extract instead keeps the smoke honest on images without FUSE; the
     // shell still sees the same arguments and still resolves its activation file
@@ -549,9 +801,10 @@ export async function smokeTestArchive({ archivePath, signal }) {
           METRICS_PORT: '0',
           HAPPIER_SERVER_LIGHT_DATA_DIR: join(scratch, 'server-light-data'),
         }
-      : runnerEnv;
+      : { ...runnerEnv };
+    delete env.NODE_PATH;
     const result = await runSmokeCommand({
-      command: binPath,
+      command: memoryRuntime || voiceRuntime ? process.execPath : binPath,
       args,
       cwd: root,
       env,
@@ -560,16 +813,10 @@ export async function smokeTestArchive({ archivePath, signal }) {
     const timedOut = result.timedOut === true;
     if (timedOut) {
       const output = formatSmokeOutput(result);
-      if (artifact?.product === 'happier') {
-        throw new Error(`[release] smoke test timed out for ${archivePath}: ${output.trim()}`);
-      }
       if (serverBinary) {
         if (/ERR_MODULE_NOT_FOUND|Cannot find module/i.test(output)) {
           throw new Error(`[release] smoke test failed for ${archivePath}: ${output.trim()}`);
         }
-        return;
-      }
-      if (/version/i.test(output)) {
         return;
       }
       throw new Error(`[release] smoke test timed out for ${archivePath}: ${output.trim()}`);
@@ -590,6 +837,9 @@ export async function smokeTestArchive({ archivePath, signal }) {
           `[release] binary version mismatch for ${archivePath}: expected ${expectedVersion}, got ${actualVersion || '<empty>'}`,
         );
       }
+    }
+    if (artifact?.product === 'happier') {
+      await runBaseCliRuntimeSmoke({ root, scratch, artifact, archivePath, env });
     }
     if (artifact?.product === 'happier-runner') {
       const hostileCwd = join(scratch, 'ambient-project');
@@ -657,14 +907,16 @@ async function main() {
   const { kv, flags } = parseArgs(process.argv.slice(2));
   const artifactsDir = resolve(String(kv.get('--artifacts-dir') ?? '').trim() || join(process.cwd(), 'dist', 'release-assets'));
   const checksumsPathInput = String(kv.get('--checksums') ?? '').trim();
-  const checksumsPath = checksumsPathInput || (await readdir(artifactsDir).catch((error) => {
+  const checksumCandidates = checksumsPathInput ? [] : (await readdir(artifactsDir, { withFileTypes: true }).catch((error) => {
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code ?? '') : '';
     if (code === 'ENOENT') return [];
     throw error;
   }))
-    .filter((name) => name.startsWith('checksums-') && name.endsWith('.txt'))
-    .sort((left, right) => left.localeCompare(right))
-    .map((name) => join(artifactsDir, name))[0];
+    .filter((entry) => entry.isFile() && /^checksums-.+\.txt$/.test(entry.name));
+  if (checksumCandidates.length > 1) {
+    throw new Error(`[release] multiple checksums files found in ${artifactsDir}; specify --checksums`);
+  }
+  const checksumsPath = checksumsPathInput || (checksumCandidates[0] && join(artifactsDir, checksumCandidates[0].name));
   if (!checksumsPath) {
     throw new Error(`[release] no checksums file found in ${artifactsDir}`);
   }
@@ -716,21 +968,17 @@ async function main() {
 
   const minisigPath = `${checksumsPath}.minisig`;
   const pubKeyPath = String(kv.get('--public-key') ?? process.env.MINISIGN_PUBLIC_KEY ?? '').trim();
-  if (flags.has('--require-signature') && !existsSync(minisigPath)) {
+  const requireSignature = flags.has('--require-signature');
+  if (requireSignature && !existsSync(minisigPath)) {
     throw new Error('[release] required checksum signature is missing');
   }
+  const verifySignedEnvelopes = requireSignature || existsSync(minisigPath);
+  const pubkeyFile = pubKeyPath ? await readFile(pubKeyPath, 'utf8') : '';
   if (existsSync(minisigPath)) {
     if (!pubKeyPath) {
       throw new Error('[release] signature found but no --public-key/MINISIGN_PUBLIC_KEY provided');
     }
-    runCheckedCommand(
-      'minisign',
-      ['-Vm', checksumsPath, '-p', pubKeyPath],
-      {
-        stdio: 'inherit',
-        missingCommandMessage: '[release] minisign required to verify signatures',
-      },
-    );
+    await verifyChecksumSignature({ checksumsPath, pubkeyFile });
   }
 
   if (!flags.has('--skip-archive-admission')) {
@@ -745,14 +993,44 @@ async function main() {
 
   const skipOptionalSmoke = flags.has('--skip-smoke');
   const cliVersionAttestations = [];
+  const baseCliRuntimeSmokes = [];
+  const componentEnvelopes = new Map();
+  const assets = entries.map((entry) => ({ name: entry.name, url: pathToFileURL(join(artifactsDir, entry.name)).href }));
   for (const entry of entries) {
     if (!entry.name.endsWith('.tar.gz') && !entry.name.endsWith('.zip')) continue;
-    if (!shouldSmokeTestReleaseArtifact({ archiveName: entry.name })) continue;
     const artifact = parseArtifactFilename(entry.name);
-    const requiresCliVersionAttestation = artifact?.product === 'happier';
-    if (skipOptionalSmoke && !requiresCliVersionAttestation) continue;
-    await smokeTestArchive({ archivePath: join(artifactsDir, entry.name) });
-    if (requiresCliVersionAttestation) cliVersionAttestations.push(entry.name);
+    if (!artifact) continue;
+    const optionalComponent = CLI_OPTIONAL_COMPONENT_PRODUCTS.includes(artifact.product);
+    if (optionalComponent) {
+      const bundle = resolveReleaseAssetBundle({
+        assets,
+        product: artifact.product,
+        os: artifact.os,
+        arch: artifact.arch,
+        requireChecksumsSignature: verifySignedEnvelopes,
+      });
+      if (bundle.archive.name !== entry.name) throw new Error(`[release] component bundle mismatch for ${entry.name}`);
+      if (!componentEnvelopes.has(bundle.checksums.name)) {
+        const componentChecksumsPath = join(artifactsDir, bundle.checksums.name);
+        const text = verifySignedEnvelopes
+          ? await verifyChecksumSignature({ checksumsPath: componentChecksumsPath, pubkeyFile })
+          : await readFile(componentChecksumsPath, 'utf8');
+        componentEnvelopes.set(bundle.checksums.name, text);
+      }
+      const expected = lookupSha256({ checksumsText: componentEnvelopes.get(bundle.checksums.name), filename: entry.name });
+      if (expected !== entry.sha256) throw new Error(`[release] component checksum mismatch for ${entry.name}`);
+    }
+    const compatible = shouldSmokeTestReleaseArtifact({ archiveName: entry.name });
+    const requiresCliVersionAttestation = compatible && artifact.product === 'happier';
+    const execute = compatible && (!skipOptionalSmoke || requiresCliVersionAttestation);
+    // Preserve Runner's separate closed-ZIP admission and startup contract.
+    if (execute || optionalComponent || artifact.product === 'happier') {
+      await smokeTestArchive({ archivePath: join(artifactsDir, entry.name), execute });
+    }
+    if (requiresCliVersionAttestation) {
+      cliVersionAttestations.push(entry.name);
+      baseCliRuntimeSmokes.push(entry.name);
+    }
   }
 
   console.log(JSON.stringify({
@@ -762,6 +1040,8 @@ async function main() {
     verified: entries.map((entry) => entry.name),
     smoke: !skipOptionalSmoke,
     cliVersionAttestations,
+    baseCliRuntimeSmokes,
+    verifiedComponentEnvelopes: [...componentEnvelopes.keys()],
   }, null, 2));
 }
 

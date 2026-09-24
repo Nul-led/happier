@@ -7,7 +7,7 @@ import {
 } from '../pipeline/release/publishing/product-specs.mjs';
 
 test('binary publish product specs expose the canonical per-product release metadata', () => {
-  assert.deepEqual(BINARY_PUBLISH_PRODUCT_IDS, ['cli', 'hstack', 'server']);
+  assert.deepEqual(BINARY_PUBLISH_PRODUCT_IDS, ['cli', 'hstack', 'server', 'runner']);
 
   assert.deepEqual(getBinaryPublishProductSpec('cli'), {
     id: 'cli',
@@ -27,6 +27,7 @@ test('binary publish product specs expose the canonical per-product release meta
     rollingNotesSubject: 'CLI binaries',
     versionNotesSubject: 'CLI',
     notarizationEvidenceSuffix: 'cli',
+    optionalComponentProducts: ['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic'],
   });
 
   assert.deepEqual(getBinaryPublishProductSpec('hstack'), {

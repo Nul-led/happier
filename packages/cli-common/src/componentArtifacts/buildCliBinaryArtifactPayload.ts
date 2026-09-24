@@ -3,7 +3,6 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from '
 import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import * as tar from 'tar';
 
 import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
 import {
@@ -31,7 +30,6 @@ import {
   readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot,
 } from './copyCliNodeRuntimePayload.js';
 import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
-import { CLI_DEFERRED_VOICE_RUNTIME_PACKAGES } from './deferredVoiceRuntimePackages.js';
 import type {
   BundledWorkspacePackage,
   EnsureWorkspacePackagesBuiltByName,
@@ -51,6 +49,17 @@ export const CLI_RUNTIME_EXTERNAL_PACKAGES = [
   'node-pty',
   '@homebridge/node-pty-prebuilt-multiarch',
 ] as const;
+
+const CLI_OPTIONAL_RUNTIME_PACKAGES: readonly string[] = [
+  '@huggingface/transformers',
+  'sherpa-onnx-node',
+  'sherpa-onnx-darwin-arm64',
+  'sherpa-onnx-darwin-x64',
+  'sherpa-onnx-linux-arm64',
+  'sherpa-onnx-linux-x64',
+  'sherpa-onnx-win-arm64',
+  'sherpa-onnx-win-x64',
+];
 
 // Every shipped Fastify owner constructs its server with `logger: false`, so its
 // optional Pino branch is deliberately absent from the standalone Bun image.
@@ -417,7 +426,6 @@ export function readCliBinaryArtifactSupportIdentity({
     'packages/cli-common/nodePtySpawnHelperPermissions.cjs',
     'packages/cli-common/src/componentArtifacts/stageCliProxyApiManagedRuntime.ts',
     'packages/cli-common/src/componentArtifacts/stageProcessCustodyRuntime.ts',
-    'packages/cli-common/src/componentArtifacts/deferredVoiceRuntimePackages.ts',
     'packages/cli-common/src/componentArtifacts/cliRuntimeSidecars.ts',
     'packages/cli-common/src/workspaces/index.ts',
     'packages/cli-common/workspaceRuntimeDependencies.mjs',
@@ -446,6 +454,7 @@ async function copyCliRuntimeSidecars(repoRoot: string, payloadDir: string): Pro
 
   const resolveFromPackageJsonPath = join(repoRoot, 'apps', 'cli', 'package.json');
   for (const { packageName, declaredSpec } of readRequiredCliRuntimePackageSpecs(repoRoot)) {
+    if (CLI_OPTIONAL_RUNTIME_PACKAGES.includes(packageName)) continue;
     bundleInstalledPackageWithRuntimeDependencies({
       packageName,
       declaredSpec,
@@ -477,38 +486,6 @@ async function copyCliRuntimeTools(repoRoot: string, payloadDir: string, target:
     tools: target.os === 'windows' ? ['ripgrep'] : ['ripgrep', 'zellij'],
   });
   await rm(targetArchivesDir, { recursive: true, force: true });
-}
-
-function resolveDeferredVoiceInferenceRuntimeArchiveName(target: BinaryTarget): string {
-  return `voice-inference-runtime-${target.os}-${target.arch}.tar.gz`;
-}
-
-async function stageDeferredVoiceInferenceRuntimeArchive(payloadDir: string, target: BinaryTarget): Promise<void> {
-  const runtimePackageEntries = CLI_DEFERRED_VOICE_RUNTIME_PACKAGES
-    .map((packageName) => join('node_modules', ...packageName.split('/')))
-    .filter((relativePath) => existsSync(join(payloadDir, relativePath)));
-
-  if (runtimePackageEntries.length === 0) {
-    return;
-  }
-
-  const archivePath = join(
-    payloadDir,
-    'tools',
-    'archives',
-    resolveDeferredVoiceInferenceRuntimeArchiveName(target),
-  );
-  await mkdir(join(archivePath, '..'), { recursive: true });
-  await tar.c({
-    gzip: true,
-    file: archivePath,
-    cwd: payloadDir,
-    portable: true,
-  }, runtimePackageEntries);
-
-  await Promise.all(runtimePackageEntries.map(async (relativePath) => {
-    await rm(join(payloadDir, relativePath), { recursive: true, force: true });
-  }));
 }
 
 function syncCliBundledWorkspacePackagesForCompile(
@@ -818,6 +795,7 @@ async function stageCliBinaryArtifactSupportPayload({
     repoRoot,
     payloadDir,
     expectedWorkspaceRuntimeIdentity,
+    excludeRootDependencies: CLI_OPTIONAL_RUNTIME_PACKAGES,
   });
   const stagedWorkspaceRuntime = readCliNodeWorkspaceRuntimeIdentityFromRuntimeRoot({
     runtimeRoot: payloadDir,
@@ -840,7 +818,6 @@ async function stageCliBinaryArtifactSupportPayload({
     runCommand,
     prebuiltExecutablePath: processCustodyRuntimeExecutablePath,
   });
-  await stageDeferredVoiceInferenceRuntimeArchive(payloadDir, target);
   await stageIrohNativeReleaseEvidence({
     repoRoot,
     payloadDir,

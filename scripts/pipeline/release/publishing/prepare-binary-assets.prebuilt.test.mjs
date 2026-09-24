@@ -12,7 +12,11 @@ import {
   prepareBinaryReleaseAssets,
 } from './prepare-binary-assets.mjs';
 import { parsePublishBinaryReleaseArgs } from './publish-binary-release.mjs';
-import { getBinaryPublishProductSpec } from './product-specs.mjs';
+import { getBinaryPublishProductSpec as getCompleteBinaryPublishProductSpec } from './product-specs.mjs';
+
+function getBinaryPublishProductSpec(product) {
+  return { ...getCompleteBinaryPublishProductSpec(product), optionalComponentProducts: [] };
+}
 
 const CLI_TARGETS = [
   ['linux', 'x64'],
@@ -21,6 +25,57 @@ const CLI_TARGETS = [
   ['darwin', 'arm64'],
   ['windows', 'x64'],
 ];
+
+test('CLI publication requires complete optional matrices and seals component envelopes', async () => {
+  const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-optional-publication-'));
+  const version = '1.2.3-preview.4';
+  const products = ['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic'];
+  const writes = [];
+  const finalize = () => finalizePreparedBinaryArtifacts({
+    artifactsDir, version, channel: 'preview', productSpec: getCompleteBinaryPublishProductSpec('cli'),
+    targets: CLI_TARGETS.map(([os, arch]) => ({ os, arch })),
+    writeChecksums: async (input) => {
+      writes.push(input);
+      const checksumPath = join(artifactsDir, `checksums-${input.product}-v${version}.txt`);
+      await writeFile(checksumPath, 'checksum');
+      return checksumPath;
+    },
+    signFile: async ({ path }) => {
+      await writeFile(`${path}.minisig`, 'signature');
+      return `${path}.minisig`;
+    },
+  });
+  try {
+    await writeCliArchives(artifactsDir, version);
+    await writeCliEvidence(artifactsDir);
+    for (const product of products) {
+      for (const [os, arch] of CLI_TARGETS) {
+        await writeFile(join(artifactsDir, `${product}-v${version}-${os}-${arch}.tar.gz`), 'component');
+      }
+      await writeProductEvidence(artifactsDir, product);
+    }
+    const missing = join(artifactsDir, `happier-difftastic-v${version}-windows-x64.tar.gz`);
+    await rm(missing);
+    await assert.rejects(finalize(), /missing prepared artifact.*happier-difftastic/);
+    assert.equal(writes.length, 0);
+    await writeFile(missing, 'component');
+    const missingEvidence = join(artifactsDir, 'darwin-arm64.happier-memory-runtime.json');
+    await rm(missingEvidence);
+    await assert.rejects(finalize(), /missing prepared Darwin notarization evidence.*happier-memory-runtime/);
+    await writeFile(missingEvidence, '{}');
+    const result = await finalize();
+    assert.deepEqual(writes.map(({ product }) => product), [...products, 'happier']);
+    for (const product of products) {
+      assert.equal(writes.find((entry) => entry.product === product).artifacts.length, 7);
+      for (const suffix of ['', '.minisig']) {
+        assert.ok(result.artifacts.some(({ name }) => name === `checksums-${product}-v${version}.txt${suffix}`));
+      }
+    }
+    assert.equal(result.artifacts.length, 34);
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
 
 async function writeCliArchives(artifactsDir, version, targets = CLI_TARGETS) {
   for (const [os, arch] of targets) {

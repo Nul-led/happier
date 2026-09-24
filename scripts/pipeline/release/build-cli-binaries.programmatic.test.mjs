@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -49,6 +49,9 @@ function createTestReleaseOwners() {
       .filter(Boolean),
     readVersionFromPackageJson: () => '0.2.10',
     refreshCliBinaryArtifactRuntimeAssetBuildManifest: () => {},
+    buildCliOptionalComponentArtifactPayload: async ({ payloadDir }) => {
+      await mkdir(payloadDir, { recursive: true });
+    },
     resolveTargets: ({ availableTargets: candidates, requested }) => {
       const requestedKeys = String(requested ?? '')
         .split(',')
@@ -148,7 +151,7 @@ test('programmatic CLI binary build stays in the caller output root and propagat
         },
         packagePreparedTargetBinaryImpl: async (params) => {
           calls.package.push(params);
-          const name = `happier-v${params.version}-${params.target.os}-${params.target.arch}.tar.gz`;
+          const name = `${params.product}-v${params.version}-${params.target.os}-${params.target.arch}.tar.gz`;
           const path = join(params.outDir, name);
           await writeFile(path, 'archive-fixture\n');
           return {
@@ -197,12 +200,12 @@ test('programmatic CLI binary build stays in the caller output root and propagat
         observedMarker: 'same-basis',
       },
     );
-    assert.equal(calls.package.length, 1);
+    assert.deepEqual(calls.package.map(({ product }) => product), ['happier', 'happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']);
     assert.equal(calls.package[0].version, '0.2.10-candidate.7');
     assert.equal(calls.package[0].outDir, fixture.outputRoot);
-    assert.equal(calls.checksums.length, 1);
+    assert.deepEqual(calls.checksums.map(({ product }) => product), ['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic', 'happier']);
     assert.equal(calls.checksums[0].outDir, fixture.outputRoot);
-    assert.equal(calls.sign.length, 1);
+    assert.equal(calls.sign.length, 4);
     assert.equal(
       await readFile(join(fixture.sharedOutputRoot, 'sentinel.txt'), 'utf8'),
       'shared-output-must-not-change\n',
@@ -212,15 +215,17 @@ test('programmatic CLI binary build stays in the caller output root and propagat
       channel: 'preview',
       version: '0.2.10-candidate.7',
       outDir: fixture.outputRoot,
-      artifacts: [{
-        name: 'happier-v0.2.10-candidate.7-linux-x64.tar.gz',
-        path: join(
-          fixture.outputRoot,
-          'happier-v0.2.10-candidate.7-linux-x64.tar.gz',
-        ),
+      artifacts: ['happier', 'happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic'].map((product) => ({
+        name: `${product}-v0.2.10-candidate.7-linux-x64.tar.gz`,
+        path: join(fixture.outputRoot, `${product}-v0.2.10-candidate.7-linux-x64.tar.gz`),
         os: 'linux',
         arch: 'x64',
-      }],
+      })).concat(['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic'].flatMap((product) => ['', '.minisig'].map((suffix) => ({
+        name: `checksums-${product}-v0.2.10-candidate.7.txt${suffix}`,
+        path: join(fixture.outputRoot, `checksums-${product}-v0.2.10-candidate.7.txt${suffix}`),
+        os: 'manifest',
+        arch: product,
+      })))),
       checksumsPath: join(
         fixture.outputRoot,
         'checksums-happier-v0.2.10-candidate.7.txt',
@@ -338,6 +343,10 @@ test('Darwin finalization refreshes managed-runtime integrity before payload evi
         });
       },
       finalizeMacOSPayloadForArchiveImpl: (params) => {
+        if (!existsSync(join(params.stageDir, 'tools', 'unpacked', 'happier-cliproxyapi-managed'))) {
+          events.push('component-codesign');
+          return null;
+        }
         events.push('codesign');
         writeFileSync(
           join(
@@ -360,7 +369,15 @@ test('Darwin finalization refreshes managed-runtime integrity before payload evi
           entrypoint: join(payloadDir, 'package-dist', 'index.mjs'),
         });
       },
-      packagePreparedTargetBinaryImpl: async ({ stageDir, outDir, target }) => {
+      packagePreparedTargetBinaryImpl: async ({ stageDir, outDir, target, product }) => {
+        if (product !== 'happier') {
+          events.push('component-archive');
+          return {
+            name: `${product}-v0.2.10-candidate.7-darwin-arm64.tar.gz`,
+            path: join(outDir, `${product}-v0.2.10-candidate.7-darwin-arm64.tar.gz`),
+            os: target.os, arch: target.arch,
+          };
+        }
         events.push('archive');
         assert.equal(cliDistBuildManifest.readCliRuntimeAssetIntegrity({
           runtimeRoot: stageDir,
@@ -382,7 +399,10 @@ test('Darwin finalization refreshes managed-runtime integrity before payload evi
     },
   );
 
-  assert.deepEqual(events, ['payload', 'codesign', 'refresh', 'evidence', 'archive']);
+  assert.deepEqual(events, ['payload', 'codesign', 'refresh', 'evidence', 'archive',
+    'component-codesign', 'component-archive',
+    'component-codesign', 'component-archive',
+    'component-codesign', 'component-archive']);
 });
 
 test('programmatic CLI binary build requires an explicit exact managed-runtime input', async () => {

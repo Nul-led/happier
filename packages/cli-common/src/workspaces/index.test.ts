@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -80,6 +81,28 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe('Transformers isolated runtime closure', () => {
+  it.each(['host', 'standalone'] as const)('preserves Node and Web Common versions for %s publication', async (mode) => {
+    const root = createTempRoot('transformers-runtime-closure-');
+    const source = join(root, 'source');
+    const payload = join(root, 'payload');
+    writePackage(source, { name: 'host', version: '1.0.0', dependencies: { '@huggingface/transformers': '3.8.1' } });
+    const transformers = join(source, 'node_modules', '@huggingface', 'transformers');
+    writePackage(transformers, { name: '@huggingface/transformers', version: '3.8.1', type: 'module', main: './index.js', dependencies: { 'onnxruntime-node': '1.21.0', 'onnxruntime-web': '1.22.0' } }, {
+      'index.js': 'import { version as direct } from "onnxruntime-common"; import { version as node } from "onnxruntime-node"; import { version as web } from "onnxruntime-web"; export const versions = { direct, node, web };',
+    });
+    for (const [runtime, version] of [['node', '1.21.0'], ['web', '1.22.0']]) {
+      const runtimeDir = join(source, 'node_modules', `onnxruntime-${runtime}`);
+      writePackage(runtimeDir, { name: `onnxruntime-${runtime}`, version, type: 'module', main: './index.js', dependencies: { 'onnxruntime-common': version } }, { 'index.js': 'export { version } from "onnxruntime-common";' });
+      writePackage(join(runtimeDir, 'node_modules', 'onnxruntime-common'), { name: 'onnxruntime-common', version, type: 'module', main: './index.js' }, { 'index.js': `export const version = ${JSON.stringify(version)};` });
+    }
+    if (mode === 'host') vendorBundledPackageRuntimeDependencies({ srcPackageJsonPath: join(source, 'package.json'), destPackageDir: payload, dereferenceRootDir: root });
+    else bundleInstalledPackageWithRuntimeDependencies({ packageName: '@huggingface/transformers', declaredSpec: '3.8.1', resolveFromPackageJsonPath: join(source, 'package.json'), destNodeModulesDir: join(payload, 'node_modules'), dereferenceRootDir: root });
+    const result = await import(pathToFileURL(join(payload, 'node_modules', '@huggingface', 'transformers', 'index.js')).href);
+    expect(result.versions).toEqual({ direct: '1.21.0', node: '1.21.0', web: '1.22.0' });
+  });
 });
 
 describe('sanitizeBundledPackageJson', () => {
@@ -557,6 +580,19 @@ describe('bundleInstalledPackageWithRuntimeDependencies', () => {
 });
 
 describe('vendorBundledPackageRuntimeDependencies', () => {
+  it('omits an optional root without removing a nested plugin dependency or changing default vendoring', () => {
+    const root = createTempRoot('optional-runtime-projection-');
+    const source = join(root, 'source');
+    writePackage(source, { name: 'host', dependencies: { heavy: '1.0.0', plugin: '1.0.0' } });
+    writePackage(join(source, 'node_modules/heavy'), { name: 'heavy', version: '1.0.0' });
+    writePackage(join(source, 'node_modules/plugin'), { name: 'plugin', version: '1.0.0', dependencies: { heavy: '1.0.0' } });
+    const payload = join(root, 'payload');
+    vendorBundledPackageRuntimeDependencies({ srcPackageJsonPath: join(source, 'package.json'), destPackageDir: payload, dereferenceRootDir: root, excludeRootDependencies: ['heavy'] });
+    expect(existsSync(join(payload, 'node_modules/heavy'))).toBe(false);
+    expect(existsSync(join(payload, 'node_modules/plugin/node_modules/heavy/package.json'))).toBe(true);
+    vendorBundledPackageRuntimeDependencies({ srcPackageJsonPath: join(source, 'package.json'), destPackageDir: join(root, 'default'), dereferenceRootDir: root });
+    expect(existsSync(join(root, 'default/node_modules/heavy/package.json'))).toBe(true);
+  });
   it('rejects a malformed runtime dependency name before resolving or writing it', () => {
     const repositoryRoot = createTempRoot('cli-common-runtime-name-traversal-');
     const srcPackageDir = join(repositoryRoot, 'packages', 'workspace-pkg');

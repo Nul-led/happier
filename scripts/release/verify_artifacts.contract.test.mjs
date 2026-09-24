@@ -1,8 +1,8 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const verifyArtifactsPath = resolve(repoRoot, 'scripts', 'pipeline', 'release', 'verify-artifacts.mjs');
 const nodeArchivePath = resolve(repoRoot, 'scripts', 'pipeline', 'release', 'node-archive.mjs');
+
+// Manual archive fixtures model the producer's 0755/0644 modes even on shared
+// remote builders whose login umask permits group writes.
+const fixtureUmask = process.umask(0o022);
+after(() => process.umask(fixtureUmask));
 
 function normalizeArchivePlatform(platform) {
   return platform === 'win32' ? 'windows' : platform;
@@ -30,6 +35,337 @@ async function sha256(path) {
   const bytes = await readFile(path);
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+
+async function createComponentFixture({
+  product = 'happier-difftastic',
+  foreign = false,
+  files,
+  signedComponent = true,
+  targetOs,
+  targetArch,
+} = {}) {
+  const workspace = await mkdtemp(join(tmpdir(), 'happier-verify-component-'));
+  const artifactsDir = join(workspace, 'artifacts');
+  const os = targetOs ?? (foreign ? (process.platform === 'linux' ? 'windows' : 'linux') : normalizeArchivePlatform(process.platform));
+  const arch = targetArch ?? (foreign ? 'x64' : normalizeArchiveArch(process.arch));
+  const archiveStem = `${product}-v1.2.3-${os}-${arch}`;
+  const archiveName = `${archiveStem}.tar.gz`;
+  const stageRoot = join(workspace, 'stage');
+  await mkdir(artifactsDir);
+  await mkdir(join(stageRoot, archiveStem), { recursive: true });
+  for (const [name, content] of Object.entries(files ?? { [os === 'windows' ? 'difft.exe' : 'difft']: foreign ? 'foreign native executable' : '#!/usr/bin/env node\nconsole.log("difftastic 0.64.0");\n' })) {
+    const path = join(stageRoot, archiveStem, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, { mode: 0o755 });
+  }
+  await tar.c({ gzip: true, portable: true, cwd: stageRoot, file: join(artifactsDir, archiveName) }, [archiveStem]);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const keyId = Buffer.alloc(8, 1);
+  const publicKeyPath = join(workspace, 'public.key');
+  await writeFile(publicKeyPath, `untrusted comment: test key\n${Buffer.concat([Buffer.from('Ed'), keyId, publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)]).toString('base64')}\n`);
+  const seal = async (path, text) => {
+    await writeFile(path, text);
+    const signature = sign(null, Buffer.from(text), privateKey);
+    const suffix = Buffer.from('test');
+    await writeFile(`${path}.minisig`, `untrusted comment: test\n${Buffer.concat([Buffer.from('Ed'), keyId, signature]).toString('base64')}\ntrusted comment: test\n${sign(null, Buffer.concat([signature, suffix]), privateKey).toString('base64')}\n`);
+  };
+  const componentChecksumsPath = join(artifactsDir, `checksums-${product}-v1.2.3.txt`);
+  const componentChecksumsText = `${await sha256(join(artifactsDir, archiveName))}  ${archiveName}\n`;
+  if (signedComponent) await seal(componentChecksumsPath, componentChecksumsText);
+  else await writeFile(componentChecksumsPath, componentChecksumsText);
+  const checksumsPath = join(artifactsDir, 'checksums-release-v1.2.3.txt');
+  const resealPrimary = async () => {
+    const names = [archiveName, basename(componentChecksumsPath)];
+    if (signedComponent) names.push(`${basename(componentChecksumsPath)}.minisig`);
+    await writeFile(checksumsPath, (await Promise.all(names.map(async (name) => `${await sha256(join(artifactsDir, name))}  ${name}\n`))).join(''));
+  };
+  await resealPrimary();
+  const run = (args = [], env = process.env) => JSON.parse(execFileSync(process.execPath, [verifyArtifactsPath, '--artifacts-dir', artifactsDir, '--checksums', checksumsPath, '--public-key', publicKeyPath, ...args], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe', env }));
+  return { workspace, artifactsDir, archiveName, stageRoot, archiveStem, componentChecksumsPath, checksumsPath, resealPrimary, seal, run };
+}
+
+function createBaseCliRuntimeSmokeFixtureFiles(version) {
+  const markerWrite = "appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, ";
+  return {
+    happier: `#!/usr/bin/env bash\nprintf '%s\\n' '${version}'\n`,
+    'tools/unpacked/rg': `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == '--version' ]]; then
+  printf 'rg-version\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
+  printf 'ripgrep 14.1.0\\n'
+  exit 0
+fi
+printf 'rg-search\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
+pattern="\${@: -2:1}"
+file="\${@: -1}"
+grep -F -- "$pattern" "$file"
+`,
+    'tools/unpacked/zellij': `#!/usr/bin/env bash
+set -euo pipefail
+[[ "\${1:-}" == '--version' ]]
+printf 'zellij-version\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
+printf 'zellij 0.44.3\\n'
+`,
+    'package-dist/index.mjs': `
+      import { appendFileSync } from 'node:fs';
+      if (!process.argv.includes('--version')) throw new Error('package-dist version flag missing');
+      if (process.env.NODE_PATH) throw new Error('package-dist inherited NODE_PATH');
+      ${markerWrite}'package-dist-version\\n');
+      console.log(${JSON.stringify(version)});
+    `,
+    'node_modules/@modelcontextprotocol/sdk/package.json': JSON.stringify({
+      name: '@modelcontextprotocol/sdk', type: 'module',
+      exports: {
+        './client/index.js': { require: './dist/cjs/client/index.cjs' },
+        './inMemory.js': { require: './dist/cjs/inMemory.cjs' },
+        './server/mcp.js': { require: './dist/cjs/server/mcp.cjs' },
+      },
+    }),
+    'node_modules/@modelcontextprotocol/sdk/dist/cjs/client/index.cjs': `
+      const { appendFileSync } = require('node:fs');
+      appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'mcp-cjs\\n');
+      const mark = (value) => appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, value + '\\n');
+      exports.Client = class Client {
+        async connect(transport) { this.transport = transport; }
+        async ping() { if (!this.transport.other.server) throw new Error('MCP server missing'); mark('mcp-ping'); return {}; }
+        async listTools() { mark('mcp-list'); return { tools: this.transport.other.server.tools }; }
+        async callTool({ name, arguments: args }) {
+          mark('mcp-call');
+          return await this.transport.other.server.tools.find((entry) => entry.name === name).handler(args);
+        }
+        async close() {}
+      };
+    `,
+    'node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.cjs': `
+      const { appendFileSync } = require('node:fs');
+      exports.McpServer = class McpServer {
+        constructor() {
+          this.tools = [];
+          appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'mcp-server\\n');
+        }
+        registerTool(name, _metadata, handler) { this.tools.push({ name, handler }); }
+        async connect(transport) { transport.server = { tools: this.tools }; }
+        async close() {}
+      };
+    `,
+    'node_modules/@modelcontextprotocol/sdk/dist/cjs/inMemory.cjs': `
+      exports.InMemoryTransport = class InMemoryTransport {
+        static createLinkedPair() {
+          const client = {};
+          const server = {};
+          client.other = server;
+          server.other = client;
+          return [client, server];
+        }
+      };
+    `,
+    'node_modules/zod/package.json': JSON.stringify({
+      name: 'zod', type: 'module', exports: { '.': { import: './index.js', require: './index.cjs' } },
+    }),
+    'node_modules/zod/index.js': "export const z = { string: () => ({ type: 'string' }) };\n",
+    'node_modules/zod/index.cjs': "exports.z = { string: () => ({ type: 'string' }) };\n",
+    'node_modules/sharp/package.json': JSON.stringify({ name: 'sharp', main: './index.cjs' }),
+    'node_modules/sharp/index.cjs': `
+      const { appendFileSync } = require('node:fs');
+      module.exports = function sharp({ create }) {
+        if (create.width !== 1 || create.height !== 1) throw new Error('sharp smoke must encode 1x1');
+        return { png: () => ({ toBuffer: async () => {
+          appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'sharp\\n');
+          return Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+        } }) };
+      };
+    `,
+    'node_modules/@homebridge/node-pty-prebuilt-multiarch/package.json': JSON.stringify({
+      name: '@homebridge/node-pty-prebuilt-multiarch', main: './index.cjs',
+    }),
+    'node_modules/@homebridge/node-pty-prebuilt-multiarch/index.cjs': `
+      require('node:fs').appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'homebridge\\n');
+      exports.spawn = () => {};
+    `,
+    'node_modules/node-pty/package.json': JSON.stringify({ name: 'node-pty', main: './index.cjs' }),
+    'node_modules/node-pty/index.cjs': `
+      const childProcess = require('node:child_process');
+      const { appendFileSync } = require('node:fs');
+      exports.spawn = (command, args, options) => {
+        if (process.platform !== 'win32' && (command !== '/bin/sh' || args.join(' ') !== '-c printf pty-ok')) {
+          throw new Error('node-pty smoke did not use the real POSIX shell recipe');
+        }
+        appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'node-pty\\n');
+        const child = childProcess.spawn(command, args, { cwd: options.cwd, env: options.env });
+        return {
+          onData(handler) { child.stdout.on('data', (chunk) => handler(chunk.toString())); },
+          onExit(handler) { child.on('exit', (exitCode, signal) => handler({ exitCode, signal })); },
+        };
+      };
+    `,
+  };
+}
+
+function createWindowsBaseCliRuntimeSmokeFixtureFiles(version) {
+  const files = createBaseCliRuntimeSmokeFixtureFiles(version);
+  files['happier.exe'] = files.happier;
+  files['tools/unpacked/rg.exe'] = files['tools/unpacked/rg'];
+  delete files.happier;
+  delete files['tools/unpacked/rg'];
+  delete files['tools/unpacked/zellij'];
+  return files;
+}
+
+test('verify-artifacts accepts signed component envelopes and foreign layouts without executing foreign binaries', async () => {
+  const fixture = await createComponentFixture({ foreign: true });
+  try {
+    await fixture.seal(fixture.checksumsPath, await readFile(fixture.checksumsPath, 'utf8'));
+    const result = fixture.run();
+    assert.ok(result.verified.includes(fixture.archiveName));
+    assert.deepEqual(result.verifiedComponentEnvelopes, [basename(fixture.componentChecksumsPath)]);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+for (const product of ['happier', 'happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']) {
+  test(`verify-artifacts applies canonical traversal validation to foreign ${product} archives even with --skip-smoke`, async () => {
+    const fixture = await createComponentFixture({ product, foreign: true });
+    try {
+      await tar.c({ gzip: true, portable: true, prefix: '../escape', cwd: fixture.stageRoot, file: join(fixture.artifactsDir, fixture.archiveName) }, [fixture.archiveStem]);
+      await fixture.seal(fixture.componentChecksumsPath, `${await sha256(join(fixture.artifactsDir, fixture.archiveName))}  ${fixture.archiveName}\n`);
+      await fixture.resealPrimary();
+      assert.throws(() => fixture.run(['--skip-smoke']), /archive topology admission|archive entry.*non-portable path/i);
+    } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+  });
+}
+
+test('verify-artifacts verifies component signatures even when the primary envelope is valid and smoke is skipped', async () => {
+  const fixture = await createComponentFixture({ foreign: true });
+  try {
+    await writeFile(`${fixture.componentChecksumsPath}.minisig`, 'invalid component signature');
+    await fixture.resealPrimary();
+    await fixture.seal(fixture.checksumsPath, await readFile(fixture.checksumsPath, 'utf8'));
+    assert.throws(() => fixture.run(['--require-signature', '--skip-smoke']), /signature verification failed/i);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts reaches native optional smoke for an unsigned local-build envelope', async () => {
+  const marker = join(tmpdir(), `happier-unsigned-component-smoke-${process.pid}-${Date.now()}`);
+  const fixture = await createComponentFixture({
+    signedComponent: false,
+    files: {
+      difft: '#!/usr/bin/env node\nrequire("node:fs").appendFileSync(process.env.HAPPIER_TEST_UNSIGNED_SMOKE_MARKER, "reached\\n"); console.log("difftastic 0.64.0");\n',
+    },
+  });
+  try {
+    const result = fixture.run([], { ...process.env, HAPPIER_TEST_UNSIGNED_SMOKE_MARKER: marker });
+    assert.ok(result.verified.includes(fixture.archiveName));
+    assert.equal(await readFile(marker, 'utf8'), 'reached\n');
+  } finally {
+    await rm(marker, { force: true });
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('verify-artifacts checks the component checksum against its archive independently of the primary envelope', async () => {
+  const fixture = await createComponentFixture({ foreign: true });
+  try {
+    await fixture.seal(fixture.componentChecksumsPath, `${'0'.repeat(64)}  ${fixture.archiveName}\n`);
+    await fixture.resealPrimary();
+    assert.throws(() => fixture.run(['--skip-smoke']), /checksum mismatch/i);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts validates foreign component layouts without executing them', async () => {
+  const fixture = await createComponentFixture({ foreign: true, files: { 'LICENSE.txt': 'license' } });
+  try {
+    assert.throws(() => fixture.run(['--skip-smoke']), /missing.*entrypoint|ENOENT/i);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts runs the native difftastic component', async () => {
+  const fixture = await createComponentFixture({ files: { difft: '#!/usr/bin/env node\nconsole.error("difft smoke reached"); process.exit(7);\n' } });
+  try {
+    assert.throws(() => fixture.run(), /difft smoke reached/);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts rejects a timed-out difftastic version smoke even when it prints version output', async () => {
+  const fixture = await createComponentFixture({
+    files: {
+      difft: [
+        '#!/usr/bin/env bash',
+        "printf 'difftastic version 0.64.0\\n'",
+        'while true; do sleep 1; done',
+        '',
+      ].join('\n'),
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run([], { ...process.env, HAPPIER_RELEASE_BINARY_SMOKE_TIMEOUT_MS: '500' }),
+      /smoke test timed out/i,
+    );
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts imports the native memory runtime instead of accepting an unopened module', async () => {
+  const fixture = await createComponentFixture({ product: 'happier-memory-runtime', files: { 'node_modules/@huggingface/transformers/dist/transformers.node.mjs': 'throw new Error("memory smoke reached");' } });
+  try {
+    assert.throws(() => fixture.run(), /memory smoke reached/);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts exercises the Transformers ONNX tensor boundary with remote models disabled', async () => {
+  // Third-party module fixture distinguishes import-only smoke from the ONNX value boundary.
+  const fixture = await createComponentFixture({ product: 'happier-memory-runtime', files: {
+    'node_modules/@huggingface/transformers/dist/transformers.node.mjs': `
+      export const env = { allowRemoteModels: true };
+      export class Tensor {
+        constructor() {
+          if (env.allowRemoteModels) throw new Error('remote models must be disabled');
+          throw new Error('ONNX tensor boundary reached');
+        }
+      }
+    `,
+  } });
+  try {
+    assert.throws(() => fixture.run(), /ONNX tensor boundary reached/);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+test('verify-artifacts imports the native voice runtime and requires a Sherpa inference constructor', async () => {
+  const fixture = await createComponentFixture({ product: 'happier-voice-runtime', files: {
+    'node_modules/sherpa-onnx-node/sherpa-onnx.js': 'module.exports = { OnlineRecognizer: class OnlineRecognizer {} };',
+  } });
+  try {
+    assert.doesNotThrow(() => fixture.run());
+    await writeFile(
+      join(fixture.stageRoot, fixture.archiveStem, 'node_modules/sherpa-onnx-node/sherpa-onnx.js'),
+      'module.exports = {};',
+    );
+    await tar.c({ gzip: true, portable: true, cwd: fixture.stageRoot, file: join(fixture.artifactsDir, fixture.archiveName) }, [fixture.archiveStem]);
+    await fixture.seal(fixture.componentChecksumsPath, `${await sha256(join(fixture.artifactsDir, fixture.archiveName))}  ${fixture.archiveName}\n`);
+    await fixture.resealPrimary();
+    assert.throws(() => fixture.run(), /Invalid Sherpa native runtime exports/);
+  } finally { await rm(fixture.workspace, { recursive: true, force: true }); }
+});
+
+
+test('verify-artifacts requires explicit checksums when component envelopes coexist', async () => {
+  const artifactsDir = await mkdtemp(join(tmpdir(), 'happier-verify-envelopes-'));
+  const primaryPath = join(artifactsDir, 'checksums-happier-v1.2.3.txt');
+  const run = (args = []) => execFileSync(process.execPath, [
+    verifyArtifactsPath, '--artifacts-dir', artifactsDir, '--skip-smoke', ...args,
+  ], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
+  try {
+    const metadataPath = join(artifactsDir, 'metadata.json');
+    await writeFile(metadataPath, '{}');
+    const checksums = `${await sha256(metadataPath)}  metadata.json\n`;
+    await writeFile(primaryPath, checksums);
+    assert.equal(JSON.parse(run()).checksumsPath, primaryPath);
+    await writeFile(join(artifactsDir, 'checksums-happier-difftastic-v1.2.3.txt'), checksums);
+    assert.throws(() => run(), /multiple checksums.*--checksums/i);
+    assert.equal(JSON.parse(run(['--checksums', primaryPath])).checksumsPath, primaryPath);
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+});
 
 function createDeterministicIncompressiblePadding(byteLength) {
   // Keep scan-boundary fixtures below the independent archive expansion limit.
@@ -158,6 +494,24 @@ function verifyArchiveFixture({
     },
   );
 }
+
+test('verify-artifacts rejects optional component payloads without their signed envelopes', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'happier-verify-optional-'));
+  try {
+    for (const product of ['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']) {
+      const fixture = await createReleaseArchiveFixture({
+        workspace: join(workspace, product),
+        archiveStem: `${product}-v0.0.0-admission-linux-x64`,
+        files: [{ path: 'component', contents: 'runtime component\n', mode: 0o755 }],
+      });
+      const result = verifyArchiveFixture(fixture);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /missing checksums-.* asset/);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
 test('verify-artifacts can require a signed checksum manifest', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'happier-verify-artifacts-require-signature-'));
@@ -628,14 +982,14 @@ test('verify-artifacts allows binary data, public certificates, and license pros
   try {
     const fixture = await createReleaseArchiveFixture({
       workspace,
+      archiveStem: 'happier-ui-web-v0.0.0-admission-web-any',
       files: [
         {
-          path: 'happier',
+          path: 'assets.bin',
           contents: Buffer.concat([
             Buffer.from([0x00, 0xff, 0x10, 0x80]),
             Buffer.from('sk-short\u0000token\u0000private key\u0000', 'utf-8'),
           ]),
-          mode: 0o755,
         },
         {
           path: 'LICENSE.txt',
@@ -1060,17 +1414,189 @@ test('verify-artifacts accepts a CLI binary whose version matches its archive ve
     const fixture = await createReleaseArchiveFixture({
       workspace,
       archiveStem: `happier-v${version}-${archivePlatform}-${archiveArch}`,
-      files: [{
-        path: 'happier',
-        contents: `#!/bin/sh\nprintf '%s\\n' '${version}'\n`,
-        mode: 0o755,
-      }],
+      files: Object.entries(createBaseCliRuntimeSmokeFixtureFiles(version)).map(([path, contents]) => ({
+        path,
+        contents,
+        mode: path === 'happier' || path.startsWith('tools/unpacked/') ? 0o755 : 0o644,
+      })),
     });
 
-    const result = verifyArchiveFixture(fixture);
+    const result = verifyArchiveFixture({
+      ...fixture,
+      env: {
+        ...process.env,
+        HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(workspace, 'runtime-smoke-markers.txt'),
+      },
+    });
     assert.equal(result.status, 0, `${result.stdout ?? ''}\n${result.stderr ?? ''}`);
   } finally {
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('verify-artifacts exercises the isolated runtime payload of a native base CLI', async () => {
+  const version = '1.2.3';
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: createBaseCliRuntimeSmokeFixtureFiles(version),
+  });
+  try {
+    const markerPath = join(fixture.workspace, 'runtime-smoke-markers.txt');
+    const result = fixture.run(['--skip-smoke'], {
+      ...process.env,
+      HAPPIER_TEST_RUNTIME_SMOKE_MARKER: markerPath,
+      NODE_PATH: join(fixture.workspace, 'outside-node-modules'),
+    });
+    assert.deepEqual(result.baseCliRuntimeSmokes, [fixture.archiveName]);
+    const markers = new Set((await readFile(markerPath, 'utf8')).trim().split('\n'));
+    assert.deepEqual(markers, new Set([
+      'package-dist-version',
+      'mcp-cjs',
+      'mcp-server',
+      'mcp-ping',
+      'mcp-list',
+      'mcp-call',
+      'sharp',
+      'node-pty',
+      'rg-version',
+      'rg-search',
+      'zellij-version',
+      ...(process.platform === 'linux' ? ['homebridge'] : []),
+    ]));
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('base CLI projection accepts the required Windows tool set without zellij', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    targetOs: 'windows',
+    targetArch: 'x64',
+    files: createWindowsBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+  });
+  try {
+    const result = fixture.run(['--skip-smoke']);
+    assert.ok(result.verified.includes(fixture.archiveName));
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('base CLI projection rejects zellij in a Windows archive', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    targetOs: 'windows',
+    targetArch: 'x64',
+    files: {
+      ...createWindowsBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      'tools/unpacked/zellij.exe': '#!/usr/bin/env bash\nprintf "zellij 0.44.3\\n"\n',
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run(['--skip-smoke']),
+      /zellij.*survived Windows base CLI projection/i,
+    );
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('verify-artifacts rejects a native CLI whose version works but help fails', async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: {
+      ...createBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      happier: `#!/usr/bin/env bash
+if [[ "\${1:-}" == '--help' ]]; then
+  printf 'native help metadata failure\\n' >&2
+  exit 1
+fi
+printf '1.2.3\\n'
+`,
+    },
+  });
+  try {
+    assert.throws(() => fixture.run(['--skip-smoke'], {
+      ...process.env,
+      HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(fixture.workspace, 'runtime-smoke-markers.txt'),
+    }), /native help metadata failure/);
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+
+test('verify-artifacts rejects Sherpa and the retired embedded voice archive left in a base CLI projection', async () => {
+  const archivePlatform = normalizeArchivePlatform(process.platform);
+  const archiveArch = normalizeArchiveArch(process.arch);
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: {
+      ...createBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      'node_modules/sherpa-onnx-node/sherpa-onnx.js': 'module.exports = {};',
+      [`tools/archives/voice-inference-runtime-${archivePlatform}-${archiveArch}.tar.gz`]: 'retired duplicate voice runtime',
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run(['--skip-smoke'], {
+        ...process.env,
+        HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(fixture.workspace, 'runtime-smoke-markers.txt'),
+      }),
+      /optional inference runtime survived base CLI projection/i,
+    );
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('verify-artifacts rejects an unused ripgrep native addon left in a base CLI projection', async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: {
+      ...createBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      'tools/unpacked/ripgrep.node': 'unused native addon',
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run(['--skip-smoke'], {
+        ...process.env,
+        HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(fixture.workspace, 'runtime-smoke-markers.txt'),
+      }),
+      /unused ripgrep native addon survived projection/i,
+    );
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
+
+test('verify-artifacts rejects Windows PTY inputs left in a native non-Windows base CLI projection', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: {
+      ...createBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      'node_modules/node-pty/third_party/conpty/win10-x64/conpty.node': 'unused Windows PTY input',
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run(['--skip-smoke'], {
+        ...process.env,
+        HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(fixture.workspace, 'runtime-smoke-markers.txt'),
+      }),
+      /Windows-only PTY input survived non-Windows projection/i,
+    );
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
   }
 });
 

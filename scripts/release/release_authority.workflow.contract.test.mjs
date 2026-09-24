@@ -610,14 +610,17 @@ test('CLI Darwin archives are finalized as two exact source/version-bound leaves
   assert.match(source, /notarize-standalone-binary\.mjs/);
   assert.match(source, /--refresh-cli-runtime-asset-manifest/);
   assert.match(source, /--verify-evidence/);
-  assert.match(source, /matrix\.platform_key.*\.cli\.json/);
+  const signing = darwin.steps.find((step) => String(step.name).startsWith('Sign, notarize'));
+  assert.match(signing.run, /for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do/);
+  assert.match(signing.run, /EVIDENCE="\$\{GITHUB_WORKSPACE\}\/dist\/notary\/\$\{PLATFORM_KEY\}\.\$\{SUFFIX\}\.json"/);
   assert.match(source, /cli-signed-.*matrix\.platform_key.*needs\.prepare\.outputs\.version.*needs\.prepare\.outputs\.source_sha/);
 
   for (const jobName of ['finalize_candidate', 'publish']) {
     const jobSource = JSON.stringify(jobs[jobName]);
     assert.match(jobSource, /cli-signed-/, `${jobName} must consume the trusted Darwin leaf handoff`);
-    assert.match(jobSource, /darwin-x64\.cli\.json/);
-    assert.match(jobSource, /darwin-arm64\.cli\.json/);
+    const assembly = jobs[jobName].steps.find((step) => String(step.name).startsWith('Assemble') && String(step.run).includes('SIGNED_DATA_DIR'));
+    assert.match(assembly.run, /for target in darwin-x64 darwin-arm64; do\s+evidence="\$\{target\}\.\$\{suffix\}\.json"/);
+    assert.match(assembly.run, /find "\$SIGNED_DATA_DIR" -type f -name "\$evidence"/);
   }
 });
 

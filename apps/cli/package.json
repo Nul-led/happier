@@ -358,26 +358,5 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org"
   },
-  "happier": {
-    "voiceInference": {
-      "deferredRuntimePackages": [
-        "@huggingface/transformers",
-        "ffmpeg-static",
-        "sherpa-onnx-node",
-        "sherpa-onnx-darwin-arm64",
-        "sherpa-onnx-darwin-x64",
-        "sherpa-onnx-linux-arm64",
-        "sherpa-onnx-linux-x64",
-        "sherpa-onnx-win-x64"
-      ],
-      "deferredRuntimeArchiveTargets": [
-        "linux-x64",
-        "linux-arm64",
-        "darwin-x64",
-        "darwin-arm64",
-        "windows-x64"
-      ]
-    }
-  },
   "packageManager": "yarn@1.22.22"
 }

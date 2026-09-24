@@ -1424,6 +1424,7 @@ export function hasBundledWorkspacePackagesHealthy(params: Readonly<{
 }
 
 function vendorRuntimeDependencyTree(params: Readonly<{
+  excludeRootDependencies?: readonly string[];
   packageJsonPath: string;
   resolveFromPackageJsonPath?: string;
   destNodeModulesDir: string;
@@ -1450,6 +1451,7 @@ function vendorRuntimeDependencyTree(params: Readonly<{
 }
 
 export function vendorBundledPackageRuntimeDependencies(params: Readonly<{
+  excludeRootDependencies?: readonly string[];
   srcPackageJsonPath: string;
   resolveFromPackageJsonPath?: string;
   destPackageDir: string;
@@ -1476,6 +1478,7 @@ export function vendorBundledPackageRuntimeDependencies(params: Readonly<{
     buildInto: (tempNodeModulesDir) => {
       vendorRuntimeDependencyTree({
         packageJsonPath: params.srcPackageJsonPath,
+        excludeRootDependencies: params.excludeRootDependencies,
         resolveFromPackageJsonPath: params.resolveFromPackageJsonPath,
         destNodeModulesDir: tempNodeModulesDir,
         dereferenceRootDir: params.dereferenceRootDir,

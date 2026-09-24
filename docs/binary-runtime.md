@@ -67,6 +67,59 @@ The managed server code artifact is independent of static web UI. Runtime launch
 
 ## Dependency ownership
 
+### Optional CLI payloads (0.3 development)
+
+Binary CLI packaging separates local semantic-memory inference, native voice
+inference, and difftastic into the signed `happier-memory-runtime`,
+`happier-voice-runtime`, and `happier-difftastic` components. The managed-installable
+catalog exposes them for explicit installation and the real memory, voice, and diff
+consumers acquire the CLI's exact version on first use. A validated
+installed version can be reused offline; first acquisition still needs the release
+service. Local memory startup does not hold daemon readiness while downloading,
+and disabling memory prevents late activation. When `deleteOnDisable` is enabled,
+it removes late-written model cache after pending initialization settles. The shared optional-runtime download is not
+aborted on behalf of other callers.
+
+The CLI host omits its direct Transformers and Sherpa dependencies and bundled
+difftastic tool. Dependencies declared by trusted plugins and SDK packages retain
+their own closure. FFmpeg remains in the base CLI because both voice decoding and
+browser recording consume it; moving it would make the non-voice recording path
+depend on voice installation policy. Voice worker entrypoints, SDK declarations,
+public author docs, examples, API and capability references, licenses, and
+executable dependency source maps are retained. The binary finalizer omits only
+the SDK/UI governance snapshots (`api-declarations.md` and `api-surface.json`)
+and the SDK's release-governance `scripts/` subtree, atomically removing those
+entries from each packaged `package.json#files` inventory first. Target projection
+removes foreign ONNX and PTY prebuild directories, preserves the selected native
+sidecars and source-built PTY fallbacks, and removes the opposite platform's exact
+PTY terminal modules and native source directories. It also removes Windows-only
+ps-list executables on POSIX. The finalizer removes only explicitly audited
+nested dependency copies whose complete physical trees and permission bits match
+an ancestor that Node will reach without an intervening package. Missing,
+shadowed, or divergent copies remain; SDK declarations, licenses, and other
+authoring files remain in the surviving tree. The audited 0.3 package closures
+have no peer dependencies; a dependency update introducing peers requires a new
+resolution audit before extending this list. The binary CLI's root `package-dist`
+also drops its unused CJS build and declarations. Declaration maps and incremental
+compiler metadata are removed from both the host and isolated components. Host dependency
+declarations remain available for plugin authoring; isolated inference components omit their
+unused declarations. Executable source maps remain available for Bun and Node diagnostics.
+Runtime JSON, JS, licenses, and docs stay.
+
+The release verifier checks each optional component's signed checksum envelope and
+uses the managed first-party extractor and catalog to validate entrypoints on every
+target, including with `--skip-smoke`. Existing archive topology, metadata, and privacy
+admission remains in force. Matching hosts also run `difft --version`, import the
+Transformers Node entrypoint to construct an ONNX-backed tensor without downloading
+a model, and import the Sherpa native entrypoint to verify an inference constructor.
+`--skip-smoke` skips these optional executions; the matching base CLI still
+has to attest both binary and Node-entrypoint versions, load the native command
+catalog through `--help`, and run its isolated
+MCP client/server, Sharp, and PTY runtime smoke. The smoke clears `NODE_PATH`, so
+repository-hoisted dependencies cannot hide an incomplete archive, and it checks the
+stable target-projection invariants, including absence of Transformers, Sherpa, and
+the retired embedded voice archive/loader and Windows-only PTY inputs.
+
 Add dependencies to the package that imports them:
 
 - If `packages/protocol` imports a library, add it to `packages/protocol/package.json#dependencies`.

@@ -2,7 +2,7 @@
 
 // @ts-check
 
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from './lib/release-script-arguments.mjs';
 import { resolveCliProxyApiPrebuiltExecutablePath } from './lib/cliproxyapi-managed-runtime-input.mjs';
+import { CLI_OPTIONAL_COMPONENT_PRODUCTS } from './publishing/product-specs.mjs';
 
 export { resolveCliProxyApiPrebuiltExecutablePath } from './lib/cliproxyapi-managed-runtime-input.mjs';
 
@@ -163,6 +164,7 @@ export async function buildCliBinaryArtifacts(
   {
     loadCliBinaryReleaseOwnersImpl = loadCliBinaryReleaseOwners,
     buildCliBinaryArtifactPayloadImpl,
+    buildCliOptionalComponentArtifactPayloadImpl,
     finalizeMacOSPayloadForArchiveImpl,
     refreshCliBinaryArtifactRuntimeAssetBuildManifestImpl,
     packagePreparedTargetBinaryImpl,
@@ -227,6 +229,8 @@ export async function buildCliBinaryArtifacts(
     }
     const buildPayload = buildCliBinaryArtifactPayloadImpl
       ?? releaseOwners.buildCliBinaryArtifactPayload;
+    const buildOptionalPayload = buildCliOptionalComponentArtifactPayloadImpl
+      ?? releaseOwners.buildCliOptionalComponentArtifactPayload;
     const finalizeMacOSPayload = finalizeMacOSPayloadForArchiveImpl
       ?? releaseOwners.finalizeMacOSPayloadForArchive;
     const refreshRuntimeAssetManifest = (
@@ -290,8 +294,35 @@ export async function buildCliBinaryArtifacts(
           stageDir,
           outDir: normalizedOutDir,
         }));
+        for (const componentId of CLI_OPTIONAL_COMPONENT_PRODUCTS) {
+          const componentStageDir = join(tempDir, `${componentId}-v${normalizedVersion}-${target.os}-${target.arch}`);
+          await buildOptionalPayload({ repoRoot: normalizedRepoRoot, payloadDir: componentStageDir, target, componentId });
+          finalizeMacOSPayload({
+            target,
+            stageDir: componentStageDir,
+            signingIdentity: normalizedMacOSSigningIdentity,
+            notarizationOutputPath: normalizedMacOSNotarizationOutputPath
+              ? join(resolve(normalizedMacOSNotarizationOutputPath, '..'), `${target.os}-${target.arch}.${componentId}.json`)
+              : '',
+          });
+          artifacts.push(await packagePreparedTarget({
+            product: componentId, version: normalizedVersion, target, stageDir: componentStageDir, outDir: normalizedOutDir,
+          }));
+        }
       }
 
+      for (const product of CLI_OPTIONAL_COMPONENT_PRODUCTS) {
+        const componentChecksums = await writeChecksums({
+          product, version: normalizedVersion, outDir: normalizedOutDir,
+          artifacts: artifacts.filter((artifact) => artifact.name.startsWith(`${product}-v`)),
+        });
+        const componentSignature = await maybeSign({
+          path: componentChecksums, trustedComment: `${product} ${normalizedVersion} ${normalizedChannel}`,
+        });
+        for (const assetPath of [componentChecksums, componentSignature].filter(Boolean)) {
+          artifacts.push({ name: basename(assetPath), path: assetPath, os: 'manifest', arch: product });
+        }
+      }
       const checksumsPath = await writeChecksums({
         product: 'happier',
         version: normalizedVersion,

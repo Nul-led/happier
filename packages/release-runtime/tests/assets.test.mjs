@@ -50,6 +50,30 @@ test('resolveReleaseAssetBundle prefers windows zip when available', () => {
   assert.equal(resolved.archive.name, 'happier-server-v1.2.3-windows-x64.zip');
 });
 
+test('resolveReleaseAssetBundle permits an explicitly unsigned local-build checksum envelope', () => {
+  const assets = [
+    { name: 'happier-difftastic-v1.2.3-linux-arm64.tar.gz', browser_download_url: 'https://example/difft.tar.gz' },
+    { name: 'checksums-happier-difftastic-v1.2.3.txt', browser_download_url: 'https://example/checksums.txt' },
+  ];
+
+  const resolved = resolveReleaseAssetBundle({
+    assets,
+    product: 'happier-difftastic',
+    os: 'linux',
+    arch: 'arm64',
+    requireChecksumsSignature: false,
+  });
+
+  assert.equal(resolved.archive.name, 'happier-difftastic-v1.2.3-linux-arm64.tar.gz');
+  assert.equal(resolved.checksums.name, 'checksums-happier-difftastic-v1.2.3.txt');
+  assert.equal(resolved.checksumsSig, null);
+  assert.throws(
+    () => resolveReleaseAssetBundle({ assets, product: 'happier-difftastic', os: 'linux', arch: 'arm64' }),
+    /missing release asset: checksums-happier-difftastic-v1\.2\.3\.txt\.minisig/,
+    'signed release resolution must remain fail-closed by default',
+  );
+});
+
 test('resolveReleaseAssetBundle selects ui web bundle artifacts', () => {
   const assets = [
     { name: 'happier-ui-web-v0.3.0-preview.1.1-web-any.tar.gz', browser_download_url: 'https://example/ui.tgz' },

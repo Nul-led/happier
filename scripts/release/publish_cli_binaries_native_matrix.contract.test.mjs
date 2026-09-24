@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -25,6 +26,132 @@ const managedRuntimeNoticesPath = new URL(
   import.meta.url,
 );
 const testsWorkflowPath = new URL('../../.github/workflows/tests.yml', import.meta.url);
+
+const cliProducts = ['happier', 'happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic'];
+const cliTargets = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'windows-x64'];
+
+test('CLI optional products survive native upload and attestation selection', async () => {
+  const workflow = YAML.parse(await readFile(workflowPath, 'utf8'));
+  const upload = workflow.jobs.build_native.steps.find((step) => usesAction(step, 'actions/upload-artifact'));
+  const attest = workflow.jobs.attest_native.steps.find((step) => usesAction(step, 'actions/attest'));
+  for (const product of cliProducts) {
+    const archive = `${product}-v\${{ needs.prepare.outputs.version }}-\${{ matrix.cli_target }}.tar.gz`;
+    assert.ok(upload.with.path.split('\n').includes(`dist/release-assets/cli/${archive}`), product);
+    assert.ok(attest.with['subject-path'].split('\n').includes(`dist/attestation-leaf/${archive}`), product);
+  }
+  const select = workflow.jobs.attest_native.steps.find((step) => step.name === 'Select exact archive for attestation');
+  const workspace = await mkdtemp(join(tmpdir(), 'cli-attest-products-'));
+  try {
+    const input = join(workspace, 'input');
+    await mkdir(input);
+    const expected = cliProducts.map((product) => `${product}-v1.2.3-linux-x64.tar.gz`).sort();
+    for (const archive of expected) await writeFile(join(input, archive), archive);
+    const result = spawnSync('bash', ['-c', select.run], {
+      cwd: workspace,
+      env: { ...process.env, CANDIDATE_DATA_DIR: input, RELEASE_VERSION: '1.2.3', CLI_TARGET: 'linux-x64' },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await readdir(join(workspace, 'dist/attestation-leaf'))).sort(), expected);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+for (const [jobName, stepName] of [
+  ['finalize_candidate', 'Assemble bounded candidate-native matrix from exact leaf handoffs'],
+  ['publish', 'Assemble prepared archive directory from exact leaf handoffs'],
+]) {
+  test(`${jobName} assembles every optional product with signed Darwin bytes and rejects missing or duplicate leaves`, async () => {
+    const workflow = YAML.parse(await readFile(workflowPath, 'utf8'));
+    const step = workflow.jobs[jobName].steps.find((entry) => entry.name === stepName);
+    const workspace = await mkdtemp(join(tmpdir(), 'cli-assemble-products-'));
+    try {
+      const unsigned = join(workspace, 'unsigned');
+      const signed = join(workspace, 'signed');
+      await mkdir(unsigned);
+      await mkdir(signed);
+      const expected = new Map();
+      for (const product of cliProducts) {
+        for (const target of cliTargets) {
+          const archive = `${product}-v1.2.3-${target}.tar.gz`;
+          await writeFile(join(unsigned, archive), `unsigned:${archive}`);
+          expected.set(archive, `unsigned:${archive}`);
+          if (target.startsWith('darwin-')) {
+            await writeFile(join(signed, archive), `signed:${archive}`);
+            expected.set(archive, `signed:${archive}`);
+            const evidence = `${target}.${product === 'happier' ? 'cli' : product}.json`;
+            await writeFile(join(signed, evidence), evidence);
+            await writeFile(join(signed, `${evidence}.notary-log.json`), 'not published');
+            expected.set(evidence, evidence);
+          }
+        }
+      }
+      const run = () => spawnSync('bash', ['-c', step.run], {
+        cwd: workspace,
+        env: { ...process.env, GITHUB_WORKSPACE: workspace, UNSIGNED_DATA_DIR: unsigned, SIGNED_DATA_DIR: signed, RELEASE_VERSION: '1.2.3' },
+        encoding: 'utf8',
+      });
+      const result = run();
+      assert.equal(result.status, 0, result.stderr);
+      const assembled = join(workspace, 'dist/release-assets/cli');
+      assert.deepEqual((await readdir(assembled)).sort(), [...expected.keys()].sort());
+      for (const [name, content] of expected) assert.equal(await readFile(join(assembled, name), 'utf8'), content);
+      const missing = 'happier-memory-runtime-v1.2.3-darwin-arm64.tar.gz';
+      await rm(join(signed, missing));
+      assert.notEqual(run().status, 0, 'an optional Darwin archive must not fall back to unsigned bytes');
+      await writeFile(join(signed, missing), `signed:${missing}`);
+      await mkdir(join(signed, 'duplicate'));
+      await writeFile(join(signed, 'duplicate', missing), `signed:${missing}`);
+      assert.notEqual(run().status, 0, 'ambiguous optional archives must fail closed');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+}
+
+test('CLI matrix verification explicitly selects the complete main checksum envelope', async () => {
+  const workflow = YAML.parse(await readFile(workflowPath, 'utf8'));
+  for (const jobName of ['finalize_candidate', 'publish']) {
+    const steps = workflow.jobs[jobName].steps.filter((step) => String(step.run ?? '').includes('verify-artifacts.mjs'));
+    assert.ok(steps.length > 0);
+    for (const step of steps) {
+      assert.match(step.run, /--checksums "[^"\n]*\/checksums-happier-v\$\{RELEASE_VERSION\}\.txt"/);
+      assert.match(step.run, /--require-all-artifacts-checksummed/);
+      assert.match(step.run, /--require-signature/);
+    }
+  }
+});
+
+test('Darwin leaf handoff retains archives, evidence, and notary logs for every CLI product', async () => {
+  const workflow = YAML.parse(await readFile(workflowPath, 'utf8'));
+  const handoff = workflow.jobs.finalize_darwin.steps.find((step) => step.name === 'Assemble exact signed Darwin leaf handoff');
+  const workspace = await mkdtemp(join(tmpdir(), 'cli-darwin-products-'));
+  try {
+    await mkdir(join(workspace, 'dist/release-assets/cli'), { recursive: true });
+    await mkdir(join(workspace, 'dist/notary'), { recursive: true });
+    const expected = [];
+    for (const product of cliProducts) {
+      const archive = `${product}-v1.2.3-darwin-arm64.tar.gz`;
+      await writeFile(join(workspace, 'dist/release-assets/cli', archive), archive);
+      expected.push(archive);
+      for (const suffix of ['.json', '.json.notary-log.json']) {
+        const evidence = `darwin-arm64.${product === 'happier' ? 'cli' : product}${suffix}`;
+        await writeFile(join(workspace, 'dist/notary', evidence), evidence);
+        expected.push(evidence);
+      }
+    }
+    const result = spawnSync('bash', ['-c', handoff.run], {
+      cwd: workspace,
+      env: { ...process.env, RELEASE_VERSION: '1.2.3', CLI_TARGET: 'darwin-arm64', PLATFORM_KEY: 'darwin-arm64' },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await readdir(join(workspace, 'dist/signed-leaf'))).sort(), expected.sort());
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
 const PINNED_PUBLISH_ACTIONS = Object.freeze({
   'actions/attest': 'f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6',
@@ -385,6 +512,20 @@ test('CLI binary publishing builds and validates each released target on its nat
   ));
   assert.equal(unsignedCliBuild?.if, undefined);
   assert.ok(build.steps.indexOf(unsignedCliBuild) >= 0);
+  const nativeArchiveSmoke = build.steps.find(
+    (step) => step.name === 'Smoke-test exact native CLI archives',
+  );
+  assert.ok(nativeArchiveSmoke, 'each native matrix leaf must execute its matching-host archives');
+  assert.equal(nativeArchiveSmoke.if, undefined, 'Linux, macOS, and Windows matrix leaves must all smoke');
+  assert.ok(
+    build.steps.indexOf(nativeArchiveSmoke) > build.steps.indexOf(unsignedCliBuild)
+      && build.steps.indexOf(nativeArchiveSmoke) < build.steps.indexOf(packagedConformanceStep),
+    'the smoke must execute the exact built archives before later leaf validation and upload',
+  );
+  assert.match(nativeArchiveSmoke.run, /for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do/);
+  assert.match(nativeArchiveSmoke.run, /import \{ smokeTestArchive \} from "\.\/scripts\/pipeline\/release\/verify-artifacts\.mjs"/);
+  assert.match(nativeArchiveSmoke.run, /await smokeTestArchive\(\{ archivePath: process\.argv\[1\] \}\)/);
+  assert.doesNotMatch(nativeArchiveSmoke.run, /skip-smoke|execute:\s*false/);
   assert.equal(build.environment, undefined);
   assert.doesNotMatch(JSON.stringify(build), /secrets\.APPLE_|setup-apple-codesigning/);
   assert.match(
@@ -469,8 +610,8 @@ test('CLI binary publishing builds and validates each released target on its nat
   assert.ok(
     attest.steps.some((step) => (
       usesPinnedPublishAction(step, 'actions/attest')
-      && String(step.with?.['subject-path'] ?? '').endsWith(
-        'happier-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz',
+      && String(step.with?.['subject-path'] ?? '').split('\n').includes(
+        'dist/attestation-leaf/happier-v${{ needs.prepare.outputs.version }}-${{ matrix.cli_target }}.tar.gz',
       )
     )),
     'the trusted artifact-only job must attest the exact archive the native builder produced',
@@ -523,6 +664,9 @@ test('Apple release credentials exist only in the separate trusted Darwin finali
 
   assert.match(String(signedCliBuild?.run ?? ''), /--refresh-cli-runtime-asset-manifest/);
   assert.match(String(signedCliBuild?.run ?? ''), /--verify-evidence/);
+  assert.match(signedCliBuild.run, /for PRODUCT in happier happier-memory-runtime happier-voice-runtime happier-difftastic; do/);
+  assert.match(signedCliBuild.run, /SUFFIX="\$PRODUCT"\s+if \[ "\$PRODUCT" = happier \]; then SUFFIX=cli; fi/);
+  assert.match(signedCliBuild.run, /if \[ "\$PRODUCT" = happier \]; then\s+NOTARIZE_ARGS\+=\(--refresh-cli-runtime-asset-manifest\)/);
   const certificateImport = darwin.steps.find((step) => step.uses === './.github/actions/setup-apple-codesigning');
   assert.equal(certificateImport?.with?.certificate, '${{ secrets.APPLE_CERTIFICATE }}');
   assert.equal(certificateImport?.with?.['certificate-password'], '${{ secrets.APPLE_CERTIFICATE_PASSWORD }}');
@@ -572,11 +716,6 @@ test('CLI binary publishing aggregates one exact source/version matrix before si
   assert.match(
     publishRuns,
     /publish-cli-binaries\.mjs[\s\S]*?--version "\$RELEASE_VERSION"[\s\S]*?--authorized-sha "\$AUTHORIZED_SHA"[\s\S]*?--prepared-artifacts[\s\S]*?--skip-smoke/,
-  );
-  assert.match(
-    publishRuns,
-    /for evidence in darwin-x64\.cli\.json darwin-arm64\.cli\.json[\s\S]*?find "\$SIGNED_DATA_DIR"[\s\S]*?cp "\$\{matches\[0\]\}" "\$ARTIFACTS_DIR\/\$evidence"/,
-    'the published checksum envelope must include both accepted Darwin notarization records',
   );
 });
 
@@ -653,10 +792,8 @@ test('CLI candidate-only mode finalizes one signed native matrix without a GitHu
     .join('\n');
   assert.match(
     candidateRuns,
-    /find "\$ARTIFACTS_DIR" -maxdepth 1 -type f -name '\*\.tar\.gz'[\s\S]*?= "5"/,
+    /find "\$ARTIFACTS_DIR" -maxdepth 1 -type f -name '\*\.tar\.gz'[\s\S]*?= "20"/,
   );
-  assert.match(candidateRuns, /darwin-x64\.cli\.json/);
-  assert.match(candidateRuns, /darwin-arm64\.cli\.json/);
   assert.match(
     candidateRuns,
     /prepare-binary-assets\.mjs[\s\S]*?--finalize-prepared-only[\s\S]*?--artifacts-dir "\$\{GITHUB_WORKSPACE\}\/dist\/release-assets\/cli"/,
@@ -665,7 +802,7 @@ test('CLI candidate-only mode finalizes one signed native matrix without a GitHu
   assert.match(
     candidateRuns,
     /--require-all-artifacts-checksummed[\s\S]*?--require-signature/,
-    'the signed candidate envelope must cover both notarization evidence files as well as native archives',
+    'the signed candidate envelope must cover all notarization evidence and component envelopes as well as native archives',
   );
   assert.match(
     JSON.stringify(candidate.steps),
@@ -822,9 +959,9 @@ test('CLI publishing can promote one exact signed candidate run without rebuildi
   );
   assert.equal(candidateVerification?.if, "inputs.candidate_run_id != ''");
   const verifyRuns = String(candidateVerification?.run ?? '');
-  assert.match(verifyRuns, /-name '\*\.tar\.gz'[\s\S]*?= "5"/);
-  assert.match(verifyRuns, /-name '\*\.cli\.json'[\s\S]*?= "2"/);
-  assert.match(verifyRuns, /-type f[\s\S]*?= "9"/);
+  assert.match(verifyRuns, /-name '\*\.tar\.gz'[\s\S]*?= "20"/);
+  assert.match(verifyRuns, /-name '\*\.json'[\s\S]*?= "8"/);
+  assert.match(verifyRuns, /-type f[\s\S]*?= "36"/);
   assert.match(
     verifyRuns,
     /scripts\/pipeline\/release\/verify-artifacts\.mjs[\s\S]*?--public-key apps\/website\/public\/happier-release\.pub[\s\S]*?--require-all-artifacts-checksummed[\s\S]*?--require-signature[\s\S]*?--skip-smoke/,
@@ -836,7 +973,7 @@ test('CLI publishing can promote one exact signed candidate run without rebuildi
   );
   assert.equal(candidateAssembly?.if, "inputs.candidate_run_id != ''");
   assert.match(String(candidateAssembly?.run ?? ''), /cp -a "\$CANDIDATE_DATA_DIR\/\." "\$ARTIFACTS_DIR\/"/);
-  assert.match(String(candidateAssembly?.run ?? ''), /-type f[\s\S]*?= "9"/);
+  assert.match(String(candidateAssembly?.run ?? ''), /-type f[\s\S]*?= "36"/);
 
   const publishRuns = publish.steps.map((step) => String(step.run ?? '')).join('\n');
   assert.doesNotMatch(

@@ -20,11 +20,14 @@ import { getReleaseProductPublication } from '@happier-dev/release-runtime/relea
  *   rollingNotesSubject: string;
  *   versionNotesSubject: string;
  *   notarizationEvidenceSuffix: 'cli' | 'hstack' | 'server' | 'runner';
+ *   optionalComponentProducts?: readonly string[];
  * }} BinaryPublishProductSpec
  */
 
 /** @type {ReadonlyArray<BinaryPublishProductSpec['id']>} */
 export const BINARY_PUBLISH_PRODUCT_IDS = Object.freeze(['cli', 'hstack', 'server', 'runner']);
+
+export const CLI_OPTIONAL_COMPONENT_PRODUCTS = Object.freeze(['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']);
 
 /** @type {Readonly<Record<BinaryPublishProductSpec['id'], Readonly<BinaryPublishProductSpec>>>} */
 const PRODUCT_SPECS = Object.freeze({
@@ -45,6 +48,7 @@ const PRODUCT_SPECS = Object.freeze({
     rollingNotesSubject: 'CLI binaries',
     versionNotesSubject: 'CLI',
     notarizationEvidenceSuffix: 'cli',
+    optionalComponentProducts: CLI_OPTIONAL_COMPONENT_PRODUCTS,
   }),
   hstack: Object.freeze({
     id: 'hstack',

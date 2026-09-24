@@ -353,11 +353,12 @@ function stageInstalledCliNodeRuntimeWorkspaceBundles(
   return before;
 }
 
-function vendorCliNodeRuntimeHostPackageDependencies(repoRoot: string, payloadDir: string): void {
+function vendorCliNodeRuntimeHostPackageDependencies(repoRoot: string, payloadDir: string, excludeRootDependencies?: readonly string[]): void {
   vendorBundledPackageRuntimeDependencies({
     srcPackageJsonPath: join(repoRoot, 'apps', 'cli', 'package.json'),
     destPackageDir: payloadDir,
     dereferenceRootDir: repoRoot,
+    excludeRootDependencies,
   });
 }
 
@@ -365,12 +366,14 @@ export function copyCliNodeRuntimeDependencies({
   repoRoot,
   payloadDir,
   expectedWorkspaceRuntimeIdentity,
+  excludeRootDependencies,
 }: Readonly<{
   repoRoot: string;
   payloadDir: string;
   expectedWorkspaceRuntimeIdentity?: string;
+  excludeRootDependencies?: readonly string[];
 }>): CliNodeWorkspaceRuntimeIdentity {
-  vendorCliNodeRuntimeHostPackageDependencies(repoRoot, payloadDir);
+  vendorCliNodeRuntimeHostPackageDependencies(repoRoot, payloadDir, excludeRootDependencies);
   return stageInstalledCliNodeRuntimeWorkspaceBundles(repoRoot, payloadDir, {
     includeRuntimeDependencies: true,
     expectedIdentity: expectedWorkspaceRuntimeIdentity,

@@ -5,6 +5,19 @@ import {
   resolveReleaseArtifactSmokeEligibility,
 } from '../pipeline/release/publishing/artifact-smoke-compatibility.mjs';
 
+test('component archives are smoke eligible only on their native target', () => {
+  for (const product of ['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']) {
+    assert.equal(resolveReleaseArtifactSmokeEligibility({
+      archiveName: `${product}-v1.2.3-linux-x64.tar.gz`,
+      runner: { platform: 'linux', arch: 'x64' },
+    }).eligible, true);
+    assert.equal(resolveReleaseArtifactSmokeEligibility({
+      archiveName: `${product}-v1.2.3-windows-x64.tar.gz`,
+      runner: { platform: 'linux', arch: 'x64' },
+    }).eligible, false);
+  }
+});
+
 test('artifact smoke eligibility accepts archives that match the current runner target', () => {
   assert.deepEqual(
     resolveReleaseArtifactSmokeEligibility({

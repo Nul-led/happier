@@ -108,10 +108,12 @@ export async function finalizePreparedBinaryArtifacts(params) {
     signFile ??= binaryRelease.maybeSignFile;
   }
   const archiveExtension = params.productSpec.id === 'runner' ? 'zip' : 'tar.gz';
-  const expectedArtifacts = targets.map((target) => ({
+  const componentProducts = params.productSpec.optionalComponentProducts ?? [];
+  const products = [params.productSpec.manifestProduct, ...componentProducts];
+  const expectedArtifacts = products.flatMap((product) => targets.map((target) => ({
     ...target,
-    name: `${params.productSpec.manifestProduct}-v${version}-${target.os}-${target.arch}.${archiveExtension}`,
-  }));
+    name: `${product}-v${version}-${target.os}-${target.arch}.${archiveExtension}`,
+  })));
   const expectedNames = new Set(expectedArtifacts.map((artifact) => artifact.name));
   const archiveNames = (await readdir(artifactsDir))
     .filter((name) => name.endsWith('.tar.gz') || name.endsWith('.zip'))
@@ -146,12 +148,13 @@ export async function finalizePreparedBinaryArtifacts(params) {
     }
   }
   const evidenceSuffix = params.productSpec.notarizationEvidenceSuffix;
+  const evidenceSuffixes = [evidenceSuffix, ...componentProducts];
   const evidenceNames = (await readdir(artifactsDir))
-    .filter((name) => name.endsWith(`.${evidenceSuffix}.json`))
+    .filter((name) => evidenceSuffixes.some((suffix) => name.endsWith(`.${suffix}.json`)))
     .sort();
   const expectedEvidenceNames = targets
     .filter((target) => target.os === 'darwin')
-    .map((target) => `darwin-${target.arch}.${evidenceSuffix}.json`)
+    .flatMap((target) => evidenceSuffixes.map((suffix) => `darwin-${target.arch}.${suffix}.json`))
     .sort();
   const missingEvidenceNames = expectedEvidenceNames.filter((name) => !evidenceNames.includes(name));
   if (missingEvidenceNames.length > 0) {
@@ -171,6 +174,20 @@ export async function finalizePreparedBinaryArtifacts(params) {
     os: 'darwin',
     arch: name.includes('arm64') ? 'arm64' : 'x64',
   })));
+  for (const product of componentProducts) {
+    const componentChecksumsPath = await writeChecksums({
+      product, version, outDir: artifactsDir,
+      artifacts: artifacts.filter((artifact) => artifact.name.startsWith(`${product}-v`)
+        || artifact.name.endsWith(`.${product}.json`)),
+    });
+    const componentSignaturePath = await signFile({
+      path: componentChecksumsPath, trustedComment: `${product} ${version} ${channel}`,
+    });
+    if (!componentSignaturePath) throw new Error(`prepared ${product} artifacts require a minisign signature`);
+    for (const assetPath of [componentChecksumsPath, componentSignaturePath]) {
+      artifacts.push({ name: path.basename(assetPath), path: assetPath, os: 'manifest', arch: product });
+    }
+  }
   const checksumsPath = await writeChecksums({
     product: params.productSpec.manifestProduct,
     version,
