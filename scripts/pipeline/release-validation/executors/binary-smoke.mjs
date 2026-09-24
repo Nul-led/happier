@@ -76,22 +76,6 @@ export async function runCandidateHostPayloadSmoke(
     if (payloadStats.isSymbolicLink() || !payloadStats.isDirectory()) {
       throw new Error(`binary-smoke candidate payload root is invalid for ${target}`);
     }
-    const voiceRuntimeLoader = join(
-      payloadRoot,
-      'scripts',
-      'runtime',
-      'loadVoiceInferenceRuntime.mjs',
-    );
-    const loaderStats = await lstat(voiceRuntimeLoader);
-    if (loaderStats.isSymbolicLink() || !loaderStats.isFile()) {
-      throw new Error(`binary-smoke candidate Voice runtime loader is invalid for ${target}`);
-    }
-    execFileSyncImpl(process.execPath, [voiceRuntimeLoader], {
-      cwd: payloadRoot,
-      env,
-      stdio: 'inherit',
-      timeout: HOST_PAYLOAD_SMOKE_TIMEOUT_MS,
-    });
     if (target.startsWith('darwin-')) {
       execFileSyncImpl(
         process.execPath,

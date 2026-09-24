@@ -58,11 +58,6 @@
       "import": "./dist/componentArtifacts/copyCliNodeRuntimePayload.js",
       "default": "./dist/componentArtifacts/copyCliNodeRuntimePayload.js"
     },
-    "./componentArtifacts/deferredVoiceRuntimePackages": {
-      "types": "./dist/componentArtifacts/deferredVoiceRuntimePackages.d.ts",
-      "import": "./dist/componentArtifacts/deferredVoiceRuntimePackages.js",
-      "default": "./dist/componentArtifacts/deferredVoiceRuntimePackages.js"
-    },
     "./workspaceBundleLock": {
       "types": "./workspaceBundleLock.d.mts",
       "import": "./workspaceBundleLock.mjs",

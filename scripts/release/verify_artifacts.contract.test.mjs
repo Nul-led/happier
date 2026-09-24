@@ -1531,6 +1531,26 @@ printf '1.2.3\\n'
   }
 });
 
+test('verify-artifacts rejects the unused Claude Agent SDK left in a base CLI projection', async () => {
+  const fixture = await createComponentFixture({
+    product: 'happier',
+    files: {
+      ...createBaseCliRuntimeSmokeFixtureFiles('1.2.3'),
+      'node_modules/@anthropic-ai/claude-agent-sdk/package.json': '{}',
+    },
+  });
+  try {
+    assert.throws(
+      () => fixture.run(['--skip-smoke'], {
+        ...process.env,
+        HAPPIER_TEST_RUNTIME_SMOKE_MARKER: join(fixture.workspace, 'runtime-smoke-markers.txt'),
+      }),
+      /unused Claude Agent SDK survived projection/i,
+    );
+  } finally {
+    await rm(fixture.workspace, { recursive: true, force: true });
+  }
+});
 
 test('verify-artifacts rejects Sherpa and the retired embedded voice archive left in a base CLI projection', async () => {
   const archivePlatform = normalizeArchivePlatform(process.platform);

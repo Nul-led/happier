@@ -123,7 +123,8 @@ catalog through `--help`, and run its isolated
 MCP client/server, Sharp, and PTY runtime smoke. The smoke clears `NODE_PATH`, so
 repository-hoisted dependencies cannot hide an incomplete archive, and it checks the
 stable target-projection invariants, including absence of Transformers, Sherpa, and
-the retired embedded voice archive/loader and Windows-only PTY inputs.
+the retired embedded voice archive/loader, the unused Claude Agent SDK, and
+Windows-only PTY inputs.
 
 Add dependencies to the package that imports them:
 

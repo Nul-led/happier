@@ -487,6 +487,10 @@ async function assertBaseCliProjection({ root, targetOs, targetArch }) {
     'optional inference runtime survived base CLI projection',
   );
   await assertPathsAbsent(
+    [join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')],
+    'unused Claude Agent SDK survived projection',
+  );
+  await assertPathsAbsent(
     [join(root, 'tools', 'unpacked', 'ripgrep.node')],
     'unused ripgrep native addon survived projection',
   );
