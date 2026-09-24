@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
-  rmSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +15,7 @@ import { readCliNodeWorkspaceRuntimeIdentity } from '@happier-dev/cli-common/com
 import { finalizeDist, readCliDistBuildManifestFingerprint } from './finalizeDist.mjs';
 import { withOptionalCliDistBuildLock } from './optionalWorkspaceBundleLock.mjs';
 import { main as rmDist } from './rmDist.mjs';
+import { rmDirSafeSync } from './rmDirSafe.mjs';
 import { runPkgrollBuild } from './runPkgrollBuild.mjs';
 
 function resolveBuildOutputDir(env = process.env) {
@@ -36,7 +36,7 @@ function reclaimAbandonedCliBuildDirs(packageRoot, activeOutputDir) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const entryPath = resolve(packageRoot, entry.name);
     if (entryPath === activeOutputPath) continue;
-    rmSync(entryPath, { recursive: true, force: true });
+    rmDirSafeSync(entryPath);
   }
 }
 
@@ -78,14 +78,18 @@ function createImmutableBuildSource({ packageRoot }) {
       cpSync(sourcePath, join(snapshotRoot, relativePath), { recursive: true });
     }
   } catch (error) {
-    rmSync(snapshotRoot, { recursive: true, force: true });
+    try {
+      rmDirSafeSync(snapshotRoot);
+    } catch {
+      // Preserve the source-snapshot creation error when best-effort cleanup also fails.
+    }
     throw error;
   }
   return {
     packageRoot: snapshotRoot,
     packageJsonPath: join(snapshotRoot, 'package.json'),
     cleanup() {
-      rmSync(snapshotRoot, { recursive: true, force: true });
+      rmDirSafeSync(snapshotRoot);
     },
   };
 }
@@ -207,9 +211,17 @@ async function buildCliDistUnlocked(options = {}) {
         : {}),
     });
   } finally {
-    immutableSource.cleanup();
+    try {
+      immutableSource.cleanup();
+    } catch {
+      // Best effort: never replace the build result with a source cleanup failure.
+    }
     if (!callerOwnsOutputDir) {
-      rmSync(resolve(packageRoot, outputDir), { recursive: true, force: true });
+      try {
+        rmDirSafeSync(resolve(packageRoot, outputDir));
+      } catch {
+        // Best effort: never replace the build result with a staging cleanup failure.
+      }
     }
   }
 }
