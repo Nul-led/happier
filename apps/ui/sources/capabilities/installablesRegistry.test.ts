@@ -4,6 +4,45 @@ import { INSTALLABLES_CATALOG, type PluginProjectionV2 } from '@happier-dev/prot
 import { getInstallablesRegistryEntries } from './installablesRegistry';
 
 describe('getInstallablesRegistryEntries', () => {
+    it.each(['local-embeddings', 'local-voice-runtime', 'difftastic'] as const)('exposes %s for offline preinstallation without version polling', (key) => {
+        const entry = getInstallablesRegistryEntries().find((candidate) => candidate.key === key);
+        expect(entry).toBeDefined();
+        if (!entry) throw new Error(`Missing installable: ${key}`);
+
+        const data = {
+            installed: true,
+            installedVersion: '0.2.12',
+            sourceKind: 'first_party_runtime',
+            lastInstallLogPath: null,
+            lastBackgroundUpdateCheckAtMs: null,
+        };
+        const result = { ok: true, checkedAt: 1, data } as const;
+        const results = { [entry.capabilityId]: result };
+
+        expect(entry.getStatus(results)).toEqual(data);
+        expect(entry.getDetectResult(results)).toEqual(result);
+        expect(entry.getStatus(undefined)).toBeNull();
+        expect(entry.getStatus({ [entry.capabilityId]: { ok: false, checkedAt: 1, error: { message: 'Unavailable' } } })).toBeNull();
+        expect(entry.shouldPrefetchLatestVersion({ result, data })).toBe(false);
+        expect(entry.buildLatestVersionDetectRequest()).toEqual({ requests: [{ id: `dep.${key}` }] });
+        expect(entry.defaultPolicy).toEqual({ autoInstallWhenNeeded: true, autoUpdateMode: 'off' });
+
+        const projected = getInstallablesRegistryEntries({
+            projectedInstallables: [{
+                id: key,
+                key,
+                capabilityId: `dep.${key}`,
+                sourceKind: 'first_party_runtime',
+                display: { name: key },
+                defaultPolicy: { autoInstallWhenNeeded: true, autoUpdateMode: 'off' },
+                experimental: false,
+            }],
+        });
+        expect(projected).toHaveLength(1);
+        expect(projected[0]?.shouldPrefetchLatestVersion({})).toBe(false);
+        expect(projected[0]?.installLabels).toEqual({ install: 'Install', update: 'Update', reinstall: 'Reinstall' });
+    });
+
     it('returns the expected built-in installables', () => {
         const entries = getInstallablesRegistryEntries();
 

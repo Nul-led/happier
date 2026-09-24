@@ -140,6 +140,7 @@ function buildGenericInstallableUi(
     projected: InstallableProjectionEntry,
 ): Omit<InstallableRegistryEntry, 'key' | 'kind' | 'experimental' | 'capabilityId' | 'defaultPolicy'> {
     const capabilityId = projected.capabilityId as Extract<CapabilityId, `dep.${string}`>;
+    const isPinnedFirstPartyRuntime = projected.sourceKind === 'first_party_runtime';
     return {
         enabledWhen: () => true,
         title: projected.display.name,
@@ -162,13 +163,17 @@ function buildGenericInstallableUi(
         },
         getStatus: (results) => getInstallableDepData(capabilityId, results),
         getDetectResult: (results) => getInstallableDetectResult(capabilityId, results),
-        shouldPrefetchLatestVersion: ({ requireExistingResult, result, data }) =>
-            shouldPrefetchInstallableLatestVersion({
-                requireExistingResult,
-                result,
-                data: data ?? null,
-            }),
-        buildLatestVersionDetectRequest: () => buildLatestVersionDetectRequest(capabilityId),
+        shouldPrefetchLatestVersion: isPinnedFirstPartyRuntime
+            ? () => false
+            : ({ requireExistingResult, result, data }) =>
+                shouldPrefetchInstallableLatestVersion({
+                    requireExistingResult,
+                    result,
+                    data: data ?? null,
+                }),
+        buildLatestVersionDetectRequest: isPinnedFirstPartyRuntime
+            ? () => ({ requests: [{ id: capabilityId }] })
+            : () => buildLatestVersionDetectRequest(capabilityId),
     };
 }
 
@@ -256,10 +261,56 @@ function readPluginProjectionInstallables(
     });
 }
 
+function buildPinnedRuntimeUiEntry(params: {
+    capabilityId: Extract<CapabilityId, `dep.${string}`>;
+    titleKey: TranslationKey;
+    descriptionKey: TranslationKey;
+    iconName: string;
+}): Omit<InstallableRegistryEntry, 'key' | 'kind' | 'experimental' | 'capabilityId' | 'defaultPolicy'> {
+    const title = t(params.titleKey);
+    return {
+        enabledWhen: () => true,
+        title,
+        subtitle: null,
+        iconName: params.iconName,
+        setupUrl: null,
+        groupTitleKey: params.titleKey,
+        supportsManagedOverrideInstall: false,
+        installLabels: {
+            install: t('deps.installable.install'),
+            update: t('deps.installable.update'),
+            reinstall: t('deps.installable.reinstall'),
+        },
+        installModal: {
+            installTitle: title,
+            updateTitle: title,
+            reinstallTitle: title,
+            description: t(params.descriptionKey),
+        },
+        getStatus: (results) => getInstallableDepData(params.capabilityId, results),
+        getDetectResult: (results) => getInstallableDetectResult(params.capabilityId, results),
+        // Runtime archives follow the CLI version; detection only reads local install state.
+        shouldPrefetchLatestVersion: () => false,
+        buildLatestVersionDetectRequest: () => ({ requests: [{ id: params.capabilityId }] }),
+    };
+}
+
 export function getInstallablesRegistryEntries(
     params?: InstallablesRegistryProjectionInput,
 ): readonly InstallableRegistryEntry[] {
     const uiByKey: Readonly<Record<InstallableKey, Omit<InstallableRegistryEntry, 'key' | 'kind' | 'experimental' | 'capabilityId' | 'defaultPolicy'>>> = {
+        [INSTALLABLE_KEYS.LOCAL_EMBEDDINGS]: buildPinnedRuntimeUiEntry({
+            capabilityId: 'dep.local-embeddings',
+            titleKey: 'deps.installable.localEmbeddings.title',
+            descriptionKey: 'deps.installable.localEmbeddings.description',
+            iconName: 'cpu',
+        }),
+        [INSTALLABLE_KEYS.DIFFTASTIC]: buildPinnedRuntimeUiEntry({
+            capabilityId: 'dep.difftastic',
+            titleKey: 'deps.installable.difftastic.title',
+            descriptionKey: 'deps.installable.difftastic.description',
+            iconName: 'arrows-left-right',
+        }),
         [INSTALLABLE_KEYS.CODEX_ACP]: {
             enabledWhen: () => true,
             title: t('deps.installable.codexAcp.title'),

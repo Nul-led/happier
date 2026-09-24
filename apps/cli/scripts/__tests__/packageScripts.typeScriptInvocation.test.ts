@@ -11,11 +11,7 @@ const packageJson = JSON.parse(
   scripts?: Record<string, string | undefined>;
   dependencies?: Record<string, string | undefined>;
   optionalDependencies?: Record<string, string | undefined>;
-  happier?: {
-    voiceInference?: {
-      deferredRuntimePackages?: string[];
-    };
-  };
+  happier?: Record<string, unknown>;
 };
 
 describe('apps/cli package scripts', () => {
@@ -99,7 +95,7 @@ describe('apps/cli package scripts', () => {
     expect(String(packageJson.scripts?.dev ?? '')).toBe('node scripts/syncSharedDepsForDev.mjs && tsx --tsconfig tsconfig.json src/index.ts');
   });
 
-  it('pins the native Voice inference runtime used by installed CLI workers', () => {
+  it('pins the native Voice inference runtime source without retaining the retired embedded-runtime manifest', () => {
     expect(packageJson.dependencies?.['sherpa-onnx-node']).toBe('1.12.38');
     const nativePackages = {
       'sherpa-onnx-darwin-arm64': '1.12.38',
@@ -109,9 +105,6 @@ describe('apps/cli package scripts', () => {
       'sherpa-onnx-win-x64': '1.12.38',
     };
     expect(packageJson.optionalDependencies).toMatchObject(nativePackages);
-    expect(packageJson.happier?.voiceInference?.deferredRuntimePackages).toEqual(expect.arrayContaining([
-      'sherpa-onnx-node',
-      ...Object.keys(nativePackages),
-    ]));
+    expect(packageJson.happier?.voiceInference).toBeUndefined();
   });
 });
