@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -77,8 +77,8 @@ it('produces an independently resolvable target-specific memory runtime, preserv
     target: { os: 'darwin', arch: 'arm64', bunTarget: 'bun-darwin-arm64', exeExt: '' },
   });
   const transformers = join(payloadDir, 'node_modules/@huggingface/transformers');
-  expect(createRequire(join(payloadDir, 'entry.js')).resolve('@huggingface/transformers'))
-    .toBe(join(transformers, 'dist/transformers.node.mjs'));
+  expect(await realpath(createRequire(join(payloadDir, 'entry.js')).resolve('@huggingface/transformers')))
+    .toBe(await realpath(join(transformers, 'dist/transformers.node.mjs')));
   expect(await readFile(join(transformers, 'dist/transformers.node.mjs'), 'utf8')).toContain('pipeline');
   expect(await readFile(join(transformers, 'LICENSE'), 'utf8')).toBe('transformers license');
   expect((await readdir(join(transformers, 'dist'))).sort()).toEqual(['index.js.map', 'runtime.cjs', 'runtime.json', 'transformers.node.mjs']);
@@ -130,8 +130,8 @@ it('produces an independently resolvable target-specific voice runtime with only
     target: { os: 'darwin', arch: 'arm64', bunTarget: 'bun-darwin-arm64', exeExt: '' },
   });
 
-  expect(createRequire(join(payloadDir, 'entry.js')).resolve('sherpa-onnx-node'))
-    .toBe(join(payloadDir, 'node_modules/sherpa-onnx-node/sherpa-onnx.js'));
+  expect(await realpath(createRequire(join(payloadDir, 'entry.js')).resolve('sherpa-onnx-node')))
+    .toBe(await realpath(join(payloadDir, 'node_modules/sherpa-onnx-node/sherpa-onnx.js')));
   expect(await readFile(join(payloadDir, 'node_modules/sherpa-onnx-node/LICENSE'), 'utf8')).toBe('sherpa wrapper license');
   expect(await readFile(join(payloadDir, 'node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-darwin-arm64/sherpa-onnx.node'), 'utf8')).toBe('darwin-arm64');
   await expect(stat(join(payloadDir, 'node_modules/sherpa-onnx-node/node_modules/sherpa-onnx-linux-x64'))).rejects.toMatchObject({ code: 'ENOENT' });
