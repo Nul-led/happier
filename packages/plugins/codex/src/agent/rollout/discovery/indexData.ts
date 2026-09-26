@@ -44,6 +44,14 @@ export type CodexRolloutFilename = Readonly<{
     turnId?: string;
 }>;
 
+/** Matches rollout identities exactly, with case folding only for UUIDs. */
+export function isMatchingCodexRolloutIdentity(candidateId: string | undefined, requestedId: string): boolean {
+    const uuid = (value: string | undefined): value is string => typeof value === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+    return candidateId === requestedId
+        || (uuid(candidateId) && uuid(requestedId) && candidateId.toLowerCase() === requestedId.toLowerCase());
+}
+
 /** Parses a rollout suffix while identifying the thread represented by a composite continuation. */
 export function parseCodexRolloutFilename(filePath: string): CodexRolloutFilename | null {
     const name = filePath.split(/[/\\\\]/).pop() ?? '';

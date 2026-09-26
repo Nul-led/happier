@@ -2,14 +2,15 @@ import { readdirSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { parseCodexRolloutFilename } from './indexData.js';
+import { isMatchingCodexRolloutIdentity, parseCodexRolloutFilename } from './indexData.js';
 
 const CODEX_ROLLOUT_SEARCH_MAX_DEPTH = 10;
 
 export function isMatchingCodexRolloutFileName(name: string, vendorResumeId: string): boolean {
   if (!name.startsWith('rollout-')) return false;
   const parsed = parseCodexRolloutFilename(name);
-  return parsed?.sessionId === vendorResumeId || parsed?.threadId === vendorResumeId;
+  return isMatchingCodexRolloutIdentity(parsed?.sessionId, vendorResumeId)
+    || isMatchingCodexRolloutIdentity(parsed?.threadId, vendorResumeId);
 }
 
 function compareDescending(a: string, b: string): number {

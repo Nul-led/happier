@@ -51,4 +51,16 @@ describe('Codex rollout session file search', () => {
       threadId,
     )).toBe(true);
   });
+
+  it('matches UUID rollout identities case-insensitively while preserving opaque IDs exactly', () => {
+    const threadId = 'cccccccc-3333-3333-3333-333333333333';
+    expect(isMatchingCodexRolloutFileName(
+      `rollout-2026-06-01T10-00-00-${threadId}.jsonl`,
+      threadId.toUpperCase(),
+    )).toBe(true);
+    expect(isMatchingCodexRolloutFileName(
+      'rollout-2026-06-01T10-00-00-opaque-id.jsonl',
+      'OPAQUE-ID',
+    )).toBe(false);
+  });
 });

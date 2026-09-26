@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import {
   parseCodexRolloutFilename,
+  isMatchingCodexRolloutIdentity,
   readCodexSessionMetaFromRollout,
 } from './indexData.js';
 import {
@@ -194,8 +195,10 @@ async function collectRolloutMatchesFromFlatDir(params: Readonly<{
         : []),
     ]) {
       const recordedSessionId = readExactCodexProviderSessionId(candidate);
-      if (recordedSessionId && params.remoteSessionIds.has(recordedSessionId)) {
-        matchingSessionIds.add(recordedSessionId);
+      if (recordedSessionId) {
+        for (const requestedId of params.remoteSessionIds) {
+          if (isMatchingCodexRolloutIdentity(recordedSessionId, requestedId)) matchingSessionIds.add(requestedId);
+        }
       }
     }
     if (matchingSessionIds.size === 0) continue;
@@ -345,15 +348,15 @@ async function resolveMatchingRolloutFile(params: Readonly<{
 }> & CodexExternalSessionInvocationBounds): Promise<CodexRolloutFile | null> {
   throwIfCodexExternalSessionInvocationStopped(params);
   const filename = parseCodexRolloutFilename(params.filePath);
-  const matchesByName = (filename?.threadId ?? filename?.sessionId) === params.remoteSessionId;
+  const matchesByName = isMatchingCodexRolloutIdentity(filename?.threadId ?? filename?.sessionId, params.remoteSessionId);
   if (!matchesByName) {
     const sessionMeta = await readCodexSessionMetaFromRollout(params.filePath, params);
     throwIfCodexExternalSessionInvocationStopped(params);
     if (
-      sessionMeta?.id !== params.remoteSessionId
+      !isMatchingCodexRolloutIdentity(sessionMeta?.id, params.remoteSessionId)
       && (
         params.membership !== 'root_session_family'
-        || sessionMeta?.session_id !== params.remoteSessionId
+        || !isMatchingCodexRolloutIdentity(sessionMeta?.session_id, params.remoteSessionId)
       )
     ) {
       return null;
