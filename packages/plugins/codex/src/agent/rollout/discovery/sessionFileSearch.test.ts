@@ -42,4 +42,13 @@ describe('Codex rollout session file search', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('matches a continuation rollout by its thread id', () => {
+    const threadId = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const turnId = 'bbbbbbbb-2222-2222-2222-222222222222';
+    expect(isMatchingCodexRolloutFileName(
+      `rollout-2026-06-01T10-00-00-${threadId}_${turnId}.jsonl`,
+      threadId,
+    )).toBe(true);
+  });
 });

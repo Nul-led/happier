@@ -1,6 +1,7 @@
 import { basename, isAbsolute, join } from 'node:path';
 
 import { readExactCodexProviderSessionId } from '../../../../../protocol/runtimeDescriptorV1.js';
+import { parseCodexRolloutFilename } from '../../../../rollout/discovery/indexData.js';
 import { isMatchingCodexRolloutFileName } from '../../../../rollout/discovery/sessionFileSearch.js';
 
 export type CodexSessionImportRoot = Readonly<{
@@ -25,9 +26,6 @@ const CODEX_IMPORTABLE_SESSION_HOME_ENTRIES = Object.freeze([
   'archived_sessions',
 ] as const);
 
-const CODEX_ROLLOUT_RESUME_ID_PATTERN =
-  /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
-
 function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -50,8 +48,8 @@ export function resolveCodexVendorResumeIdFromImportedSessionFile(
 ): string | null {
   const candidates = [basename(detail.sourcePath), basename(detail.destinationPath), detail.relativePath];
   for (const candidate of candidates) {
-    const match = CODEX_ROLLOUT_RESUME_ID_PATTERN.exec(candidate);
-    if (match) return match[1];
+    const parsed = parseCodexRolloutFilename(candidate);
+    if (parsed?.threadId) return parsed.threadId;
   }
   return null;
 }

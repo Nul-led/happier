@@ -1,7 +1,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import {
-  parseCodexRolloutSessionIdFromFilename,
+  parseCodexRolloutFilename,
   readCodexSessionMetaFromRollout,
 } from './indexData.js';
 import {
@@ -184,7 +184,8 @@ async function collectRolloutMatchesFromFlatDir(params: Readonly<{
     const sessionId = readNonEmptySessionId(sessionMeta?.id);
     const rootSessionId = readNonEmptySessionId(sessionMeta?.session_id);
     const matchingSessionIds = new Set<string>();
-    const filenameSessionId = parseCodexRolloutSessionIdFromFilename(filePath);
+    const filename = parseCodexRolloutFilename(filePath);
+    const filenameSessionId = filename?.threadId ?? filename?.sessionId ?? null;
     for (const candidate of [
       filenameSessionId,
       sessionMeta?.id,
@@ -343,7 +344,8 @@ async function resolveMatchingRolloutFile(params: Readonly<{
   membership: CodexRolloutMembership;
 }> & CodexExternalSessionInvocationBounds): Promise<CodexRolloutFile | null> {
   throwIfCodexExternalSessionInvocationStopped(params);
-  const matchesByName = parseCodexRolloutSessionIdFromFilename(params.filePath) === params.remoteSessionId;
+  const filename = parseCodexRolloutFilename(params.filePath);
+  const matchesByName = (filename?.threadId ?? filename?.sessionId) === params.remoteSessionId;
   if (!matchesByName) {
     const sessionMeta = await readCodexSessionMetaFromRollout(params.filePath, params);
     throwIfCodexExternalSessionInvocationStopped(params);
@@ -571,7 +573,10 @@ export async function inventoryCodexRootSessionRolloutFiles(params: Readonly<{
       const discoveredRootSessionId = (
         metadataRootSessionId
         ?? sessionId
-        ?? parseCodexRolloutSessionIdFromFilename(full)
+        ?? (() => {
+          const filename = parseCodexRolloutFilename(full);
+          return filename?.threadId ?? filename?.sessionId;
+        })()
       );
       if (!discoveredRootSessionId || !requestedIds.has(discoveredRootSessionId)) continue;
 

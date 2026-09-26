@@ -35,20 +35,39 @@ type ScanOptions = {
 
 const CODEX_SESSION_META_CLOCK_SKEW_MS = 2_000;
 
-export function parseCodexRolloutSessionIdFromFilename(filePath: string): string | null {
+const CODEX_ROLLOUT_SUFFIX_PATTERN = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/i;
+const CODEX_ROLLOUT_ID_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?$/i;
+
+export type CodexRolloutFilename = Readonly<{
+    sessionId: string;
+    threadId?: string;
+    turnId?: string;
+}>;
+
+/** Parses a rollout suffix while identifying the thread represented by a composite continuation. */
+export function parseCodexRolloutFilename(filePath: string): CodexRolloutFilename | null {
     const name = filePath.split(/[/\\\\]/).pop() ?? '';
-    const match = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/i.exec(name);
+    const suffix = CODEX_ROLLOUT_SUFFIX_PATTERN.exec(name)?.[1];
+    if (!suffix) return null;
+    const ids = CODEX_ROLLOUT_ID_PATTERN.exec(suffix);
+    return {
+        sessionId: suffix,
+        ...(ids?.[1] ? { threadId: ids[1] } : {}),
+        ...(ids?.[2] ? { turnId: ids[2] } : {}),
+    };
+}
+
+export function parseCodexRolloutSessionIdFromFilename(filePath: string): string | null {
     // A filename is not a byte-exact identity source: Windows strips trailing
     // spaces and dots from names, so this stays a trimmed best-effort fast path.
     // `session_meta.payload.id` is the authoritative id and is read exactly.
-    const sessionId = match?.[1]?.trim() ?? '';
+    const sessionId = parseCodexRolloutFilename(filePath)?.sessionId.trim() ?? '';
     return sessionId || null;
 }
 
 function parseResumeIdFromRolloutFilename(filePath: string): string | null {
     const name = basename(filePath);
-    const match = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(name);
-    return match ? match[1] : null;
+    return parseCodexRolloutFilename(filePath)?.threadId ?? null;
 }
 
 function parseRolloutTimestampFromFilename(filePath: string): number | null {

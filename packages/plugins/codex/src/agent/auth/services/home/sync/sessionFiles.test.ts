@@ -48,6 +48,14 @@ describe('Codex connected-service home sync session files', () => {
     expect(result).toBe('11111111-2222-3333-4444-555555555555');
   });
 
+  it('extracts the thread id from a composite continuation rollout path', () => {
+    expect(resolveCodexVendorResumeIdFromImportedSessionFile({
+      sourcePath: '/materialized/sessions/rollout-2026-06-06T00-00-00-11111111-2222-3333-4444-555555555555_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl',
+      destinationPath: '/user/.codex/sessions/imported.jsonl',
+      relativePath: 'imported.jsonl',
+    })).toBe('11111111-2222-3333-4444-555555555555');
+  });
+
   it('falls back to destination and relative paths when source basename has no rollout id', () => {
     expect(resolveCodexVendorResumeIdFromImportedSessionFile({
       sourcePath: '/materialized/sessions/imported.jsonl',

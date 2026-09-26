@@ -13,7 +13,7 @@ import type { CodexExternalSessionHomeEntry } from './homeEntries.js';
 import { homeEntries } from './homeEntries.js';
 import { readExactCodexProviderSessionId } from '../../../protocol/runtimeDescriptorV1.js';
 import {
-  parseCodexRolloutSessionIdFromFilename,
+  parseCodexRolloutFilename,
   readCodexSessionMetaFromRollout,
 } from './indexData.js';
 import {
@@ -315,9 +315,10 @@ async function resolveRolloutCandidateSessionId(
   bounds: CodexExternalSessionInvocationBounds,
 ): Promise<string | null> {
   throwIfCodexExternalSessionInvocationStopped(bounds);
-  const fromFilename = parseCodexRolloutSessionIdFromFilename(filePath);
+  const fromFilename = parseCodexRolloutFilename(filePath);
   if (fromFilename) {
-    return fromFilename;
+    // Composite continuation filenames identify the same resumable thread as their first UUID.
+    return fromFilename.threadId ?? fromFilename.sessionId;
   }
   const sessionMeta = await readCodexSessionMetaFromRollout(filePath, bounds);
   throwIfCodexExternalSessionInvocationStopped(bounds);

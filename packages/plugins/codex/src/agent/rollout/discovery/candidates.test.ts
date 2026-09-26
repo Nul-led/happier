@@ -102,6 +102,31 @@ describe('Codex rollout candidate discovery', () => {
     expect(selection.entries.find((entry) => entry.remoteSessionId === archivedSessionId)?.group.archived).toBe(true);
   });
 
+  it('uses the thread id for a composite continuation filename when metadata is unreadable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-rollout-candidates-composite-'));
+    const codexHome = join(root, 'codex-home');
+    const sessionsDir = join(codexHome, 'sessions');
+    await mkdir(sessionsDir, { recursive: true });
+    const threadId = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const turnId = 'bbbbbbbb-2222-2222-2222-222222222222';
+    await writeFile(
+      join(sessionsDir, `rollout-2026-01-02T00-00-00-${threadId}_${turnId}.jsonl`),
+      '',
+      'utf8',
+    );
+
+    const selection = await selectCodexRolloutCandidateEntries({
+      source: { kind: 'codexHome', home: 'user' },
+      activeServerDir: join(root, 'servers', 'cloud'),
+      env: { CODEX_HOME: codexHome },
+      limit: 10,
+    });
+
+    expect(selection.kind).toBe('direct');
+    if (selection.kind !== 'direct') throw new Error('expected direct rollout selection');
+    expect(selection.entries.map((entry) => entry.remoteSessionId)).toEqual([threadId]);
+  });
+
   it('applies provider filename-search policy before falling back to candidate metadata search', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-codex-rollout-candidate-search-'));
     const codexHome = join(root, 'codex-home');
