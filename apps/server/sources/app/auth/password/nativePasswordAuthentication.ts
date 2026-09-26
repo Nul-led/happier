@@ -3,6 +3,7 @@ import { encodePasswordCredentialFieldV1, selectPasswordEnvelopeWriterProfileV1,
     type NativeEmailPasswordPreloginResponseV1 } from "@happier-dev/protocol";
 import { acceptPasswordTextV1, normalizeVerifiedEmail, parseAccountPasswordCredentialV1 } from "@happier-dev/protocol";
 import { issueKeyChallengeV2 } from "@/app/auth/keyChallengeV2";
+import { ensureSameServiceHomeEntryInTx, prepareSameServiceHomeEntry } from "@/app/accountDirectory/accountDirectoryService";
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 import { auth } from "@/app/auth/auth";
@@ -43,7 +44,15 @@ export async function loginWithNativePlainPassword(params: Readonly<{
     env: NodeJS.ProcessEnv;
     /** Final persisted-policy admission in the token-writing transaction. */
     admitInTx: (tx: Tx) => Promise<boolean>;
+    /**
+     * `account_directory` mints the restricted account-service credential instead of an ordinary
+     * Home one. The caller has already established that this server is an account service; the
+     * same-service Home entry is ensured in the token transaction, exactly as the Key Challenge and
+     * OAuth Directory finalizers do.
+     */
+    tokenKind?: "account" | "account_directory";
 }>) {
+    const tokenKind = params.tokenKind ?? "account";
     const candidate = await findNativePasswordAccount(params.email);
     const text = acceptPasswordTextV1(params.password);
     if (!candidate || candidate.parsed.mode !== "plain" || !text.accepted) {
@@ -55,6 +64,13 @@ export async function loginWithNativePlainPassword(params: Readonly<{
     }
     const eligible = await enforceLoginEligibility({ accountId: candidate.account.id, env: params.env });
     if (!eligible.ok) return eligible;
+    const sameServicePreparation = tokenKind === "account_directory"
+        ? await prepareSameServiceHomeEntry({ env: params.env })
+        : null;
+    if (sameServicePreparation?.status === "not_dual_role"
+        && sameServicePreparation.reason === "server_identity_mismatch") {
+        throw new Error("Same-service Home descriptor identity mismatch");
+    }
     try {
         return await inTx(async (tx) => {
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, candidate.account.id);
@@ -66,8 +82,15 @@ export async function loginWithNativePlainPassword(params: Readonly<{
             if (!await params.admitInTx(tx)) {
                 return { ok: false, statusCode: 403, error: "method_not_available" } as const;
             }
+            if (sameServicePreparation) {
+                await ensureSameServiceHomeEntryInTx(tx, {
+                    accountId: candidate.account.id,
+                    preparation: sameServicePreparation,
+                    env: params.env,
+                });
+            }
             const token = await auth.createTokenInTx(tx, candidate.account.id, undefined, {
-                kind: "account", authority: "present_user",
+                kind: tokenKind, authority: "present_user",
                 authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
             });
             return { ok: true, token } as const;

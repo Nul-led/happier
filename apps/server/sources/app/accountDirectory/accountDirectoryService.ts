@@ -143,7 +143,9 @@ export async function readAccountDirectoryMe(accountId: string): Promise<Account
             firstName: true,
             lastName: true,
             avatar: true,
-            AccountIdentity: { select: { provider: true, providerUserId: true }, orderBy: { provider: "asc" } },
+            encryptionMode: true,
+            AccountPasswordCredential: { select: { accountId: true } },
+            AccountIdentity: { select: { provider: true, providerLogin: true }, orderBy: { provider: "asc" } },
         },
     });
     if (!user) throw new AccountDirectoryError("not_found", "Account not found");
@@ -162,8 +164,15 @@ export async function readAccountDirectoryMe(accountId: string): Promise<Account
             .filter((identity) => isAccountIdentityEligibleForGenericPresentation(process.env, identity.provider))
             .map((identity) => ({
                 providerId: identity.provider,
-                login: identity.providerUserId,
+                // The handle people know the identity by (GitHub username); a provider without
+                // one reports none rather than leaking its opaque user id.
+                login: identity.providerLogin ?? null,
             })),
+        // The persisted mode is the authority (docs/encryption.md), never key presence. The login
+        // email is not disclosed here; the unlock asks the person for it.
+        recoveryKey: user.encryptionMode === "e2ee"
+            ? user.AccountPasswordCredential ? "password_unlock" : "key_only"
+            : "none",
     });
 }
 

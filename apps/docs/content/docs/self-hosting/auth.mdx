@@ -118,16 +118,19 @@ HAPPIER_AUTH_EMAIL_FROM_ADDRESS=happier@example.com
 
 Optional transport settings are `HAPPIER_AUTH_EMAIL_SMTP_PORT`,
 `HAPPIER_AUTH_EMAIL_SMTP_SECURE`, `HAPPIER_AUTH_EMAIL_SMTP_USERNAME`,
-`HAPPIER_AUTH_EMAIL_SMTP_PASSWORD`, and `HAPPIER_AUTH_EMAIL_FROM_NAME`. When SMTP
-is not configured, mail-dependent actions are reported as unavailable while other
-authentication methods continue to work.
+`HAPPIER_AUTH_EMAIL_SMTP_PASSWORD`, and `HAPPIER_AUTH_EMAIL_FROM_NAME`.
 
 Bearer emails also require a published Home connection descriptor and an application
 origin. Configure the Home's public HTTPS ingress (or its supported Iroh endpoint), then
 either set `HAPPIER_WEBAPP_URL` or serve the bundled UI from the configured public server
 URL. Happier puts that portable Home target beside the one-time bearer. SMTP configuration
-alone is not enough. If the Home cannot publish that target, verification and reset
-requests remain existence-neutral but no operation or email is created.
+alone is not enough.
+
+Mail-dependent actions (account creation by email, **Forgot password?**, sign-in email
+changes and emailed invitations) are reported as unavailable until **both** are in place:
+SMTP delivery and a link the Home can build. Clients then simply do not offer them, and other
+authentication methods continue to work. Verification and reset requests stay
+existence-neutral either way.
 
 The UI keeps the journeys distinct: login authenticates an existing Account;
 provisioning verifies an email before creating an Account; enrollment/change/removal
@@ -274,6 +277,29 @@ Three details decide whether this configuration takes effect:
   [Home administration](/self-hosting/home-administration) when the deployment
   offers one. They cannot point the Home at a different service: the endpoint is
   yours to set here.
+
+## Running your own Account Service
+
+These settings are part of the 0.3 development implementation. Released 0.2 servers are not Account Services.
+
+Happier Cloud is only the default Account Service. Any Happier server can be one, for example a company's own sign-in service for its people and Homes. Clients never assume anything about a service: the sign-in methods, account creation, password reset and Home discovery they show all come from what the selected service advertises. People pick a service in **Settings → Account → Change service → Another service…**, which checks the address before anything is saved.
+
+A server is an Account Service when all of these hold:
+
+- It can sign Home-directory assertions. That key is derived from `HANDY_MASTER_SECRET`, which every server already needs; a server that has it advertises `capabilities.accountDirectory` in `GET /v1/features`.
+- It publishes a stable identity and audience: set `HAPPIER_CANONICAL_SERVER_URL` (or `HAPPIER_PUBLIC_SERVER_URL`) to its public HTTPS address. Without a canonical URL, clients treat the server as "not an Account Service".
+- Optionally, `HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME` names it in client copy ("Sign in to Acme Accounts"). Without it, clients name the service by the Home it is, or use a generic phrase.
+
+Sign-in methods are the server's own authentication methods, published through `POST /v1/auth/entry` with `purpose: "account_service"`:
+
+- **Account key** sign-in (Key Challenge v2) is on by default.
+- **GitHub and OIDC** follow the [OAuth return URL](#oauth-return-url-required-for-githuboidc-self-hosting) and provider settings below.
+- **Email and password** follows [Native email and password](#native-email-and-password-03-development):
+  - `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED` turns sign-in on or off.
+  - `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED` turns account creation on or off.
+  - Account creation and "Forgot password?" need SMTP (`HAPPIER_AUTH_EMAIL_SMTP_HOST` and `HAPPIER_AUTH_EMAIL_FROM_ADDRESS` at minimum) **and** a link the service can build (a published Home connection descriptor plus an application origin), as described there. Until both are set, clients offer email and password sign-in only: no "Create an account" by email, and no mailed reset.
+
+Signing in with a password to an Account Service gives the device the service's restricted Account Directory credential, never an ordinary Home credential. A Plain account gets it from the password route. An end-to-end encrypted account unlocks its key from the password and proves it to the service's Account Directory key challenge; the key stays on the device. Creating an account proves the mailbox first: the person enters an email, opens the confirmation link, then chooses a password. That link carries `purpose=account_service`, so the device that opens it finishes signing in to the service rather than to a Home.
 
 ## Auth methods (discovery)
 

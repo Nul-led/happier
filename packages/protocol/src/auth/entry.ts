@@ -122,6 +122,13 @@ export const AuthEntryAuthenticationActionV1Schema = z.object({
    * default from the permitted set. Absent means the Home states no preference.
    */
   recommendedProvisionMode: AccountEncryptionModeSchema.nullable().optional(),
+  /**
+   * Carried only on the `email_password` `login` action, and only when this
+   * server can mail a password-reset link right now. Absent means a
+   * forgotten-password link cannot arrive, so a client must not offer it.
+   * Mail availability is a deployment fact, never an Account fact.
+   */
+  passwordReset: z.literal('email').optional(),
   presentation: AuthEntryProviderPresentationV1Schema,
 }).strict();
 

@@ -36,11 +36,27 @@ see [Homes](/accounts/multi-server).
 - A Home you are already signed in to, on this device.
 - An account on a sign-in service. If you have not chosen one, the Welcome screen's
   **Choose sign-in service** action and `happier auth service use <endpoint>` both set it.
+  In the app, **Change service** in **Settings → Account** lists Happier Cloud, your
+  current service and any Home you use that also offers sign-in, plus **Another
+  service…** for an address. **Check** shows what a service offers before anything is
+  saved; nothing changes until you choose **Use**. Your sign-in to the previous service
+  stays saved on the device, so switching back keeps you signed in.
 
 ## Find your Homes
 
-Open **Settings → Account → Account & Home discovery**. The same actions are on the
-connection controls, so you can reach them without leaving what you are doing.
+Open **Settings → Account**. The section is named after your sign-in service (for
+example **Happier Cloud**). Signed out, it lists what the service does and the ways
+it offers to sign in; signed in, it shows who you are signed in as, with **Linked
+Homes** below it. If the service cannot find Homes, or cannot be reached, the
+section says so and offers **Change service** (and **Retry** when it is
+unreachable). The same actions are on the connection controls, so you can reach them
+without leaving what you are doing.
+
+The ways to sign in are the ones your service offers: a provider such as GitHub, an
+account key, or an email and password. Email and password sign-in opens right in the
+section. If the service offers it, **New here? Create an account** asks for your email
+first, sends a confirmation link, and you choose your password after opening that link.
+**Forgot password?** appears only when the service can email you a reset link.
 
 **Find your Homes** discovers linked Homes and opens the selected or preferred one.
 Your existing Homes and current focus stay unchanged while it runs — discovery
@@ -62,10 +78,11 @@ sign in to that service again before it will refresh or connect anything.
 
 ## Make a Home available on your other devices
 
-From a device that is signed in to the Home, use **Make this Home available on your
-other devices**. The subtitle says exactly what it grants — *Let … help your other
-devices find this Home and request access*, naming the service. Request, not
-receive: the Home still applies its own admission rules to each new device.
+From a device that is signed in to the Home, use **Link** on that Home's row in
+**Linked Homes** (*On this device only. Link it so your other devices can find it.*).
+Linking lets the service help your other devices find this Home and request access.
+Request, not receive: the Home still applies its own admission rules to each new
+device.
 
 From the Home's own host, the same link is made with:
 

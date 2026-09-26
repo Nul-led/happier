@@ -50,21 +50,24 @@ import { isTeamMembershipAdmissionEnabled } from "@/app/teams/memberships/member
 import { linkIdentityInTx, ProviderAlreadyLinkedError } from "@/app/auth/providers/accountIdentityLifecycle";
 import { registerNativeAuthEmailOperationRoutes } from "./registerNativeAuthEmailPreviewRoutes";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
-import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
 import { isPrismaUniqueConstraintError } from "@/storage/db";
 import type { ResolveAuthEmailApplicationLinkTarget } from "@/app/auth/email/nativeAuthEmailOperations";
 import { isE2eePasswordEnvelopeBoundToAccount } from "@/app/auth/password/e2eePasswordCredentialAccountBinding";
 import { shouldDenyPublicSignupProvisioningAction } from "@/app/integrations/publicUrl/publicSignupProvisioningPolicy";
+import { isAccountDirectoryServiceEnabled } from "@/app/features/accountDirectoryFeature";
+import { prepareSameServiceHomeEntry } from "@/app/accountDirectory/accountDirectoryService";
 
 export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly<{
-    isEmailDeliveryReady?: () => boolean;
+    isEmailDeliveryReady?: () => boolean | Promise<boolean>;
     authEmailDelivery?: AuthEmailDelivery;
     resolveApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
     const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
-    const isEmailDeliveryReady = params.isEmailDeliveryReady ?? (() => authEmailDelivery.isReady);
     const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
         ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
+    const isEmailDeliveryReady = params.isEmailDeliveryReady
+        ?? (() => resolveAuthEmailReadiness({ transportReady: authEmailDelivery.isReady, resolveApplicationLinkTarget }));
     // Fail before installing any part of this method when its authenticated
     // Account Security surface has no canonical bearer verifier.
     registerAccountSecurityRoutes(app, {
@@ -102,6 +105,17 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
         const requestIp = request.ip;
         const normalized = normalizeVerifiedEmail(body.email);
         if (!normalized || !body.account || !["plain", "e2ee"].includes(body.account.mode)) return reply.code(401).send({ error: "authentication_failed" });
+        const directoryCredential = body.credentialTarget === "account_directory";
+        if (directoryCredential && !isAccountDirectoryServiceEnabled(process.env)) {
+            return reply.code(403).send({ error: "method_not_available" });
+        }
+        // A new account-service Account on a server that is also its own Home gets that Home's
+        // directory entry in the creating transaction, as the Key Challenge finalizer does.
+        const sameServicePreparation = directoryCredential ? await prepareSameServiceHomeEntry({}) : null;
+        if (sameServicePreparation?.status === "not_dual_role"
+            && sameServicePreparation.reason === "server_identity_mismatch") {
+            throw new Error("Same-service Home descriptor identity mismatch");
+        }
         const admissionTargetsTeam = body.admission.kind === "team_invitation"
             || await inTx(async (tx) => {
                 const operation = await readNativeAuthOneTimeOperation(tx, {
@@ -156,6 +170,8 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
             }
             throw error;
         }
+        // Read once, outside the transaction: the link-target read is I/O.
+        const emailDeliveryReady = await isEmailDeliveryReady();
         const result = await inTx(async (tx) => {
             let teamId: string | null = null;
             let nativeProofToken: string | null = null;
@@ -187,7 +203,7 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
                 }
                 const methods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
                     env: process.env,
-                    emailDeliveryReady: isEmailDeliveryReady(),
+                    emailDeliveryReady,
                     admission: { kind: "team_invitation" },
                 });
                 if (methods.status !== "ready") return null;
@@ -208,7 +224,7 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
                     : undefined;
                 const methods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
                     env: process.env,
-                    emailDeliveryReady: isEmailDeliveryReady(),
+                    emailDeliveryReady,
                     ...(contextualAdmission ? { admission: contextualAdmission } : {}),
                 });
                 if (!admitsRequestedProvisionMode(methods, body.account.mode)) {
@@ -246,6 +262,7 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
                 encryptionMode: e2eeAdmission ? "e2ee" : "plain",
                 ...(e2eeAdmission ? { contentKeyBinding: e2eeAdmission.contentKeyBinding } : {}),
                 verifiedMailbox: normalized,
+                ...(sameServicePreparation ? { directoryPreparation: sameServicePreparation } : {}),
             });
             await linkIdentityInTx(tx, {
                 accountId: account.id,
@@ -278,7 +295,7 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
                 teamId = acceptedInvitation.teamId;
             }
             const token = await auth.createTokenInTx(tx, account.id, undefined, {
-                kind: "account",
+                kind: directoryCredential ? "account_directory" : "account",
                 authority: "present_user",
                 authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
             });
@@ -324,9 +341,15 @@ export function registerNativeEmailPasswordRoutes(app: Fastify, params: Readonly
         if (!await isEffectiveHomeAuthMethodActionEnabled({ env: process.env, methodId: "email_password", actionId: "login", mode: "keyless" })) {
             return reply.code(403).send({ error: "method_not_available" });
         }
+        const { credentialTarget, ...credentials } = request.body;
+        // The restricted account-service credential exists only where this server is one.
+        if (credentialTarget === "account_directory" && !isAccountDirectoryServiceEnabled(process.env)) {
+            return reply.code(403).send({ error: "method_not_available" });
+        }
         try {
             const result = await loginWithNativePlainPassword({
-                ...request.body,
+                ...credentials,
+                ...(credentialTarget === "account_directory" ? { tokenKind: "account_directory" as const } : {}),
                 env: process.env,
                 admitInTx: async (tx) => await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
                     env: process.env,

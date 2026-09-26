@@ -65,7 +65,7 @@ import {
     resolveJoinScreenHomeIdentity,
     resolveTeamJoinLinkTarget,
 } from "@/app/teams/invitations/joinScreenHome";
-import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { registerAuthEmailApplicationLinkTarget, resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
 import { startHomeSearchLifecycle, type HomeSearchLifecycle } from "@/app/search/homeSearchLifecycle";
 import { readCanonicalSessionMessagesPage } from "@/app/search/homeSearchCanonicalSessionMessages";
 import { registerHomeSearchRoutes } from "@/app/search/homeSearchRoutes";
@@ -160,9 +160,16 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
             process.env,
             params.homeConnectionDescriptorContinuityStore,
         ));
+    // The one mail-readiness owner reads the same link target the mail routes render from, for the
+    // routes below and for environment-only readers (feature projection, Home governance).
+    const isAuthEmailReady = () => resolveAuthEmailReadiness({
+        transportReady: authEmail.delivery.isReady,
+        resolveApplicationLinkTarget: resolveAuthEmailApplicationLinkTarget,
+    });
+    registerAuthEmailApplicationLinkTarget(resolveAuthEmailApplicationLinkTarget);
     authRoutes(typed, {
         ...(resolveHomeConnectionDescriptor ? { resolveHomeConnectionDescriptor } : {}),
-        isEmailDeliveryReady: () => authEmail.delivery.isReady,
+        isEmailDeliveryReady: isAuthEmailReady,
         authEmailDelivery: authEmail.delivery,
         resolveApplicationLinkTarget: resolveAuthEmailApplicationLinkTarget,
     });
@@ -237,7 +244,7 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
         resolveJoinScreenHomeIdentity: async () => resolveJoinScreenHomeIdentity(process.env),
         email: {
             delivery: authEmail.delivery,
-            isDeliveryReady: () => authEmail.delivery.isReady,
+            isDeliveryReady: isAuthEmailReady,
         },
     });
 }

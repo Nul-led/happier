@@ -14,21 +14,22 @@ import { registerHomeLoginRoute } from "@/app/accountDirectory/accountDirectoryR
 import type { HomeConnectionDescriptorResolver } from "@/app/accountDirectory/accountDirectoryService";
 import { registerHomeLoginApprovalRoutes } from "./homeApprovalGate";
 import { registerAuthEntryRoute } from "./registerAuthEntryRoute";
-import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import type { ResolveAuthEmailApplicationLinkTarget } from "@/app/auth/email/nativeAuthEmailOperations";
 
 export function authRoutes(app: Fastify, params: Readonly<{
     resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
-    isEmailDeliveryReady?: () => boolean;
+    isEmailDeliveryReady?: () => boolean | Promise<boolean>;
     authEmailDelivery?: AuthEmailDelivery;
     resolveApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
     const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
-    const isEmailDeliveryReady = params.isEmailDeliveryReady
-        ?? (() => authEmailDelivery.isReady);
     const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
         ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
+    // One readiness owner: mail can be sent and its link can be built from these same facts.
+    const isEmailDeliveryReady = params.isEmailDeliveryReady
+        ?? (() => resolveAuthEmailReadiness({ transportReady: authEmailDelivery.isReady, resolveApplicationLinkTarget }));
     app.get(
         "/v1/auth/ping",
         {
@@ -60,7 +61,7 @@ export function authRoutes(app: Fastify, params: Readonly<{
     app.addHook("onReady", async () => {
         const methods = await resolveEffectiveHomeAuthMethods({
             env: process.env,
-            emailDeliveryReady: isEmailDeliveryReady(),
+            emailDeliveryReady: await isEmailDeliveryReady(),
         });
         if (methods.status !== "ready" || !methods.decisions.some((method) =>
             method.actions.some((action) => action.enabled && (action.id === "login" || action.id === "provision")))) {

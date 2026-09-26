@@ -44,7 +44,7 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
         const environmentPayload = resolveFeaturesFromEnv(process.env);
         const effectiveHomeMethods = await resolveEffectiveHomeAuthMethods({
             env: process.env,
-            emailDeliveryReady: isAuthEmailDeliveryReady(process.env),
+            emailDeliveryReady: await isAuthEmailDeliveryReady(process.env),
         }).catch((error: unknown) => {
             app.log.error({ err: error }, 'Failed to resolve the Home authentication policy for public features');
             captureFastifyExceptionForSentry(error, request);

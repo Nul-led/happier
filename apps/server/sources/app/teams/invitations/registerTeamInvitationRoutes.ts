@@ -136,7 +136,7 @@ export type TeamInvitationRouteDeps = Readonly<{
      * mail owner's projection, not a local guess: a Home that cannot send must not
      * create an invitation whose only delivery path is mail.
      */
-    email: TeamInvitationEmailDeps & Readonly<{ isDeliveryReady: () => boolean }>;
+    email: TeamInvitationEmailDeps & Readonly<{ isDeliveryReady: () => boolean | Promise<boolean> }>;
 }>;
 
 export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationRouteDeps) {
@@ -175,7 +175,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
 
     /** Whether this Home can both send mail and render the link mail must carry. */
     async function canDeliverInvitationEmail(): Promise<boolean> {
-        if (!deps.email.isDeliveryReady()) return false;
+        if (!await deps.email.isDeliveryReady()) return false;
         return (await resolveInvitationHomeName()) !== null;
     }
 
@@ -291,7 +291,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
         const homeName = await resolveInvitationHomeName();
         return reply.send({
             ...result.value,
-            emailDelivery: deps.email.isDeliveryReady() && homeName !== null ? "available" : "unavailable",
+            emailDelivery: await deps.email.isDeliveryReady() && homeName !== null ? "available" : "unavailable",
             linkDelivery: homeName === null ? "unavailable" : "available",
         });
     });

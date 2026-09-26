@@ -24,7 +24,7 @@ import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDeliv
  * runtime is rejected instead of being silently downgraded to a public caller.
  */
 export function registerAuthEntryRoute(app: Fastify, params: Readonly<{
-    isEmailDeliveryReady: () => boolean;
+    isEmailDeliveryReady: () => boolean | Promise<boolean>;
 }> = { isEmailDeliveryReady: () => isAuthEmailDeliveryReady(process.env) }): void {
     app.post(
         '/v1/auth/entry',
@@ -78,7 +78,7 @@ export function registerAuthEntryRoute(app: Fastify, params: Readonly<{
             const projection = await resolveAuthEntry(request.body, {
                 env: process.env,
                 principal,
-                emailDeliveryReady: params.isEmailDeliveryReady(),
+                emailDeliveryReady: await params.isEmailDeliveryReady(),
                 requestIp: request.ip,
             });
             reply.header('Cache-Control', 'no-store');

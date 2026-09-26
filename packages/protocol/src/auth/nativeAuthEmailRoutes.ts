@@ -44,6 +44,13 @@ export const NativeEmailPasswordLoginRequestV1Schema = z.object({
     v: z.literal(1), email: RequestedEmailSchema,
     // The shared acceptance owner validates exact scalar/UTF-8 semantics.
     password: z.string().max(PASSWORD_MAX_UTF8_BYTES_V1),
+    /**
+     * Ask for the restricted Account Directory credential an account service
+     * issues, instead of an ordinary Home credential. Refused on a server that
+     * is not an account service. E2EE Accounts reach the same credential by
+     * redeeming their unlocked key at the Account Directory Key Challenge.
+     */
+    credentialTarget: z.literal('account_directory').optional(),
 }).strict();
 export type NativeEmailPasswordLoginRequestV1 = z.infer<typeof NativeEmailPasswordLoginRequestV1Schema>;
 export const NativeEmailPasswordLoginResponseV1Schema = z.object({ token: z.string().min(1) }).strict();
@@ -113,6 +120,8 @@ export const NativeEmailPasswordProvisionRequestV1Schema = z.object({
     email: RequestedEmailSchema,
     admission: NativeEmailPasswordProvisionAdmissionV1Schema,
     account: NativeEmailPasswordProvisionAccountV1Schema,
+    /** As on login: the new Account signs in to the account service rather than to the Home. */
+    credentialTarget: z.literal('account_directory').optional(),
 }).strict();
 export type NativeEmailPasswordProvisionRequestV1 = z.infer<typeof NativeEmailPasswordProvisionRequestV1Schema>;
 
@@ -143,6 +152,13 @@ export const NativeEmailVerifyRequestV1Schema = z.object({
     email: RequestedEmailSchema,
     continuationId: z.string().min(1).max(256).optional(),
     admission: TeamInvitationAccountAdmissionV1Schema.optional(),
+    /**
+     * The mailbox is being proven to create an account-service sign-in. The
+     * mailed link carries `purpose=account_service` so the landing finishes
+     * that journey on whichever device opens it. Non-authoritative: creation
+     * still re-checks every admission and capability on the server.
+     */
+    purpose: z.literal('account_service').optional(),
 }).strict();
 export type NativeEmailVerifyRequestV1 = z.infer<typeof NativeEmailVerifyRequestV1Schema>;
 

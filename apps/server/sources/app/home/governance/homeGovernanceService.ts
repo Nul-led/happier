@@ -148,11 +148,11 @@ async function projectHomeAuthenticationOptionsV1(
     const deployment = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
         homeAuthenticationPolicyOverride: { status: "inherited" },
-        emailDeliveryReady: isAuthEmailDeliveryReady(env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
     });
     const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
-        emailDeliveryReady: isAuthEmailDeliveryReady(env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
     });
     const permittedAccountModes = [...resolveAllowedAccountProvisionModes(env)];
     const recommendedProvisioningMode = resolveRecommendedAccountProvisionMode(env);
@@ -329,7 +329,7 @@ async function readHomeAccountAuthenticationByIdInTx(
 ): Promise<ReadonlyMap<string, AccountAdministrationAuthenticationProjection>> {
     const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env: input.env,
-        emailDeliveryReady: isAuthEmailDeliveryReady(input.env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady(input.env),
     });
     return await readAccountAdministrationAuthenticationByIdInTx(tx, {
         accountIds: input.accountIds,

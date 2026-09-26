@@ -25,3 +25,12 @@ export function resolveAccountDirectoryFeature(env: NodeJS.ProcessEnv): Features
         return {};
     }
 }
+
+/**
+ * Whether this server is an account service: it can sign the Home-directory assertions every
+ * Account Directory credential is used for. Routes that mint the restricted Directory credential
+ * answer to this one fact, the same one discovery advertises.
+ */
+export function isAccountDirectoryServiceEnabled(env: NodeJS.ProcessEnv): boolean {
+    return resolveAccountDirectoryFeature(env).capabilities?.accountDirectory?.homeDirectory === true;
+}

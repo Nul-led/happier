@@ -196,7 +196,7 @@ async function isProspectiveAuthenticationPolicyValidInTx(
 ): Promise<boolean> {
     const current = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
-        emailDeliveryReady: isAuthEmailDeliveryReady(env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
     });
     const prospective = policy === null
         ? { status: "inherited" as const }
@@ -204,7 +204,7 @@ async function isProspectiveAuthenticationPolicyValidInTx(
     const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
         homeAuthenticationPolicyOverride: prospective,
-        emailDeliveryReady: isAuthEmailDeliveryReady(env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
     });
     if (effective.status !== "ready") return false;
 

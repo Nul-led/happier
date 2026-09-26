@@ -439,6 +439,12 @@ export const AccountDirectoryMeResponseV1Schema = z.object({
   displayName: LabelSchema.nullable(),
   avatar: z.string().trim().max(ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES).url().nullable(),
   linkedAuthenticationMethods: z.array(AccountDirectoryLinkedAuthenticationMethodV1Schema).max(32),
+  /**
+   * How this Account's recovery key can be reached, from its stored mode: `none` for a Plain Account
+   * (it has no key), `password_unlock` for an E2EE Account with a password envelope, `key_only` for
+   * an E2EE Account without one. Absent from servers that predate it; clients then offer nothing.
+   */
+  recoveryKey: z.enum(['none', 'password_unlock', 'key_only']).optional(),
 }).strict();
 export type AccountDirectoryMeResponseV1 = z.infer<typeof AccountDirectoryMeResponseV1Schema>;
 

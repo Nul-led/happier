@@ -144,6 +144,49 @@ describe("native password authentication through the registered method", () => {
         } finally { await app.close(); }
     });
 
+    it("mints an Account Directory credential for a Plain password login only where this server is an Account Service", async () => {
+        const accepted = acceptPasswordTextV1(password);
+        if (!accepted.accepted) throw new Error("invalid test password");
+        const account = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        await db.accountIdentity.create({ data: {
+            accountId: account.id, provider: "email", providerUserId: "directory@example.test", profile: {},
+        } });
+        await db.accountPasswordCredential.create({ data: {
+            accountId: account.id,
+            credential: { v: 1, kind: "plain_password_hash", hash: await hashPasswordMaterial(accepted.utf8) },
+        } });
+        const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        enableAuthentication(app);
+        emailPasswordAuthMethodModule.registerRoutes(app);
+        await app.ready();
+        try {
+            const login = (candidate = password) => app.inject({
+                method: "POST", url: "/v1/auth/email/login",
+                payload: { v: 1, email: "directory@example.test", password: candidate, credentialTarget: "account_directory" },
+            });
+            const response = await login();
+            expect(response.statusCode, response.body).toBe(200);
+            expect(await auth.verifyToken(response.json().token)).toMatchObject({
+                userId: account.id, authTokenKind: "account_directory", authority: "present_user",
+            });
+            const wrong = await login("different password with spaces");
+            expect(wrong.statusCode).toBe(401);
+            expect(wrong.json()).toEqual({ error: "authentication_failed" });
+            // Without the Account Directory capability (no master secret) the
+            // server is not an Account Service and must not mint the restricted kind.
+            delete process.env.HANDY_MASTER_SECRET;
+            const refused = await login();
+            expect(refused.statusCode).toBe(403);
+            expect(refused.json()).toEqual({ error: "method_not_available" });
+        } finally {
+            harness.resetEnv();
+            await db.account.delete({ where: { id: account.id } });
+            await app.close();
+        }
+    });
+
     it("releases an E2EE envelope only after its derived key proves the current signing-bound credential", async () => {
         const signing = tweetnacl.sign.keyPair();
         const authKey = new Uint8Array(32).fill(71);

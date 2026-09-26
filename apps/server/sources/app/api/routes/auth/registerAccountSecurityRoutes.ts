@@ -42,7 +42,7 @@ import {
     type ResolveAuthEmailApplicationLinkTarget,
 } from "@/app/auth/email/nativeAuthEmailOperations";
 import { consumeNativeAuthOneTimeOperationInTx, readNativeAuthOneTimeOperation } from "@/app/auth/email/nativeAuthOneTimeOperations";
-import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import { consumePasswordMutationKeyChallengeInTx, issuePasswordMutationKeyChallengeV1 } from "@/app/auth/keyChallengeV2";
 import { checkAccountRetainsLoginRouteForDecisions, readAccountLoginViabilityFactsAfterProviderRemovalInTx } from "@/app/auth/methods/effectiveAccountLoginMethods";
@@ -126,15 +126,16 @@ async function sendNotice(
 
 export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
     authEmailDelivery?: AuthEmailDelivery;
-    isEmailDeliveryReady?: () => boolean;
+    isEmailDeliveryReady?: () => boolean | Promise<boolean>;
     resolveApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
     if (typeof app.authenticate !== "function") throw new Error("Account Security routes require app.authenticate");
     const authenticated = [app.authenticate, requirePresentUser];
     const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
-    const isEmailDeliveryReady = params.isEmailDeliveryReady ?? (() => authEmailDelivery.isReady);
     const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
         ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
+    const isEmailDeliveryReady = params.isEmailDeliveryReady
+        ?? (() => resolveAuthEmailReadiness({ transportReady: authEmailDelivery.isReady, resolveApplicationLinkTarget }));
 
     app.post(ACCOUNT_PASSWORD_MUTATION_CHALLENGE_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.mutate"), connectionAuthFailureError: "invalid_token" }, schema: { body: PasswordMutationPreparationRequestV1Schema, response: { 200: PasswordMutationPreparationResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
@@ -246,7 +247,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const recipient = normalizeVerifiedEmail(request.body.email);
         if (!recipient) return reply.code(400).send({ error: "invalid_request" });
-        if (!isEmailDeliveryReady()) return reply.code(503).send({ error: "email_delivery_unavailable" });
+        if (!await isEmailDeliveryReady()) return reply.code(503).send({ error: "email_delivery_unavailable" });
         const eligible = await inTx(async (tx) => {
             const account = await tx.account.findUnique({
                 where: { id: request.userId },
@@ -458,8 +459,9 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const recipient = normalizeVerifiedEmail(request.body.email);
         if (!recipient) return reply.code(400).send({ error: "invalid_request" });
-        if (!isEmailDeliveryReady()) return reply.code(503).send({ error: "email_delivery_unavailable" });
-        const current = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } } } });
+        if (!await isEmailDeliveryReady()) return reply.code(503).send({ error: "email_delivery_unavailable" });
+        const current = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, AccountIdentity: { where: { provider: "email" }, select: { id: true, providerUserId: true } } } });
+        const currentIdentity = current?.AccountIdentity[0];
         const currentEmail = current?.AccountIdentity[0]?.providerUserId ?? null;
         if (!current || current.status !== "active" || !currentEmail) return reply.code(409).send({ error: "identity_changed" });
         const delivery = await requestNativeEmailVerification({ delivery: authEmailDelivery, resolveApplicationLinkTarget }, {

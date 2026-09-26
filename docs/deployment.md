@@ -123,6 +123,45 @@ operator setup/recovery tool and is not a substitute for atomic managed provisio
     already-started OAuth attempts bound to the previous runtime.
 - Debug logging: `DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING` (enables file logging + dev log endpoint).
 
+## Happier Cloud as the default Account Service (0.3)
+
+Happier Cloud (`https://api.happier.dev`) is the client's default Account Service, but clients
+treat it exactly like a self-hosted one: every method, creation path and reset is read from what it
+advertises. The operator-facing contract is the published
+[Running your own Account Service](../apps/docs/content/docs/self-hosting/auth.mdx) section; this
+records what the Happier Cloud deployment itself must set.
+
+Observed 2026-09-25: production runs 0.2. `GET /v1/features` has no `capabilities.accountDirectory`,
+`capabilities.server` is empty (no canonical URL), GitHub is enabled but not configured, and
+`/v1/auth/entry` does not exist. Current clients therefore show "Happier Cloud can't find Homes yet"
+and no sign-in methods. Nothing changes until Cloud deploys 0.3.
+
+For email and password on Happier Cloud once it runs 0.3:
+
+- `HAPPIER_CANONICAL_SERVER_URL=https://api.happier.dev`. Without it, clients reject the service
+  (no stable audience for the Account Directory key challenge).
+- `HANDY_MASTER_SECRET`: already required. It derives the Account Directory signing key, so it must
+  stay stable; rotating it changes the key Homes pin.
+- `HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME` is optional. Clients already call the default service
+  "Happier Cloud".
+- `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED=1` and `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED=1`.
+  Both are on by default; set them explicitly so a later default change is not silent.
+- SMTP, required for account creation, "Forgot password?" and sign-in email changes:
+  - `HAPPIER_AUTH_EMAIL_SMTP_HOST` and `HAPPIER_AUTH_EMAIL_FROM_ADDRESS` (for example `no-reply@happier.dev`);
+  - `HAPPIER_AUTH_EMAIL_SMTP_PORT` and `HAPPIER_AUTH_EMAIL_SMTP_SECURE` (465 with `true`, or 587 with `false`);
+  - `HAPPIER_AUTH_EMAIL_SMTP_USERNAME` and `HAPPIER_AUTH_EMAIL_SMTP_PASSWORD` from the mail provider;
+  - optionally `HAPPIER_AUTH_EMAIL_FROM_NAME=Happier`.
+- Mail links also need an application origin and a published Home connection descriptor:
+  `HAPPIER_WEBAPP_URL` (for example `https://app.happier.dev`) and the public HTTPS ingress
+  (`HAPPIER_PUBLIC_SERVER_URL`). Without them the mail-dependent actions are reported unavailable
+  (one readiness owner: `resolveAuthEmailReadiness`, SMTP **and** a buildable link), so clients do
+  not offer them.
+- Public sign-up policy (`shouldDenyPublicSignupProvisioningAction`) still applies to email
+  account creation. Decide it together with key sign-up.
+
+Without SMTP, clients show email and password sign-in only: no "Create an account" by email and no
+mailed reset. That is safe, but new users could then create accounts only with a key.
+
 ## Managed identity provider secrets (0.3 development)
 
 Database-managed provider credentials — OIDC client secrets and GitHub App private keys and

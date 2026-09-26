@@ -80,6 +80,8 @@ type HomeActionRequestContext = Readonly<{
     env: NodeJS.ProcessEnv;
     principal: AuthEntryPrincipal | null;
     requestIp?: unknown;
+    /** Whether a password-reset link can be mailed now; said on the password sign-in action. */
+    emailDeliveryReady?: boolean;
 }>;
 
 /**
@@ -277,6 +279,12 @@ function projectHomeAuthenticationActions(
                 // Account that already has a stored mode, so they state nothing.
                 ...(action.id === 'provision' && decision.recommendedProvisionMode
                     ? { recommendedProvisionMode: decision.recommendedProvisionMode }
+                    : {}),
+                // The reset request route mails a link exactly when password sign-in is enabled
+                // and mail delivery is ready; the sign-in action says so, so no client offers a
+                // "Forgot password?" whose link could never arrive.
+                ...(methodId === 'email_password' && action.id === 'login' && request.emailDeliveryReady === true
+                    ? { passwordReset: 'email' as const }
                     : {}),
                 presentation,
             }];
@@ -624,7 +632,7 @@ async function resolveInvitationAuthEntryInTx(
         : undefined;
     // Invitation admission is exempt from the public-signup restriction in every
     // finalizer, so the invitation projection carries no requesting address.
-    const homeActions = projectHomeAuthenticationActions(homeMethods, { env, principal }, allowedHomeMethodIds);
+    const homeActions = projectHomeAuthenticationActions(homeMethods, { env, principal, emailDeliveryReady });
     const connectionActions = await projectTeamConnectionActionsInTx(tx, {
         env,
         teamId: invitation.team.teamId,
@@ -690,7 +698,7 @@ export async function resolveAuthEntry(
         return await resolveTeamAuthEntry(input.scope.teamId, {
             env: context.env,
             principal: context.principal ?? null,
-            emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
+            emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
             ...(context.requestIp === undefined ? {} : { requestIp: context.requestIp }),
         }, home);
     }
@@ -706,7 +714,7 @@ export async function resolveAuthEntry(
         return await resolveInvitationAuthEntry(
             input.scope.token,
             context.env,
-            context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
+            context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
             context.principal ?? null,
             home,
         );
@@ -728,7 +736,7 @@ export async function resolveAuthEntry(
                         tx,
                         invitation,
                         context.env,
-                        context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
+                        context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
                         context.principal ?? null,
                         home,
                     )
@@ -737,19 +745,21 @@ export async function resolveAuthEntry(
             if (operation.consumer.kind !== 'fresh_account') return unavailableInvitationProjection('entry_not_available');
             const homeMethods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
                 env: context.env,
-                emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
+                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
             });
             if (homeMethods.status !== 'ready') return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
             return projectHomeAuthEntryProjection(homeMethods, {
                 env: context.env,
                 principal: context.principal ?? null,
                 ...(context.requestIp === undefined ? {} : { requestIp: context.requestIp }),
+                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
             }, false);
         });
     }
+    const emailDeliveryReady = context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env);
     const homeMethods = await resolveEffectiveHomeAuthMethods({
         env: context.env,
-        emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
+        emailDeliveryReady,
     });
     if (homeMethods.status !== 'ready') {
         return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
@@ -758,5 +768,6 @@ export async function resolveAuthEntry(
         env: context.env,
         principal: context.principal ?? null,
         ...(context.requestIp === undefined ? {} : { requestIp: context.requestIp }),
+        emailDeliveryReady,
     }, true);
 }

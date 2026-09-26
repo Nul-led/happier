@@ -50,8 +50,28 @@ function buildApplicationUrl(
     }
 }
 
-export function buildNativeEmailVerifyUrl(target: AuthEmailApplicationLinkTarget, rawBearer: string): string | null {
-    return buildApplicationUrl(target, `${NATIVE_AUTH_EMAIL_VERIFY_APP_PATH_V1}/${rawBearer}`);
+export function buildNativeEmailVerifyUrl(
+    target: AuthEmailApplicationLinkTarget,
+    rawBearer: string,
+    purpose?: "account_service",
+): string | null {
+    const url = buildApplicationUrl(target, `${NATIVE_AUTH_EMAIL_VERIFY_APP_PATH_V1}/${rawBearer}`);
+    if (url === null || purpose === undefined) return url;
+    // A non-secret journey marker: the landing finishes account-service sign-in instead of Home
+    // sign-in. Creation still re-checks every admission and capability on the server.
+    const marked = new URL(url);
+    marked.searchParams.set("purpose", purpose);
+    return marked.toString();
+}
+
+/**
+ * Whether mail links can be built for this Home right now: the same facts every mailed link is
+ * rendered from (an application origin and the portable Home target). Readiness reads this so it
+ * can never advertise a mail action whose link the send path would refuse to render.
+ */
+export function isAuthEmailApplicationLinkBuildable(target: AuthEmailApplicationLinkTarget): boolean {
+    return buildNativeEmailVerifyUrl(target, "readiness") !== null
+        && buildApplicationUrl(target, "/readiness", "serverId") !== null;
 }
 
 export function buildPlainPasswordResetUrl(target: AuthEmailApplicationLinkTarget, rawBearer: string): string | null {
@@ -112,6 +132,8 @@ export async function requestNativeEmailVerification(
     params: Readonly<{
         recipient: NormalizedVerifiedEmail;
         consumer: Extract<NativeAuthOneTimeOperationV1, { purpose: "verify_native_email" }>["consumer"];
+        /** Set only by a server that is an account service, for account-service creation. */
+        linkPurpose?: "account_service";
     }>,
 ): Promise<NativeAuthEmailRequestOutcome> {
     const target = await deps.resolveApplicationLinkTarget();
@@ -122,7 +144,7 @@ export async function requestNativeEmailVerification(
         normalizedEmail: params.recipient.normalizedEmail,
         consumer: params.consumer,
     }));
-    const verifyUrl = buildNativeEmailVerifyUrl(target, issued.rawBearer);
+    const verifyUrl = buildNativeEmailVerifyUrl(target, issued.rawBearer, params.linkPurpose);
     if (verifyUrl === null) return { status: "unavailable" };
 
     const delivery = await deliverAuthEmail(deps.delivery, {

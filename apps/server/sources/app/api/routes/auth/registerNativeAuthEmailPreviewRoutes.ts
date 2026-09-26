@@ -31,6 +31,7 @@ import {
     resolveEffectiveHomeAuthMethodsInTx,
 } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { resolveTeamInvitationMailboxVerificationAdmissionInTx } from "@/app/teams/invitations/freshAccountAdmission";
+import { isAccountDirectoryServiceEnabled } from "@/app/features/accountDirectoryFeature";
 import { loadValidFreshAccountAuthContinuation } from "@/app/api/routes/connect/connectRoutes.oauthPending";
 
 const NO_REFERRER_HEADER = "Referrer-Policy";
@@ -47,7 +48,7 @@ export function registerNativeAuthEmailOperationRoutes(
     app: Fastify,
     deps: Readonly<{
         delivery: AuthEmailDelivery;
-        isDeliveryReady: () => boolean;
+        isDeliveryReady: () => boolean | Promise<boolean>;
         env: NodeJS.ProcessEnv;
         resolveApplicationLinkTarget: ResolveAuthEmailApplicationLinkTarget;
     }>,
@@ -61,7 +62,7 @@ export function registerNativeAuthEmailOperationRoutes(
     }, async (request, reply) => {
         reply.header(NO_REFERRER_HEADER, NO_REFERRER_VALUE);
         const recipient = normalizeVerifiedEmail(request.body.email);
-        const emailDeliveryReady = recipient ? deps.isDeliveryReady() : false;
+        const emailDeliveryReady = recipient ? await deps.isDeliveryReady() : false;
         const invitation = recipient && emailDeliveryReady && request.body.admission
             ? await inTx(async (tx) => {
                 const resolved = await resolveTeamInvitationMailboxVerificationAdmissionInTx(tx, {
@@ -98,6 +99,11 @@ export function registerNativeAuthEmailOperationRoutes(
                         teamId: invitation.resolved.teamId,
                     }
                     : { kind: "fresh_account", continuationId: continuation?.key ?? null },
+                // Only a fresh account on an account service can be an account-service sign-in.
+                ...(request.body.purpose === "account_service" && !invitation
+                    && isAccountDirectoryServiceEnabled(deps.env)
+                    ? { linkPurpose: "account_service" as const }
+                    : {}),
             });
         }
         return reply.send({ accepted: true });
@@ -112,7 +118,7 @@ export function registerNativeAuthEmailOperationRoutes(
     }, async (request, reply) => {
         reply.header(NO_REFERRER_HEADER, NO_REFERRER_VALUE);
         const recipient = normalizeVerifiedEmail(request.body.email);
-        if (recipient && deps.isDeliveryReady()) {
+        if (recipient && await deps.isDeliveryReady()) {
             const eligible = await inTx(async (tx) => {
                 if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
                     env: deps.env,

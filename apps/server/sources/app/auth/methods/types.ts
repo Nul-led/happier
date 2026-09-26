@@ -34,7 +34,7 @@ export type EffectiveAuthMethodAction = Readonly<{
 
 export type AuthMethodRouteContext = Readonly<{
     /** Readiness of the API-composed transactional-mail adapter. */
-    isEmailDeliveryReady: () => boolean;
+    isEmailDeliveryReady: () => boolean | Promise<boolean>;
     /** The same API-composed adapter whose readiness feeds method policy. */
     authEmailDelivery: AuthEmailDelivery;
     /** Homes-owned portable application-link target consumed by bearer mail. */

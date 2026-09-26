@@ -1,7 +1,7 @@
 import { createServer, type Socket } from "node:net";
 import { once } from "node:events";
 import { describe, expect, it } from "vitest";
-import { resolveAuthEmailDelivery, isAuthEmailDeliveryReady } from "./resolveAuthEmailDelivery";
+import { resolveAuthEmailDelivery, isAuthEmailTransportConfigured } from "./resolveAuthEmailDelivery";
 
 /** Local SMTP system boundary; no connection or message leaves this process. */
 async function smtpSandbox(rejectRecipient = false) {
@@ -75,7 +75,7 @@ describe("production auth SMTP transport", () => {
     it("sends multipart invitation and inline QR through the default configured binding", async () => {
         const sandbox = await smtpSandbox();
         try {
-            expect(isAuthEmailDeliveryReady(sandbox.env)).toBe(true);
+            expect(isAuthEmailTransportConfigured(sandbox.env)).toBe(true);
             const delivery = resolveAuthEmailDelivery(sandbox.env);
             expect(delivery.isReady).toBe(true);
             expect(await delivery.deliver(message)).toEqual({ status: "sent" });
