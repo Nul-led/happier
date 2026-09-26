@@ -147,7 +147,13 @@ export const TranscriptRowShell = React.memo(function TranscriptRowShell(props: 
         reconciler: props.reconciler,
         signature: props.signature,
     });
-    const reservedMinHeight = reservation?.minHeight;
+    // Row-local collapsibles change the painted height without changing the row signature. Once a
+    // local mutation occurs, the mounted row's natural content is authoritative and all subsequent
+    // layouts are ignored for reservation purposes until the row remounts in its collapsed state.
+    const [hasRowLocalLayoutMutation, setHasRowLocalLayoutMutation] = React.useState(false);
+    const latestSignatureRef = React.useRef(props.signature);
+    latestSignatureRef.current = props.signature;
+    const reservedMinHeight = hasRowLocalLayoutMutation ? undefined : reservation?.minHeight;
     const shellStyle = React.useMemo(() => (
         reservedMinHeight === undefined ? undefined : { minHeight: reservedMinHeight }
     ), [reservedMinHeight]);
@@ -156,14 +162,16 @@ export const TranscriptRowShell = React.memo(function TranscriptRowShell(props: 
         const height = event?.nativeEvent?.layout?.height;
         if (typeof height === 'number' && Number.isFinite(height)) {
             const heightPx = Math.max(1, Math.trunc(height));
-            props.reconciler.recordMeasuredHeight({ signature: props.signature, heightPx });
+            if (!hasRowLocalLayoutMutation) {
+                props.reconciler.recordMeasuredHeight({ signature: props.signature, heightPx });
+            }
             props.onRowMeasured?.({
                 itemId: props.itemId,
                 rowKind: props.signature.kind,
                 heightPx,
             });
         }
-    }, [props.reconciler, props.itemId, props.onRowMeasured, props.signature]);
+    }, [hasRowLocalLayoutMutation, props.reconciler, props.itemId, props.onRowMeasured, props.signature]);
 
     React.useLayoutEffect(() => {
         if (lastSignatureKeyRef.current === signatureKey) return;
@@ -188,12 +196,20 @@ export const TranscriptRowShell = React.memo(function TranscriptRowShell(props: 
         });
     }, [props.onRowLayoutMutation, props.reconciler, props.itemId, signatureKey, props.signature]);
     const handleChildRowLayoutMutation = React.useCallback((mutation: TranscriptRowLayoutMutation) => {
+        if (mutation.reason === 'collapse') {
+            props.reconciler.resetReservationForStructuralChange({
+                itemId: props.itemId,
+                signature: latestSignatureRef.current,
+                invalidateExact: !hasRowLocalLayoutMutation,
+            });
+        }
+        setHasRowLocalLayoutMutation(true);
         props.onRowLayoutMutation?.({
             itemId: props.itemId,
             mutation,
             rowKind: props.signature.kind,
         });
-    }, [props.itemId, props.onRowLayoutMutation, props.signature.kind]);
+    }, [hasRowLocalLayoutMutation, props.itemId, props.onRowLayoutMutation, props.reconciler, props.signature.kind]);
 
     return (
         <TranscriptRowLayoutMutationProvider value={handleChildRowLayoutMutation}>
