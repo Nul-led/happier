@@ -155,6 +155,8 @@ For React and React Native corridors, inspect subscription breadth, selector loc
 
 For UI/UX, check primary flows, loading/empty/error/disabled states, accessibility, focus/keyboard/navigation, continuity, responsive layouts, and visible recovery only where affected. An optimization that improves an isolated metric while regressing freshness, feedback, state or scroll continuity, accessibility, responsive behavior, recovery, or perceived latency is not successful; design taste alone is not a code-review finding.
 
+For settings and other configuration pages, check conformance with `DESIGN.md` → "Configuration surfaces" through its canonical owners (page presentation, `PageHeader`, `ItemGroup` description, `SelectionTiles` visual variant, `ListDetailLayout`, setting declarations). A locally rebuilt section header, row divider, dropdown trigger or selection ring, or a rendered setting missing from its page's search declaration, is a split-brain finding.
+
 For CLI, daemon, terminal, installer/update, filesystem/path, process, service, or integration changes, treat Windows, Linux, and macOS as first-class. Inspect separator and case behavior, executable resolution, quoting/shell assumptions, signals/process trees, locks/atomic replacement, permissions, and service lifecycle where the changed seam can differ; require evidence for each materially affected platform or record the unvalidated platform as residual risk.
 
 ## Triage

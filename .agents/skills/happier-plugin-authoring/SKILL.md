@@ -13,6 +13,12 @@ Before choosing an SDK import, read `node_modules/@happier-dev/plugin-sdk/API.md
 Before adopting a contribution or service family, read `node_modules/@happier-dev/plugin-sdk/capability-matrix.json`. It is the sole product-availability authority: a `deferred` row is conformance-only reference material, not a supported product lifecycle. Its source API and consumer fields do not by themselves establish loaded-platform or release availability.
 Use only the package entrypoints documented there. Do not reach into host source, private aliases, or another installed plugin artifact.
 
+## Settings and configuration pages
+
+A plugin settings or detail page uses the same anatomy as Happier's own settings (`DESIGN.md` → "Configuration surfaces"): a page header, sentence-case sections with their explanation above the rows, one control per row, visual tiles for choices that change what you see, and list + detail for collections of named things. Compose it from the public plugin UI components listed in the API inventory; do not rebuild headers, row dividers, dropdown triggers or selection rings locally.
+
+Load `.agents/skills/happier-ui-craft` for the method: hierarchy, control choice, copy, states and the side-by-side check.
+
 ## Cross-plugin integrations
 
 For the beginner cross-plugin shape, read `node_modules/@happier-dev/plugin-sdk/examples/operation-only-channel-provider/`. It consumes the public `@happier-dev/channels-protocol/v1` contract by binding this plugin's Actions to the target-owned `happier.channels/providers` point; it does not declare a target, descriptor, or surface. Its `maintained-public-reference` classification describes evidence maturity; capability availability remains owned only by the capability matrix. For the advanced public descriptor and embedded-surface shape, use the `action-contract-producer` and `action-contract-consumer` pair instead; the same public contracts serve external and bundled plugins. The examples resolve from this workspace once dependencies are prepared; a documentation-site path does not. This beginner scaffold does not declare a feature integration.

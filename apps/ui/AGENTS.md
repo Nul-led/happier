@@ -5,6 +5,7 @@ Package-specific instructions for `apps/ui`. These supplement the root constitut
 ## Product design and experience
 
 - Read `../../DESIGN.md` in full before creating or changing user-facing UI, UX, copy, motion, onboarding, responsive composition, accessibility behavior, or meaningful loading/empty/error/recovery states when the work can materially affect the experience, and before a substantive design review. Purely mechanical changes and small non-material experience edits do not need the full document unless a design decision arises. It is the canonical definition of Happier as a **Warm and Fluid Companion** and of the experience quality expected across mobile, web, and desktop.
+- Load `.agents/skills/happier-ui-craft` before designing, building, or reviewing a surface. It holds the working method and taste rules (hierarchy, anatomy, control choice, copy, stability, side-by-side validation) that apply `DESIGN.md`.
 - The design doctrine does not authorize unrelated redesigns or scope expansion. Inspect and reuse canonical components, tokens, motion primitives, copy patterns, and state/navigation owners before adding or changing a pattern.
 - External design skills are optional accelerators, never prerequisites or alternate sources of product doctrine. When relevant and available, use `apple-design`, `interface-details`, `make-interfaces-feel-better`, `emil-design-eng`, and `review-animations` as focused aids. A contributor without those skills must still have the complete Happier quality bar through `DESIGN.md`, these package instructions, and canonical code.
 - Landing-page or fixed-art-direction skills such as `frontend-design`, `design-taste-frontend`, `high-end-visual-design`, `minimalist-ui`, and `gpt-taste` may inform a bounded signature or web-storytelling surface when relevant. Do not apply their mandatory fonts, colors, frameworks, layout recipes, motion machinery, or universal aesthetic rules to routine product UI. Happier's `DESIGN.md`, canonical primitives, accessibility requirements, platform contracts, and measured evidence override every generic prescription or magic value from a skill.
@@ -67,6 +68,29 @@ Details: `../../docs/agents-catalog.md` and `../../docs/providers.md`.
 - Apply layout width constraints from `@/components/layout` to full-screen scroll/content containers.
 - Keep existing-object settings lists separate from creation/attachment actions.
 - Worktrees remain usable without first creating a workspace.
+
+## Configuration surfaces
+
+Doctrine: `../../DESIGN.md` → "Configuration surfaces". Binding implementation:
+
+- **Page:** a full configuration/detail page is an `ItemList presentation="page"` that starts with a
+  `PageHeader` (settings routes: `SettingsPageHeader`, titled from `settingsRouteRegistry`).
+  `ItemGroup` and `Item` below it take the page anatomy automatically; menus and popovers reset to
+  the grouped look in `FloatingOverlay`. Do not hand-build section headers, row dividers, sheets or
+  dropdown triggers.
+- **Sections:** use `ItemGroup` `title` + `description` (+ `action`), not `footer`, on pages.
+- **Rows:** `Item` with one right-side control. Set `accessoryLayout="adaptive"` for segmented
+  controls and field selects, and `"stacked"` for visual pickers and text areas. Preference rows pass
+  no `icon`; identity marks (agent, provider, service, machine, avatar) stay.
+- **Visual pickers:** `SelectionTiles variant="visual"` with `preview` elements that render the real
+  component at static props (no subscriptions, no RPCs).
+- **Collections:** `ListDetailLayout` (rail + detail, push when narrow) for deep entities;
+  `ExpandableItem` rows for shallow ones. Selection comes from the route.
+- **Machine context:** `MachineAdministrationTargetSelector presentation="chip"` in the page header
+  actions. Keep it rendered through loading and error states.
+- **Search:** declare every rendered setting in the page's `defineSettingsPage` module, register it in
+  `settingsPageDeclarations.ts`, and render rows through `SettingRow`/`SettingAnchor` so the label and
+  anchor come from the declaration.
 
 ## Performance and continuity
 

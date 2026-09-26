@@ -473,6 +473,93 @@ Responsiveness is the foundation of fluidity. A beautiful interface that lags, j
 
 Do not “optimize” by removing useful feedback, accessibility, visual continuity, or user-visible freshness. Performance and experience are one constraint, not opposing goals.
 
+## Configuration surfaces
+
+Settings, and every full page used to configure or inspect something, share one composition. The
+visual reference is the approved design lab for the configuration-surfaces program; the exact values
+live in the page-presentation owners in code.
+
+- **The page is paper, the navigation recedes.** The settings rail is the tinted plane; the page is
+  the readable surface.
+- **Every page has an identity.** A page header states the title and one sentence of purpose. Where
+  native navigation already shows the title, the header shows only the purpose.
+- **Sections read before their controls.** A sentence-case section title with its explanation above
+  the rows, then one hairline sheet with full-width row dividers. No uppercase group labels or
+  after-the-fact footers on page surfaces.
+- **One row, one decision, one control.**
+  - A switch for on/off.
+  - A segmented control for two to four short choices, all visible.
+  - A bordered field select for longer or larger sets.
+  - A compound row only for facets of one decision (model and effort).
+  - An inline action button for operations.
+  - A value summary and chevron for destinations.
+  - A stacked row when the control needs the full width.
+
+  Never hide a choice behind tap-to-cycle.
+- **Show the choice when it changes what you see.** Theme, density, avatar, layout and similar
+  options use visual tiles whose previews render the real component at static props, never a drawn
+  replica. Behaviour settings stay textual.
+- **Icons say where a row leads, or who a thing is.** A row that opens another page, and a hub tile,
+  carries an icon; a preference row (switch, select, segmented control, inline field, button) does
+  not. Identity marks — agents, providers, services, machines, people — always stay. Icons come from
+  one family at one size in the secondary text colour, never in a bordered tile, in a fixed leading
+  column so titles line up within a section.
+- **Rarely changed detail is disclosed, not buried.** A disclosure shows a summary of its current
+  value when closed and never hides an error or a required field.
+- **Collections scale with depth.**
+  - Named things with substantial configuration use a list beside the selected detail on wide
+    screens, and push the detail on narrow ones.
+  - Shallow collections expand in place.
+  - The detail is one component in every mode.
+  - Each presentation has its matching detail container: a list opens beside it (list + detail); a
+    grid or a board opens a drawer on wide screens so the collection stays visible; phones push.
+    Closing returns to the same view with its scroll, filters and search kept.
+  - Offer **Grid | List** only where both genuinely help (a default per surface, remembered on the
+    device). Never a switch that swaps the whole page's shape.
+  - Grid cards keep one fixed footer (status left, action right) and reserve two lines of
+    description; the footer action acts, it never opens the item.
+- **Phones recompose rather than shrink.** Only a switch, a short value or a chevron may sit to the
+  right of a label; anything wider moves beneath it. A setting that can never apply on a platform is
+  not shown there.
+- **Everything is findable.** Every setting a page renders is declared for search. A result names
+  the setting and its location, and opening it brings the row into view.
+- **Status speaks only when it matters.** Healthy items stay quiet. A tinted banner appears only when
+  something blocks use, and it carries the next action. A dashed border means "add something here".
+- **Every page shares one set of measures.** The content column, the title block, the space between
+  sections and the sheet insets have one owner, so the page title, its purpose line, section titles
+  and sheets line up on the same edge on every page, inside Settings and out.
+- **Back stays out of the title.** The title and purpose, or the leading mark, keep the content's
+  left edge; on wide screens the back arrow sits in the gutter beside the column, level with the
+  title, and moves onto the title row only when there is no room for it.
+- **Glyphs stand alone.** A plain icon never sits in a bordered tile. Real marks — logos, avatars,
+  tinted monograms — may sit on a borderless filled shape.
+- **Emptiness is designed.** An empty page shows a calm glyph without a tile, a short title, one line
+  of purpose and one primary action; an empty list or rail says so in one quiet line. A rail and its
+  detail never both show the full state.
+- **Row height follows content.** A long list of single-line rows is compact; rows with a description
+  keep their room.
+- **Controls are truthful.** A control acting on an empty set is hidden (no "Show archived" when
+  nothing is archived). When the viewer cannot take the page's main action, the page says why and
+  who can. An action is offered only when every prerequisite for its success holds (sending mail
+  needs delivery configured **and** a link it can build); nothing is ever "accepted" and then silently
+  dropped.
+- **Hubs gather, they don't duplicate.** The app home (the empty main pane) is the primary hub:
+  greeting, the start-session box, what needs your attention, setup, machines and usage. Settings →
+  Overview is the lighter hub: identity, attention, summary rows and quick settings. Both are built
+  from the same hub sections. A row with no data behind it drops out rather than leaving a hole,
+  freshness is stated honestly ("As of …"), opening a hub asks no machine anything, and usage loads
+  once, lazily, keeping its last value.
+- **Setup steps leave when they are done.** A step disappears once done (for the recovery key, saved
+  or dismissed counts as done) and never claims completion it cannot see.
+- **The sidebar's foot is the account.** Avatar, name and Home open the Home and account popover, or
+  it honestly offers "Link to {service}". Beside it, icon buttons for Usage, Machines, Updates (only
+  when one exists) and Settings fold into `⋯` when narrow. One glass "+" starts a new session.
+- **No results only for a real search.** A search with a query and no match says so inline, with a
+  way to clear it ("No plugins match "x"" · Clear); an empty query never shows "no results".
+
+These are shared, generally named primitives. Plugins compose the same anatomy through the public
+plugin UI package; they do not reproduce it locally.
+
 ## Canonical components and ownership
 
 Before creating or changing a user-facing pattern:
@@ -522,6 +609,9 @@ Keep these techniques limited to signature storytelling unless another use has e
 If onboarding infrastructure is reused for release notes, guided tours, help, marketing capture, or previews, reuse the existing canonical stage and surface owners. Do not create another demo system.
 
 ## Design workflow
+
+The step-by-step method, taste rules, owner map and review checklist that apply this doctrine live in
+`.agents/skills/happier-ui-craft`.
 
 ### 1. Understand
 
