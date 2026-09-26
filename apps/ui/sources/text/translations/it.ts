@@ -6975,6 +6975,7 @@ export const it: TranslationStructure = {
       title: "Utilizzo provider",
       windowSession: "5 ore",
       windowWeekly: "Settimana",
+      usedPercent: ({ percent }: { percent: string }) => `${percent} usato`,
       titleForProvider: ({ provider }: { provider: string }) => `Utilizzo ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>

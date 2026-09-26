@@ -156,7 +156,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
     const windowRings = props.viewModel.windowRings;
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
         value: windowRings.length > 0
-            ? windowRings.map((ring) => `${windowLabel(ring.window)} ${t('agentInput.providerUsage.remaining', { percent: `${ring.ringValueLabel}%` })}`).join(', ')
+            ? windowRings.map((ring) => `${windowLabel(ring.window)} ${t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` })}`).join(', ')
             : props.viewModel.badgeLabel,
     });
     const title = props.viewModel.providerDisplayName

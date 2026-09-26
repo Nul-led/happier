@@ -6293,6 +6293,7 @@ export const en = {
             title: 'Provider usage',
             windowSession: '5h',
             windowWeekly: 'Week',
+            usedPercent: ({ percent }: { percent: string }) => `${percent} used`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} usage`,
             activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider usage: ${value}`,

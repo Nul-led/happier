@@ -6263,6 +6263,7 @@ export const de: TranslationStructure = {
             title: 'Provider-Nutzung',
             windowSession: '5 Std.',
             windowWeekly: 'Woche',
+            usedPercent: ({ percent }: { percent: string }) => `${percent} verbraucht`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} Nutzung`,
             activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider-Nutzung: ${value}`,

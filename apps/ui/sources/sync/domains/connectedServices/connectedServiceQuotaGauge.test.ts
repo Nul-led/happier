@@ -98,6 +98,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(viewModel?.effectiveMeter.meterId).toBe('weekly');
         expect(viewModel?.remainingPct).toBe(12);
         expect(viewModel?.badgeLabel).toBe('12% left');
+        expect(viewModel?.ringValueLabel).toBe('88');
         expect(viewModel?.tone).toBe('warning');
         expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['daily', 'weekly']);
     });
@@ -153,8 +154,8 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         });
 
         expect(claude?.windowRings).toEqual([
-            expect.objectContaining({ window: 'session', meterId: 'five_hour', remainingPct: 90, ringValueLabel: '90' }),
-            expect.objectContaining({ window: 'weekly', meterId: 'seven_day', remainingPct: 75, ringValueLabel: '75' }),
+            expect.objectContaining({ window: 'session', meterId: 'five_hour', usedPct: 10, ringValueLabel: '10' }),
+            expect.objectContaining({ window: 'weekly', meterId: 'seven_day', usedPct: 25, ringValueLabel: '25' }),
         ]);
         expect(codex?.windowRings.map((ring) => [ring.window, ring.meterId])).toEqual([
             ['session', 'codex:primary'],

@@ -6652,6 +6652,7 @@ export const pl: TranslationStructure = {
       title: "Użycie dostawcy",
       windowSession: "5 godz.",
       windowWeekly: "Tydzień",
+      usedPercent: ({ percent }: { percent: string }) => `${percent} wykorzystano`,
       titleForProvider: ({ provider }: { provider: string }) => `Użycie ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>

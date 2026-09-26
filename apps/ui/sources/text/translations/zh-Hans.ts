@@ -6426,6 +6426,7 @@ export const zhHans: TranslationStructure = {
       title: "提供商使用量",
       windowSession: "5小时",
       windowWeekly: "本周",
+      usedPercent: ({ percent }: { percent: string }) => `已用 ${percent}`,
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `账号：${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>

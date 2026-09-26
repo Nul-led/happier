@@ -5568,6 +5568,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
             title: '提供者使用量',
             windowSession: '5小時',
             windowWeekly: '本週',
+            usedPercent: ({ percent }: { percent: string }) => `已用 ${percent}`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
             activeAccount: ({ account }: { account: string }) => `帳號：${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `提供者使用量：${value}`,

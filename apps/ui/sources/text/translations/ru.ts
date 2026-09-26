@@ -6635,6 +6635,7 @@ export const ru: TranslationStructure = {
         title: "Использование провайдера",
         windowSession: "5 ч",
         windowWeekly: "Неделя",
+        usedPercent: ({ percent }: { percent: string }) => `${percent} использовано`,
         titleForProvider: ({ provider }: { provider: string }) => `Использование ${provider}`,
         activeAccount: ({ account }: { account: string }) => `Аккаунт: ${account}`,
         accessibilityLabel: ({ value }: { value: string }) =>

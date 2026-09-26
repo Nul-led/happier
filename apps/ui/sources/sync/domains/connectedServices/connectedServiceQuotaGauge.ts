@@ -228,7 +228,8 @@ function buildWindowRings(
             meterId: row.meterId,
             remainingPct: row.remainingPct,
             usedPct: row.usedPct,
-            ringValueLabel: String(Math.round(row.remainingPct)),
+            // Used, like the context ring beside it; the fill and tone already follow the same meter.
+            ringValueLabel: String(Math.round(row.usedPct)),
             tone: row.tone,
         }] : [];
     });
@@ -451,7 +452,7 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         usedPct: selectedRow.usedPct,
         primaryValueSemantics: 'remaining',
         valueLabel: remainingValueLabel,
-        ringValueLabel: String(roundedRemaining),
+        ringValueLabel: String(Math.round(selectedRow.usedPct)),
         badgeLabel: selectedWindowPrefix ? `${selectedWindowPrefix} ${remainingValueLabel}` : remainingValueLabel,
         scopePrefix: selectedWindowPrefix,
         detailRightLabel: selectedRow.detailRightLabel,

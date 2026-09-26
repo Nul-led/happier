@@ -2422,7 +2422,7 @@ describe('SessionView (direct sessions)', () => {
       serviceId: 'openai-codex',
       providerDisplayName: 'connectedServices.serviceNames.openaiCodex',
       activeAccountDisplayLabel: 'Native Codex account',
-      ringValueLabel: '38',
+      ringValueLabel: '62',
     }));
   });
 
@@ -2475,7 +2475,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       activeAccountDisplayLabel: 'View-backed Codex account',
-      ringValueLabel: '18',
+      ringValueLabel: '82',
     }));
   });
 
@@ -2546,7 +2546,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       activeAccountDisplayLabel: 'Active Codex account',
-      ringValueLabel: '65',
+      ringValueLabel: '35',
     }));
   });
 
@@ -2603,7 +2603,7 @@ describe('SessionView (direct sessions)', () => {
 
     expect(connectedServiceAuthGroupsState.requestedServiceIds).toContain('openai-codex');
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '80',
+      ringValueLabel: '20',
     }));
   });
 
@@ -2672,7 +2672,7 @@ describe('SessionView (direct sessions)', () => {
       profileId: 'work',
     }));
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '55',
+      ringValueLabel: '45',
       recoveryCreditSummary: null,
     }));
     expect(findAgentInput(screen).props.onProviderUsageRecoveryCreditPress).toBeUndefined();
@@ -2802,7 +2802,7 @@ describe('SessionView (direct sessions)', () => {
 
     const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '18',
+      ringValueLabel: '82',
       recoveryCreditSummary: expect.objectContaining({ availableCount: 1 }),
     }));
     expect(screen.findByTestId('session-usageLimit-recovery-consumeResetCredit')).toBeTruthy();
@@ -2825,7 +2825,7 @@ describe('SessionView (direct sessions)', () => {
     await updateSessionViewAndSettle(screen, { routeServerId: 'server-route-polled' });
 
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '55',
+      ringValueLabel: '45',
       recoveryCreditSummary: null,
     }));
     expect(findAgentInput(screen).props.onProviderUsageRecoveryCreditPress).toBeUndefined();

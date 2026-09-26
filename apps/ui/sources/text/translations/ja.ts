@@ -6905,6 +6905,7 @@ localTailscale: {
       title: "プロバイダー使用量",
       windowSession: "5時間",
       windowWeekly: "今週",
+      usedPercent: ({ percent }: { percent: string }) => `使用済み ${percent}`,
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `アカウント: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>

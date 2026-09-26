@@ -6262,6 +6262,7 @@ deps: {
             title: 'Ús del proveïdor',
             windowSession: '5h',
             windowWeekly: 'Setmana',
+            usedPercent: ({ percent }: { percent: string }) => `${percent} usat`,
             titleForProvider: ({ provider }: { provider: string }) => `Ús de ${provider}`,
             activeAccount: ({ account }: { account: string }) => `Compte: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Ús del proveïdor: ${value}`,
