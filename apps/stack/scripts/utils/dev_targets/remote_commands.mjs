@@ -423,12 +423,23 @@ function requireServicePort(value, label, { optional = false } = {}) {
 
 const REMOTE_SERVER_LIGHT_SEMANTIC_ENV_KEYS = new Set([
   'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY',
+  // The application origin mailed links (verification, reset, invitations) are rendered on.
+  'HAPPIER_WEBAPP_URL',
   'HAPPIER_SQLITE_BUSY_TIMEOUT_MS',
   'HAPPIER_SQLITE_CONNECTION_LIMIT',
 ]);
-const REMOTE_SERVER_LIGHT_SEMANTIC_ENV_PREFIXES = ['HAPPIER_SERVER_RETENTION__'];
+const REMOTE_SERVER_LIGHT_SEMANTIC_ENV_PREFIXES = [
+  'HAPPIER_SERVER_RETENTION__',
+  // Auth mail delivery and the email/password method: a Stack's own settings must reach its server
+  // wherever it is placed, or mail-dependent sign-in silently stays off on a remote target.
+  'HAPPIER_AUTH_EMAIL_',
+  'HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__',
+];
+// Secrets never enter a remote command line or its persisted env file.
+const REMOTE_SERVER_LIGHT_NEVER_FORWARDED_ENV_KEYS = new Set(['HAPPIER_AUTH_EMAIL_SMTP_PASSWORD']);
 
 function isRemoteServerLightSemanticEnvKey(key) {
+  if (REMOTE_SERVER_LIGHT_NEVER_FORWARDED_ENV_KEYS.has(key)) return false;
   return REMOTE_SERVER_LIGHT_SEMANTIC_ENV_KEYS.has(key)
     || REMOTE_SERVER_LIGHT_SEMANTIC_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
 }

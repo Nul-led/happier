@@ -607,6 +607,46 @@ test('attended dev-target Stack preserves attended server readiness on the targe
   assert.match(decodedWindowsCommand, /\$env:HAPPIER_STACK_TUI = '1'/);
 });
 
+test('remote Stack server receives the non-secret auth mail, email/password and mail-link origin settings, never the SMTP password', () => {
+  const command = buildRemoteStackCommand(posix, {
+    services: { server: true, expo: false, daemon: false },
+    serverUrl: 'http://127.0.0.1:43005',
+    publicServerUrl: 'http://192.168.1.20:53005',
+    activeServerId: 'stack_repo__id_default',
+    stackName: 'repo-local-dev',
+    remoteServerPort: 43005,
+    resolveServerPublicUrlOnTarget: false,
+    remoteServerRuntimeConfig: {
+      serverComponentName: 'happier-server-light',
+      dbProvider: 'sqlite',
+      environment: {
+        HAPPIER_AUTH_EMAIL_SMTP_HOST: '127.0.0.1',
+        HAPPIER_AUTH_EMAIL_SMTP_PORT: '1025',
+        HAPPIER_AUTH_EMAIL_SMTP_SECURE: 'false',
+        HAPPIER_AUTH_EMAIL_SMTP_USERNAME: 'mailer',
+        HAPPIER_AUTH_EMAIL_SMTP_PASSWORD: 'smtp-secret-do-not-forward',
+        HAPPIER_AUTH_EMAIL_FROM_ADDRESS: 'noreply@happier.localhost',
+        HAPPIER_AUTH_EMAIL_FROM_NAME: 'Happier',
+        HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: 'true',
+        HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: 'true',
+        HAPPIER_WEBAPP_URL: 'http://127.0.0.1:19364',
+      },
+    },
+  });
+  // Mailed links are rendered on the application origin; without it a remote server mails nothing.
+  assert.match(command, /HAPPIER_WEBAPP_URL=http:\/\/127\.0\.0\.1:19364/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_SMTP_HOST=127\.0\.0\.1/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_SMTP_PORT=1025/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_SMTP_SECURE=false/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_SMTP_USERNAME=mailer/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_FROM_ADDRESS=noreply@happier\.localhost/);
+  assert.match(command, /HAPPIER_AUTH_EMAIL_FROM_NAME=Happier/);
+  assert.match(command, /HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED=true/);
+  assert.match(command, /HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED=true/);
+  // A secret would land in a remote command line and a persisted env file: never forwarded.
+  assert.doesNotMatch(command, /smtp-secret-do-not-forward|HAPPIER_AUTH_EMAIL_SMTP_PASSWORD/);
+});
+
 test('remote Stack server uses the stable outer public URL and projects only supported light/SQLite semantics', () => {
   const serverPlacedOptions = {
     services: { server: true, expo: true, daemon: false },
