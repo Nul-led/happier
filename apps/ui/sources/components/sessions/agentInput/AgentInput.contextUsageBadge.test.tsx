@@ -520,6 +520,7 @@ describe('AgentInput (context usage badge)', () => {
                 status: 'ok',
                 details: {},
             },
+            windowRings: [],
             allMeterRows: [
                 {
                     meterId: 'weekly',
@@ -620,6 +621,7 @@ describe('AgentInput (context usage badge)', () => {
                 status: 'ok',
                 details: {},
             },
+            windowRings: [],
             allMeterRows: [
                 {
                     meterId: 'weekly',

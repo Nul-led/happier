@@ -6424,6 +6424,8 @@ export const zhHans: TranslationStructure = {
     dropToAttach: "拖放以附加文件",
     providerUsage: {
       title: "提供商使用量",
+      windowSession: "5小时",
+      windowWeekly: "本周",
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `账号：${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -6573,6 +6575,7 @@ export const zhHans: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `剩余 ${percent}%`,
+      badgeLabel: "上下文",
       windowTitle: "上下文窗口",
       usedDetail: ({
         percent,

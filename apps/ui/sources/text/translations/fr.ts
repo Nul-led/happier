@@ -6248,6 +6248,8 @@ export const fr: TranslationStructure = {
         dropToAttach: 'Dépose pour joindre des fichiers',
         providerUsage: {
             title: 'Usage du provider',
+            windowSession: '5 h',
+            windowWeekly: 'Semaine',
             titleForProvider: ({ provider }: { provider: string }) => `${provider} — usage`,
             activeAccount: ({ account }: { account: string }) => `Compte : ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Usage du provider : ${value}`,
@@ -6384,6 +6386,7 @@ export const fr: TranslationStructure = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
+            badgeLabel: 'Contexte',
             windowTitle: 'Fenêtre de contexte',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} de contexte utilisé`,

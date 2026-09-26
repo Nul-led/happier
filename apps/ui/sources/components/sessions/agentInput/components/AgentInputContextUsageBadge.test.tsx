@@ -34,6 +34,13 @@ function contextUsageState(overrides: Partial<ContextUsageState> = {}): ContextU
 }
 
 describe('AgentInputContextUsageBadge', () => {
+    it('labels the ring as context usage', async () => {
+        const screen = await renderScreen(<AgentInputContextUsageBadge state={contextUsageState()} />);
+
+        expect(screen.findByTestId('agent-input-context-usage-label')?.props.children).toBe('Context');
+        expect(screen.findByTestId('agent-input-context-usage-value')?.props.children).toBe('82');
+    });
+
     it('does not rerender the ring when parent rerenders with the same usage display data', async () => {
         tokenUsageRingRenderSpy.mockClear();
         const screen = await renderScreen(

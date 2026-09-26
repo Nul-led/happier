@@ -6973,6 +6973,8 @@ export const it: TranslationStructure = {
     dropToAttach: "Rilascia per allegare file",
     providerUsage: {
       title: "Utilizzo provider",
+      windowSession: "5 ore",
+      windowWeekly: "Settimana",
       titleForProvider: ({ provider }: { provider: string }) => `Utilizzo ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -7122,6 +7124,7 @@ export const it: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contesto",
       windowTitle: "Finestra di contesto",
       usedDetail: ({
         percent,

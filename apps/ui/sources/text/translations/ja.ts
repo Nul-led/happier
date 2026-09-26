@@ -6903,6 +6903,8 @@ localTailscale: {
     dropToAttach: "ドロップして添付",
     providerUsage: {
       title: "プロバイダー使用量",
+      windowSession: "5時間",
+      windowWeekly: "今週",
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `アカウント: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -7052,6 +7054,7 @@ localTailscale: {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `残り ${percent}%`,
+      badgeLabel: "コンテキスト",
       windowTitle: "コンテキストウィンドウ",
       usedDetail: ({
         percent,

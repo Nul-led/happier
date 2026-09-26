@@ -7,7 +7,10 @@ import { Text } from '@/components/ui/text/Text';
 import { TokenUsageRing, type TokenUsageTone } from '@/components/sessions/usage';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import type { ConnectedServiceQuotaGaugeViewModel } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+import type {
+    ConnectedServiceQuotaGaugeViewModel,
+    ConnectedServiceQuotaGaugeRingWindow,
+} from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 
 import { AgentInputContentPopover } from './AgentInputContentPopover';
 
@@ -49,6 +52,23 @@ function areProviderUsageMeterRowsEqual(
         }
     }
     return true;
+}
+
+function areProviderUsageWindowRingsEqual(
+    left: ConnectedServiceQuotaGaugeViewModel['windowRings'],
+    right: ConnectedServiceQuotaGaugeViewModel['windowRings'],
+): boolean {
+    if (left === right) return true;
+    if (left.length !== right.length) return false;
+    return left.every((ring, index) => {
+        const other = right[index];
+        return !!other
+            && ring.window === other.window
+            && ring.meterId === other.meterId
+            && ring.usedPct === other.usedPct
+            && ring.ringValueLabel === other.ringValueLabel
+            && ring.tone === other.tone;
+    });
 }
 
 function areProviderUsageRecoveryCreditsEqual(
@@ -93,7 +113,8 @@ function areProviderUsageViewModelsEqual(
         && left.tone === right.tone
         && left.isStale === right.isStale
         && areProviderUsageRecoveryCreditsEqual(left.recoveryCreditSummary, right.recoveryCreditSummary)
-        && areProviderUsageMeterRowsEqual(left.allMeterRows, right.allMeterRows);
+        && areProviderUsageMeterRowsEqual(left.allMeterRows, right.allMeterRows)
+        && areProviderUsageWindowRingsEqual(left.windowRings, right.windowRings);
 }
 
 function areProviderUsageBadgePropsEqual(
@@ -118,6 +139,12 @@ function mapGaugeToneToMeterTone(tone: ConnectedServiceQuotaGaugeViewModel['tone
     return 'success';
 }
 
+function windowLabel(window: ConnectedServiceQuotaGaugeRingWindow): string {
+    return window === 'session'
+        ? t('agentInput.providerUsage.windowSession')
+        : t('agentInput.providerUsage.windowWeekly');
+}
+
 export const AgentInputProviderUsageBadge = React.memo(function AgentInputProviderUsageBadge(
     props: AgentInputProviderUsageBadgeProps,
 ) {
@@ -126,8 +153,11 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
     const [isPinnedOpen, setIsPinnedOpen] = React.useState(false);
     const [isHovered, setIsHovered] = React.useState(false);
     const open = isPinnedOpen || isHovered;
+    const windowRings = props.viewModel.windowRings;
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
-        value: props.viewModel.badgeLabel,
+        value: windowRings.length > 0
+            ? windowRings.map((ring) => `${windowLabel(ring.window)} ${t('agentInput.providerUsage.remaining', { percent: `${ring.ringValueLabel}%` })}`).join(', ')
+            : props.viewModel.badgeLabel,
     });
     const title = props.viewModel.providerDisplayName
         ? t('agentInput.providerUsage.titleForProvider', { provider: props.viewModel.providerDisplayName })
@@ -157,15 +187,36 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                     ];
                 }}
             >
-                <TokenUsageRing
-                    used={props.viewModel.usedPct}
-                    limit={100}
-                    label={accessibilityLabel}
-                    value={props.viewModel.ringValueLabel}
-                    tone={mapQuotaToneToTokenTone(props.viewModel.tone)}
-                    ringTestID="agent-input-provider-usage-ring"
-                    valueTestID="agent-input-provider-usage-value"
-                />
+                {windowRings.length > 0 ? windowRings.map((ring) => (
+                    <View key={ring.window} style={styles.windowRing}>
+                        <Text
+                            testID={`agent-input-provider-usage-window-label:${ring.window}`}
+                            style={styles.windowLabel}
+                            numberOfLines={1}
+                        >
+                            {windowLabel(ring.window)}
+                        </Text>
+                        <TokenUsageRing
+                            used={ring.usedPct}
+                            limit={100}
+                            label={accessibilityLabel}
+                            value={ring.ringValueLabel}
+                            tone={mapQuotaToneToTokenTone(ring.tone)}
+                            ringTestID={`agent-input-provider-usage-ring:${ring.window}`}
+                            valueTestID={`agent-input-provider-usage-value:${ring.window}`}
+                        />
+                    </View>
+                )) : (
+                    <TokenUsageRing
+                        used={props.viewModel.usedPct}
+                        limit={100}
+                        label={accessibilityLabel}
+                        value={props.viewModel.ringValueLabel}
+                        tone={mapQuotaToneToTokenTone(props.viewModel.tone)}
+                        ringTestID="agent-input-provider-usage-ring"
+                        valueTestID="agent-input-provider-usage-value"
+                    />
+                )}
             </Pressable>
             </View>
 
@@ -306,8 +357,10 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
 const stylesheet = StyleSheet.create((theme) => ({
     badge: {
         position: 'relative',
-        width: 20,
+        flexDirection: 'row',
+        minWidth: 20,
         height: 20,
+        gap: 8,
         borderRadius: 999,
         justifyContent: 'center',
         alignItems: 'center',
@@ -315,6 +368,16 @@ const stylesheet = StyleSheet.create((theme) => ({
     badgePressed: {
         opacity: 0.9,
         transform: [{ scale: 0.96 }],
+    },
+    windowRing: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    windowLabel: {
+        fontSize: 11,
+        color: theme.colors.text.secondary,
+        ...Typography.default(),
     },
     popoverContent: {
         paddingHorizontal: 18,

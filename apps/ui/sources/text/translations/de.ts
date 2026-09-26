@@ -6261,6 +6261,8 @@ export const de: TranslationStructure = {
         dropToAttach: 'Zum Anhängen hierher ziehen',
         providerUsage: {
             title: 'Provider-Nutzung',
+            windowSession: '5 Std.',
+            windowWeekly: 'Woche',
             titleForProvider: ({ provider }: { provider: string }) => `${provider} Nutzung`,
             activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider-Nutzung: ${value}`,
@@ -6397,6 +6399,7 @@ export const de: TranslationStructure = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% übrig`,
+            badgeLabel: 'Kontext',
             windowTitle: 'Kontextfenster',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} Kontext genutzt`,

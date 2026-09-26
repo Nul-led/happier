@@ -6633,6 +6633,8 @@ export const ru: TranslationStructure = {
       dropToAttach: "Перетащите, чтобы прикрепить файлы",
       providerUsage: {
         title: "Использование провайдера",
+        windowSession: "5 ч",
+        windowWeekly: "Неделя",
         titleForProvider: ({ provider }: { provider: string }) => `Использование ${provider}`,
         activeAccount: ({ account }: { account: string }) => `Аккаунт: ${account}`,
         accessibilityLabel: ({ value }: { value: string }) =>
@@ -6783,6 +6785,7 @@ export const ru: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `Осталось ${percent}%`,
+      badgeLabel: "Контекст",
       windowTitle: "Окно контекста",
       usedDetail: ({
         percent,

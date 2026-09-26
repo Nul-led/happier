@@ -6650,6 +6650,8 @@ export const pl: TranslationStructure = {
     dropToAttach: "Upuść, aby dołączyć pliki",
     providerUsage: {
       title: "Użycie dostawcy",
+      windowSession: "5 godz.",
+      windowWeekly: "Tydzień",
       titleForProvider: ({ provider }: { provider: string }) => `Użycie ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -6800,6 +6802,7 @@ export const pl: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `Pozostało ${percent}%`,
+      badgeLabel: "Kontekst",
       windowTitle: "Okno kontekstu",
       usedDetail: ({
         percent,

@@ -6260,6 +6260,8 @@ deps: {
         dropToAttach: 'Deixa anar per adjuntar fitxers',
         providerUsage: {
             title: 'Ús del proveïdor',
+            windowSession: '5h',
+            windowWeekly: 'Setmana',
             titleForProvider: ({ provider }: { provider: string }) => `Ús de ${provider}`,
             activeAccount: ({ account }: { account: string }) => `Compte: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Ús del proveïdor: ${value}`,
@@ -6396,6 +6398,7 @@ deps: {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
+            badgeLabel: 'Context',
             windowTitle: 'Finestra de context',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} de context utilitzat`,

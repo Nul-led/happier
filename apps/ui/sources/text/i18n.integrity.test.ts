@@ -483,6 +483,9 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     ]),
     // These locales use the same spelling for this label.
     ca: new Set([
+        // "Context" is the Catalan word; "5h" is the unit-symbol window label.
+        'agentInput.context.badgeLabel',
+        'agentInput.providerUsage.windowSession',
         'agentInput.suggestionGroups.sessions',
         'automations.form.schedule.manualTitle',
         // "Errors" is the Catalan plural of "error", not an untranslated fallback.

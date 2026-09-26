@@ -92,6 +92,9 @@ export const AgentInputContextUsageBadge = React.memo(function AgentInputContext
                     ];
                 }}
             >
+                <Text testID="agent-input-context-usage-label" style={styles.label} numberOfLines={1}>
+                    {t('agentInput.context.badgeLabel')}
+                </Text>
                 <TokenUsageRing
                     used={props.state.usedTokens}
                     limit={props.state.contextWindowTokens}
@@ -133,11 +136,18 @@ export const AgentInputContextUsageBadge = React.memo(function AgentInputContext
 const stylesheet = StyleSheet.create((theme) => ({
     badge: {
         position: 'relative',
-        width: 20,
+        flexDirection: 'row',
+        minWidth: 20,
         height: 20,
+        gap: 4,
         borderRadius: 999,
         justifyContent: 'center',
         alignItems: 'center',
+    },
+    label: {
+        fontSize: 11,
+        color: theme.colors.text.secondary,
+        ...Typography.default(),
     },
     badgePressed: {
         opacity: 0.9,

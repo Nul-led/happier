@@ -65,10 +65,27 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
             resetLabel: '2h',
             tone: 'warning',
         }],
+        windowRings: [],
     };
 }
 
 describe('AgentInputProviderUsageBadge', () => {
+    it('labels one ring per usage window', async () => {
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={{
+            ...viewModel(),
+            windowRings: [
+                { window: 'session', meterId: 'five_hour', remainingPct: 90, usedPct: 10, ringValueLabel: '90', tone: 'neutral' },
+                { window: 'weekly', meterId: 'seven_day', remainingPct: 18, usedPct: 82, ringValueLabel: '18', tone: 'warning' },
+            ],
+        }} />);
+
+        expect(screen.findByTestId('agent-input-provider-usage-value:session')?.props.children).toBe('90');
+        expect(screen.findByTestId('agent-input-provider-usage-value:weekly')?.props.children).toBe('18');
+        expect(screen.findByTestId('agent-input-provider-usage-window-label:session')?.props.children).toBe('5h');
+        expect(screen.findByTestId('agent-input-provider-usage-window-label:weekly')?.props.children).toBe('Week');
+        expect(screen.findByTestId('agent-input-provider-usage-value')).toBeNull();
+    });
+
     it('keeps subscription details live while the usage popover remains open', async () => {
         const firstViewModel = {
             ...viewModel(),

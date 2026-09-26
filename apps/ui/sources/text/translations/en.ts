@@ -6291,6 +6291,8 @@ export const en = {
         dropToAttach: 'Drop to attach files',
         providerUsage: {
             title: 'Provider usage',
+            windowSession: '5h',
+            windowWeekly: 'Week',
             titleForProvider: ({ provider }: { provider: string }) => `${provider} usage`,
             activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider usage: ${value}`,
@@ -6427,6 +6429,7 @@ export const en = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% left`,
+            badgeLabel: 'Context',
             windowTitle: 'Context Window',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} context used`,

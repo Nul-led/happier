@@ -6762,6 +6762,8 @@ export const pt: TranslationStructure = {
     dropToAttach: "Solte para anexar arquivos",
     providerUsage: {
       title: "Uso do provedor",
+      windowSession: "5 h",
+      windowWeekly: "Semana",
       titleForProvider: ({ provider }: { provider: string }) => `Uso de ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Conta: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -6911,6 +6913,7 @@ export const pt: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contexto",
       windowTitle: "Janela de contexto",
       usedDetail: ({
         percent,

@@ -5566,6 +5566,8 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         dropToAttach: '拖放以附加檔案',
         providerUsage: {
             title: '提供者使用量',
+            windowSession: '5小時',
+            windowWeekly: '本週',
             titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
             activeAccount: ({ account }: { account: string }) => `帳號：${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `提供者使用量：${value}`,
@@ -5651,6 +5653,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `剩餘 ${percent}%`,
+            badgeLabel: '上下文',
             windowTitle: '上下文視窗',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • 已使用 ${used}/${total} 上下文`,

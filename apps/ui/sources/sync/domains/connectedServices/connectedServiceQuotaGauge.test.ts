@@ -129,6 +129,54 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         });
     });
 
+    it('reports a 5-hour and a weekly ring from the overall window meters, ignoring per-model windows', () => {
+        const claude = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([
+                meter({ meterId: 'five_hour', label: '5-hour', utilizationPct: 10, unit: 'unknown' }),
+                meter({ meterId: 'seven_day', label: 'Weekly', utilizationPct: 25, unit: 'unknown' }),
+                meter({ meterId: 'seven_day_fable', label: 'Weekly (Fable)', utilizationPct: 61, unit: 'unknown' }),
+            ]),
+            windowMode: 'most_constrained',
+            nowMs: 2_000,
+            formatter,
+        });
+        const codex = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([
+                meter({ meterId: 'codex:primary', label: 'Codex · Primary', utilizationPct: 40, windowDurationMs: 5 * 60 * 60 * 1000 }),
+                meter({ meterId: 'codex:secondary', label: 'Codex · Secondary', utilizationPct: 70, windowDurationMs: 7 * 24 * 60 * 60 * 1000 }),
+                meter({ meterId: 'codex_spark:secondary', label: 'Spark · Secondary', utilizationPct: 95, windowDurationMs: 7 * 24 * 60 * 60 * 1000, modelId: 'gpt-spark' }),
+                meter({ meterId: 'daily', label: 'Daily', utilizationPct: 99, windowDurationMs: 24 * 60 * 60 * 1000 }),
+            ]),
+            windowMode: 'most_constrained',
+            nowMs: 2_000,
+            formatter,
+        });
+
+        expect(claude?.windowRings).toEqual([
+            expect.objectContaining({ window: 'session', meterId: 'five_hour', remainingPct: 90, ringValueLabel: '90' }),
+            expect.objectContaining({ window: 'weekly', meterId: 'seven_day', remainingPct: 75, ringValueLabel: '75' }),
+        ]);
+        expect(codex?.windowRings.map((ring) => [ring.window, ring.meterId])).toEqual([
+            ['session', 'codex:primary'],
+            ['weekly', 'codex:secondary'],
+        ]);
+    });
+
+    it('limits window rings to the selected window mode', () => {
+        const viewModel = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([
+                meter({ meterId: 'five_hour', label: '5-hour', utilizationPct: 90, unit: 'unknown' }),
+                meter({ meterId: 'seven_day', label: 'Weekly', utilizationPct: 25, unit: 'unknown' }),
+            ]),
+            windowMode: 'weekly',
+            nowMs: 2_000,
+            formatter,
+        });
+
+        expect(viewModel?.effectiveMeter.meterId).toBe('seven_day');
+        expect(viewModel?.windowRings.map((ring) => ring.meterId)).toEqual(['seven_day']);
+    });
+
     it('does not compare quota windows against rate or capacity families in most-constrained mode', () => {
         const viewModel = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: snapshot([
