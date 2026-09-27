@@ -133,7 +133,7 @@
   "list-bullets": "LeftToRightListBulletIcon",
   "list-checks": "CheckListIcon",
   "list-numbers": "LeftToRightListNumberIcon",
-  "lock": "LockIcon",
+  "lock": "SquareLock01Icon",
   "lock-open": "SquareUnlock01Icon",
   "magic-wand": "MagicWand01Icon",
   "magnifying-glass": "Search01Icon",

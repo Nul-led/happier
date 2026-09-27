@@ -36,6 +36,8 @@ export type EmailPasswordProvisionInput = Readonly<{
     admission: NativeAccountAdmissionV1;
     signal?: AbortSignal;
     isCurrent?: () => boolean;
+    /** Create the Account for account-service sign-in: the server answers with its Directory credential. */
+    credentialTarget?: 'account_directory';
 }>;
 
 export type EmailPasswordProvisionResult = Readonly<{
@@ -100,6 +102,7 @@ export async function provisionEmailPasswordAccount(
             email: input.email,
             admission: input.admission,
             account: { mode: 'plain', password: input.password },
+            ...(input.credentialTarget ? { credentialTarget: input.credentialTarget } : {}),
         });
         return {
             credentials: { token: created.token },
@@ -162,6 +165,7 @@ export async function provisionEmailPasswordAccount(
                     contentPublicKeySig: binding.contentPublicKeySig,
                 },
             },
+            ...(input.credentialTarget ? { credentialTarget: input.credentialTarget } : {}),
         });
         succeeded = true;
         return {

@@ -5,12 +5,6 @@ import { renderScreen } from '@/dev/testkit';
 import { voiceSettingsDefaults } from '@/sync/domains/settings/voiceSettings';
 import { t } from '@/text';
 
-vi.mock('@/components/ui/lists/Item', () => ({
-  Item: (props: any) => React.createElement('Item', props, props.rightElement),
-}));
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-  ItemGroup: (props: any) => React.createElement('ItemGroup', props, props.children),
-}));
 vi.mock('@/components/ui/forms/Switch', () => ({
   Switch: (props: any) => React.createElement('Switch', props),
 }));
@@ -57,18 +51,13 @@ describe('VoicePrivacySection', () => {
       setVoice,
     }));
 
-    const menu = screen.tree.root.findByType('DropdownMenu' as any);
-    expect(menu.props.selectedId).toBe('on_demand');
-    expect(menu.props.itemTrigger.itemProps).toMatchObject({
-      testID: 'settings.voice.privacy.currentUiContextMode',
-    });
-    expect(menu.props.items.map((item: { id: string }) => item.id)).toEqual([
-      'off',
-      'on_demand',
-      'automatic',
-    ]);
+    // Three short, always-visible choices (segmented), each with its own stable selector.
+    expect(screen.findByTestId('settings.voice.privacy.currentUiContextMode')).toBeTruthy();
+    for (const mode of ['off', 'on_demand', 'automatic']) {
+      expect(screen.findByTestId(`settings.voice.privacy.currentUiContextMode:${mode}`)).toBeTruthy();
+    }
 
-    menu.props.onSelect(currentUiContextMode);
+    screen.pressByTestId(`settings.voice.privacy.currentUiContextMode:${currentUiContextMode}`);
     expect(setVoice).toHaveBeenCalledWith({
       ...voiceSettingsDefaults,
       privacy: {
@@ -78,4 +67,28 @@ describe('VoicePrivacySection', () => {
     });
     },
   );
+  it('edits the recent messages count in place, within 0–50', async () => {
+    const setVoice = vi.fn();
+    const { act } = await import('react-test-renderer');
+    const { VoicePrivacySection } = await import('./VoicePrivacySection');
+    const voice = {
+      ...voiceSettingsDefaults,
+      privacy: { ...voiceSettingsDefaults.privacy, shareRecentMessages: true, recentMessagesCount: 3 },
+    };
+    const screen = await renderScreen(React.createElement(VoicePrivacySection, { voice, setVoice }));
+
+    const field = () => screen.findByTestId('settings.voice.privacy.recentMessagesCount.field');
+    expect(field()?.props.value).toBe('3');
+    await act(async () => {
+      field()!.props.onChangeText('80');
+    });
+    await act(async () => {
+      field()!.props.onBlur();
+    });
+
+    expect(setVoice).toHaveBeenLastCalledWith({
+      ...voice,
+      privacy: { ...voice.privacy, recentMessagesCount: 50 },
+    });
+  });
 });

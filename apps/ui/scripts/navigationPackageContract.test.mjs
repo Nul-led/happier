@@ -242,6 +242,30 @@ test('apps/ui patched expo-router web modal keeps critical layout when Metro omi
   );
 });
 
+test('apps/ui patched expo-router web modal mounts its screen in the first commit', async () => {
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const packageRoot = dirname(scriptsDir);
+  const modalWebDir = join(packageRoot, 'node_modules', 'expo-router', 'build', 'modal', 'web');
+
+  // A route modal whose screen mounts a commit late emits navigation state without the nested
+  // navigator's routes, and linking then rewrites a cold-loaded `/settings/<page>` URL to `/settings`.
+  const drawerContents = await readFile(join(modalWebDir, 'ModalStackRouteDrawer.js'), 'utf-8');
+  assert.match(drawerContents, /HAPPIER PATCH\(expo-router-web-modal-first-commit-mount\)/);
+  assert.match(
+    drawerContents,
+    /<vaul_1\.Drawer\.Portal container=\{portalContainer\}>/,
+    'the drawer portal should render into an explicit container so it does not wait a commit for Radix to mount it',
+  );
+
+  const utilsContents = await readFile(join(modalWebDir, 'utils.js'), 'utf-8');
+  assert.match(utilsContents, /HAPPIER PATCH\(expo-router-web-modal-first-commit-mount\)/);
+  assert.match(
+    utilsContents,
+    /useState\(\(\) => readIsDesktop\(isWeb, breakpoint\)\)/,
+    'the desktop/sheet decision should be known on the first render so the drawer does not remount its screen',
+  );
+});
+
 test('apps/ui patched expo-router linking rolls browser history back when route removal is prevented', async () => {
   const scriptsDir = dirname(fileURLToPath(import.meta.url));
   const packageRoot = dirname(scriptsDir);
@@ -383,6 +407,16 @@ test('apps/ui postinstall verifies every current expo-router patch target', asyn
     postinstallContents,
     /HAPPIER PATCH\(expo-router-web-modal-critical-inline-layout\)/,
     'postinstall should verify the critical inline route-modal layout marker',
+  );
+  assert.match(
+    postinstallContents,
+    /build['"], ['"]modal['"], ['"]web['"], ['"]utils\.js/,
+    'postinstall should verify the Expo Router web modal viewport patch target',
+  );
+  assert.match(
+    postinstallContents,
+    /HAPPIER PATCH\(expo-router-web-modal-first-commit-mount\)/,
+    'postinstall should verify the first-commit route-modal mount marker',
   );
   assert.match(
     postinstallContents,

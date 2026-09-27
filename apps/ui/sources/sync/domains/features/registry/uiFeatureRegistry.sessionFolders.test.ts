@@ -12,6 +12,5 @@ describe('uiFeatureRegistry session folders', () => {
         expect(sessionFolders.settingsToggle?.serverVisibilityScope).toBe('main_selection');
         expect(sessionFolders.settingsToggle?.titleKey).toBe('settingsFeatures.expSessionsFolders');
         expect(sessionFolders.settingsToggle?.subtitleKey).toBe('settingsFeatures.expSessionsFoldersSubtitle');
-        expect(sessionFolders.settingsToggle?.icon.ioniconName).toBe('folder-outline');
     });
 });

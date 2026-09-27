@@ -35,7 +35,9 @@ describe('Home governance eligibility contract', () => {
   it('accepts only empty input and publishes only effective Team eligibility', () => {
     expect(HomeGovernanceEligibilityGetInputV1Schema.safeParse({}).success).toBe(true);
     expect(HomeGovernanceEligibilityGetInputV1Schema.safeParse({ serverId: 'home-a' }).success).toBe(false);
-    expect(HomeGovernanceEligibilityV1Schema.safeParse({ teamsEnabled: true, createTeam: false }).success).toBe(true);
+    expect(HomeGovernanceEligibilityV1Schema.safeParse({ teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false }).success).toBe(true);
+    // Whether creation names its first Account is part of the answer, never guessed by a client.
+    expect(HomeGovernanceEligibilityV1Schema.safeParse({ teamsEnabled: true, createTeam: true }).success).toBe(false);
     expect(HomeGovernanceEligibilityV1Schema.safeParse({
       teamsEnabled: true,
       createTeam: false,

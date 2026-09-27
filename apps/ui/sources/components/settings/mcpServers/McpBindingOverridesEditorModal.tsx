@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import type {
     McpServerBindingOverridesV1,
@@ -14,39 +14,19 @@ import { Modal } from '@/modal';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Text, TextInput } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import { t } from '@/text';
 
 import { ValueRefEditorModal, getValueRefEditorModalTitle } from '@/components/ui/forms/valueRefs/ValueRefEditorModal';
 import { McpBindingOverridesValuePatchGroup } from '@/components/settings/mcpServers/bindingOverrides/McpBindingOverridesValuePatchGroup';
-import { Icon } from '@/components/ui/icons/Icon';
 
 const ENV_KEY_REGEX = /^[A-Z_][A-Z0-9_]*$/;
 const HEADER_KEY_REGEX = /^[A-Za-z0-9-]+$/;
 
-const stylesheet = StyleSheet.create((theme) => ({
-    fieldLabel: {
-        ...Typography.default('semiBold'),
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        marginBottom: 8,
-        marginTop: 8,
-    },
-    textInput: {
-        ...Typography.default('regular'),
-        backgroundColor: theme.colors.input.background,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        ...SETTINGS_TEXT_INPUT_METRICS,
-        color: theme.colors.input.text,
-        borderWidth: 0.5,
-        borderColor: theme.colors.border.default,
-    },
+const stylesheet = StyleSheet.create(() => ({
     padded: {
         paddingHorizontal: 16,
         paddingBottom: 16,
@@ -91,7 +71,7 @@ export function getBindingOverridesValueRefEditorChrome(kind: 'env' | 'header') 
 }
 
 export function McpBindingOverridesEditorModal(props: McpBindingOverridesEditorModalProps) {
-    const { theme } = useUnistyles();
+
     const styles = stylesheet;
 
     const initialOverrides = props.binding.overrides ?? {};
@@ -226,47 +206,43 @@ export function McpBindingOverridesEditorModal(props: McpBindingOverridesEditorM
                     <Item
                         title={t('settings.mcpServersOverridesCommandTitle')}
                         subtitle={t('settings.mcpServersOverridesCommandSubtitle')}
-                        icon={<Icon name="terminal" size={29} color={theme.colors.accent.purple} />}
                         rightElement={<Switch value={commandOverrideEnabled} onValueChange={setCommandOverrideEnabled} />}
                         onPress={() => setCommandOverrideEnabled((v) => !v)}
                         showChevron={false}
                     />
                     {commandOverrideEnabled ? (
                         <View style={styles.padded}>
-                            <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldCommand')}</Text>
-                            <TextInput
-                                style={styles.textInput}
-                                value={commandOverride}
-                                onChangeText={setCommandOverride}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                placeholder="node"
-                                placeholderTextColor={theme.colors.input.placeholder}
-                            />
+                            <FieldItem label={t('settings.mcpServersFieldCommand')}>
+                                <FieldTextInput
+                                    value={commandOverride}
+                                    onChangeText={setCommandOverride}
+                                    accessibilityLabel={t('settings.mcpServersFieldCommand')}
+                                    placeholder="node"
+                                    monospace
+                                />
+                            </FieldItem>
                         </View>
                     ) : null}
 
                     <Item
                         title={t('settings.mcpServersOverridesArgsTitle')}
                         subtitle={t('settings.mcpServersOverridesArgsSubtitle')}
-                        icon={<Icon name="list" size={29} color={theme.colors.accent.blue} />}
                         rightElement={<Switch value={argsOverrideEnabled} onValueChange={setArgsOverrideEnabled} />}
                         onPress={() => setArgsOverrideEnabled((v) => !v)}
                         showChevron={false}
                     />
                     {argsOverrideEnabled ? (
                         <View style={styles.padded}>
-                            <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldArgs')}</Text>
-                            <TextInput
-                                style={styles.textInput}
-                                value={argsOverrideText}
-                                onChangeText={setArgsOverrideText}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                multiline
-                                placeholder={t('settings.mcpServersArgsPlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                            />
+                            <FieldItem label={t('settings.mcpServersFieldArgs')}>
+                                <FieldTextInput
+                                    value={argsOverrideText}
+                                    onChangeText={setArgsOverrideText}
+                                    accessibilityLabel={t('settings.mcpServersFieldArgs')}
+                                    placeholder={t('settings.mcpServersArgsPlaceholder')}
+                                    monospace
+                                    multiline
+                                />
+                            </FieldItem>
                         </View>
                     ) : null}
                 </ItemGroup>
@@ -275,23 +251,21 @@ export function McpBindingOverridesEditorModal(props: McpBindingOverridesEditorM
                     <Item
                         title={t('settings.mcpServersOverridesUrlTitle')}
                         subtitle={t('settings.mcpServersOverridesUrlSubtitle')}
-                        icon={<Icon name="link" size={29} color={theme.colors.accent.purple} />}
                         rightElement={<Switch value={urlOverrideEnabled} onValueChange={setUrlOverrideEnabled} />}
                         onPress={() => setUrlOverrideEnabled((v) => !v)}
                         showChevron={false}
                     />
                     {urlOverrideEnabled ? (
                         <View style={styles.padded}>
-                            <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldUrl')}</Text>
-                            <TextInput
-                                style={styles.textInput}
-                                value={urlOverride}
-                                onChangeText={setUrlOverride}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                placeholder="https://example.com/mcp"
-                                placeholderTextColor={theme.colors.input.placeholder}
-                            />
+                            <FieldItem label={t('settings.mcpServersFieldUrl')}>
+                                <FieldTextInput
+                                    value={urlOverride}
+                                    onChangeText={setUrlOverride}
+                                    accessibilityLabel={t('settings.mcpServersFieldUrl')}
+                                    placeholder="https://example.com/mcp"
+                                    monospace
+                                />
+                            </FieldItem>
                         </View>
                     ) : null}
                 </ItemGroup>
@@ -319,7 +293,6 @@ export function McpBindingOverridesEditorModal(props: McpBindingOverridesEditorM
                 <Item
                     testID="mcp.bindingOverrides.save"
                     title={t('common.save')}
-                    icon={<Icon name="floppy-disk" size={29} color={theme.colors.state.success.foreground} />}
                     onPress={onSave}
                 />
             </ItemGroup>

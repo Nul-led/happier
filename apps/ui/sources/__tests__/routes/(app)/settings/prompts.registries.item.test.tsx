@@ -9,7 +9,6 @@ import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/stora
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const useLocalSearchParamsMock = vi.hoisted(() => vi.fn(() => ({
-    machineId: 'machine-1',
     sourceId: 'skills_sh:featured',
     itemId: 'item-1',
     title: 'frontend-design',
@@ -50,8 +49,9 @@ describe('PromptRegistryItemDetailsRoute', () => {
         const Route = (await import('@/app/(app)/settings/prompts/registries/item')).default;
         await renderScreen(<Route />);
 
+        // The machine is not a route param: the details screen installs on the canonical
+        // Machine Administration target.
         expect(promptRegistryItemDetailsScreenMock).toHaveBeenCalledWith(expect.objectContaining({
-            machineId: 'machine-1',
             sourceId: 'skills_sh:featured',
             itemId: 'item-1',
             title: 'frontend-design',

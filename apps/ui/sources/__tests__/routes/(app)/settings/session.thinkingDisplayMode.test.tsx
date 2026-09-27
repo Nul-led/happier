@@ -49,20 +49,19 @@ afterEach(() => {
 });
 
 describe('Transcript settings (thinking display mode)', () => {
-    it('renders a dropdown and updates session thinking mode + inline presentation', async () => {
+    it('renders the thinking display choices and updates session thinking mode + inline presentation', async () => {
         const mod = await import('@/app/(app)/settings/session/transcript');
         const screen = await renderSettingsView(React.createElement(mod.default));
 
-        expect(screen.findRowByTitle('settingsSession.thinking.displayModeTitle')).toBeTruthy();
-
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        expect(dropdowns.length).toBeGreaterThan(0);
-
-        const thinkingDropdown = dropdowns.find((dropdown: any) => dropdown?.props?.selectedId === 'inline_summary');
-        expect(thinkingDropdown).toBeTruthy();
+        // A visual picker row: `Item` is a host element here, the tiles are its `rightElement`.
+        const row = screen.findAll((node) => (node.type as unknown) === 'Item' && node.props?.testID === 'settings-session-thinking-display')[0];
+        expect(row?.props.title).toBe('settingsSession.thinking.displayModeTitle');
+        const tiles = row!.props.rightElement.props;
+        expect(tiles.value).toBe('inline_summary');
+        expect(tiles.options.map((option: { id: string }) => option.id)).toEqual(['inline_summary', 'inline_full', 'tool', 'hidden']);
 
         await act(async () => {
-            thinkingDropdown!.props.onSelect('inline_full');
+            tiles.onChange('inline_full');
         });
 
         expect(shared.setThinkingDisplayMode).toHaveBeenCalledWith('inline');

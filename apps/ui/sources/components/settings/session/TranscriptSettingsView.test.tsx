@@ -8,6 +8,8 @@ import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/stora
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const setTranscriptMessageTimestampDisplayMode = vi.fn();
+const setSessionThinkingDisplayMode = vi.fn();
+const setSessionThinkingInlinePresentation = vi.fn();
 
 installSessionSettingsCommonModuleMocks({
     storage: async (importOriginal) => {
@@ -33,6 +35,12 @@ installSessionSettingsCommonModuleMocks({
                     }
                     if (name === 'toolViewTimelineChromeMode') {
                         return ['activity_feed', vi.fn()];
+                    }
+                    if (name === 'sessionThinkingDisplayMode') {
+                        return ['tool', setSessionThinkingDisplayMode];
+                    }
+                    if (name === 'sessionThinkingInlinePresentation') {
+                        return ['summary', setSessionThinkingInlinePresentation];
                     }
                     if (name === 'transcriptMessageTimestampDisplayMode') {
                         return ['hover_web_hidden_mobile', setTranscriptMessageTimestampDisplayMode];
@@ -111,5 +119,19 @@ describe('TranscriptSettingsView', () => {
         dropdown?.props?.onSelect?.('always');
 
         expect(setTranscriptMessageTimestampDisplayMode).toHaveBeenCalledWith('always');
+    });
+
+    it('shows thinking as picture choices and writes both settings behind the full inline choice', async () => {
+        const { TranscriptSettingsView } = await import('./TranscriptSettingsView');
+        const screen = await renderSettingsView(React.createElement(TranscriptSettingsView));
+
+        const tiles = (screen.findRow('settings-session-thinking-display')?.props.rightElement as React.ReactElement<any> | undefined);
+        expect(tiles?.props.value).toBe('tool');
+        expect(tiles?.props.options.map((option: { id: string }) => option.id)).toEqual(['inline_summary', 'inline_full', 'tool', 'hidden']);
+        expect(tiles?.props.options.every((option: { preview?: unknown }) => option.preview != null)).toBe(true);
+
+        tiles?.props.onChange('inline_full');
+        expect(setSessionThinkingDisplayMode).toHaveBeenCalledWith('inline');
+        expect(setSessionThinkingInlinePresentation).toHaveBeenCalledWith('full');
     });
 });

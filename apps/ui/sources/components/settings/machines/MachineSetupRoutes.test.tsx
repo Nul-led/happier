@@ -11,6 +11,11 @@ const expoRouterMock = createExpoRouterMock({
 });
 
 vi.mock('expo-router', () => expoRouterMock.module);
+// The add-machine choices depend on the platform (browser vs desktop app); these routes are web.
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
 
 const isDesktopHostMock = vi.fn();
 // Only the desktop-host answer this suite steers is replaced. The rest of the platform boundary
@@ -21,14 +26,14 @@ vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
 }));
 
 describe('Machines settings routes', () => {
-    it('renders a setup wizard launcher for add-machine route on desktop', async () => {
+    it('offers the SSH setup wizard, not this computer, on the add-machine route on desktop', async () => {
         isDesktopHostMock.mockReturnValue(true);
         const AddMachineRoute = (await import('@/app/(app)/settings/machines/add')).default;
         const screen = await renderScreen(React.createElement(AddMachineRoute));
 
-        const item = screen.tree.findByProps({ testID: 'settings.machineSetup.openSetupWizard' });
-        expect(item).toBeTruthy();
-        expect(item.props.title).toBe('Set up a new machine');
+        expect(screen.tree.findByProps({ testID: 'settings.machineSetup:ssh' })).toBeTruthy();
+        expect(screen.tree.findAll((node) => node.props?.testID === 'settings.machineSetup:thisComputer')).toHaveLength(0);
+        expect(screen.tree.findAll((node) => node.props?.children === 'Set up a new machine').length).toBeGreaterThan(0);
     });
 
     it('renders a setup wizard launcher for this-computer route on desktop', async () => {
@@ -39,14 +44,13 @@ describe('Machines settings routes', () => {
         expect(screen.tree.findByProps({ testID: 'settings.machineSetup.openSetupWizard' })).toBeTruthy();
     });
 
-    it('renders a setup wizard launcher for add-machine route on web', async () => {
+    it('offers this computer and the SSH setup wizard on the add-machine route on web', async () => {
         isDesktopHostMock.mockReturnValue(false);
         const AddMachineRoute = (await import('@/app/(app)/settings/machines/add')).default;
         const screen = await renderScreen(React.createElement(AddMachineRoute));
 
-        const item = screen.tree.findByProps({ testID: 'settings.machineSetup.openSetupWizard' });
-        expect(item).toBeTruthy();
-        expect(item.props.title).toBe('Set up a new machine');
+        expect(screen.tree.findByProps({ testID: 'settings.machineSetup:thisComputer' })).toBeTruthy();
+        expect(screen.tree.findByProps({ testID: 'settings.machineSetup:ssh' })).toBeTruthy();
     });
 
     it('renders a setup wizard launcher for this-computer route on web', async () => {

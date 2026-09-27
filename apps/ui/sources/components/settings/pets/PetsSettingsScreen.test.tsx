@@ -385,6 +385,14 @@ function findSettingsItemByTestId(screen: RenderScreenResult, testID: string): R
     ))[0] ?? null;
 }
 
+function findSegmentedChoice(screen: RenderScreenResult, testIDPrefix: string): ReactTestInstance | null {
+    return screen.findAll((node) => (
+        node.props?.testIDPrefix === testIDPrefix
+        && typeof node.props?.onChange === 'function'
+        && Array.isArray(node.props?.options)
+    ))[0] ?? null;
+}
+
 function hasDescendantTestId(node: ReactTestInstance | null, testID: string): boolean {
     if (!node) return false;
     return node.findAll((candidate) => candidate.props?.testID === testID).length > 0;
@@ -1517,10 +1525,10 @@ describe('PetsSettingsScreen', () => {
             true,
             'settings-pets-enabled',
         );
-        const deviceOverrideMenu = screen.findAllByType('DropdownMenu')[0];
+        const deviceOverrideChoice = findSegmentedChoice(screen, 'settings-pets-device-override');
         invokeTestInstanceHandler(
-            deviceOverrideMenu,
-            'onSelect',
+            deviceOverrideChoice,
+            'onChange',
             'disabled',
             'settings-pets-device-override',
         );
@@ -1535,8 +1543,8 @@ describe('PetsSettingsScreen', () => {
         const screen = await renderScreen(<PetsSettingsScreen />);
 
         const readOverrideTitles = () => {
-            const deviceOverrideMenu = screen.findAllByType('DropdownMenu' as never)[0];
-            return deviceOverrideMenu?.props?.items?.map((item: { title: string }) => item.title) ?? [];
+            const deviceOverrideChoice = findSegmentedChoice(screen, 'settings-pets-device-override');
+            return deviceOverrideChoice?.props?.options?.map((option: { label: string }) => option.label) ?? [];
         };
 
         expect(readOverrideTitles()).toEqual([
@@ -1557,15 +1565,22 @@ describe('PetsSettingsScreen', () => {
         ]);
     });
 
-    it('exposes one device override test id for each override control', async () => {
+    it('offers each device override as one segmented choice between account default, on and off', async () => {
         const { PetsSettingsScreen } = await import('./PetsSettingsScreen');
         const screen = await renderScreen(<PetsSettingsScreen />);
 
-        expect(screen.findAllByTestId('settings-pets-device-override')).toHaveLength(1);
-        expect(screen.findAllByTestId('settings-pets-desktop-overlay-device-override')).toHaveLength(1);
-        const deviceOverrideMenu = screen.findAllByType('DropdownMenu')[0];
-        expect(deviceOverrideMenu?.props.itemTrigger?.itemProps?.testID).toBeUndefined();
-        const desktopOverrideMenu = screen.findAllByType('DropdownMenu')[1];
-        expect(desktopOverrideMenu?.props.itemTrigger?.itemProps?.testID).toBeUndefined();
+        for (const prefix of ['settings-pets-device-override', 'settings-pets-desktop-overlay-device-override']) {
+            const choices = screen.findAll((node) => node.props?.testIDPrefix === prefix && Array.isArray(node.props?.options));
+            expect(choices).toHaveLength(1);
+            expect(choices[0]?.props.options.map((option: { id: string }) => option.id)).toEqual(['inherit', 'enabled', 'disabled']);
+        }
+
+        invokeTestInstanceHandler(
+            findSegmentedChoice(screen, 'settings-pets-desktop-overlay-device-override'),
+            'onChange',
+            'enabled',
+            'settings-pets-desktop-overlay-device-override',
+        );
+        expect(applyLocalSettingsSpy).toHaveBeenCalledWith({ desktopPetOverlayEnabledOverride: 'enabled' });
     });
 });

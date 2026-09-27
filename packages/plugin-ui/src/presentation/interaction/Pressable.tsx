@@ -200,6 +200,21 @@ function isKeyboardGeneratedClick(event: unknown): boolean {
 
 const anchorStyle: ViewStyle = { position: 'relative' };
 
+/**
+ * Whether a focus should show its ring. On web the browser decides (`:focus-visible`): keyboard
+ * focus shows it, focus left by a pointer press does not. Native focus is always keyboard focus.
+ */
+function isFocusVisible(event: unknown): boolean {
+  if (Platform.OS !== 'web') return true;
+  const target = (event as { target?: { matches?: (selector: string) => boolean } } | null)?.target;
+  if (typeof target?.matches !== 'function') return true;
+  try {
+    return target.matches(':focus-visible');
+  } catch {
+    return true;
+  }
+}
+
 export function HappierPressable({
   onPress,
   onPressIn,
@@ -388,7 +403,9 @@ export function HappierPressable({
       const styleState: HappierPressableStyleState = {
         ...state,
         hovered: web.hovered === true || hovered,
-        focused: web.focused === true || focused,
+        // On web RNW reports any focus, including the focus a pointer press leaves behind; the
+        // ring follows the browser's focus-visible decision instead (keyboard focus only).
+        focused: Platform.OS === 'web' ? focused : web.focused === true || focused,
         pressed: pressState.pressed,
       };
       const callerStyle = style(styleState);
@@ -440,7 +457,7 @@ export function HappierPressable({
       onKeyDown={Platform.OS === 'web' ? handleKeyDown : undefined}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      onFocus={() => { setFocused(true); onFocusChange?.(true); }}
+      onFocus={(event: unknown) => { setFocused(isFocusVisible(event)); onFocusChange?.(true); }}
       onBlur={() => { setFocused(false); onFocusChange?.(false); }}
       style={pressableStyle}
     >

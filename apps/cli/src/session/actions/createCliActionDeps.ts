@@ -308,6 +308,7 @@ import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsPr
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
+  updateAccountSettingsV2OnceAgainstLatest,
   updateAccountSettingsV2WithRetry,
   type AccountSettingsMutationResult,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
@@ -2425,6 +2426,24 @@ export function createCliActionDeps(params: Readonly<{
       request,
       ...(signal ? { signal } : {}),
     }),
+    updateAccountAcpCatalogSettings: async ({ mutate, signal }) => {
+      if (!params.credentials) return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      // The Account settings owner fetches the latest document, applies the catalog owner's result
+      // once under its own encryption mode, and compare-and-sets the version.
+      const result = await updateAccountSettingsV2OnceAgainstLatest({
+        credentials: params.credentials,
+        ...(signal ? { signal } : {}),
+        mutate: (settings) => ({ ...settings, acpCatalogSettingsV1: mutate(settings.acpCatalogSettingsV1) }),
+      });
+      if (result.status === 'applied' || result.status === 'satisfied' || result.status === 'unchanged') {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        errorCode: result.status === 'conflict' ? 'account_settings_conflict' : `account_settings_${result.status}`,
+        error: `account_settings_${result.status}`,
+      };
+    },
     promptDocUpdate: async ({ signal, ...request }) => {
       if (!approvalsStore) return notSupported();
       return await updatePromptDocInLibrary({

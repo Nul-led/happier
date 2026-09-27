@@ -149,14 +149,8 @@ describe('AcpCatalogSettingsScreen', () => {
         screen.pressRow('settings.acpCatalog.addBackend');
         screen.pressRow('settings.acpCatalog.backend.custom-kiro');
 
-        expect(shared.routerPushSpy).toHaveBeenNthCalledWith(1, '/(app)/settings/acp-backend');
-        expect(shared.routerPushSpy).toHaveBeenNthCalledWith(
-            2,
-            expect.objectContaining({
-                pathname: '/(app)/settings/acp-backend',
-                params: { backendId: 'custom-kiro' },
-            }),
-        );
+        expect(shared.routerPushSpy).toHaveBeenNthCalledWith(1, '/(app)/settings/agents/custom');
+        expect(shared.routerPushSpy).toHaveBeenNthCalledWith(2, '/(app)/settings/agents/custom/custom-kiro');
     });
 
     it('shows only the add backend row inside the titled custom backends group when no configured backends exist', async () => {

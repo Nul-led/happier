@@ -174,6 +174,8 @@ const WORKFLOW_READ_ACTION_ID_SET = new Set([
 ] as const);
 
 const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
+  'agents.acp.backends.upsert',
+  'agents.acp.backends.delete',
   'secrets.shared.list',
   'session.follow.get',
   'session.follow.preferences.get',

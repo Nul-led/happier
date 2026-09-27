@@ -45,8 +45,8 @@ describe('control gradient theme tokens', () => {
     it('defines primary button gradients separately from color tokens used by non-fill consumers', () => {
         expect(lightTheme.colors.button.primary.background).toBe('#000000');
         expect(lightTheme.colors.button.primary.gradient?.colors).toEqual(['#000000', '#020202']);
-        expect(darkTheme.colors.button.primary.background).toBe('#221C1C');
-        expect(darkTheme.colors.button.primary.gradient?.colors).toEqual(['#221C1C', '#251F1F']);
+        expect(darkTheme.colors.button.primary.background).toBe('#EFEFEF');
+        expect(darkTheme.colors.button.primary.gradient?.colors).toEqual(['#EFEFEF', '#F2F2F2']);
     });
 
     it('keeps raised control gradients lighter at the top than the bottom', () => {

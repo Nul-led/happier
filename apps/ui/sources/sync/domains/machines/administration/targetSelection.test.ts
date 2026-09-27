@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildMachineAdministrationTargetRouteParams,
+    isMachineAdministrationCandidateExplicitlySelectable,
     isMachineAdministrationCandidateSelectable,
     readMachineAdministrationTargetRouteParams,
     resolveMachineAdministrationTargetLabel,
@@ -99,6 +100,19 @@ describe('resolveMachineAdministrationTargetState', () => {
             machineId: 'machine-locked',
             availability: 'locked',
         }))).toBe(false);
+    });
+
+    it('lets a consumer that shows last-known state opt in to choosing an offline machine, never a locked one', () => {
+        const offline = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-offline', availability: 'offline' });
+        const stale = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-stale', observation: 'stale' });
+        const locked = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-locked', availability: 'locked' });
+        const online = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-online' });
+
+        expect(isMachineAdministrationCandidateExplicitlySelectable(offline, 'live')).toBe(false);
+        expect(isMachineAdministrationCandidateExplicitlySelectable(offline, 'lastKnown')).toBe(true);
+        expect(isMachineAdministrationCandidateExplicitlySelectable(stale, 'lastKnown')).toBe(true);
+        expect(isMachineAdministrationCandidateExplicitlySelectable(locked, 'lastKnown')).toBe(false);
+        expect(isMachineAdministrationCandidateExplicitlySelectable(online, 'live')).toBe(true);
     });
 
     it('does not choose the first candidate when several portable targets exist', () => {

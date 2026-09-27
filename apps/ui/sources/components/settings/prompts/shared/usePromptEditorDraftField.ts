@@ -7,6 +7,8 @@ export type PromptEditorDraftField<T> = Readonly<{
     applyExternalValue: (next: T, options?: Readonly<{ preserveDirty?: boolean }>) => void;
     resetDirty: () => void;
     isDirty: () => boolean;
+    /** Whether the value differs from the last pristine value (the saved one), for a Save that waits for a change. */
+    changed: boolean;
 }>;
 
 /**
@@ -20,6 +22,7 @@ export type PromptEditorDraftField<T> = Readonly<{
  */
 export function usePromptEditorDraftField<T>(initialValue: T): PromptEditorDraftField<T> {
     const [value, setValueState] = React.useState<T>(initialValue);
+    const [pristine, setPristine] = React.useState<T>(initialValue);
     const dirtyRef = React.useRef(false);
 
     const setValue = React.useCallback((next: T) => {
@@ -30,9 +33,11 @@ export function usePromptEditorDraftField<T>(initialValue: T): PromptEditorDraft
     const setPristineValue = React.useCallback((next: T) => {
         dirtyRef.current = false;
         setValueState(next);
+        setPristine(next);
     }, []);
 
     const applyExternalValue = React.useCallback((next: T, options?: Readonly<{ preserveDirty?: boolean }>) => {
+        setPristine(next);
         if (options?.preserveDirty === true && dirtyRef.current) {
             return;
         }
@@ -54,7 +59,8 @@ export function usePromptEditorDraftField<T>(initialValue: T): PromptEditorDraft
             applyExternalValue,
             resetDirty,
             isDirty,
+            changed: !Object.is(value, pristine),
         }),
-        [applyExternalValue, isDirty, resetDirty, setPristineValue, setValue, value],
+        [applyExternalValue, isDirty, pristine, resetDirty, setPristineValue, setValue, value],
     );
 }

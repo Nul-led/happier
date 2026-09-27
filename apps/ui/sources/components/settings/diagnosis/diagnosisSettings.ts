@@ -1,0 +1,19 @@
+import { defineSettingsPage } from '@/components/settings/catalog/settingDeclarations';
+
+/** The searchable settings of the `diagnosis` page. Rows render their labels from these declarations. */
+export const DIAGNOSIS_SETTINGS = defineSettingsPage({
+    pageId: 'diagnosis',
+    sections: {
+        overview: {
+            titleKey: 'diagnosis.sections.overview',
+            settings: {
+                activeServer: { titleKey: 'diagnosis.overview.activeServer' },
+            },
+        },
+        page: {
+            settings: {
+                copyReport: { titleKey: 'diagnosis.actions.copyReport', descriptionKey: 'diagnosis.actions.copyReportSubtitle' },
+            },
+        },
+    },
+});

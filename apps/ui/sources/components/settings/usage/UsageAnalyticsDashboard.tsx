@@ -43,6 +43,8 @@ interface UsageAnalyticsDashboardProps {
     isRefreshing?: boolean;
     /** Bottom padding for the full-page route so the floating nav clears the footer (D-R2-10). Modal passes 0. */
     contentBottomInset?: number;
+    /** A page header above the filters; the dashboard then sits on the page surface. */
+    pageHeader?: React.ReactNode;
     errorMessage?: string | null;
     onPeriodChange: (period: UsageFilterState['period']) => void;
     onMetricChange: (metric: UsageMetric) => void;
@@ -58,6 +60,12 @@ const styles = StyleSheet.create((theme) => ({
     },
     // Sticky command bar (D-R3-5): a direct ScrollView child pinned via
     // stickyHeaderIndices. Opaque canvas + hairline so bands slide beneath it.
+    screenPage: {
+        backgroundColor: theme.colors.surface.base,
+    },
+    commandBarPage: {
+        backgroundColor: theme.colors.surface.base,
+    },
     commandBar: {
         backgroundColor: theme.colors.background.canvas,
         borderBottomWidth: StyleSheet.hairlineWidth,
@@ -93,6 +101,7 @@ export const UsageAnalyticsDashboard: React.FC<UsageAnalyticsDashboardProps> = (
     sessionId,
     isRefreshing = false,
     contentBottomInset = 0,
+    pageHeader,
     errorMessage,
     onPeriodChange,
     onMetricChange,
@@ -126,8 +135,14 @@ export const UsageAnalyticsDashboard: React.FC<UsageAnalyticsDashboardProps> = (
     const periodLabel = t(getUsagePeriodDefinition(filters.period).translationKey);
 
     return (
-        <ScrollView style={styles.screen} stickyHeaderIndices={[0]} testID="usage-dashboard-scroll">
-            <View style={styles.commandBar} testID="usage-command-bar">
+        <ScrollView
+            style={[styles.screen, pageHeader ? styles.screenPage : null]}
+            // The filters stay pinned; a page header above them scrolls away.
+            stickyHeaderIndices={[pageHeader ? 1 : 0]}
+            testID="usage-dashboard-scroll"
+        >
+            {pageHeader ? <View>{pageHeader}</View> : null}
+            <View style={[styles.commandBar, pageHeader ? styles.commandBarPage : null]} testID="usage-command-bar">
                 <View style={[styles.commandBarInner, contentMaxWidthStyle]}>
                     <FiltersSection
                         viewModel={viewModel}

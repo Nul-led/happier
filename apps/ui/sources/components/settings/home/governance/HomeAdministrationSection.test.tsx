@@ -108,7 +108,7 @@ describe('HomeAdministrationSection', () => {
         screen.pressByTestId('request-home-approval');
         await waitForHomeGovernance(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-approval'));
         expect(screen.findByTestId('request-home-approval')?.props.accessibilityState?.disabled).toBe(true);
-        screen.pressByTestId('home-admin-approval');
+        screen.pressByTestId('home-admin-approval.action');
 
         expect(routerPush).toHaveBeenCalledWith(
             `/inbox/approvals/approval-home-1?serverId=${encodeURIComponent(home)}`,
@@ -162,11 +162,11 @@ describe('HomeAdministrationSection', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable');
         });
         expect(screen.findByTestId('home-admin-unavailable')?.props.accessibilityLiveRegion).toBe('assertive');
-        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable-action');
 
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
         const before = harness.requestsFor(GOVERNANCE_PATH).length;
-        await screen.pressByTestIdAsync('home-admin-retry');
+        await screen.pressByTestIdAsync('home-admin-unavailable-action');
 
         await waitForHomeGovernance(() => {
             expect(harness.requestsFor(GOVERNANCE_PATH).length).toBeGreaterThan(before);
@@ -185,7 +185,7 @@ describe('HomeAdministrationSection', () => {
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable');
         });
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-unavailable-action');
     });
 
     it('shows setup instructions for the typed ownerless-Home response without rendering administration data', async () => {

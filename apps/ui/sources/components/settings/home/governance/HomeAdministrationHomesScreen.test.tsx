@@ -34,6 +34,7 @@ installSettingsViewCommonModuleMocks({
         useRouter: () => ({ push: routerPush, back: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
+        usePathname: () => '/settings/home',
     }),
 });
 

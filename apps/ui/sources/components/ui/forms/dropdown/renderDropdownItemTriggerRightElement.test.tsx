@@ -40,4 +40,20 @@ describe('renderDropdownItemTriggerRightElement', () => {
         // returned as a bare element rather than wrapped in a Text node.
         expect((node as React.ReactElement).type).toBe('Icon');
     });
+
+    it('shows a placeholder in an empty page field instead of a blank box', async () => {
+        const { renderDropdownItemTriggerRightElement } = await import('./renderDropdownItemTriggerRightElement');
+
+        const node = renderDropdownItemTriggerRightElement({
+            detail: null,
+            open: false,
+            detailColor: '#666',
+            chevronColor: '#999',
+            field: { borderColor: '#ccc', backgroundColor: '#fff', valueColor: '#111', placeholderColor: '#aaa' },
+        });
+
+        const [valueText] = React.Children.toArray((node as React.ReactElement<{ children: React.ReactNode }>).props.children) as React.ReactElement<{ children: React.ReactNode; style: { color: string } }>[];
+        expect(valueText.props.children).toBe('Choose…');
+        expect(valueText.props.style.color).toBe('#aaa');
+    });
 });

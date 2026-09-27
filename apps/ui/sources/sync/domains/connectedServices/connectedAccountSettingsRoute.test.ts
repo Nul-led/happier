@@ -6,6 +6,7 @@ import type {
 import {
     buildConnectedAccountsSettingsRoute,
     buildConnectedAccountSettingsRoute,
+    readConnectedAccountAddRequest,
     resolveConnectedAccountSettingsRoute,
     resolveQualifiedConnectedAccountSettingsRoute,
 } from './connectedAccountSettingsRoute';
@@ -64,6 +65,20 @@ describe('connectedAccountSettingsRoute', () => {
             legacyServiceId: null,
             focus: null,
         });
+    });
+
+    it('opens a service page on its new-account draft and still resolves the service', () => {
+        const service = {
+            pluginId: 'acme.connected-accounts-conformance',
+            localId: 'vault',
+        };
+
+        const route = buildConnectedAccountSettingsRoute(service, null, { add: true });
+
+        expect(route.params).toEqual({ ...service, add: '1' });
+        expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toMatchObject({ service, focus: null });
+        expect(readConnectedAccountAddRequest(route.params)).toBe(true);
+        expect(readConnectedAccountAddRequest(buildConnectedAccountSettingsRoute(service).params)).toBe(false);
     });
 
     it('keeps a generated released qualified route reachable before its descriptor projects', () => {

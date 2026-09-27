@@ -7,6 +7,7 @@ import {
     type WorkspaceScopeBase,
 } from '@/sync/domains/workspaces/workspaceScope';
 import type { UniversalSearchTarget } from './universalSearchResult';
+import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 
 function areWorkspaceScopesEqual(left: WorkspaceScopeBase, right: WorkspaceScopeBase): boolean {
     const normalizedLeft = normalizeWorkspaceScopeBase(left);
@@ -50,7 +51,13 @@ export function isUniversalSearchTargetCurrent(input: Readonly<{
             && input.isWorkspaceScopeReachable(target);
     }
     if (target.kind === 'settingsPage') {
-        return [...input.settingsPages.values()].some((page) => page.route === target.route);
+        // A result may name one row (`?setting=`) or a sub-page below its catalog page; either is
+        // current while that page is offered. The Overview owns only its own route.
+        const pathname = target.route.split('?')[0];
+        return [...input.settingsPages.values()].some((page) => typeof page.route === 'string' && (
+            page.route === pathname
+            || (page.route !== SETTINGS_ROUTES.general && pathname.startsWith(`${page.route}/`))
+        ));
     }
     if (!target.serverId) return false;
     const capturedScope = normalizeWorkspaceScopeBase(target.scope);

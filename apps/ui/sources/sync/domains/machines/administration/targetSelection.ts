@@ -84,6 +84,21 @@ export function isMachineAdministrationCandidateSelectable(
     return candidate.observation === 'live' && candidate.availability === 'online';
 }
 
+/**
+ * Which candidates an explicit choice may name. `live` (the default) admits only a live online
+ * machine. `lastKnown` is for consumers that show a machine's last known state and disable its
+ * operations while it is away: they may also choose an offline machine, never a locked one.
+ */
+export type MachineAdministrationExplicitSelectionPolicy = 'live' | 'lastKnown';
+
+export function isMachineAdministrationCandidateExplicitlySelectable(
+    candidate: MachineAdministrationCandidateV1,
+    policy: MachineAdministrationExplicitSelectionPolicy,
+): boolean {
+    if (isMachineAdministrationCandidateSelectable(candidate)) return true;
+    return policy === 'lastKnown' && (candidate.availability === 'online' || candidate.availability === 'offline');
+}
+
 export function machineAdministrationTargetsEqual(
     left: MachineAdministrationTargetV1,
     right: MachineAdministrationTargetV1,

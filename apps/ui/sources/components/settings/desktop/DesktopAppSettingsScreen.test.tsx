@@ -120,8 +120,10 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
+const desktopHostState = vi.hoisted(() => ({ value: true }));
+
 vi.mock('@/utils/platform/desktopHost', () => ({
-    isDesktopHost: () => true,
+    isDesktopHost: () => desktopHostState.value,
 }));
 
 vi.mock('@/activity/adapters/desktop/runtime/desktopActivityOverlayBridge', () => ({
@@ -140,6 +142,7 @@ describe('DesktopAppSettingsScreen', () => {
         autostartState.enabled = false;
         autostartState.loading = false;
         autostartState.error = null;
+        desktopHostState.value = true;
         localSettingsState.current = {};
         getDesktopActivityOverlayWindowStateMock.mockReset();
         listenDesktopActivityOverlayWindowStateMock.mockReset();
@@ -152,6 +155,16 @@ describe('DesktopAppSettingsScreen', () => {
 
         expect(screen.findRow('settings-desktop-autostart-enabled')).toBeTruthy();
         expect(screen.findRow('settings-desktop-overlay-enabled')).toBeTruthy();
+    });
+
+    it('says where these settings live instead of rendering an empty page outside the desktop app', async () => {
+        autostartState.supported = false;
+        desktopHostState.value = false;
+        const { DesktopAppSettingsScreen } = await import('./DesktopAppSettingsScreen');
+        const screen = await renderSettingsView(<DesktopAppSettingsScreen />);
+
+        expect(screen.findRow('settings-desktop-unavailable')).toBeTruthy();
+        expect(screen.findRow('settings-desktop-overlay-enabled')).toBeNull();
     });
 
     it('hides the autostart section when it is not supported', async () => {

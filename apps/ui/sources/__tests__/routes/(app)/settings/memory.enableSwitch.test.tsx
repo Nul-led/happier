@@ -2,16 +2,16 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import {
+    createMachineAdministrationTargetSelectionMock,
+    installMachineAdministrationTargetSelectionBoundary,
+} from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
 import { installSessionSettingsEntryModuleMocks, resetSessionSettingsEntryState } from './sessionSettingsEntryTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const machineRpcSpy = vi.fn();
 const featureEnabledState: Record<string, boolean> = { 'memory.search': true };
-
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'srv_1', generation: 1 }),
-}));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcSpy,
@@ -29,25 +29,16 @@ function installMemorySettingsEntryMocks() {
         featureEnabled: (featureId) => featureEnabledState[featureId] === true,
         storageModule: async () => {
             const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-            return createStorageModuleStub({
-                // Boundary fixture: only the machine fields exercised by this screen matter here.
-                useAllMachines: (() => ([
-                    {
-                        id: 'm1',
-                        seq: 0,
-                        createdAt: 0,
-                        updatedAt: 0,
-                        active: true,
-                        activeAt: 0,
-                        metadata: { displayName: 'Machine 1' },
-                        metadataVersion: 0,
-                        daemonState: null,
-                        daemonStateVersion: 0,
-                    },
-                ])) as any,
-            });
+            return createStorageModuleStub({});
         },
     });
+
+    // The screen administers the machine chosen through the canonical Machine Administration target;
+    // the selection owner's persisted-settings and live-inventory boundary is replaced by the testkit.
+    installMachineAdministrationTargetSelectionBoundary(createMachineAdministrationTargetSelectionMock({
+        serverId: 'srv_1',
+        machines: [{ machineId: 'm1', displayName: 'Machine 1' }],
+    }));
 
     vi.doMock('@/components/ui/lists/Item', () => ({
         Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),

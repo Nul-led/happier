@@ -51,7 +51,10 @@ installProviderSettingsRpcBoundary(providerHarness);
 installProviderSettingsStorageBoundary(providerHarness);
 
 const routerPush = vi.hoisted(() => vi.fn());
-vi.mock('expo-router', () => ({ useRouter: () => ({ back: vi.fn(), push: routerPush }) }));
+vi.mock('expo-router', () => ({
+    useRouter: () => ({ back: vi.fn(), push: routerPush }),
+    usePathname: () => '/settings/agents/codex/models',
+}));
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({ useActiveServerSnapshot: () => ({ serverId: 'server-a' }) }));
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({ useFeatureEnabled: () => true }));
 vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
@@ -65,6 +68,12 @@ vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', ()
         React.createElement('MachineAdministrationTargetSelector', props)
     ),
 }));
+
+// The models are one section of the page's virtualized list; the recycler renders every row here.
+vi.mock('@legendapp/list/react-native', async (importOriginal) => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock({ original: await importOriginal<Record<string, unknown>>() }).module;
+});
 
 describe('AgentModelsScreen provider settings safety', () => {
     beforeEach(() => {
@@ -163,6 +172,26 @@ describe('AgentModelsScreen provider settings safety', () => {
         expect(screen.findByType(ProviderModelManager).props.groups[0].rows[0].descriptor.name)
             .toBe('Boundary agent model');
     });
+    it('renders the page anatomy: a page header with the machine chip, never the full-width machine group', async () => {
+        const { AgentModelsScreen } = await import('./AgentModelsScreen');
+        mocks.settings = { schemaVersion: 7, providerSettingsV1: DEFAULT_PROVIDER_SETTINGS_V1 };
+        providerHarness.state.settings = mocks.settings;
+        const { ProviderModelManager } = await import('@/providers/models/ProviderModelManager');
+        const listed = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        // The model list hosts the page: its header (rendered by the list) carries the machine chip.
+        const host = listed.findByType(ProviderModelManager).props.page;
+        expect(host?.header.props.actions.props.presentation).toBe('chip');
+        expect(listed.findAllByType('MachineAdministrationTargetSelector' as never)
+            .filter((node) => node.props.presentation !== 'chip')).toHaveLength(0);
+
+        administrationTargetState.selectedTarget = null;
+        administrationTargetState.executionTarget = null;
+        const noMachine = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        expect(noMachine.findByTestId('settings.agents.models.header')).not.toBeNull();
+        expect(noMachine.findAllByType('MachineAdministrationTargetSelector' as never).map((node) => node.props.presentation))
+            .toEqual(['chip']);
+    });
+
     it('renders a read-only diagnostic for future provider settings instead of a mutable default manager', async () => {
         const { AgentModelsScreen } = await import('./AgentModelsScreen');
         const screen = await renderScreen(

@@ -6,6 +6,7 @@ import { VOICE_SETTINGS_INTENTS } from '@/voice/settings/voiceSettingsIntents';
 
 vi.mock('expo-router', () => ({
   useLocalSearchParams: () => ({}),
+  usePathname: () => '/settings/voice',
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 

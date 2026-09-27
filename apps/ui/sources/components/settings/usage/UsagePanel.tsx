@@ -28,6 +28,11 @@ type UsagePanelProps = {
     onFiltersChange?: (filters: UsageFilterState) => void;
     /** Extra bottom padding for the full-page route (floating-nav clearance, D-R2-10). */
     contentBottomInset?: number;
+    /**
+     * A page header drawn above the filters (the settings route). Its presence also makes the
+     * panel a configuration page: it paints the page surface instead of the canvas.
+     */
+    pageHeader?: React.ReactNode;
 };
 
 type ConnectedServiceQuotaCards = ReturnType<typeof buildConnectedServiceQuotaSummaryCards>;
@@ -63,6 +68,9 @@ const styles = StyleSheet.create((theme) => ({
         flex: 1,
         backgroundColor: theme.colors.background.canvas,
     },
+    pageSurface: {
+        backgroundColor: theme.colors.surface.base,
+    },
 }));
 
 function UsagePanelCurrentUiContext(props: Readonly<{
@@ -72,7 +80,7 @@ function UsagePanelCurrentUiContext(props: Readonly<{
     return null;
 }
 
-export const UsagePanel: React.FC<UsagePanelProps> = ({ sessionId, initialFilters, onFiltersChange, contentBottomInset }) => {
+export const UsagePanel: React.FC<UsagePanelProps> = ({ sessionId, initialFilters, onFiltersChange, contentBottomInset, pageHeader }) => {
     const auth = useAuth();
     const resolvedInitialFilters = React.useMemo(() => resolveInitialFilters(initialFilters), [initialFilters]);
     const [period, setPeriod] = React.useState<UsageFilterState['period']>(resolvedInitialFilters.period);
@@ -178,7 +186,8 @@ export const UsagePanel: React.FC<UsagePanelProps> = ({ sessionId, initialFilter
         ? (
             // Skeletons that echo sections 1–3 while the first response is in
             // flight — never a spinner (L6 loading contract).
-            <View style={styles.loadingContainer}>
+            <View style={[styles.loadingContainer, pageHeader ? styles.pageSurface : null]}>
+                {pageHeader}
                 <UsageLoadingSkeleton />
             </View>
         )
@@ -195,6 +204,7 @@ export const UsagePanel: React.FC<UsagePanelProps> = ({ sessionId, initialFilter
                     filters={{ period, metric, costMode, focus }}
                     sessionId={sessionId}
                     contentBottomInset={contentBottomInset}
+                    pageHeader={pageHeader}
                     isRefreshing={loading && usageData != null}
                     errorMessage={errorMessage}
                     onPeriodChange={(nextPeriod) => {

@@ -243,6 +243,10 @@ describe('PushNotificationTroubleshootingView', () => {
         const screen = await renderSettingsView(<PushNotificationTroubleshootingView />);
         await flushHookEffects({ cycles: 20 });
 
+        // The OS will not ask again, so the action says where it leads.
+        expect(screen.findAllByTestId('settings-notifications-push-troubleshooting-request-permission')[0]?.props.title)
+            .toBe('settingsNotifications.pushPriming.openSettings');
+
         await act(async () => {
             screen.pressByTestId('settings-notifications-push-troubleshooting-request-permission');
         });
@@ -298,6 +302,9 @@ describe('PushNotificationTroubleshootingView', () => {
         const { PushNotificationTroubleshootingView } = await import('./PushNotificationTroubleshootingView');
         const screen = await renderSettingsView(<PushNotificationTroubleshootingView />);
         await flushHookEffects({ cycles: 20 });
+
+        // Nothing to ask for once the permission is granted.
+        expect(screen.findByTestId('settings-notifications-push-troubleshooting-request-permission')).toBeNull();
 
         await act(async () => {
             screen.pressByTestId('settings-notifications-push-troubleshooting-reregister');

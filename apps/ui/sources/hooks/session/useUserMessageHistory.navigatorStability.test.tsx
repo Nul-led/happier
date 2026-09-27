@@ -39,10 +39,6 @@ vi.mock('@/sync/sync', () => ({
   },
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-  isBundledAgentId: (value: unknown) => value === 'codex',
-}));
-
 vi.mock('@/agents/registry/registryUiBehavior', async () => {
   const { createRegistryUiBehaviorModuleMock } = await import('@/dev/testkit/mocks/registryUiBehavior');
   return createRegistryUiBehaviorModuleMock();

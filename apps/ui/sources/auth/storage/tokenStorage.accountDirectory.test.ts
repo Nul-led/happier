@@ -321,6 +321,23 @@ describe('TokenStorage Account Directory namespaces', () => {
         ).resolves.toEqual({ token: 'directory-token-b' });
     });
 
+    it('tells observers when the stored Account Service sign-in changes', async () => {
+        const { TokenStorage, subscribeAccountDirectoryCredentialMutations } = await import('./tokenStorage');
+        const directory = TokenStorage.accountDirectoryAuthCredentials;
+        const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
+        const observer = vi.fn();
+        const unsubscribe = subscribeAccountDirectoryCredentialMutations(observer);
+
+        await directory.set(target, { token: 'directory-token-a' });
+        expect(observer).toHaveBeenCalledTimes(1);
+        await directory.logout(target);
+        expect(observer).toHaveBeenCalledTimes(2);
+
+        unsubscribe();
+        await directory.set(target, { token: 'directory-token-b' });
+        expect(observer).toHaveBeenCalledTimes(2);
+    });
+
     it('rejects endpoint-only operations without touching identity-bound credentials at the same URL', async () => {
         const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;

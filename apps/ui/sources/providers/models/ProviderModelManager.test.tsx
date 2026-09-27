@@ -71,6 +71,19 @@ describe('ProviderModelManager', () => {
         expect(sections.map((section) => section.id)).not.toContain('current');
     });
 
+    it('does not repeat the connection on every row of that connection\'s own list', () => {
+        const [available] = buildProviderModelManagerSections({
+            scope: { kind: 'connection', connectionId: 'pc_a' },
+            nativeModels: [],
+            groups: [group(2)],
+            showHidden: false,
+            onSetVisibility: () => {},
+        });
+        const subtitle = available?.options.find((option) => option.label === 'Model 1')?.subtitle ?? '';
+        expect(subtitle).toContain('model-1');
+        expect(subtitle).not.toContain('Gateway · Work');
+    });
+
     it('announces the action each model row will perform, including connection identity', () => {
         const sections = buildProviderModelManagerSections({
             scope: { kind: 'agent', agentTargetKey: 'backend:codex' },

@@ -65,4 +65,23 @@ describe('SurfaceCard surface chrome', () => {
         expect(hasShadow(findSurfaceCardStyle(screen))).toBe(false);
     });
 
+    it('sits on a configuration page as a sheet rather than a floating shadowed card', async () => {
+        const { SurfaceCard } = await import('./SurfaceCard');
+        const { ListPresentationProvider } = await import('@/components/ui/lists/listPresentation');
+        const { PAGE_LIST_METRICS } = await import('@/components/ui/lists/pageListMetrics');
+        const screen = await renderScreen(
+            <ListPresentationProvider value="page">
+                <SurfaceCard testID="card">{React.createElement('View')}</SurfaceCard>
+            </ListPresentationProvider>,
+        );
+        const { lightTheme } = await import('@/theme');
+        const cardStyle = screen.findAllByType('View' as never)
+            .map((node) => flattenStyle(node.props.style))
+            .find((style) => style.minWidth === 0 && style.width === '100%');
+
+        expect(cardStyle?.backgroundColor).toBe(lightTheme.colors.surface.sectionTint);
+        expect(cardStyle?.borderColor).toBe(lightTheme.colors.border.default);
+        expect(cardStyle?.borderRadius).toBe(PAGE_LIST_METRICS.sheetRadiusPx);
+        expect(hasShadow(cardStyle ?? {}) && cardStyle?.shadowOpacity !== 0).toBe(false);
+    });
 });

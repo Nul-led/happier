@@ -4,16 +4,44 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 
 const useArtifactsLoaded = vi.hoisted(() => vi.fn());
+const routerState = vi.hoisted(() => ({ pathname: '/settings/prompts', screenOptions: null as null | Record<string, unknown> }));
 
+// expo-router is the navigation boundary: record what the layout asks its settings-stack screen to show.
 vi.mock('expo-router', () => ({
     Slot: () => React.createElement('PromptRouteSlot'),
+    usePathname: () => routerState.pathname,
+    Stack: {
+        Screen: (props: { options?: Record<string, unknown> }) => {
+            routerState.screenOptions = props.options ?? null;
+            return null;
+        },
+    },
 }));
 vi.mock('react-native-unistyles', () => ({ StyleSheet: { create: (styles: unknown) => styles } }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/sync/domains/state/storage', () => ({ useArtifactsLoaded }));
 
 describe('PromptsLayoutRoute', () => {
-    beforeEach(() => useArtifactsLoaded.mockReset());
+    beforeEach(() => {
+        useArtifactsLoaded.mockReset();
+        routerState.pathname = '/settings/prompts';
+        routerState.screenOptions = null;
+    });
+
+    it.each([
+        ['/settings/prompts/skills', 'promptLibrary.skills'],
+        ['/settings/prompts/templates', 'promptLibrary.templates'],
+        ['/settings/prompts/docs/doc-1', 'promptLibrary.editPrompt'],
+        ['/settings/prompts', 'settings.prompts'],
+    ] as const)('titles the phone header for %s from the route registry', async (pathname, titleKey) => {
+        useArtifactsLoaded.mockReturnValue(true);
+        routerState.pathname = pathname;
+        const { t } = await import('@/text');
+        const { default: PromptsLayoutRoute } = await import('./_layout');
+        await renderScreen(<PromptsLayoutRoute />);
+
+        expect(routerState.screenOptions?.headerTitle).toBe(t(titleKey));
+    });
 
     it('keeps every prompt route unmounted until artifact heads are materialized', async () => {
         useArtifactsLoaded.mockReturnValue(false);

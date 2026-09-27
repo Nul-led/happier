@@ -268,6 +268,24 @@ describe('ResizableDockedPane (web pointer drag)', () => {
         expect(findAllByType(tree!, 'ViewStub')).toHaveLength(1);
     });
 
+    it('places the resize handle on the pane edge it resizes in reading and focus order', async () => {
+        // A modal's initial focus lands on its first focusable element: the handle of a leading pane
+        // (resized at its trailing edge) must not come before that pane's own content.
+        const { ResizableDockedPane } = await import('./ResizableDockedPane');
+        const order = async (resizeEdge: 'left' | 'right') => {
+            const tree = (await renderScreen(
+                <ResizableDockedPane widthPx={320} minWidthPx={200} maxWidthPx={480} resizeEdge={resizeEdge} onCommitWidthPx={vi.fn()}>
+                    <ViewStub />
+                </ResizableDockedPane>,
+            )).tree;
+            const kind = (node: { type: unknown }) => node.type === 'Pressable' ? 'handle' : node.type === 'ViewStub' ? 'content' : null;
+            return tree.root.findAll((node) => kind(node) !== null, { deep: true }).map((node) => kind(node));
+        };
+
+        expect(await order('right')).toEqual(['content', 'handle']);
+        expect(await order('left')).toEqual(['handle', 'content']);
+    });
+
     it('renders the shared column resize handle frame for docked panes', async () => {
         const { ResizableDockedPane } = await import('./ResizableDockedPane');
 

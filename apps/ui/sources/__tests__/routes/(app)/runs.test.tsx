@@ -175,6 +175,8 @@ describe('Runs screen', () => {
         machineListState.byServerId = { 'server-a': [machine] };
         machineListState.statusByServerId = { 'server-a': 'idle' };
         routerMock.state.params = {};
+        // `router.setParams` overrides live on the module-level mock; clear them between cases.
+        routerMock.resetParams();
         Screen = (await import('@/app/(app)/runs')).default;
         machineExecutionRunsListSpy.mockReset();
         machineExecutionRunsListSpy.mockResolvedValue({ ok: true, runs: [] });
@@ -204,12 +206,36 @@ describe('Runs screen', () => {
         return renderScreen(React.createElement(options!.headerRight as React.ComponentType));
     }
 
-    it('configures a header title and right-side icon actions', async () => {
+    it('configures a header title with a refresh action', async () => {
         await renderRunsScreen();
 
         const headerRightScreen = await renderHeaderRight();
         expect(headerRightScreen.findByProps({ accessibilityLabel: 'runs.a11y.refresh' })).toBeTruthy();
-        expect(headerRightScreen.findByProps({ accessibilityLabel: 'runs.a11y.toggleFinished' })).toBeTruthy();
+    });
+
+    it('shows running runs by default and every run once the page filter is set to all', async () => {
+        machineExecutionRunsListSpy.mockResolvedValue({
+            ok: true,
+            runs: [
+                createExecutionRun({ runId: 'run-live' }),
+                createExecutionRun({ runId: 'run-done', status: 'succeeded' }),
+            ],
+        });
+        const screen = await renderRunsScreen();
+        const runIds = () => screen.findAllByType('ExecutionRunRow' as any).map((row) => row.props.run.runId);
+
+        expect(runIds()).toEqual(['run-live']);
+        await act(async () => {
+            screen.pressByTestId('runs.filter:all');
+        });
+        expect(runIds()).toEqual(['run-live', 'run-done']);
+    });
+
+    it('says there are no machines when the signed-in Homes have none', async () => {
+        machineListState.byServerId = { 'server-a': [] };
+        const screen = await renderRunsScreen();
+
+        expect(screen.findAllByType('Item' as any).map((item) => item.props.title)).toContain('runs.noMachinesAvailable');
     });
 
     it('renders runs inside the constrained route content wrapper', async () => {

@@ -197,9 +197,12 @@ describe('PluginDetailInvocationLogsSectionView', () => {
             />,
         );
 
-        const target = screen.findByTestId(`settings.plugins.detail.${PLUGIN_ID}.invocationLogs.target`);
-        expect(target).not.toBeNull();
-        expect(target?.props.accessibilityState).toMatchObject({ selected: true });
+        // A passive info row carries `selected` as its visual state; the shared
+        // Item deliberately omits `aria-selected` on web rows without a
+        // selection role, so read the row's own prop (outermost testID match).
+        const target = screen.findAllByTestId(`settings.plugins.detail.${PLUGIN_ID}.invocationLogs.target`)[0];
+        expect(target).toBeDefined();
+        expect(target?.props.selected).toBe(true);
         expect(screen.getTextContent()).toContain('machine-2');
         expect(screen.getTextContent()).toContain('srv_plugin_logs');
         expect(screen.getTextContent()).toContain('Version 1.0.0');

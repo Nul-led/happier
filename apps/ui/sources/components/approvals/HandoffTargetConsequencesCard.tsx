@@ -88,7 +88,6 @@ export const HandoffTargetConsequencesCard = React.memo(function HandoffTargetCo
 }>) {
     return (
         <View style={styles.card} testID="approvals.handoff-target-consequences">
-            <Text style={styles.sectionTitle}>{t('sessionHandoff.targetApproval.title')}</Text>
             <View style={styles.rows}>
                 <View style={styles.endpoint}>
                     <Text style={styles.endpointLabel}>{t('sessionHandoff.targetApproval.sourceLabel')}</Text>
@@ -121,18 +120,9 @@ export const HandoffTargetConsequencesCard = React.memo(function HandoffTargetCo
 });
 
 const styles = StyleSheet.create((theme) => ({
+    // Sheet content of the approval page section titled "What happens at the destination".
     card: {
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.elevated,
-        padding: 16,
         gap: 12,
-    },
-    sectionTitle: {
-        fontSize: 14,
-        fontWeight: '700',
-        color: theme.colors.text.primary,
     },
     rows: {
         gap: 8,

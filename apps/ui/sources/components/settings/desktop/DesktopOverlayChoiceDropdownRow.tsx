@@ -15,7 +15,7 @@ type DesktopOverlayChoiceDropdownRowProps<T extends string | number> = Readonly<
     testID?: string;
     title: string;
     subtitle: string;
-    icon: React.ReactNode;
+    icon?: React.ReactNode;
     choices: readonly ChoiceOption<T>[];
     selectedValue: T;
     onSelect: (value: T) => void;

@@ -1,7 +1,6 @@
 import * as React from 'react';
 import type { TeamCredentialResourceListFilterV1 } from '@happier-dev/protocol/teams';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import {
     SelectionList,
@@ -118,7 +117,6 @@ export const TeamCredentialResourceFilterPicker = React.memo(function TeamCreden
             testID="team-credentials-filter"
             title={filterLabel(props.value)}
             accessibilityLabel={`${t('teams.credentials.title')}, ${filterLabel(props.value)}`}
-            icon={<Icon name="funnel-simple" size={24} />}
             disabled={props.disabled}
             onPress={open}
         />

@@ -21,8 +21,10 @@ vi.mock('react-native-unistyles', () => ({
         theme: {
             colors: {
                 input: { text: 'text', background: 'background', placeholder: 'placeholder' },
-                border: { default: 'border' },
+                border: { default: 'border', strong: 'border-strong' },
                 text: { secondary: 'secondary' },
+                surface: { base: 'surface' },
+                state: { danger: { foreground: 'danger' } },
             },
         },
     }),
@@ -76,7 +78,7 @@ describe('ConnectedAccountOAuthForm', () => {
         expect(openExternalUrlMock).toHaveBeenCalledWith('https://provider.example/authorize');
 
         const callback = tree.find(
-            (node) => node.props.testID === 'connected-account-oauth:callback',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-oauth:callback',
         );
         await act(async () => {
             callback.props.onChangeText(
@@ -131,7 +133,7 @@ describe('ConnectedAccountOAuthForm', () => {
         )).tree;
 
         const callback = tree.find(
-            (node) => node.props.testID === 'connected-account-oauth:callback',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-oauth:callback',
         );
         await act(async () => {
             callback.props.onChangeText('https://untrusted.example/callback?code=code-1&state=state-1');
@@ -145,10 +147,10 @@ describe('ConnectedAccountOAuthForm', () => {
         expect(callback.props.accessibilityHint)
             .toBe('connectedServices.oauthPaste.invalidConfig');
         const error = tree.find(
-            (node) => node.props.testID === 'connected-account-oauth:callback:error',
+            (node) => node.props.testID === 'connected-account-oauth:callback.error',
         );
         expect(error.props.accessibilityRole).toBe('alert');
-        expect(error.props.accessibilityLiveRegion).toBe('assertive');
+        expect(error.props.accessibilityLiveRegion).toBe('polite');
     });
 
     it('registers a pasted OAuth callback draft with the shared shell-navigation guard', async () => {
@@ -163,7 +165,7 @@ describe('ConnectedAccountOAuthForm', () => {
         )).tree;
         await act(async () => {
             tree.find(
-                (node) => node.props.testID === 'connected-account-oauth:callback',
+                (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-oauth:callback',
             ).props.onChangeText('http://127.0.0.1:1455/auth/callback?code=code-1&state=state-1');
         });
 

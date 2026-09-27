@@ -1,0 +1,288 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+
+import { MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
+import { ToolCallsGroupViewWithSessionCommon } from '@/components/sessions/transcript/turns/toolCalls/ToolCallsGroupView';
+import type {
+    TranscriptForkCommon,
+    TranscriptMessageDisplayCommon,
+    TranscriptToolChromeCommon,
+    TranscriptToolRouteCommon,
+} from '@/components/sessions/transcript/transcriptSessionCommon';
+import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
+import { createAgentSelectionActionChip } from '@/components/sessions/agentInput/definitions/createAgentSelectionActionChip';
+import { createPermissionActionChip } from '@/components/sessions/agentInput/definitions/createPermissionActionChip';
+import { createPathActionChip } from '@/components/sessions/agentInput/definitions/createPathActionChip';
+import { createActionMenuTriggerChip } from '@/components/sessions/agentInput/definitions/createActionMenuTriggerChip';
+import {
+    AGENT_INPUT_ACTION_CHIP_ICON_ONLY_STYLE,
+    AGENT_INPUT_ACTION_CHIP_STYLE,
+    resolveAgentInputActionChipTextStyle,
+    resolveAgentInputPanelStyle,
+} from '@/components/sessions/agentInput/components/agentInputChromeStyles';
+import { Text } from '@/components/ui/text/Text';
+import type { AgentTextMessage, Message, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { Settings } from '@/sync/domains/settings/settings';
+import { getPermissionModeLabelForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
+import { t } from '@/text';
+
+/**
+ * Previews for the visual choices on the transcript and composer settings pages. Each tile renders
+ * the real transcript rows (`MessageViewWithSessionCommon`, `ToolCallsGroupViewWithSessionCommon`)
+ * and the real composer chips inside the real composer panel, at static props: sample messages
+ * built here, the option under preview and fixed tool display settings in place of the session's
+ * and account's settings, and a read-only interaction so no row offers an action. Nothing reads a
+ * session or a display setting. The rows lay out at a normal
+ * width and the tile shows them scaled down.
+ */
+
+const PREVIEW_SESSION_ID = 'settings-preview';
+const CANVAS_WIDTH = 320;
+const CANVAS_SCALE = 0.34;
+const READ_ONLY_INTERACTION = { canSendMessages: false, canApprovePermissions: false, disableToolNavigation: true } as const;
+const NOOP = () => {};
+
+const FORK_COMMON: TranscriptForkCommon = {
+    sessionReplayEnabled: false,
+    sessionReplayMaxSeedChars: 0,
+    sessionReplayStrategy: 'recent_messages',
+    sessionReplaySummaryRunnerV1: null,
+    executionRunsEnabled: false,
+    agentSwitchingEnabled: false,
+    sessionForkSupportSource: null,
+};
+
+const TOOL_ROUTE_COMMON: TranscriptToolRouteCommon = { messagesById: {}, reducerState: null };
+
+type ThinkingDisplay = Pick<Settings, 'sessionThinkingDisplayMode' | 'sessionThinkingInlinePresentation' | 'sessionThinkingInlineChrome'>;
+type ToolChromeMode = TranscriptToolChromeCommon['toolViewTimelineChromeMode'];
+
+function messageDisplayCommon(thinking: ThinkingDisplay): TranscriptMessageDisplayCommon {
+    return {
+        ...thinking,
+        transcriptMessageTimestampDisplayMode: 'never',
+        transcriptMessageSelectionEnabled: false,
+        transcriptMessageSendToSessionEnabled: false,
+        transcriptStreamingMarkdownRenderingEnabled: true,
+        transcriptStreamingPartialOutputEnabled: true,
+        transcriptStreamingSettleDelayMs: 0,
+        transcriptStreamingSmoothingEnabled: false,
+        workspacePath: null,
+        debugInformationEnabled: false,
+    };
+}
+
+/** How a tool call reads in a preview: each style's own default detail level, rows collapsed. */
+const PREVIEW_TOOL_DISPLAY_SETTINGS: ToolViewDisplaySettings = {
+    toolViewDetailLevelDefault: 'default',
+    toolViewDetailLevelDefaultLocalControl: 'title',
+    toolViewDetailLevelByToolName: {},
+    toolViewExpandedDetailLevelDefault: 'default',
+    toolViewExpandedDetailLevelByToolName: {},
+    toolViewTimelineFeedDefaultExpanded: false,
+    toolViewTapAction: 'expand',
+    permissionPromptSurface: 'composer',
+};
+
+function toolChromeCommon(mode: ToolChromeMode): TranscriptToolChromeCommon {
+    return {
+        toolViewTimelineChromeMode: mode,
+        transcriptToolCallsCollapsedPreviewCount: 0,
+        transcriptToolCallsGroupShowBackground: false,
+        toolDisplaySettings: PREVIEW_TOOL_DISPLAY_SETTINGS,
+    };
+}
+
+const DEFAULT_THINKING: ThinkingDisplay = {
+    sessionThinkingDisplayMode: 'inline',
+    sessionThinkingInlinePresentation: 'summary',
+    sessionThinkingInlineChrome: 'plain',
+};
+
+function userMessage(): UserTextMessage {
+    return { kind: 'user-text', id: 'preview-user', localId: null, createdAt: 0, text: t('settingsSessionPages.preview.userMessage') };
+}
+
+function agentMessage(): AgentTextMessage {
+    return { kind: 'agent-text', id: 'preview-agent', localId: null, createdAt: 0, text: t('settingsSessionPages.preview.agentReply') };
+}
+
+function thinkingMessage(): AgentTextMessage {
+    return { kind: 'agent-text', id: 'preview-thinking', localId: null, createdAt: 0, text: t('settingsSessionPages.preview.thinking'), isThinking: true };
+}
+
+function toolMessage(id: string, command: string): ToolCallMessage {
+    return {
+        kind: 'tool-call',
+        id,
+        localId: null,
+        createdAt: 0,
+        children: [],
+        tool: {
+            name: 'Bash',
+            state: 'completed',
+            input: { command },
+            createdAt: 0,
+            startedAt: 0,
+            completedAt: 0,
+            description: null,
+            result: '',
+        },
+    };
+}
+
+/** A normal-width stage for real rows, shown scaled down inside the tile. */
+function PreviewStage(props: Readonly<{ children: React.ReactNode }>) {
+    return (
+        <View style={{ flex: 1, overflow: 'hidden' }} pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+            <View style={{ width: CANVAS_WIDTH, transform: [{ scale: CANVAS_SCALE }], transformOrigin: 'top left', paddingTop: 12 }}>
+                {props.children}
+            </View>
+        </View>
+    );
+}
+
+function TranscriptRow(props: Readonly<{ message: Message; thinking?: ThinkingDisplay; toolChrome?: ToolChromeMode }>) {
+    const display = React.useMemo(() => messageDisplayCommon(props.thinking ?? DEFAULT_THINKING), [props.thinking]);
+    const chrome = React.useMemo(() => toolChromeCommon(props.toolChrome ?? 'cards'), [props.toolChrome]);
+    return (
+        <MessageViewWithSessionCommon
+            message={props.message}
+            metadata={null}
+            sessionId={PREVIEW_SESSION_ID}
+            interaction={READ_ONLY_INTERACTION}
+            forkCommon={FORK_COMMON}
+            messageDisplayCommon={display}
+            toolChromeCommon={chrome}
+            toolRouteCommon={TOOL_ROUTE_COMMON}
+        />
+    );
+}
+
+export const TranscriptLayoutPreview = React.memo(function TranscriptLayoutPreview(props: Readonly<{ layout: 'linear' | 'turns' }>) {
+    const tools = React.useMemo(() => [toolMessage('preview-tool-1', 'yarn test'), toolMessage('preview-tool-2', 'git diff')], []);
+    const display = React.useMemo(() => messageDisplayCommon(DEFAULT_THINKING), []);
+    const chrome = React.useMemo(() => toolChromeCommon('activity_feed'), []);
+    return (
+        <PreviewStage>
+            <TranscriptRow message={userMessage()} />
+            {props.layout === 'turns' ? (
+                // Turns gather a turn's tool calls into one group, as the transcript does.
+                <ToolCallsGroupViewWithSessionCommon
+                    id="preview-group"
+                    status="completed"
+                    toolMessages={tools}
+                    metadata={null}
+                    sessionId={PREVIEW_SESSION_ID}
+                    expanded={false}
+                    setExpanded={NOOP}
+                    interaction={READ_ONLY_INTERACTION}
+                    forkCommon={FORK_COMMON}
+                    messageDisplayCommon={display}
+                    toolChromeCommon={chrome}
+                    toolRouteCommon={TOOL_ROUTE_COMMON}
+                />
+            ) : (
+                tools.map((tool) => <TranscriptRow key={tool.id} message={tool} toolChrome="activity_feed" />)
+            )}
+            <TranscriptRow message={agentMessage()} />
+        </PreviewStage>
+    );
+});
+
+export type ThinkingDisplayPreviewMode = 'inline_summary' | 'inline_full' | 'tool' | 'hidden';
+
+const THINKING_BY_MODE: Record<ThinkingDisplayPreviewMode, Omit<ThinkingDisplay, 'sessionThinkingInlineChrome'>> = {
+    inline_summary: { sessionThinkingDisplayMode: 'inline', sessionThinkingInlinePresentation: 'summary' },
+    inline_full: { sessionThinkingDisplayMode: 'inline', sessionThinkingInlinePresentation: 'full' },
+    tool: { sessionThinkingDisplayMode: 'tool', sessionThinkingInlinePresentation: 'summary' },
+    hidden: { sessionThinkingDisplayMode: 'hidden', sessionThinkingInlinePresentation: 'summary' },
+};
+
+export const ThinkingDisplayPreview = React.memo(function ThinkingDisplayPreview(props: Readonly<{
+    mode: ThinkingDisplayPreviewMode;
+    /** The page's current thinking-card choice, so inline previews show the chrome the user has. */
+    inlineChrome: Settings['sessionThinkingInlineChrome'];
+}>) {
+    const thinking = React.useMemo<ThinkingDisplay>(
+        () => ({ ...THINKING_BY_MODE[props.mode], sessionThinkingInlineChrome: props.inlineChrome }),
+        [props.inlineChrome, props.mode],
+    );
+    return (
+        <PreviewStage>
+            <TranscriptRow message={userMessage()} />
+            <TranscriptRow message={thinkingMessage()} thinking={thinking} />
+            <TranscriptRow message={agentMessage()} />
+        </PreviewStage>
+    );
+});
+
+export const ToolStylePreview = React.memo(function ToolStylePreview(props: Readonly<{ style: ToolChromeMode }>) {
+    const tools = React.useMemo(() => [
+        toolMessage('preview-tool-1', 'yarn test'),
+        toolMessage('preview-tool-2', 'git diff'),
+        toolMessage('preview-tool-3', 'yarn lint'),
+        toolMessage('preview-tool-4', 'git status'),
+    ], []);
+    return (
+        <PreviewStage>
+            {tools.map((tool) => <TranscriptRow key={tool.id} message={tool} toolChrome={props.style} />)}
+        </PreviewStage>
+    );
+});
+
+type ChipLabels = 'all' | 'core' | 'none';
+
+/** The composer panel with the real action chips, as `AgentInput` lays them out. */
+function ComposerStage(props: Readonly<{ layout: 'wrap' | 'scroll' | 'collapsed'; labels: ChipLabels }>) {
+    const { theme } = useUnistyles();
+    const tint = theme.colors.composer.chipTint;
+    const textStyle = React.useMemo(() => resolveAgentInputActionChipTextStyle(theme), [theme]);
+    const panelStyle = React.useMemo(() => resolveAgentInputPanelStyle(theme), [theme]);
+    const coreChipStyle = React.useCallback(() => (
+        props.labels === 'none' ? [AGENT_INPUT_ACTION_CHIP_STYLE, AGENT_INPUT_ACTION_CHIP_ICON_ONLY_STYLE] : AGENT_INPUT_ACTION_CHIP_STYLE
+    ), [props.labels]);
+    // Auto keeps labels on the core chips and drops them from the extra ones, as `AgentInput` does.
+    const extraChipStyle = React.useCallback(() => (
+        props.labels === 'all' ? AGENT_INPUT_ACTION_CHIP_STYLE : [AGENT_INPUT_ACTION_CHIP_STYLE, AGENT_INPUT_ACTION_CHIP_ICON_ONLY_STYLE]
+    ), [props.labels]);
+    const anchor = React.useRef<View | null>(null);
+    const chips = props.layout === 'collapsed'
+        ? [
+            createActionMenuTriggerChip({ anchorRef: anchor, tint, showLabel: props.labels !== 'none', chipStyle: coreChipStyle, textStyle, onPress: NOOP }),
+        ]
+        : [
+            createAgentSelectionActionChip({ anchorRef: anchor, agentId: 'claude', tint, showLabel: props.labels !== 'none', label: 'Claude', chipStyle: coreChipStyle, textStyle, onPress: NOOP }),
+            createPermissionActionChip({ anchorRef: anchor, tint, showLabel: props.labels !== 'none', label: getPermissionModeLabelForAgentType('claude', 'default'), chipStyle: coreChipStyle, textStyle, onPress: NOOP }),
+            createPathActionChip({ anchorRef: anchor, currentPath: '~/happier', tint, showLabel: props.labels === 'all', chipStyle: extraChipStyle, textStyle, onPress: NOOP }),
+            createActionMenuTriggerChip({ anchorRef: anchor, tint, showLabel: props.labels === 'all', chipStyle: extraChipStyle, textStyle, onPress: NOOP }),
+        ];
+    return (
+        <View style={{ flex: 1, overflow: 'hidden', justifyContent: 'flex-end' }} pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+            <View style={{ width: CANVAS_WIDTH, transform: [{ scale: CANVAS_SCALE }], transformOrigin: 'bottom left', padding: 10 }}>
+                <View style={panelStyle}>
+                    <Text style={{ paddingHorizontal: 8, paddingVertical: 10, color: theme.colors.input.placeholder, fontSize: 15 }}>
+                        {t('session.inputPlaceholder')}
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: props.layout === 'scroll' ? 'nowrap' : 'wrap', columnGap: 6, rowGap: 2 }}>
+                        {chips}
+                    </View>
+                </View>
+            </View>
+        </View>
+    );
+}
+
+export const ComposerActionBarPreview = React.memo(function ComposerActionBarPreview(props: Readonly<{
+    layout: 'auto' | 'wrap' | 'scroll' | 'collapsed';
+}>) {
+    // Auto wraps on wide screens (where this page is usually read) and scrolls on phones.
+    return <ComposerStage layout={props.layout === 'auto' ? 'wrap' : props.layout} labels="all" />;
+});
+
+export const ComposerChipDensityPreview = React.memo(function ComposerChipDensityPreview(props: Readonly<{
+    density: 'auto' | 'labels' | 'icons';
+}>) {
+    return <ComposerStage layout="wrap" labels={props.density === 'labels' ? 'all' : props.density === 'icons' ? 'none' : 'core'} />;
+});

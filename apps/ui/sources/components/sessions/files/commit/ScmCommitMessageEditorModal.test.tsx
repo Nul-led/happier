@@ -46,10 +46,6 @@ vi.mock('react-native-unistyles', async () => {
     });
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 async function renderScmCommitMessageEditorModal(
     Component: React.ComponentType<ScmCommitMessageEditorModalProps>,
     props: Omit<ScmCommitMessageEditorModalProps, 'setChrome'>,

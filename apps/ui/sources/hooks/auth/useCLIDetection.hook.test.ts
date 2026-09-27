@@ -323,6 +323,7 @@ describe('useCLIDetection (hook)', () => {
                                     resolvedPath: '/opt/acme/bin/acme',
                                     resolvedCommand: "'/opt/acme/bin/acme'",
                                     resolutionSource: 'system',
+                                    version: '4.2.0',
                                 },
                             },
                         },
@@ -341,6 +342,8 @@ describe('useCLIDetection (hook)', () => {
         expect(firstCall?.request?.requests).toEqual([{ id: 'cli.acme.native' }]);
         expect(latest.available['acme.native']).toBe(true);
         expect(latest.resolvedCommand['acme.native']).toBe("'/opt/acme/bin/acme'");
+        // The detected CLI version is what an agent's detail names beside the machine.
+        expect(latest.version?.['acme.native']).toBe('4.2.0');
     });
 
     it('scopes the capability cache entry by daemon state version', async () => {

@@ -20,8 +20,10 @@ vi.mock('react-native-unistyles', () => ({
         theme: {
             colors: {
                 input: { text: 'text', background: 'background', placeholder: 'placeholder' },
-                border: { default: 'border' },
+                border: { default: 'border', strong: 'border-strong' },
                 text: { primary: 'primary', secondary: 'secondary' },
+                surface: { base: 'surface' },
+                state: { danger: { foreground: 'danger' } },
             },
         },
     }),
@@ -33,7 +35,9 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
         React.createElement('ItemGroup', props, props.children),
 }));
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
+    // The row stand-in keeps its control mounted so the field inside it can be exercised.
+    Item: (props: Record<string, unknown> & { rightElement?: React.ReactNode }) =>
+        React.createElement('Item', props, props.rightElement),
 }));
 vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: (props: Record<string, unknown>) => React.createElement('Switch', props),
@@ -104,8 +108,8 @@ describe('ConnectedAccountConfigurationForm', () => {
             />,
         )).tree;
 
-        const endpoint = tree.find((node) => node.props.testID === 'connected-account-configuration:endpoint');
-        const secret = tree.find((node) => node.props.testID === 'connected-account-configuration:clientSecret');
+        const endpoint = tree.find((node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:endpoint');
+        const secret = tree.find((node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:clientSecret');
         const enabled = tree.find((node) => String(node.type) === 'Item' && node.props.title === 'Enabled');
         const region = tree.find((node) => node.props.testID === 'connected-account-configuration:region');
 
@@ -203,17 +207,17 @@ describe('ConnectedAccountConfigurationForm', () => {
         );
 
         const endpoint = tree.find(
-            (node) => node.props.testID === 'connected-account-configuration:endpoint',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:endpoint',
         );
         expect(endpoint.props.accessibilityLabel)
             .toBe('Endpoint: connectedServices.account.configurationInvalid');
         expect(endpoint.props.accessibilityHint)
             .toBe('connectedServices.account.configurationInvalid');
         const secretError = tree.find(
-            (node) => node.props.testID === 'connected-account-configuration:clientSecret:error',
+            (node) => node.props.testID === 'connected-account-configuration:clientSecret.error',
         );
         expect(secretError.props.accessibilityRole).toBe('alert');
-        expect(secretError.props.accessibilityLiveRegion).toBe('assertive');
+        expect(secretError.props.accessibilityLiveRegion).toBe('polite');
     });
 
     it('registers an entered configuration secret with the shared shell-navigation guard', async () => {
@@ -231,7 +235,7 @@ describe('ConnectedAccountConfigurationForm', () => {
 
         await act(async () => {
             tree.find(
-                (node) => node.props.testID === 'connected-account-configuration:clientSecret',
+                (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:clientSecret',
             ).props.onChangeText('replacement-secret');
         });
 
@@ -254,7 +258,7 @@ describe('ConnectedAccountConfigurationForm', () => {
 
         await act(async () => {
             screen.tree.find(
-                (node) => node.props.testID === 'connected-account-configuration:clientSecret',
+                (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:clientSecret',
             ).props.onChangeText('replacement-secret');
         });
         await act(async () => {
@@ -271,10 +275,10 @@ describe('ConnectedAccountConfigurationForm', () => {
         });
 
         expect(screen.tree.find(
-            (node) => node.props.testID === 'connected-account-configuration:clientSecret',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:clientSecret',
         ).props.value).toBe('');
         expect(screen.tree.find(
-            (node) => node.props.testID === 'connected-account-configuration:endpoint',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-configuration:endpoint',
         ).props.value).toBe('https://updated.example');
         const { getActiveUnsavedChangesGuard } = await import('@/utils/navigation/runGuardedNavigation');
         expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current ?? false).toBe(false);

@@ -15,12 +15,14 @@ const CONFIRMED: RemoteAlertRegistrationStatus = {
     deviceEnrollment: 'enrolled', refreshing: false,
 };
 
-function SettingsHarness({ registration = CONFIRMED, nativeDevice = true }: Readonly<{
+function SettingsHarness({ registration = CONFIRMED, nativeDevice = true, deviceOptedIn = true }: Readonly<{
     registration?: RemoteAlertRegistrationStatus;
     nativeDevice?: boolean;
+    /** This device's remote-alert opt-in; an opted-in switch stays enabled so it can always be turned off. */
+    deviceOptedIn?: boolean;
 }>) {
     const [account, setAccount] = React.useState(() => accountSettingsParse({ sessionRemoteAlertsEnabled: true }));
-    const [local, setLocal] = React.useState(() => localSettingsParse({ localNotificationsEnabled: false }));
+    const [local, setLocal] = React.useState(() => localSettingsParse({ localNotificationsEnabled: false, deviceRemoteAlertsEnabled: deviceOptedIn }));
     return <NotificationRemoteAlertsSection
         homeName="Studio Home"
         accountEnabled={account.sessionRemoteAlertsEnabled}
@@ -70,13 +72,13 @@ describe('NotificationRemoteAlertsSection', () => {
             nativeAvailable: false,
             deviceEnrollment: 'unavailable',
         };
-        const screen = await renderSettingsView(<SettingsHarness registration={unavailable} />);
+        const screen = await renderSettingsView(<SettingsHarness registration={unavailable} deviceOptedIn={false} />);
         expect(screen.findByTestId('settings-notifications-remote-device-switch')?.props.disabled).toBe(true);
 
         await screen.update(<SettingsHarness registration={{
             ...CONFIRMED,
             deviceEnrollment: 'disabled',
-        }} />);
+        }} deviceOptedIn={false} />);
 
         expect(screen.findByTestId('settings-notifications-remote-device-switch')?.props.disabled).toBe(false);
     });
@@ -87,9 +89,11 @@ describe('NotificationRemoteAlertsSection', () => {
             deviceEnrollment,
         }} />);
 
-        const row = screen.findByTestId('settings-notifications-remote-device');
-        expect(row?.props.subtitle).toContain('settingsNotifications.remoteAlerts.pending');
-        expect(row?.props.accessibilityState?.busy).toBe(true);
+        // The row renders through `SettingRow`: read the announced subtitle and the rendered busy state.
+        const matches = screen.findAllByTestId('settings-notifications-remote-device');
+        expect(matches.find((node) => typeof node.props.subtitle === 'string')?.props.subtitle)
+            .toContain('settingsNotifications.remoteAlerts.pending');
+        expect(matches.some((node) => node.props.accessibilityState?.busy === true)).toBe(true);
     });
 
     it.each(['current', 'stale', 'pending', 'unavailable'] as const)('shows the reported %s Home policy separately from consent', async (accountPolicy) => {

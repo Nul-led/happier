@@ -17,6 +17,7 @@ vi.mock('@/sync/domains/server/selection/serverSelectionResolution', () => ({
 
 type ProbeProps = Readonly<{
     allMachines: any[];
+    serverProfiles?: any[];
     machineListByServerId?: Record<string, any[] | null>;
     onValue: (value: ReturnType<typeof useActiveSelectionMachineGroups>) => void;
 }>;
@@ -25,7 +26,7 @@ function Probe(props: ProbeProps) {
     const value = useActiveSelectionMachineGroups({
         activeServerSnapshot: { serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 } as any,
         allMachines: props.allMachines as any,
-        serverProfiles: [{ id: 'server-a', name: 'Server A', serverUrl: 'https://a.example.test', lastUsedAt: 1 }] as any,
+        serverProfiles: (props.serverProfiles ?? [{ id: 'server-a', name: 'Server A', serverUrl: 'https://a.example.test', lastUsedAt: 1 }]) as any,
         machineListByServerId: props.machineListByServerId ?? {},
         machineListStatusByServerId: {},
         settings: {
@@ -139,5 +140,22 @@ describe('useActiveSelectionMachineGroups', () => {
                 machines: [expect.objectContaining({ id: 'm-identity' })],
             }),
         ]);
+    });
+
+    it('names each Home through the Home label owner, never offering its address as a name', async () => {
+        const captured: any[] = [];
+        await renderScreen(<Probe
+            allMachines={[]}
+            serverProfiles={[{
+                id: 'server-a',
+                name: 'a.example.test',
+                serverUrl: 'https://a.example.test',
+                personalHomeBootstrapCompleted: true,
+                lastUsedAt: 1,
+            }]}
+            onValue={(value) => captured.push(value)}
+        />);
+
+        expect(captured.at(-1).visibleMachineGroups[0].serverName).not.toBe('a.example.test');
     });
 });

@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text/Text';
 import { MachineCliGlyphs } from '@/components/sessions/new/components/MachineCliGlyphs';
 import { t } from '@/text';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 
 import { resolveMachinePickerPresence } from '../resolveMachinePickerPresence';
@@ -17,15 +18,15 @@ type AccessoryPressEvent = Partial<GestureResponderEvent> & {
     };
 };
 
-export type MachineSelectionRowAccessoryProps = Readonly<{
-    machine: Machine;
+export type MachineSelectionRowAccessoryProps<TMachine extends MachineDisplayRenderable = Machine> = Readonly<{
+    machine: TMachine;
     serverId?: string | null;
     readinessTestID?: string;
     showCliGlyphs: boolean;
     autoDetectCliGlyphs: boolean;
     showFavoriteToggle: boolean;
     isFavorite: boolean;
-    onToggleFavorite?: (machine: Machine) => void;
+    onToggleFavorite?: (machine: TMachine) => void;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -55,7 +56,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-export function MachineSelectionRowAccessory(props: MachineSelectionRowAccessoryProps): React.ReactElement {
+export function MachineSelectionRowAccessory<TMachine extends MachineDisplayRenderable = Machine>(
+    props: MachineSelectionRowAccessoryProps<TMachine>,
+): React.ReactElement {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const presence = resolveMachinePickerPresence(props.machine);

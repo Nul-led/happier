@@ -13,6 +13,7 @@ import type { SessionForkSupportSource } from '@/sync/domains/sessionFork/forkUi
 import type { CurrentProjectedAgentCapabilities } from '@/agents/backendCatalog/currentAgentCapabilities';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
+import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
 import type { ReducerState } from '@/sync/reducer/reducer';
 import {
     useSessionForkSupportSource,
@@ -99,6 +100,11 @@ export type TranscriptToolChromeCommon = Pick<TranscriptSessionCommonSettings,
 > & Readonly<{
     /** Exact Home identity carried once by the mounted transcript host. */
     serverId?: string | null;
+    /**
+     * Tool display settings given as values instead of read from the store. Only surfaces that show
+     * sample rows outside a session (settings previews) set it; the transcript host never does.
+     */
+    toolDisplaySettings?: ToolViewDisplaySettings;
 }>;
 
 export type TranscriptToolRouteCommon = Readonly<{

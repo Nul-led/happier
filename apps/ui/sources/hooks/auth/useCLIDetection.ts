@@ -20,6 +20,8 @@ export type CLIAvailability = Readonly<{
     resolvedPath: Readonly<Record<string, string | null>>; // null = unknown/not available
     resolvedCommand?: Readonly<Record<string, string | null>>; // null = unknown/not available
     resolutionSource: Readonly<Record<string, 'override' | 'system' | 'managed' | null>>;
+    /** Detected CLI version; null = unknown/not reported. */
+    version?: Readonly<Record<string, string | null>>;
     tmux: boolean | null;
     isDetecting: boolean; // Explicit loading state
     timestamp: number; // When detection completed
@@ -85,6 +87,12 @@ function readCliResolvedCommand(result: CapabilityDetectResult | undefined): str
     if (!result || !result.ok) return null;
     const data = result.data as Partial<CliCapabilityData> | undefined;
     return typeof data?.resolvedCommand === 'string' ? data.resolvedCommand : null;
+}
+
+function readCliVersion(result: CapabilityDetectResult | undefined): string | null {
+    if (!result || !result.ok) return null;
+    const data = result.data as Partial<CliCapabilityData> | undefined;
+    return typeof data?.version === 'string' && data.version.trim() ? data.version.trim() : null;
 }
 
 function readCliResolutionSource(result: CapabilityDetectResult | undefined): 'override' | 'system' | 'managed' | null {
@@ -201,6 +209,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
         resolvedPath: Readonly<Record<string, string | null>>;
         resolvedCommand: Readonly<Record<string, string | null>>;
         resolutionSource: Readonly<Record<string, 'override' | 'system' | 'managed' | null>>;
+        version: Readonly<Record<string, string | null>>;
         tmux: boolean | null;
         timestamp: number;
     }> | null>(null);
@@ -289,6 +298,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
                     resolvedPath: stable.resolvedPath,
                     resolvedCommand: stable.resolvedCommand,
                     resolutionSource: stable.resolutionSource,
+                    version: stable.version,
                     tmux: stable.tmux,
                     isDetecting: cached.status === 'loading',
                     timestamp: stable.timestamp,
@@ -331,6 +341,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
         const resolvedPath: Record<string, string | null> = {};
         const resolvedCommand: Record<string, string | null> = {};
         const resolutionSource: Record<string, 'override' | 'system' | 'managed' | null> = {};
+        const version: Record<string, string | null> = {};
         for (const agentId of probeAgentIds) {
             const capId = buildProviderCliCapabilityId(agentId);
             available[agentId] = readCliAvailable(resultsById[capId]);
@@ -339,6 +350,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
             resolvedPath[agentId] = readCliResolvedPath(resultsById[capId]);
             resolvedCommand[agentId] = readCliResolvedCommand(resultsById[capId]);
             resolutionSource[agentId] = readCliResolutionSource(resultsById[capId]);
+            version[agentId] = readCliVersion(resultsById[capId]);
         }
 
         const nextTimestamp =
@@ -351,6 +363,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
             resolvedPath,
             resolvedCommand,
             resolutionSource,
+            version,
             tmux: readTmuxAvailable(results['tool.tmux']),
             timestamp: nextTimestamp,
         };
@@ -362,6 +375,7 @@ export function useCLIDetection(machineId: string | null, options?: UseCLIDetect
             resolvedPath,
             resolvedCommand,
             resolutionSource,
+            version,
             tmux: readTmuxAvailable(results['tool.tmux']),
             isDetecting: cached.status === 'loading',
             timestamp: nextTimestamp,

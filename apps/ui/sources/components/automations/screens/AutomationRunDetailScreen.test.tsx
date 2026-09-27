@@ -213,6 +213,7 @@ vi.mock('@/components/ui/lists/Item', () => ({
         props,
         React.createElement('Text', null, props.title),
         props.subtitle ? React.createElement('Text', null, props.subtitle) : null,
+        props.rightElement ?? null,
     ),
 }));
 
@@ -436,9 +437,11 @@ describe('AutomationRunDetailScreen', () => {
         // as current: a silent failure leaves the reader believing a finished
         // Run is still running.
         expect(screen.getTextContent()).toContain('Failed');
-        const staleNotice = screen.findByProps({ testID: 'automation-run-detail-stale-refresh-error' });
-        expect(staleNotice.props.accessibilityRole).toBe('alert');
-        expect(staleNotice.props.accessibilityLiveRegion).toBe('assertive');
+        // The notice is an AttentionBanner; the announced row it renders is what assistive tech reads.
+        const staleNotice = screen.findAllByProps({ testID: 'automation-run-detail-stale-refresh-error' })
+            .find((node) => (node.type as unknown) === 'Item');
+        expect(staleNotice?.props.accessibilityRole).toBe('alert');
+        expect(staleNotice?.props.accessibilityLiveRegion).toBe('assertive');
         expect(screen.findAllByProps({ testID: 'automation-run-detail-load-error' })).toHaveLength(0);
 
         await act(async () => {

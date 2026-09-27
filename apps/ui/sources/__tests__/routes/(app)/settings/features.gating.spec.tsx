@@ -239,7 +239,9 @@ describe('FeaturesSettingsScreen gating', () => {
         const { default: FeaturesSettingsScreen } = await import('@/app/(app)/settings/features');
 
         const screen = await renderSettingsView(React.createElement(FeaturesSettingsScreen));
-        expect(screen.findAll((node) => node.props?.itemTrigger?.title === 'terminalEmbedded.settings.locationTitle')[0]).toBeTruthy();
-        expect(screen.findAll((node) => node.props?.itemTrigger?.title === 'terminalEmbedded.settings.rendererTitle')[0]).toBeTruthy();
+        const location = screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.locationTitle' && Array.isArray(node.props?.options))[0];
+        expect(location?.props.value).toBe('sidebar');
+        const renderer = screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.rendererTitle' && Array.isArray(node.props?.options))[0];
+        expect(renderer?.props.value).toBe('native');
     });
 });

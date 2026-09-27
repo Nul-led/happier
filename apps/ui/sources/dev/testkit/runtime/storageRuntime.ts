@@ -333,6 +333,8 @@ export function createStorageModuleStub<TOverrides extends object>(
         useWorkspaceReviewCommentsDrafts: () => [],
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
+        useMachineListForServer: () => null,
+        useMachineListStatusForServer: () => 'idle' as const,
         useServerScopedMachine: () => null,
         useWorkspaceScmSnapshot: () => null,
         useWorkspaceScmSnapshotError: () => null,

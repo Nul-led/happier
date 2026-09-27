@@ -159,4 +159,32 @@ describe('LocalNeuralSttSettings native model download accessory', () => {
     expect(installerSpies.ensureInstalled).toHaveBeenCalledOnce();
     expect(setCfg).not.toHaveBeenCalled();
   });
+
+  it('types a custom language inline after choosing Custom in the language menu', async () => {
+    const { Modal } = await import('@/modal');
+    const { LocalNeuralSttSettings } = await import('./LocalNeuralSttSettings.native');
+    const setCfg = vi.fn();
+    const cfg = {
+      provider: 'local_neural' as const,
+      localNeural: { assetId: 'stt-pack', language: null, execution: 'device' as const },
+    };
+    const { tree } = await renderScreen(<LocalNeuralSttSettings cfg={cfg} setCfg={setCfg} popoverBoundaryRef={null} />);
+    await act(async () => {});
+
+    const languageMenu = tree.root.findAll((node) => (
+      node.props.itemTrigger?.title === 'settingsVoice.local.localNeuralStt.language.title'
+      && typeof node.props.onSelect === 'function'
+    ))[0];
+    await act(async () => { languageMenu!.props.onSelect('__custom__'); });
+
+    const field = () => tree.root.findAll((node) => (
+      node.props.testID === 'settings.voice.localNeuralStt.language.custom.field'
+      && typeof node.props.onChangeText === 'function'
+    ))[0]!;
+    await act(async () => { field().props.onChangeText('fr-CA'); });
+    await act(async () => { field().props.onBlur(); });
+
+    expect(Modal.prompt).not.toHaveBeenCalled();
+    expect(setCfg).toHaveBeenLastCalledWith({ ...cfg, localNeural: { ...cfg.localNeural, language: 'fr-CA' } });
+  });
 });

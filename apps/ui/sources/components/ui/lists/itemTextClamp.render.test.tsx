@@ -43,17 +43,6 @@ installUiListsCommonModuleMocks({
 
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn(async () => {}) }));
-vi.mock('@/constants/Typography', () => ({ Typography: { default: () => ({}) } }));
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroupSelectionContext: React.createContext(null),
-}));
-vi.mock('@/components/ui/lists/ItemGroupRowPosition', () => ({
-    useItemGroupRowPosition: () => 'middle',
-}));
-vi.mock('@/components/ui/lists/itemGroupRowCorners', () => ({
-    getItemGroupRowCornerRadii: () => ({}),
-}));
-
 async function paintedLines(
     element: React.ReactElement,
     text: string,

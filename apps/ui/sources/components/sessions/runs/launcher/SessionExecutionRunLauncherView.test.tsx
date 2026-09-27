@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol';
 
 import { flattenTestStyle, flushHookEffects, pressTestInstance, renderScreen, standardCleanup } from '@/dev/testkit';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { createStorageModuleStub, createStorageStoreMock } from '@/dev/testkit/mocks/storage';
 import { installSessionHooksCommonModuleMocks } from '@/hooks/session/sessionHooksTestHelpers';
 
@@ -111,6 +110,14 @@ let mockSession: {
 };
 
 installSessionHooksCommonModuleMocks({
+    // The shared helper owns the `@/modal` mock (a file-level `vi.mock('@/modal')` is shadowed by it),
+    // so the confirm spy is routed through the canonical modal testkit here.
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({
+            spies: { confirm: (...args: Parameters<typeof modalConfirmSpy>) => modalConfirmSpy(...args) },
+        }).module;
+    },
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
@@ -158,13 +165,6 @@ vi.mock('@/components/sessions/model/useSessionMachineTarget', () => ({
 
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
     useDaemonMergedProjectionInputs: () => daemonMergedProjectionMock,
-}));
-
-vi.mock('@/components/sessions/teamCredentials/useTeamCredentialSelectionCoordinator', () => ({
-    useTeamCredentialSelectionCoordinator: () => async () => ({
-        kind: 'continue' as const,
-        consequence: { visibilityRequirement: 'account_private' as const },
-    }),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession', () => ({
@@ -372,13 +372,6 @@ vi.mock('@/components/sessions/modelPicker/SessionModelPicker', () => ({
     },
 }));
 
-vi.mock('@/modal', () => ({
-    Modal: {
-        confirm: (...args: unknown[]) => modalConfirmSpy(...args),
-        alert: vi.fn(),
-    },
-}));
-
 vi.mock('./resolveExecutionRunLauncherBackendChoices', async (importOriginal) => ({
     ...await importOriginal<typeof import('./resolveExecutionRunLauncherBackendChoices')>(),
     resolveExecutionRunLauncherBackendChoices: () => launcherCatalogTestState.backendChoices,
@@ -386,12 +379,6 @@ vi.mock('./resolveExecutionRunLauncherBackendChoices', async (importOriginal) =>
 
 vi.mock('./resolveExecutionRunLauncherContainerStyle', () => ({
     resolveExecutionRunLauncherContainerStyle: () => ({}),
-}));
-
-vi.mock('@/components/sessions/actions/ActionInputFields', () => ({
-    ActionInputFields: () => React.createElement('ActionInputFields'),
-    getValueAtPath: () => undefined,
-    setValueAtTopLevelPatch: () => ({}),
 }));
 
 vi.mock('@happier-dev/protocol', async (importOriginal) => {
@@ -402,6 +389,25 @@ vi.mock('@happier-dev/protocol', async (importOriginal) => {
         resolveEffectiveActionInputFields: () => [],
     };
 });
+
+/**
+ * The press area a control really guarantees, read through its owner's mechanism rather than one
+ * style key: the pressable's own minimum box, or — for a segment whose drawn surface sits inside a
+ * padded press frame — the surface's minimum plus that frame padding, then the hit slop on each side.
+ */
+function measurePressHitArea(node: { props: Record<string, any>; findAll: (predicate: (candidate: any) => boolean) => any[] }): { width: number; height: number } {
+    const style = flattenTestStyle(node.props.style);
+    const slop = typeof node.props.hitSlop === 'number' ? node.props.hitSlop : 0;
+    const surfaceMinHeight = node.findAll((candidate) => candidate !== node
+        && typeof candidate.type === 'string'
+        && typeof flattenTestStyle(candidate.props?.style).minHeight === 'number')
+        .map((candidate) => Number(flattenTestStyle(candidate.props.style).minHeight))[0] ?? 0;
+    const framedHeight = surfaceMinHeight + Number(style.paddingVertical ?? 0) * 2;
+    return {
+        width: Number(style.minWidth ?? 0) + slop * 2,
+        height: Math.max(Number(style.minHeight ?? 0), framedHeight) + slop * 2,
+    };
+}
 
 describe('SessionExecutionRunLauncherView', () => {
     beforeEach(() => {
@@ -930,6 +936,28 @@ describe('SessionExecutionRunLauncherView', () => {
     });
 
 
+    it('keeps the cockpit panel look and gives only the screen page the segmented intents', async () => {
+        const { SessionExecutionRunLauncherView } = await import('./SessionExecutionRunLauncherView');
+        const panel = await renderScreen(React.createElement(SessionExecutionRunLauncherView, {
+            sessionId: 'session-launcher',
+            presentation: 'panel',
+            initialIntent: 'review',
+        }));
+        // The panel is a non-page surface (I1): its intents stay buttons, not a tab list.
+        expect(panel.findByTestId('execution-run-launcher-intent:review')?.props.accessibilityRole).toBe('button');
+        expect(panel.findAll((node) => node.props?.accessibilityRole === 'tablist')).toHaveLength(0);
+        await panel.unmount();
+
+        const page = await renderScreen(React.createElement(SessionExecutionRunLauncherView, {
+            sessionId: 'session-launcher',
+            presentation: 'screen',
+            initialIntent: 'review',
+        }));
+        expect(page.findByTestId('execution-run-launcher-intent:review')?.props.accessibilityRole).toBe('tab');
+        expect(page.findAll((node) => node.props?.accessibilityRole === 'tablist').length).toBeGreaterThan(0);
+        await page.unmount();
+    });
+
     it('marks the selected intent choice through accessibility state rather than colour alone', async () => {
         const { SessionExecutionRunLauncherView } = await import('./SessionExecutionRunLauncherView');
         const screen = await renderScreen(React.createElement(SessionExecutionRunLauncherView, {
@@ -1013,14 +1041,34 @@ describe('SessionExecutionRunLauncherView', () => {
         const { Platform } = await import('react-native');
         const originalPlatform = Platform.OS;
 
+        const { HappierUiPlatformProvider, useHappierNativeMinimumInteractiveTargetSize } = await import('@happier-dev/plugin-ui/environment');
+        // The expected floor is read from the shared platform-policy owner under the same provider the
+        // app mounts (`app/_layout.tsx`): 44/48 on native touch platforms, none on web/desktop.
+        let policyFloor: number | undefined;
+        function PlatformPolicyProbe() {
+            policyFloor = useHappierNativeMinimumInteractiveTargetSize();
+            return null;
+        }
+
         try {
-            for (const platform of ['android', 'ios', 'web'] as const) {
+            for (const [platform, presentation] of [
+                ['android', 'panel'], ['ios', 'panel'], ['web', 'panel'],
+                ['android', 'screen'], ['ios', 'screen'], ['web', 'screen'],
+            ] as const) {
                 Object.defineProperty(Platform, 'OS', { configurable: true, value: platform });
-                const screen = await renderScreen(React.createElement(SessionExecutionRunLauncherView, {
-                    sessionId: 'session-launcher',
-                    presentation: 'panel',
-                }));
-                const targetSize = resolveMinimumInteractiveTargetSize(platform);
+                policyFloor = undefined;
+                const screen = await renderScreen(React.createElement(
+                    HappierUiPlatformProvider,
+                    { platform: { platform, colorScheme: 'light' } },
+                    React.createElement(PlatformPolicyProbe),
+                    React.createElement(SessionExecutionRunLauncherView, {
+                        sessionId: 'session-launcher',
+                        presentation,
+                    }),
+                ));
+                // Native platforms must report a floor, or the check below would pass vacuously.
+                if (platform !== 'web') expect(policyFloor, `${platform} policy floor`).toBeGreaterThan(0);
+                const targetSize = policyFloor ?? 0;
 
                 for (const testID of [
                     'execution-run-launcher-intent:review',
@@ -1032,9 +1080,9 @@ describe('SessionExecutionRunLauncherView', () => {
                 ]) {
                     const target = screen.findByTestId(testID);
                     expect(target, testID).not.toBeNull();
-                    const style = flattenTestStyle(target?.props.style);
-                    expect(style.minWidth, testID).toBe(targetSize);
-                    expect(style.minHeight, testID).toBe(targetSize);
+                    const hitArea = measurePressHitArea(target!);
+                    expect(hitArea.width, `${presentation} ${platform} ${testID} width`).toBeGreaterThanOrEqual(targetSize);
+                    expect(hitArea.height, `${presentation} ${platform} ${testID} height`).toBeGreaterThanOrEqual(targetSize);
                 }
 
                 await screen.unmount();

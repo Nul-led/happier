@@ -33,6 +33,8 @@ export type AccountDirectorySessionSnapshot = Readonly<{
     refreshedAtMs: number | null;
     error: unknown | null;
     reconciliation: AccountDirectoryReconciliationResult;
+    /** Who is signed in (`/me`), read with the Homes; the last known answer survives a failed read. */
+    account: AccountDirectoryMeResponseV1 | null;
 }>;
 
 type SessionOptions = Readonly<{
@@ -66,6 +68,7 @@ function initialSnapshot(endpoint: string): AccountDirectorySessionSnapshot {
         refreshedAtMs: null,
         error: null,
         reconciliation: { kind: 'not_run' },
+        account: null,
     };
 }
 
@@ -128,6 +131,22 @@ export class AccountDirectorySession {
             throw new Error('Account Service Home enrollment is unsupported');
         }
         return await this.client.requestLoginAssertion(homeServerIdentityId, { clientBoxPublicKeyBase64 });
+    }
+
+    /**
+     * Reads who is signed in (`/me`) into the snapshot. It only presents the account, so a failed
+     * read keeps the last known identity; Home flows that refresh the directory do not pay for it.
+     */
+    async refreshAccount(): Promise<AccountDirectoryMeResponseV1 | null> {
+        const isCurrent = this.captureLifecycle();
+        try {
+            const account = await this.client.getMe();
+            if (!isCurrent()) return this.snapshotValue.account;
+            this.update({ ...this.snapshotValue, account });
+            return account;
+        } catch {
+            return this.snapshotValue.account;
+        }
     }
 
     /** Minimal authenticated account projection; the subject used for Home relationship provisioning. */

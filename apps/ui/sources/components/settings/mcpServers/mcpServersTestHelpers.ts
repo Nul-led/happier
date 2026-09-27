@@ -154,7 +154,9 @@ export function installMcpServersCommonModuleMocks(
     }));
 
     vi.mock('@/components/ui/lists/ItemGroup', () => ({
-        ItemGroup: ({ children }: React.PropsWithChildren) => React.createElement('ItemGroup', null, children),
+        // A section's action (Scan, Check, Test, Add) sits in its header on pages; keep it reachable.
+        ItemGroup: ({ children, action }: React.PropsWithChildren<{ action?: React.ReactNode }>) =>
+            React.createElement('ItemGroup', null, action ?? null, children),
     }));
 
     vi.mock('@/components/ui/lists/Item', () => ({

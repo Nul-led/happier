@@ -175,12 +175,19 @@ describe('accountDirectoryAuthClient', () => {
                     method: { id: 'github' },
                     action: { id: 'provision', mode: 'keyed' },
                 },
+                {
+                    // The service's email sign-in is an account-service way in too.
+                    execution: { kind: 'email_password', action: 'login', mode: 'keyless' },
+                    method: { id: 'email_password' },
+                    action: { id: 'login', mode: 'keyless' },
+                },
             ],
         });
 
         expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts-b.example.test',
             force: true,
+            timeoutMs: 0,
         });
         expect(activeSnapshot).not.toHaveBeenCalled();
         expect(getActiveCredentials).not.toHaveBeenCalled();
@@ -225,6 +232,36 @@ describe('accountDirectoryAuthClient', () => {
         }));
     });
 
+    it('offers email and password sign-in and creation on an account service, never attaching it to an existing Account', async () => {
+        fetchHomeAuthEntryMock.mockResolvedValueOnce({
+            kind: 'ready',
+            projection: {
+                v: 1,
+                state: 'ready',
+                scope: { kind: 'home' },
+                actions: [
+                    { kind: 'authenticate', methodId: 'email_password', action: 'login', mode: 'either', origin: 'home',
+                        passwordReset: 'email', presentation: { displayName: 'Email and password' } },
+                    { kind: 'authenticate', methodId: 'email_password', action: 'provision', mode: 'keyed', origin: 'home',
+                        recommendedProvisionMode: 'e2ee', presentation: { displayName: 'Email and password' } },
+                    { kind: 'authenticate', methodId: 'email_password', action: 'connect', mode: 'either', origin: 'home',
+                        presentation: { displayName: 'Email and password' } },
+                ],
+                autoRedirect: null,
+            },
+        });
+
+        const discovered = await loadedAccountDirectoryAuthClient.discoverAuthenticationMethods({
+            endpointUrl: 'https://accounts.example.test',
+        });
+        expect(discovered).toMatchObject({ kind: 'supported_account_service' });
+        if (discovered.kind !== 'supported_account_service') throw new Error('expected a supported service');
+        expect(discovered.authenticationActions.map(({ execution }) => execution)).toEqual([
+            { kind: 'email_password', action: 'login', mode: 'either', passwordReset: 'email' },
+            { kind: 'email_password', action: 'provision', mode: 'keyed', recommendedProvisionMode: 'e2ee' },
+        ]);
+    });
+
     it('discovers explicit endpoint methods before any Home profile exists', async () => {
         const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
         const activeSnapshot = vi.mocked(getActiveServerSnapshot);
@@ -241,6 +278,7 @@ describe('accountDirectoryAuthClient', () => {
         expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts-b.example.test',
             force: true,
+            timeoutMs: 0,
         });
         expect(activeSnapshot).not.toHaveBeenCalled();
     });
@@ -269,6 +307,7 @@ describe('accountDirectoryAuthClient', () => {
             homeCarrier,
             signal: controller.signal,
             force: true,
+            timeoutMs: 0,
         });
         expect(result).not.toHaveProperty('runtimeOrigin');
         expect(result).not.toHaveProperty('homeCarrier');
@@ -322,6 +361,7 @@ describe('accountDirectoryAuthClient', () => {
             endpointUrl: 'https://accounts.example.test',
             serverId: 'directory-1',
             force: true,
+            timeoutMs: 0,
         });
         expect(directoryCredentialsSet).not.toHaveBeenCalled();
         expect(pendingSet).not.toHaveBeenCalled();

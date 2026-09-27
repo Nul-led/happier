@@ -17,7 +17,7 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit');
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },

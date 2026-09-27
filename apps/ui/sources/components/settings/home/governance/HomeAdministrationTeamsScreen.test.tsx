@@ -125,8 +125,8 @@ afterEach(() => {
 
 describe('HomeAdministrationTeamsScreen', () => {
     it('keeps a large administered Team directory behind the canonical virtualized window', async () => {
-        // The create action precedes two mounted Team segments.
-        virtualizedBoundary.mountLimit = 3;
+        // Two mounted Team segments; the create action heads the first one.
+        virtualizedBoundary.mountLimit = 2;
         const home = await harness.addHome({
             name: 'Home A',
             serverUrl: 'https://home-a.example',
@@ -143,8 +143,8 @@ describe('HomeAdministrationTeamsScreen', () => {
 
         const screen = await renderHomeTeams(home);
         await waitForHomeGovernance(() => {
-            // Create + 10 row segments + archived toggle.
-            expect(virtualizedBoundary.props?.data.length).toBe(12);
+            // 10 row segments + archived toggle.
+            expect(virtualizedBoundary.props?.data.length).toBe(11);
         });
 
         expect(virtualizedBoundary.props?.testID).toBe('home-teams-virtualized-list');
@@ -230,6 +230,28 @@ describe('HomeAdministrationTeamsScreen', () => {
         expect(routerPush).toHaveBeenCalledWith(
             `/settings/teams/new?administrationServerId=${encodeURIComponent(home)}`,
         );
+    });
+
+    it('keeps the Teams section and its create action when the Home could not list its Teams', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        harness.answer(home, TEAMS_LIST_PATH, { status: 503, body: { error: 'teams_unavailable' } });
+
+        const screen = await renderHomeTeams(home);
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-retry');
+        });
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        // Creating does not depend on the list the Home failed to send.
+        expect(ids).toContain('home-teams-create');
+        // The unknown list is stated once, inside the section, never as an empty Home.
+        expect(ids.filter((id) => id === 'home-teams-retry')).toHaveLength(1);
+        expect(ids).not.toContain('home-teams-empty');
     });
 
     it('keeps archived administered Teams reachable for restore', async () => {

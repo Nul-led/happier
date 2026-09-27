@@ -311,6 +311,15 @@ if (wants('verify-expo-router-web-modal-patch')) {
                 'criticalDrawerContentStyle',
                 'criticalModalDesktopStyle',
                 'criticalModalBodyStyle',
+                'HAPPIER PATCH(expo-router-web-modal-first-commit-mount)',
+                '<vaul_1.Drawer.Portal container={portalContainer}>',
+            ],
+        },
+        {
+            relativePath: ['build', 'modal', 'web', 'utils.js'],
+            markers: [
+                'HAPPIER PATCH(expo-router-web-modal-first-commit-mount)',
+                'useState(() => readIsDesktop(isWeb, breakpoint))',
             ],
         },
         {

@@ -9,6 +9,7 @@ import type { HomeDomainFailure } from '@/sync/api/home/homeServerActionTranspor
 import { resolveHomeAccountStatusPresentation } from '@/sync/domains/home/governance/homeAccountAdministration';
 import type { HomeAccountActionUnavailableReason } from '@/sync/domains/home/governance/homeAccountAdministration';
 import type { HomeAdministrationHomeEntry } from '@/sync/domains/home/governance/homeAdministrationSettingsAdmission';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors/errors';
@@ -27,13 +28,12 @@ type HomeUnresolvedReason = Extract<HomeAdministrationHomeEntry, { state: 'unres
 /**
  * How one Home is named to the person administering it.
  *
- * The saved name comes first because it is what they chose; the address is the
- * honest fallback, and the opaque id is used only when this device knows
- * nothing else about the Home.
+ * The app's one Home namer decides first (the name they chose, else "Personal Home" for this
+ * device's own Home). Only a Home with no name falls back to what tells Homes apart — its saved
+ * label or address — and the opaque id is used only when this device knows nothing else about it.
  */
 export function homeDisplayName(serverId: string): string {
-    const profile = getServerProfileById(serverId);
-    return (profile?.name ?? '').trim() || (profile?.serverUrl ?? '').trim() || serverId;
+    return resolveHomeDisplayLabel(getServerProfileById(serverId), serverId);
 }
 
 /** Why a Home in the exact set has not yet said whether it admits this device. */

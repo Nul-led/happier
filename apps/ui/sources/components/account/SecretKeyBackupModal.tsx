@@ -7,7 +7,7 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
-import { formatSecretKeyForBackup } from '@/auth/recovery/secretKeyBackup';
+import { formatRecoveryKeyForDisplay, maskRecoveryKeyForDisplay } from '@/auth/recovery/secretKeyBackup';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
@@ -16,7 +16,6 @@ import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { Icon } from '@/components/ui/icons/Icon';
 import { downloadWebFile } from '@/sync/runtime/files/downloadWebFile';
 import { createNativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
-import { encodeBase64 } from '@/encryption/base64';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -92,12 +91,8 @@ export function SecretKeyBackupModal(props: Props) {
     const [revealed, setRevealed] = React.useState(false);
     const copyFeedback = useTemporaryCopyFeedback();
 
-    const secretText = React.useMemo(
-        () => typeof props.secret === 'string' ? props.secret : encodeBase64(props.secret, 'base64url'),
-        [props.secret],
-    );
-    const formattedSecret = React.useMemo(() => formatSecretKeyForBackup(secretText), [secretText]);
-    const maskedSecret = React.useMemo(() => formattedSecret.replace(/[A-Za-z0-9]/g, '•'), [formattedSecret]);
+    const formattedSecret = React.useMemo(() => formatRecoveryKeyForDisplay(props.secret), [props.secret]);
+    const maskedSecret = React.useMemo(() => maskRecoveryKeyForDisplay(formattedSecret), [formattedSecret]);
 
     React.useEffect(() => () => {
         if (props.secret instanceof Uint8Array) props.secret.fill(0);

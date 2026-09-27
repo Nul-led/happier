@@ -43,6 +43,23 @@ describe('AccountDirectorySession', () => {
         expect(await session.refresh()).toMatchObject({ status: 'stale', homes: [fixture.home] });
     });
 
+    it('reads who is signed in and keeps the last known identity when that read fails', async () => {
+        const me = { v: 1, accountId: 'account-directory', displayName: 'Ada Lovelace', avatar: null,
+            linkedAuthenticationMethods: [{ providerId: 'github', login: 'ada' }] };
+        request.mockImplementation(async (path: string) => path === '/v1/account-directory/me'
+            ? json(me)
+            : json({ v: 1, homes: [fixture.home], preferredHomeServerIdentityId: fixture.home.homeServerIdentityId }));
+        const session = createSession();
+        await session.refreshAccount();
+        expect(session.snapshot.account).toEqual(me);
+        // A directory refresh keeps the identity it did not read.
+        expect(await session.refresh()).toMatchObject({ status: 'ready', homes: [fixture.home], account: me });
+
+        request.mockImplementation(async () => { throw new Error('offline'); });
+        await session.refreshAccount();
+        expect(session.snapshot.account).toEqual(me);
+    });
+
     it('keeps logout authoritative when an earlier refresh resolves late', async () => {
         let release!: (response: Response) => void;
         request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));

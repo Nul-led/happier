@@ -78,4 +78,29 @@ describe('RecoveryKeyUnlockModal', () => {
         expect(recovered).toEqual(new Uint8Array(32));
         expect(screen.findByTestId('recovery-key-unlock-password')?.props.value).toBe('');
     });
+
+    it('asks for the sign-in email too when the caller does not know it, and unlocks with what was typed', async () => {
+        runtime.recover.mockRejectedValueOnce(new Error('password_authentication_failed'));
+        runtime.recover.mockResolvedValueOnce(new Uint8Array(32).fill(5));
+        const onUnlocked = vi.fn();
+        const { RecoveryKeyUnlockModal } = await import('./RecoveryKeyUnlockModal');
+        const screen = await renderScreen(<RecoveryKeyUnlockModal
+            email={null}
+            request={vi.fn()}
+            onUnlocked={onUnlocked}
+            onClose={vi.fn()}
+        />);
+
+        await act(async () => screen.findByTestId('recovery-key-unlock-email')?.props.onChangeText('person@example.test'));
+        await act(async () => screen.findByTestId('recovery-key-unlock-password')?.props.onChangeText('wrong password'));
+        await screen.pressByTestIdAsync('recovery-key-unlock-submit');
+        // A wrong pair is a typed error under the field; the key is not disclosed.
+        expect(screen.findByTestId('recovery-key-unlock-password')?.props.error).toBeTruthy();
+        expect(onUnlocked).not.toHaveBeenCalled();
+        expect(runtime.recover).toHaveBeenLastCalledWith(expect.objectContaining({ email: 'person@example.test' }));
+
+        await act(async () => screen.findByTestId('recovery-key-unlock-password')?.props.onChangeText('right password'));
+        await screen.pressByTestIdAsync('recovery-key-unlock-submit');
+        expect(onUnlocked).toHaveBeenCalledTimes(1);
+    });
 });

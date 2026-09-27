@@ -35,6 +35,13 @@ vi.mock('@/components/ui/lists/virtualized', () => ({
 }));
 vi.mock('@expo/vector-icons', () => createExpoVectorIconsMock());
 vi.mock('@/modal', () => modalMock.module);
+// The History page is a settings page: its header reads the current route.
+vi.mock('expo-router', async () => {
+  const { createExpoRouterMock } = await vi.importActual<typeof import('@/dev/testkit/mocks/router')>(
+    '@/dev/testkit/mocks/router',
+  );
+  return createExpoRouterMock({ pathname: '/settings/voice-history' }).module;
+});
 
 const OPENAI_SOURCE = Object.freeze({
   pluginId: 'happier.voice.openai',
@@ -797,7 +804,7 @@ describe('VoiceHistoryScreen', () => {
     await flushAsyncState();
 
     expect(screen.findByTestId('voice-history-upgrade-required')).not.toBeNull();
-    expect(screen.findByTestId('voice-history-upgrade-required-retry')).toBeNull();
+    expect(screen.findByTestId('voice-history-upgrade-required-action')).toBeNull();
     expect(screen.findByTestId('voice-history-error')).toBeNull();
   });
 

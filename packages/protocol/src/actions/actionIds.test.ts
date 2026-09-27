@@ -363,6 +363,10 @@ describe('ActionIdSchema', () => {
         'memory.get_window',
         'memory.ensure_up_to_date',
       ],
+      agent_acp_catalog: [
+        'agents.acp.backends.upsert',
+        'agents.acp.backends.delete',
+      ],
       prompt_library: [
         'prompt_doc.update',
         'prompt_bundle.update',
@@ -1102,6 +1106,8 @@ describe('ActionIdSchema', () => {
       'account.apiTokens.list',
       'account.apiTokens.revoke',
       'account.apiTokens.revokeAll',
+      'agents.acp.backends.upsert',
+      'agents.acp.backends.delete',
       'identity.githubApps.list',
       'identity.githubApps.create',
       'identity.githubApps.manifestSetup.start',

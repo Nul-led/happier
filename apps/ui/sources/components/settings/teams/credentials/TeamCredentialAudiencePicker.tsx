@@ -66,7 +66,7 @@ function PickerContent(props: Readonly<{
     ), [props.allowedKinds]);
     const directory = useSessionAccessDirectory({
         scope: props.scope,
-        availability: 'full_collaboration',
+        availability: 'available',
         contextTeams: [],
         operations: EMPTY_OPERATIONS,
         revision: 0,

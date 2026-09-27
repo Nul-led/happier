@@ -1,0 +1,27 @@
+import * as React from 'react';
+import { useUnistyles } from 'react-native-unistyles';
+
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { HeaderLogo } from '@/components/ui/navigation/HeaderLogo';
+import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
+import { DEFAULT_ACCOUNT_SERVICE_ENDPOINT } from '@/sync/domains/server/serverProfiles';
+
+export function isDefaultAccountServiceUrl(url: string): boolean {
+    const normalized = normalizeAccountDirectoryEndpoint(url);
+    return normalized !== null && normalized === normalizeAccountDirectoryEndpoint(DEFAULT_ACCOUNT_SERVICE_ENDPOINT.url);
+}
+
+/**
+ * The mark of a sign-in service: the Happier mark for Happier Cloud, and a plain glyph for any
+ * other service (a cloud for a sign-in service, a server for a Home that also offers sign-in).
+ */
+export const AccountServiceMark = React.memo(function AccountServiceMark(props: Readonly<{
+    url: string;
+    size?: number;
+    fallback?: Extract<IconName, 'cloud' | 'hard-drives' | 'globe'>;
+}>) {
+    const { theme } = useUnistyles();
+    const size = props.size ?? 20;
+    if (isDefaultAccountServiceUrl(props.url)) return <HeaderLogo size={size} />;
+    return <Icon name={props.fallback ?? 'cloud'} size={size} color={theme.colors.text.secondary} />;
+});

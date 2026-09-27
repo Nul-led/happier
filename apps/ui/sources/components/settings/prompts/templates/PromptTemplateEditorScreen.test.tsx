@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import {
@@ -6,6 +7,8 @@ import {
     promptTemplatesRouterBackSpy,
     promptTemplatesRouterPushSpy,
 } from './promptTemplatesScreenTestHelpers';
+
+const promptTemplatesRouterReplaceSpy = vi.hoisted(() => vi.fn());
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,7 +46,7 @@ installPromptTemplatesCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
-            router: { push: promptTemplatesRouterPushSpy, back: promptTemplatesRouterBackSpy },
+            router: { push: promptTemplatesRouterPushSpy, back: promptTemplatesRouterBackSpy, replace: promptTemplatesRouterReplaceSpy },
         });
         return routerMock.module;
     },
@@ -65,6 +68,17 @@ installPromptTemplatesCommonModuleMocks({
     },
 });
 
+/** Whether the screen currently asks the navigator to hold a departure (the unsaved-changes guard). */
+const preventRemoveState = vi.hoisted(() => ({ last: null as boolean | null }));
+
+// The navigator's remove interception is the navigation library boundary; record what the screen asks for.
+vi.mock('@react-navigation/native', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@react-navigation/native')>(),
+    usePreventRemove: (preventRemove: boolean) => {
+        preventRemoveState.last = preventRemove;
+    },
+}));
+
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
@@ -75,34 +89,11 @@ vi.mock('@/components/ui/layout/layout', () => ({
     useLayoutMaxWidthStyle: () => ({ maxWidth: 1000 }),
 }));
 
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     DropdownMenu: (props: any) => React.createElement('DropdownMenu', {
         ...props,
-        testID: 'promptTemplate.target',
-    }),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-    TextInput: 'TextInput',
-}));
-
-vi.mock('@/components/ui/settingsSurface/SettingsActionFooter', () => ({
-    SettingsActionFooter: (props: any) => React.createElement('SettingsActionFooter', {
-        ...props,
-        testID: 'promptTemplate.footer',
+        // The target prompt select; the header's `⋯` menu keeps its own id.
+        testID: props.testID ?? 'promptTemplate.target',
     }),
 }));
 
@@ -114,6 +105,7 @@ describe('PromptTemplateEditorScreen', () => {
     beforeEach(() => {
         promptTemplatesRouterPushSpy.mockClear();
         promptTemplatesRouterBackSpy.mockClear();
+        promptTemplatesRouterReplaceSpy.mockClear();
         setInvocationsMock.mockClear();
     });
 
@@ -128,10 +120,47 @@ describe('PromptTemplateEditorScreen', () => {
 
         expect(screen.findByTestId('promptTemplate.target.edit')).toBeTruthy();
         expect(screen.findByTestId('promptTemplate.target.new')).toBeTruthy();
-        expect(screen.findByTestId('promptTemplate.behavior.insert_on_send')).toBeTruthy();
+        expect(screen.findByTestId('promptTemplate.behavior:insert_on_send')).toBeTruthy();
+        expect(screen.findByTestId('promptTemplate.save')).toBeTruthy();
+    });
 
-        const footer = screen.findByTestId('promptTemplate.footer');
-        expect(footer?.props.primaryTestID).toBe('promptTemplate.save');
-        expect(footer?.props.secondaryTestID).toBe('promptTemplate.cancel');
+    it('explains under the command field why a reserved slash command cannot be saved', async () => {
+        const { PromptTemplateEditorScreen } = await import('./PromptTemplateEditorScreen');
+        const screen = await renderScreen(React.createElement(PromptTemplateEditorScreen, { invocationId: null }));
+
+        await act(async () => {
+            screen.changeTextByTestId('promptTemplate.title', 'Clear');
+            screen.changeTextByTestId('promptTemplate.token', '/clear');
+            screen.findByTestId('promptTemplate.target')?.props.onSelect('doc-1');
+        });
+        await act(async () => {
+            await screen.findByTestId('promptTemplate.save')?.props.onPress();
+        });
+
+        expect(screen.findByTestId('promptTemplate.token.error')).toBeTruthy();
+        expect(setInvocationsMock).not.toHaveBeenCalled();
+    });
+
+    it('opens a new template in the collection once its draft is saved', async () => {
+        const { PromptTemplateEditorScreen } = await import('./PromptTemplateEditorScreen');
+        const screen = await renderScreen(React.createElement(PromptTemplateEditorScreen, { invocationId: null }));
+
+        await act(async () => {
+            screen.changeTextByTestId('promptTemplate.title', 'Daily');
+            screen.changeTextByTestId('promptTemplate.token', 'daily');
+            screen.findByTestId('promptTemplate.target')?.props.onSelect('doc-1');
+        });
+        expect(preventRemoveState.last).toBe(true);
+        await act(async () => {
+            await screen.findByTestId('promptTemplate.save')?.props.onPress();
+        });
+        // The saved draft has nothing left to lose, so opening the saved template is not held for a decision.
+        expect(preventRemoveState.last).toBe(false);
+
+        expect(setInvocationsMock).toHaveBeenCalledWith({
+            v: 1,
+            entries: [expect.objectContaining({ id: 'template-1', token: '/daily', title: 'Daily' })],
+        });
+        expect(promptTemplatesRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/templates/template-1');
     });
 });

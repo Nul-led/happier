@@ -232,7 +232,7 @@ describe('Settings → Account desktop shell', () => {
         );
 
         expect(screen.findByTestId('settings-sidebar')).toBeTruthy();
-        expect(screen.findByTestId('settings-account-secret-key-item')).toBeTruthy();
+        expect(screen.findByTestId('settings-account-identity')).toBeTruthy();
         const text = screen.getTextContent();
         expect(text).not.toContain('connectedServices.serviceNames.openaiCodex');
         expect(text).not.toContain('connectedServices.serviceNames.anthropic');

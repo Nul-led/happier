@@ -14,6 +14,7 @@ import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/stora
 const transcriptAdvancedSettingsTestState = vi.hoisted(() => ({
     requestedSettings: [] as string[],
     setCoalesceEnabled: vi.fn(),
+    setCoalesceWindowMs: vi.fn(),
 }));
 
 installSessionSettingsCommonModuleMocks({
@@ -31,7 +32,7 @@ installSessionSettingsCommonModuleMocks({
                 useSettingMutable: createUseSettingMutableMockFromReader((key) => {
                     transcriptAdvancedSettingsTestState.requestedSettings.push(key);
                     if (key === 'transcriptStreamingCoalesceEnabled') return [true, transcriptAdvancedSettingsTestState.setCoalesceEnabled];
-                    if (key === 'transcriptStreamingCoalesceWindowMs') return [16, vi.fn()];
+                    if (key === 'transcriptStreamingCoalesceWindowMs') return [16, transcriptAdvancedSettingsTestState.setCoalesceWindowMs];
                     if (key === 'transcriptStreamingCoalesceMaxBatchSize') return [200, vi.fn()];
                     if (key === 'transcriptThinkingPulseStaleMs') return [120_000, vi.fn()];
                     if (key === 'transcriptMotionPreset') return ['subtle', vi.fn()];
@@ -60,7 +61,7 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
 }));
 
 vi.mock('@/components/ui/forms/Switch', () => ({
@@ -75,6 +76,7 @@ afterEach(() => {
     standardCleanup();
     transcriptAdvancedSettingsTestState.requestedSettings.length = 0;
     transcriptAdvancedSettingsTestState.setCoalesceEnabled.mockClear();
+    transcriptAdvancedSettingsTestState.setCoalesceWindowMs.mockClear();
 });
 
 describe('Transcript advanced settings (performance)', () => {
@@ -98,9 +100,27 @@ describe('Transcript advanced settings (performance)', () => {
     it('omits the obsolete renderer menu without reading a writable renderer setting', async () => {
         const screen = await renderView();
 
-        expect(screen.findRowByTitle('settingsSession.transcript.advanced.coalesceWindowTitle')).toBeTruthy();
+        expect(screen.findRowByTitle('settingsSession.transcript.advanced.coalesceWindowPromptTitle')).toBeTruthy();
         expect(screen.findRowByTitle('settingsSession.transcript.advanced.listImplementationTitle')).toBeNull();
         expect(screen.findAllByType('DropdownMenu' as any)).toHaveLength(0);
         expect(transcriptAdvancedSettingsTestState.requestedSettings).not.toContain('transcriptListImplementation');
+    });
+
+    it('edits a number in place and saves it, moved into range, when the field is left', async () => {
+        const screen = await renderView();
+        const findField = () => screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.transcript.advanced.coalesceWindowPromptTitle')[0] ?? null;
+
+        expect(findField()?.props.value).toBe('16');
+        await act(async () => {
+            findField()?.props.onChangeText('900ms');
+        });
+        expect(findField()?.props.value).toBe('900');
+        await act(async () => {
+            findField()?.props.onBlur();
+        });
+
+        expect(transcriptAdvancedSettingsTestState.setCoalesceWindowMs).toHaveBeenCalledWith(200);
+        expect(findField()?.props.value).toBe('200');
     });
 });

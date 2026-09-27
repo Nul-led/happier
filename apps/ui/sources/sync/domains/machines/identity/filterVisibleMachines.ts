@@ -3,13 +3,21 @@ import { isPersistentMachine } from '@happier-dev/protocol';
 
 import { isMachineReplaced } from './machineIdentityTypes';
 
-export function isMachineVisibleForSelection(machine: Machine): boolean {
+/** The identity facts selection visibility reads; a full `Machine` and its display projection both carry them. */
+type MachineSelectionVisibilityFacts = Readonly<{
+    kind?: Machine['kind'];
+    revokedAt?: number | null;
+    replacedByMachineId?: string | null;
+    replacedAt?: unknown;
+}>;
+
+export function isMachineVisibleForSelection(machine: MachineSelectionVisibilityFacts): boolean {
     const revokedAt = machine.revokedAt;
     return isPersistentMachine(machine)
         && !(typeof revokedAt === 'number' && Number.isFinite(revokedAt) && revokedAt > 0);
 }
 
-export function isMachineVisibleForLaunchSelection(machine: Machine): boolean {
+export function isMachineVisibleForLaunchSelection(machine: MachineSelectionVisibilityFacts): boolean {
     return isMachineVisibleForSelection(machine) && !isMachineReplaced(machine);
 }
 

@@ -96,10 +96,13 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
     listServerProfiles: () => [{ id: 'home-1', serverUrl: 'https://home.example' }],
 }));
 
-vi.mock('@/sync/domains/state/storage', () => ({
-    useMachineListByServerId: () => ({ 'home-1': state.machines }),
-    useProfile: () => ({ id: 'account-1' }),
-}));
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
+        useMachineListByServerId: () => ({ 'home-1': state.machines }),
+        useProfile: () => ({ id: 'account-1' }),
+    });
+});
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: serverFetchMock,
@@ -198,10 +201,8 @@ describe('DiagnosisView', () => {
         act(() => {
             screen.changeTextByTestId('diagnosis-paste-input', '{ invalid json');
         });
-        const parseAction = screen.findAllByType('Item' as any)
-            .find((node) => node.props.title === 'diagnosis.pasteDoctorJson.parse');
         await act(async () => {
-            parseAction?.props.onPress?.();
+            screen.pressByTestId('diagnosis-parse-button');
             await settle();
         });
         const parseError = screen.findAllByType('Text' as any)

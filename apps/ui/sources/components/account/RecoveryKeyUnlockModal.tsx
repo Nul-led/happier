@@ -4,7 +4,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { PasswordField } from '@/components/account/auth/emailPassword/PasswordField';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { Text } from '@/components/ui/text/Text';
+import { Text, TextInput } from '@/components/ui/text/Text';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { recoverPasswordEnvelopeSecret } from '@/auth/password/recoverPasswordEnvelopeSecret';
 import type { ServerFetch } from '@/sync/http/client';
 import { t } from '@/text';
@@ -12,7 +13,8 @@ import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
 
 type Props = CustomModalInjectedProps & Readonly<{
-    email: string;
+    /** The sign-in email when the caller knows it; null asks for it (an account-service Account). */
+    email: string | null;
     request: ServerFetch;
     onUnlocked(secret: Uint8Array): void | Promise<void>;
 }>;
@@ -20,6 +22,8 @@ type Props = CustomModalInjectedProps & Readonly<{
 export function RecoveryKeyUnlockModal(props: Props) {
     const { theme } = useUnistyles();
     const [password, setPassword] = React.useState('');
+    const [typedEmail, setTypedEmail] = React.useState('');
+    const email = props.email ?? typedEmail.trim();
     const [pending, setPending] = React.useState(false);
     const [failed, setFailed] = React.useState(false);
     const abortRef = React.useRef<AbortController | null>(null);
@@ -38,8 +42,8 @@ export function RecoveryKeyUnlockModal(props: Props) {
     }, []);
 
     const submit = React.useCallback(async () => {
-        if (!password || pending) {
-            passwordRef.current?.focus();
+        if (!email || !password || pending) {
+            if (email) passwordRef.current?.focus();
             return;
         }
         const controller = new AbortController();
@@ -50,7 +54,7 @@ export function RecoveryKeyUnlockModal(props: Props) {
         try {
             secret = await recoverPasswordEnvelopeSecret({
                 request: props.request,
-                email: props.email,
+                email,
                 password,
                 signal: controller.signal,
             });
@@ -70,10 +74,32 @@ export function RecoveryKeyUnlockModal(props: Props) {
             }
             if (abortRef.current === controller) abortRef.current = null;
         }
-    }, [password, pending, props]);
+    }, [email, password, pending, props]);
 
     return <View style={styles.body}>
         <Text style={styles.description}>{t('settingsAccount.nativePassword.currentPasswordRequired')}</Text>
+        {props.email === null ? (
+            <FieldItem label={t('settingsAccount.nativePassword.email')}>
+                <TextInput
+                    testID="recovery-key-unlock-email"
+                    accessibilityLabel={t('settingsAccount.nativePassword.email')}
+                    style={[styles.input, { color: theme.colors.text.primary, borderColor: theme.colors.border.default }]}
+                    value={typedEmail}
+                    onChangeText={setTypedEmail}
+                    placeholder={t('settingsAccount.nativePassword.emailPlaceholder')}
+                    placeholderTextColor={theme.colors.text.secondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    inputMode="email"
+                    autoComplete="username"
+                    textContentType="username"
+                    editable={!pending}
+                    returnKeyType="next"
+                    onSubmitEditing={() => passwordRef.current?.focus()}
+                />
+            </FieldItem>
+        ) : null}
         <PasswordField
             testID="recovery-key-unlock-password"
             inputRef={passwordRef}
@@ -96,4 +122,12 @@ export function RecoveryKeyUnlockModal(props: Props) {
 const styles = StyleSheet.create((theme) => ({
     body: { padding: 16, gap: 14 },
     description: { color: theme.colors.text.secondary, fontSize: 14, lineHeight: 20 },
+    input: {
+        borderWidth: 1,
+        borderRadius: 12,
+        backgroundColor: theme.colors.surface.base,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        minHeight: 44,
+    },
 }));

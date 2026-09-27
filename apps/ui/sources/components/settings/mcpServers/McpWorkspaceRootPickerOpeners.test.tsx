@@ -57,6 +57,8 @@ describe('McpWorkspaceRootPickerModal openers', () => {
             />,
         );
 
+        // A rule is a row that expands in place; its target fields live in the expanded body.
+        await screen.pressByTestIdAsync('mcp.server.binding.binding-1.header');
         const workspaceRootRow = screen.findAllByType('Item')
             .find((row) => row.props.title === 'settings.mcpServersBindingWorkspaceRootTitle');
         expect(workspaceRootRow).toBeTruthy();

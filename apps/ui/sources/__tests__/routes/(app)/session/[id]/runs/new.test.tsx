@@ -824,14 +824,12 @@ describe('Session New Run Screen', () => {
         const stackOptions = stackScreenSpy.mock.calls.at(-1)?.[0]?.options;
         expect(stackOptions?.headerTitle).toBe('Start run');
 
+        // The form is a page section, which the page layout constrains to the content width.
         const views = screen.findAllByType('View');
         const hasConstrainedContainer = views.some((node: any) => {
-            const raw = node.props.style;
-            const styles = Array.isArray(raw) ? raw : [raw];
-            return styles.some((entry: any) => {
-                if (!entry || typeof entry !== 'object') return false;
-                return entry.maxWidth === 999 && entry.width === '100%' && entry.alignSelf === 'center';
-            });
+            const flat = [node.props.style].flat(Infinity).filter((entry: any) => entry && typeof entry === 'object');
+            return flat.some((entry: any) => entry.maxWidth === 999)
+                && node.findAll((n: any) => n.props?.testID === 'execution-run-new-start-button').length > 0;
         });
         expect(hasConstrainedContainer).toBe(true);
     });

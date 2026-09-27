@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import {
@@ -87,10 +88,19 @@ function historyResponse() {
     };
 }
 
-async function renderSection() {
-    const screen = await renderScreen(
+async function renderCollapsedSection() {
+    return await renderScreen(
         <SettingsHistorySection credentials={credentials} encryption={null} />,
     );
+}
+
+/** History is a disclosure row: its snapshots are listed once it is opened. */
+async function renderSection() {
+    const screen = await renderCollapsedSection();
+    await act(async () => {
+        screen.findByTestId('settings-account-history')!
+            .findByProps({ accessibilityRole: 'button' }).props.onPress();
+    });
     return screen;
 }
 
@@ -196,6 +206,12 @@ describe('SettingsHistorySection', () => {
         await vi.waitFor(() => {
             expect(restoreMock).not.toHaveBeenCalled();
         });
+    });
+
+    it('summarizes the saved snapshots while the disclosure is closed', async () => {
+        const screen = await renderCollapsedSection();
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('2 snapshots'));
+        expect(screen.findByTestId('settings-account-history-restore-3')).toBeNull();
     });
 
     it('reports an empty history without offering restore actions', async () => {

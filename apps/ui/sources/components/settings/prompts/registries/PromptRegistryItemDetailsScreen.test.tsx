@@ -150,23 +150,6 @@ vi.mock('@/components/ui/layout/layout', () => ({
   useLayoutMaxWidthStyle: () => ({ maxWidth: 1000 }),
 }));
 
-vi.mock('@/components/ui/text/Text', () => ({
-  Text: 'Text',
-  TextInput: 'TextInput',
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-  ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-  ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-  Item: (props: any) => React.createElement('Item', props),
-}));
-
 vi.mock('@/components/settings/contextBar/ContextBar', () => ({
   ContextBar: (props: any) => React.createElement('ContextBar', props),
 }));
@@ -192,10 +175,6 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
   DropdownMenu: (props: any) => React.createElement('DropdownMenu', props),
-}));
-
-vi.mock('@/components/ui/settingsSurface/SettingsActionFooter', () => ({
-  SettingsActionFooter: (props: any) => React.createElement('SettingsActionFooter', props),
 }));
 
 vi.mock('@/hooks/ui/useHappyAction', () => ({
@@ -317,10 +296,8 @@ describe('PromptRegistryItemDetailsScreen', () => {
         }))).tree;
     await act(async () => {});
 
-    const footer = tree.findByType('SettingsActionFooter');
-
     await act(async () => {
-      invokeTestInstanceHandler(await footer, 'onPrimaryPress', );
+      invokeTestInstanceHandler(tree.findByTestId('promptRegistries.details.install'), 'onPress');
     });
 
     expect(installPromptRegistryItemMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -362,7 +339,7 @@ describe('PromptRegistryItemDetailsScreen', () => {
     await act(async () => {});
 
     await act(async () => {
-      invokeTestInstanceHandler(await tree.findByType('SettingsActionFooter'), 'onPrimaryPress', );
+      invokeTestInstanceHandler(tree.findByTestId('promptRegistries.details.install'), 'onPress');
     });
 
     expect(installPromptRegistryItemMock).toHaveBeenCalledWith(expect.objectContaining({

@@ -50,9 +50,9 @@ installServerSettingsHooksCommonModuleMocks({
     },
 });
 
-const setActiveServerAndSwitchMock = vi.fn(
+const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(
     async (): Promise<ActiveServerSwitchResult> => 'switched',
-);
+));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     setActiveServerAndSwitch: setActiveServerAndSwitchMock,
 }));

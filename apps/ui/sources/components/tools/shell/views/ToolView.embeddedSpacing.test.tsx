@@ -1,7 +1,6 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
-import { StyleSheet } from 'react-native-unistyles';
+import { flattenTestStyle, renderScreen, standardCleanup } from '@/dev/testkit';
 
 import { installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
@@ -93,9 +92,9 @@ vi.mock('@/agents/catalog/catalog', () => ({
     resolveAgentIdFromFlavor: () => null,
 }));
 
-function flatten(style: unknown): Record<string, unknown> {
-    return (StyleSheet.flatten(style as any) ?? {}) as Record<string, unknown>;
-}
+// The unistyles test runtime has no `StyleSheet.flatten`; the testkit flattener resolves nested and
+// pressable style values the same way.
+const flatten = flattenTestStyle;
 
 describe('ToolView (embedded group spacing)', () => {
     afterEach(() => {

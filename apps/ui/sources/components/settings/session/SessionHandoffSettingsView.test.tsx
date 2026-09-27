@@ -9,6 +9,12 @@ import {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const settingsState: Record<string, any> = {};
+// The settings store is the boundary: a write re-renders subscribers, as the real store does.
+const settingsListeners = new Set<() => void>();
+function writeSetting(key: string, next: any) {
+    settingsState[key] = next;
+    settingsListeners.forEach((listener) => listener());
+}
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
@@ -38,10 +44,14 @@ installSessionSettingsCommonModuleMocks({
             importOriginal,
             overrides: {
                 useSettingMutable: (key: string) => [
-                    settingsState[key],
-                    (next: any) => {
-                        settingsState[key] = next;
-                    },
+                    React.useSyncExternalStore(
+                        (listener) => {
+                            settingsListeners.add(listener);
+                            return () => settingsListeners.delete(listener);
+                        },
+                        () => settingsState[key],
+                    ),
+                    (next: any) => writeSetting(key, next),
                 ],
             },
         });
@@ -112,45 +122,40 @@ describe('SessionHandoffSettingsView', () => {
         const SessionHandoffSettingsView = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionHandoffSettingsView));
 
-        const commonModeMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceMode.title'
-        ))[0] ?? null;
+        const choice = (prefix: string) => screen.findAll((node) => node.props?.testIDPrefix === prefix)[0] ?? null;
+        const commonMode = choice('session-handoff-workspace-sync-mode');
         const advanced = screen.findAll((node) => node.props?.testID === 'session-handoff-settings-advanced')[0] ?? null;
-        const ignoredMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title'
-        ))[0] ?? null;
-        const directModeMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.directTargetMode.title'
-        ))[0] ?? null;
+        const directMode = choice('session-handoff-direct-target-mode');
 
-        expect(commonModeMenu?.props.items.map((item: any) => item.id)).toEqual(['keep_synced', 'copy_once', 'none']);
-        expect(advanced?.props.expanded).toBe(false);
-        expect(ignoredMenu).toBeFalsy();
-        expect(directModeMenu).toBeTruthy();
+        expect(commonMode?.props.options.map((item: any) => item.id)).toEqual(['keep_synced', 'copy_once', 'none']);
+        expect(directMode).toBeTruthy();
 
         await act(async () => {
             advanced?.props.onExpandedChange(true);
         });
 
-        const advancedModeMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.advanced.modeTitle'
-        ))[0] ?? null;
-        const expandedIgnoredMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title'
-        ))[0] ?? null;
-        expect(advancedModeMenu?.props.items.map((item: any) => item.id)).toEqual(['mirror_exactly', 'keep_both_in_sync']);
+        const advancedMode = choice('session-handoff-settings-advanced-mode');
+        expect(advancedMode?.props.options.map((item: any) => item.id)).toEqual(['mirror_exactly', 'keep_both_in_sync']);
 
         await act(async () => {
-            advancedModeMenu?.props.onSelect('mirror_exactly');
-            expandedIgnoredMenu?.props.onSelect('include_selected');
-            directModeMenu?.props.onSelect('convert_to_persisted');
+            advancedMode?.props.onChange('mirror_exactly');
+        });
+        await act(async () => {
+            choice('session-handoff-ignored-mode')?.props.onChange('include_selected');
+        });
+        await act(async () => {
+            choice('session-handoff-direct-target-mode')?.props.onChange('convert_to_persisted');
         });
 
-        const globInput = screen.findAll((node) => typeof node.props?.onChangeText === 'function')[0] ?? null;
+        const globInput = screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0] ?? null;
         expect(globInput).toBeTruthy();
         await act(async () => {
             globInput?.props.onChangeText('dist/**, .env.local');
         });
+        const editedGlobInput = screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0] ?? null;
+        await act(async () => editedGlobInput?.props.onBlur());
 
         expect(settingsState.sessionHandoffDefaultsV1).toEqual({
             v: 1,
@@ -159,5 +164,50 @@ describe('SessionHandoffSettingsView', () => {
             ignoredIncludeGlobs: ['dist/**', '.env.local'],
             directTargetMode: 'convert_to_persisted',
         });
+    });
+
+    it('keeps an unfinished comma while editing patterns and commits both entries on blur', async () => {
+        const mod = await import('./SessionHandoffSettingsView');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+        const advanced = screen.findAll((node) => node.props?.testID === 'session-handoff-settings-advanced')[0];
+        await act(async () => advanced?.props.onExpandedChange(true));
+
+        for (const draft of ['dist/**', 'dist/**,', 'dist/**, ', 'dist/**, .env.local']) {
+            const input = screen.findAll((node) => String(node.type) === 'TextInput'
+                && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0];
+            await act(async () => input?.props.onChangeText(draft));
+            expect(screen.findAll((node) => String(node.type) === 'TextInput'
+                && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0]?.props.value).toBe(draft);
+        }
+
+        const input = screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0];
+        await act(async () => input?.props.onBlur());
+        expect(settingsState.sessionHandoffDefaultsV1.ignoredIncludeGlobs).toEqual(['dist/**', '.env.local']);
+    });
+
+    it('opens Advanced on arrival when "Include selected" needs its patterns, so the required field is never hidden', async () => {
+        const mod = await import('./SessionHandoffSettingsView');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+
+        const advanced = screen.findAll((node) => node.props?.testID === 'session-handoff-settings-advanced')[0];
+        expect(advanced?.props.expanded).toBe(true);
+        expect(screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')).toHaveLength(1);
+    });
+
+    it('shows the stored patterns again when they change elsewhere while the page is open', async () => {
+        const mod = await import('./SessionHandoffSettingsView');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+        const field = () => screen.findAll((node) => String(node.type) === 'TextInput'
+            && node.props?.accessibilityLabel === 'settingsSession.handoff.includeIgnoredMode.globsTitle')[0];
+        expect(field()?.props.value).toBe('');
+
+        // A settings sync (another device, or the legacy-state reset on this page) writes new patterns.
+        await act(async () => {
+            writeSetting('sessionHandoffDefaultsV1', { ...settingsState.sessionHandoffDefaultsV1, ignoredIncludeGlobs: ['build/**'] });
+        });
+
+        expect(field()?.props.value).toBe('build/**');
     });
 });

@@ -20,7 +20,11 @@ export function createFrontDoorActionExecute(
   // renders nothing) never eagerly builds the full executor dependency graph.
   let resolved: ActionExecutorLike | null = executor ?? null;
   return async (actionId, input, context) => {
-    const target = resolved ?? (resolved = (await import('./defaultActionExecutor')).createDefaultActionExecutor());
+    // A call-time `require`, not `import()`: the executor is already part of the main bundle, and a
+    // dynamic import makes the dev bundler serve a duplicate lazy bundle that takes seconds to build
+    // (production cost is unchanged). Evaluation stays deferred to the first dispatch. A top-level
+    // import would form a cycle: the executor's dependencies import this front door.
+    const target = resolved ?? (resolved = (require('./defaultActionExecutor') as typeof import('./defaultActionExecutor')).createDefaultActionExecutor());
     return target.execute(actionId, input, context);
   };
 }

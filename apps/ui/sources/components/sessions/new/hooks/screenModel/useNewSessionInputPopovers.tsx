@@ -22,13 +22,13 @@ import {
     describeTemporaryComputerUnavailability,
 } from '@/components/sessions/new/hooks/temporaryComputerCopy';
 import { buildTemporaryComputerSelectionRows } from '@/components/sessions/new/components/machineSelection/buildTemporaryComputerSelectionRows';
+import { SELECTION_LIST_LARGE_POPOVER_SIZE } from '@/components/ui/selectionList';
 
 const LARGE_PICKER_LAYOUT: Pick<
     AgentInputContentPopoverConfig,
     'maxHeightCap' | 'maxWidthCap' | 'keyboardShouldPersistTaps' | 'edgeFades' | 'edgeIndicators' | 'initialVisibility'
 > = {
-    maxHeightCap: 560,
-    maxWidthCap: 560,
+    ...SELECTION_LIST_LARGE_POPOVER_SIZE,
     keyboardShouldPersistTaps: 'handled',
     edgeFades: { top: true, bottom: true, size: 28 },
     edgeIndicators: true,

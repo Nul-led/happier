@@ -1,11 +1,11 @@
 import React from 'react';
 import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { useAuth } from '@/auth/context/AuthContext';
 import { Item } from '@/components/ui/lists/Item';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { ACCOUNT_SECURITY_SETTINGS } from './accountSecuritySettings';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Icon } from '@/components/ui/icons/Icon';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { createApiTokenSettingsController } from '@/components/settings/apiTokens/apiTokenSettingsController';
@@ -14,10 +14,10 @@ import { completeApiTokenSettingsSignOutEverywhere } from '@/components/settings
 import { resolveApiTokenOperationErrorMessageKey } from '@/components/settings/apiTokens/apiTokenSettingsPresentation';
 import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 
-export const AccountSessionSecuritySection = React.memo(function AccountSessionSecuritySection() {
+/** Ends every signed-in session for this Account. A row, so it can sit in any section. */
+export const AccountSignOutEverywhereItem = React.memo(function AccountSignOutEverywhereItem(props: Readonly<{ showDivider?: boolean }>) {
     const auth = useAuth();
     const router = useRouter();
-    const { theme } = useUnistyles();
     const [controller] = React.useState(createApiTokenSettingsController);
     const state = useApiTokenSettingsControllerState(controller);
     React.useInsertionEffect(() => () => controller.retire(), [controller]);
@@ -41,17 +41,26 @@ export const AccountSessionSecuritySection = React.memo(function AccountSessionS
     };
 
     return (
-        <ItemGroup>
-            <Item
-                testID="settings-account-sign-out-everywhere"
-                title={t('settingsApiTokens.signOutEverywhere.title')}
-                subtitle={t('settingsApiTokens.signOutEverywhere.subtitle')}
-                icon={<Icon name="sign-out" size={24} color={theme.colors.state.danger.foreground} />}
-                destructive
-                disabled={!auth.credentials || state.operation !== null}
-                loading={state.operation === 'signOutEverywhere'}
-                onPress={signOut}
-            />
+        <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signOutEverywhere} showDivider={props.showDivider}>
+        <Item
+            testID="settings-account-sign-out-everywhere"
+            title={t('settingsApiTokens.signOutEverywhere.title')}
+            subtitle={t('settingsApiTokens.signOutEverywhere.subtitle')}
+            destructive
+            disabled={!auth.credentials || state.operation !== null}
+            loading={state.operation === 'signOutEverywhere'}
+            onPress={signOut}
+            showChevron={false}
+            showDivider={props.showDivider}
+        />
+        </SettingAnchor>
+    );
+});
+
+export const AccountSessionSecuritySection = React.memo(function AccountSessionSecuritySection() {
+    return (
+        <ItemGroup title={t('settingsAccount.sessionsSectionTitle')}>
+            <AccountSignOutEverywhereItem />
         </ItemGroup>
     );
 });

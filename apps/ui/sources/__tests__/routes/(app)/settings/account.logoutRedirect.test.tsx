@@ -1,12 +1,11 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import {
     renderSettingsView,
     standardCleanup,
 } from '@/dev/testkit';
-import { storage } from '@/sync/domains/state/storageStore';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
 
 import { createAccountFeaturesResponse, getRequestUrl, isFeaturesRequest } from './account.testHelpers';
@@ -117,6 +116,13 @@ vi.mock('@/components/account/ProviderIdentityItems', () => ({
 }));
 
 const routerMockRef = getAccountSettingsRouteRouterMockRef();
+
+// Loaded only after the route mocks above are registered: the real store's import graph reaches
+// modules (such as the first-key credential lifecycle) that must bind the mocked `@/modal`.
+let storage: typeof import('@/sync/domains/state/storageStore')['storage'];
+beforeAll(async () => {
+    ({ storage } = await import('@/sync/domains/state/storageStore'));
+});
 
 async function activateDeletionTestScope(): Promise<void> {
     const serverProfiles = await import('@/sync/domains/server/serverProfiles');
@@ -312,7 +318,7 @@ describe('Settings → Account logout redirect', () => {
         const modal = modalMockRef.current;
         if (!modal) throw new Error('Expected account modal mock');
         modal.spies.prompt.mockResolvedValueOnce('DELETE');
-        const row = screen.findRowByTitle('settingsAccount.deleteAccount');
+        const row = screen.findRowByTitle('settingsAccount.deleteAccountEllipsis');
         expect(row?.props.testID).toBe('settings-account-delete');
         await act(async () => { await row?.props.onPress?.(); });
         expect(modal.spies.prompt).toHaveBeenCalledWith('settingsAccount.deleteAccountConfirmTitle', 'settingsAccount.deleteAccountConfirmBody', expect.objectContaining({ placeholder: 'DELETE' }));
@@ -346,7 +352,7 @@ describe('Settings → Account logout redirect', () => {
             buttons?.find((button) => button.text === 'common.retry')?.onPress?.();
         });
 
-        await act(async () => { await screen.findRowByTitle('settingsAccount.deleteAccount')?.props.onPress?.(); });
+        await act(async () => { await screen.findRowByTitle('settingsAccount.deleteAccountEllipsis')?.props.onPress?.(); });
 
         expect(deleteCurrentAccountMock).toHaveBeenCalledOnce();
         expect(removeRunnerCreatorCustodyForAccountMock).toHaveBeenCalledTimes(2);

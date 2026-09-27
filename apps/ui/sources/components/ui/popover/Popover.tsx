@@ -65,6 +65,15 @@ type PopoverLayoutProps = Omit<PopoverRenderProps, 'requestClose'>;
 
 const RECT_UPDATE_TOLERANCE = 1;
 const NATIVE_PORTAL_SHADOW_OUTSET = 16;
+
+/**
+ * Width bounds of a content-sized popover (`portal.sizeToContent`): wide enough for a row's title
+ * and status on one line, narrow enough to read as attached to the control that opened it.
+ */
+export const CONTENT_SIZED_POPOVER_WIDTH = {
+    minPx: 240,
+    maxPx: 360,
+} as const;
 const WEB_POPOVER_FOCUSABLE_SELECTOR = [
     'button:not([disabled])',
     '[href]',
@@ -280,6 +289,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
     const anchorAlignOnPortal = props.portal?.anchorAlign ?? 'start';
     const anchorAlignVerticalOnPortal = props.portal?.anchorAlignVertical ?? 'center';
     const topBottomLayoutOnPortal = props.portal?.topBottomLayout ?? 'anchored';
+    const sizeToContentOnPortal = props.portal?.sizeToContent === true && topBottomLayoutOnPortal === 'anchored';
 
     const shouldPortalWeb = Platform.OS === 'web' && Boolean(portalWeb);
     const shouldPortalNative = Platform.OS !== 'web' && Boolean(portalNative) && Boolean(overlayPortal);
@@ -1261,6 +1271,33 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 } as any;
             })();
 
+            if (sizeToContentOnPortal && (computed.placement === 'top' || computed.placement === 'bottom')) {
+                // The content decides the width; only its bounds and one edge are pinned, so no
+                // measurement of the content width is needed to place it.
+                const anchorRight = anchorRectState.x + anchorRectState.width;
+                const alignEnd = anchorAlignOnPortal === 'end';
+                const room = alignEnd
+                    ? anchorRight - boundaryRect.x
+                    : boundaryRect.x + boundaryRect.width - anchorRectState.x;
+                const maxWidth = Math.max(0, Math.min(computed.maxWidth, CONTENT_SIZED_POPOVER_WIDTH.maxPx, Math.floor(room)));
+                const minWidth = Math.min(CONTENT_SIZED_POPOVER_WIDTH.minPx, maxWidth);
+                const offsetX = position === 'absolute' ? webPortalOffsetX : 0;
+                const portalWidth = Platform.OS === 'web' && position === 'absolute'
+                    ? (webPortalTargetRect?.width ?? windowWidth)
+                    : windowWidth;
+                const horizontal: ViewStyle = alignEnd
+                    ? { right: Math.floor(portalWidth - (anchorRight - offsetX) - nativePortalShadowOutset) }
+                    : { left: Math.floor(Math.max(boundaryRect.x, anchorRectState.x) - offsetX - nativePortalShadowOutset) };
+                return {
+                    position,
+                    ...horizontal,
+                    ...verticalStyle,
+                    zIndex: 1000,
+                    minWidth: minWidth + (nativePortalShadowOutset * 2),
+                    maxWidth: maxWidth + (nativePortalShadowOutset * 2),
+                };
+            }
+
             return {
                 position,
                 left: Math.floor(clampedLeft - (position === 'absolute' ? webPortalOffsetX : 0) - nativePortalShadowOutset),
@@ -1597,7 +1634,8 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                     paddingStyle,
                     containerStyle,
                     nativePortalShadowPaddingStyle,
-                    { maxWidth: contentContainerMaxWidth },
+                    // A content-sized popover carries its own (narrower) bounds in `placementStyle`.
+                    typeof placementStyle.maxWidth === 'number' ? null : { maxWidth: contentContainerMaxWidth },
                     (shouldPortalWeb || shouldPortalNative) ? { opacity: portalOpacity } : null,
                     shouldPortal ? { zIndex: portalZ + 1 } : null,
                     // The legacy prop used to take precedence over caller-owned styles.

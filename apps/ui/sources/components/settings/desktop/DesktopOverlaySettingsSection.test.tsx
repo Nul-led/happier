@@ -161,32 +161,33 @@ describe('DesktopOverlaySettingsSection', () => {
 
         expect(screen.findGroup('settingsDesktop.overlay.title')).toBeTruthy();
         expect(screen.findRow('settings-desktop-overlay-enabled')).toBeTruthy();
-        expect(screen.findAllByType('DropdownMenu' as any)).toHaveLength(5);
+        // Only the eight-way anchor stays a field select; the short choices are segmented.
+        expect(screen.findAllByType('DropdownMenu' as any)).toHaveLength(1);
         expect(screen.findRowByTitle('settingsDesktop.overlay.interactiveCollapsedTitle')).toBeNull();
         expect(screen.findRowByTitle('settingsDesktop.overlay.densityTitle')).toBeNull();
         expect(screen.findRowByTitle('settingsDesktop.overlay.compactStyleTitle')).toBeNull();
     });
 
-    it('writes overlay visibility and placement changes through the dropdown menu controls', async () => {
+    it('writes overlay visibility and placement changes through the segmented and field controls', async () => {
         const { DesktopOverlaySettingsSection } = await import('./DesktopOverlaySettingsSection');
         const screen = await renderSettingsView(<DesktopOverlaySettingsSection />);
-        const dropdownMenus = screen.findAllByType('DropdownMenu' as any);
+        const segmented = (title: string) => screen.findAll((node) => (
+            node.props?.title === title && Array.isArray(node.props?.options) && typeof node.props?.onChange === 'function'
+        ))[0];
 
-        const visibilityMenu = dropdownMenus.find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.visibilityModeTitle');
-        expect(visibilityMenu).toBeTruthy();
-        visibilityMenu?.props.onSelect?.('always_when_enabled');
+        segmented('settingsDesktop.overlay.visibilityModeTitle')?.props.onChange('always_when_enabled');
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
             desktopOverlayVisibilityMode: 'always_when_enabled',
         });
 
-        const autoHideMenu = dropdownMenus.find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.autoHideDelayTitle');
-        expect(autoHideMenu).toBeTruthy();
-        autoHideMenu?.props.onSelect?.('10000');
+        segmented('settingsDesktop.overlay.autoHideDelayTitle')?.props.onChange('10000');
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
             desktopOverlayAutoHideDelayMs: 10_000,
         });
 
-        const anchorMenu = dropdownMenus.find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.anchorPresetTitle');
+        // Eight anchors are too many for a segmented row: they stay a field select.
+        const anchorMenu = screen.findAllByType('DropdownMenu' as any)
+            .find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.anchorPresetTitle');
         expect(anchorMenu).toBeTruthy();
         anchorMenu?.props.onSelect?.('bottom_right');
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
@@ -194,9 +195,7 @@ describe('DesktopOverlaySettingsSection', () => {
         });
         expect(resetDesktopActivityOverlayPositionMock).toHaveBeenCalledTimes(1);
 
-        const presentationModeMenu = dropdownMenus.find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.presentationModeTitle');
-        expect(presentationModeMenu).toBeTruthy();
-        presentationModeMenu?.props.onSelect?.('notch_integrated');
+        segmented('settingsDesktop.overlay.presentationModeTitle')?.props.onChange('notch_integrated');
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
             desktopOverlayPresentationMode: 'notch_integrated',
         });
@@ -236,6 +235,7 @@ describe('DesktopOverlaySettingsSection', () => {
         const screen = await renderSettingsView(<DesktopOverlaySettingsSection />);
 
         expect(screen.findAllByType('DropdownMenu' as any)).toHaveLength(0);
+        expect(screen.findRowByTitle('settingsDesktop.overlay.visibilityModeTitle')).toBeNull();
         expect(screen.findRowByTitle('settingsDesktop.overlay.showWhenRunningTitle')).toBeNull();
         expect(screen.findRowByTitle('settingsDesktop.overlay.showWhenAttentionRequiredTitle')).toBeNull();
         expect(screen.findRowByTitle('settingsDesktop.overlay.showWhenReadyTitle')).toBeNull();
@@ -727,12 +727,12 @@ describe('DesktopOverlaySettingsSection', () => {
         };
         const { DesktopOverlaySettingsSection } = await import('./DesktopOverlaySettingsSection');
         const screen = await renderSettingsView(<DesktopOverlaySettingsSection />);
-        const dropdownMenus = screen.findAllByType('DropdownMenu' as any);
+        const placementModeChoice = screen.findAll((node) => (
+            node.props?.title === 'settingsDesktop.overlay.placementModeTitle' && typeof node.props?.onChange === 'function'
+        ))[0];
+        expect(placementModeChoice).toBeTruthy();
 
-        const placementModeMenu = dropdownMenus.find((menu) => menu.props.itemTrigger?.title === 'settingsDesktop.overlay.placementModeTitle');
-        expect(placementModeMenu).toBeTruthy();
-
-        placementModeMenu?.props.onSelect?.('anchored');
+        placementModeChoice?.props.onChange?.('anchored');
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({
             desktopOverlayPlacementMode: 'anchored',

@@ -186,6 +186,7 @@ vi.mock('@/utils/sessions/machineUtils', () => {
 
 vi.mock('@/utils/sessions/sessionUtils', () => {
     return {
+        formatOSPlatform: (platform?: string) => platform ?? '',
         formatPathRelativeToHome: () => '',
         getSessionName: () => '',
         getSessionSubtitle: () => '',
@@ -196,7 +197,8 @@ vi.mock('@/utils/path/pathUtils', () => {
     return { resolveAbsolutePath: () => '' };
 });
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
     getActiveServerId: () => activeServerIdRef.current,
 }));

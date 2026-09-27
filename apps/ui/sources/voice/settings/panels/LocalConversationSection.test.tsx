@@ -240,6 +240,22 @@ function findDropdownByItemTriggerTitle(
   return screen.findAll((node) => String(node.type) === 'DropdownMenu' && node.props?.itemTrigger?.title === title)[0] ?? null;
 }
 
+/** A choice row with its options always visible (two to four short options). */
+function findSegmentedChoiceByTitle(
+  screen: Pick<SettingsViewHarness, 'findAll'>,
+  title: string,
+) {
+  return screen.findAll((node) => Array.isArray(node.props?.options) && typeof node.props?.onChange === 'function' && node.props?.title === title)[0] ?? null;
+}
+
+/** Any single-choice control for a setting, whether a menu or a segmented row. */
+function findChoiceByTitle(
+  screen: Pick<SettingsViewHarness, 'findAll'>,
+  title: string,
+) {
+  return findDropdownByItemTriggerTitle(screen, title) ?? findSegmentedChoiceByTitle(screen, title);
+}
+
 beforeEach(() => {
   platformOsMock.value = 'ios';
   featureEnabledState['voice.agent'] = true;
@@ -454,10 +470,10 @@ describe('LocalConversationSection', () => {
       t('settingsVoice.local.mediatorCommitModelSource'),
       t('settingsVoice.local.conversation.commitModelId.title'),
     ]) {
-      expect(findDropdownByItemTriggerTitle(screen, title)).toBeNull();
+      expect(findChoiceByTitle(screen, title)).toBeNull();
     }
 
-    expect(findDropdownByItemTriggerTitle(
+    expect(findSegmentedChoiceByTitle(
       screen,
       t('settingsVoice.local.mediatorPermissionPolicy'),
     )).not.toBeNull();
@@ -511,7 +527,7 @@ describe('LocalConversationSection', () => {
 
     const screen = await renderSettingsView(<LocalConversationSection voice={localVoice} setVoice={() => {}} />);
 
-    expect(findDropdownByItemTriggerTitle(screen, t('settingsVoice.local.conversationMode'))).toBeTruthy();
+    expect(findSegmentedChoiceByTitle(screen, t('settingsVoice.local.conversationMode'))).toBeTruthy();
 
     act(() => {
       screen.tree.update(
@@ -522,7 +538,7 @@ describe('LocalConversationSection', () => {
       );
     });
 
-    expect(findDropdownByItemTriggerTitle(screen, t('settingsVoice.local.conversationMode'))).toBeFalsy();
+    expect(findChoiceByTitle(screen, t('settingsVoice.local.conversationMode'))).toBeFalsy();
   });
 
   it('renders the fixed Agent dropdown when agentSource=agent', async () => {
@@ -781,8 +797,9 @@ describe('LocalConversationSection', () => {
     });
 
     const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={() => {}} />);
-    const policyDropdown = findDropdownByItemTriggerTitle(screen, t('settingsVoice.local.conversation.rootSessionPolicy.title'));
-    expect(policyDropdown?.props.selectedId).toBe('keep_warm');
+    const policyChoice = findSegmentedChoiceByTitle(screen, t('settingsVoice.local.conversation.rootSessionPolicy.title'));
+    expect(policyChoice?.props.value).toBe('keep_warm');
+    expect(policyChoice?.props.options.map((option: { id: string }) => option.id)).toEqual(['single', 'keep_warm']);
   });
 
   it('hides Agent-only commit isolation when voice.agent is disabled', async () => {
@@ -814,5 +831,25 @@ describe('LocalConversationSection', () => {
 
     const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={setVoice} />);
     expect(screen.findRowByTitle(t('settingsVoice.local.conversation.commitIsolation.title'))).toBeTruthy();
+  });
+  it('edits the network timeout in place, moved to its bounds', async () => {
+    const LocalConversationSection = await loadLocalConversationSection();
+    const setVoice = vi.fn();
+    const voice = createLocalConversationVoice();
+    const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={setVoice} />);
+
+    // `Item` is mocked in this file, so the field is reached through the row's right-hand control.
+    const field = () => screen.findAll((node) => String(node.type) === 'Item'
+      && node.props?.rightElement?.props?.testID === 'settings.voice.local.networkTimeoutMs.field')[0]?.props.rightElement;
+    expect(field()?.props.value).toBe(String(readLocalConversationVoiceSettings(voice).networkTimeoutMs));
+    await act(async () => {
+      field()!.props.onChangeText('100');
+    });
+    await act(async () => {
+      field()!.props.onBlur();
+    });
+
+    const written = setVoice.mock.calls.at(-1)?.[0] as VoiceSettings;
+    expect(readLocalConversationVoiceSettings(written).networkTimeoutMs).toBe(1000);
   });
 });

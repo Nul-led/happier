@@ -1,10 +1,8 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { t } from '@/text';
 import type { CliAuthStatusData } from '@/sync/api/capabilities/capabilitiesProtocol';
-import { Icon } from '@/components/ui/icons/Icon';
 
 function resolveAuthStateSubtitle(authStatus: CliAuthStatusData | null): string {
     if (!authStatus) return t('settingsAgents.authentication.stateUnknown');
@@ -47,7 +45,6 @@ function resolveAuthSourceSubtitle(source: CliAuthStatusData['source']): string 
 export const AgentAuthenticationStatusRows = React.memo(function AgentAuthenticationStatusRows(props: Readonly<{
     authStatus: CliAuthStatusData | null;
 }>) {
-    const { theme } = useUnistyles();
     const methodSubtitle = resolveAuthMethodSubtitle(props.authStatus?.method);
     const reasonSubtitle = resolveAuthReasonSubtitle(props.authStatus?.reason);
     const sourceSubtitle = resolveAuthSourceSubtitle(props.authStatus?.source);
@@ -62,7 +59,6 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                 testID="settings-provider-auth-status"
                 title={t('settingsAgents.authentication.statusTitle')}
                 subtitle={resolveAuthStateSubtitle(props.authStatus)}
-                icon={<Icon name="shield-check" size={20} color={theme.colors.text.secondary} />}
                 mode="info"
             />
             {props.authStatus?.accountLabel ? (
@@ -70,7 +66,6 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                     testID="settings-provider-auth-account"
                     title={t('settingsAgents.authentication.loggedInAsTitle')}
                     subtitle={props.authStatus.accountLabel}
-                    icon={<Icon name="person" size={20} color={theme.colors.text.secondary} />}
                     mode="info"
                     copy={props.authStatus.accountLabel}
                 />
@@ -80,7 +75,6 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                     testID="settings-provider-auth-method"
                     title={t('settingsAgents.authentication.methodTitle')}
                     subtitle={methodSubtitle}
-                    icon={<Icon name="key" size={20} color={theme.colors.text.secondary} />}
                     mode="info"
                 />
             ) : null}
@@ -89,7 +83,6 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                     testID="settings-provider-auth-source"
                     title={t('settingsAgents.authentication.sourceTitle')}
                     subtitle={sourceSubtitle}
-                    icon={<Icon name="file-text" size={20} color={theme.colors.text.secondary} />}
                     mode="info"
                 />
             ) : null}
@@ -98,7 +91,6 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                     testID="settings-provider-auth-reason"
                     title={t('settingsAgents.authentication.reasonTitle')}
                     subtitle={reasonSubtitle}
-                    icon={<Icon name="warning-circle" size={20} color={theme.colors.text.secondary} />}
                     mode="info"
                 />
             ) : null}
@@ -107,10 +99,40 @@ export const AgentAuthenticationStatusRows = React.memo(function AgentAuthentica
                     testID="settings-provider-auth-last-checked"
                     title={t('settingsAgents.authentication.lastCheckedTitle')}
                     subtitle={checkedAtSubtitle}
-                    icon={<Icon name="clock" size={20} color={theme.colors.text.secondary} />}
                     mode="info"
                 />
             ) : null}
         </>
+    );
+});
+
+/**
+ * The same authentication facts as one page row: state, account, method and when it was checked,
+ * with the sign-in action beside it. Used where readiness is a section of a configuration page.
+ */
+export const AgentAuthenticationSummaryRow = React.memo(function AgentAuthenticationSummaryRow(props: Readonly<{
+    authStatus: CliAuthStatusData | null;
+    action?: React.ReactNode;
+}>) {
+    const checkedAt = props.authStatus?.checkedAt && Number.isFinite(props.authStatus.checkedAt)
+        ? t('settingsAgents.detailPage.checkedAt', { time: new Date(props.authStatus.checkedAt).toLocaleString() })
+        : null;
+    const facts = [
+        resolveAuthStateSubtitle(props.authStatus),
+        props.authStatus?.accountLabel ?? null,
+        resolveAuthMethodSubtitle(props.authStatus?.method),
+        resolveAuthReasonSubtitle(props.authStatus?.reason),
+        checkedAt,
+    ].filter((fact): fact is string => Boolean(fact));
+    return (
+        <Item
+            testID="settings-provider-auth-status"
+            title={t('settingsAgents.detailPage.signInTitle')}
+            subtitle={facts.join(' · ')}
+            subtitleLines={0}
+            mode="info"
+            showChevron={false}
+            rightElement={props.action}
+        />
     );
 });

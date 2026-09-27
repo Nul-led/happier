@@ -548,11 +548,13 @@ export const darkTheme = {
             dot: '#131111',
         },
         button: {
+            // Inverted primary: a light fill with dark text, mirroring the light theme's
+            // black-on-white, so the primary action never reads as disabled on dark surfaces.
             primary: {
-                background: '#221C1C',
-                gradient: createVerticalGradient(['#221C1C', '#251F1F']),
-                tint: '#EFEFEF',
-                disabled: '#2A2323',
+                background: '#EFEFEF',
+                gradient: createVerticalGradient(['#EFEFEF', '#F2F2F2']),
+                tint: '#191717',
+                disabled: '#4A4242',
             },
             secondary: {
                 background: 'transparent',

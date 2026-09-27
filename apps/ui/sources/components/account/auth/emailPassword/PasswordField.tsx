@@ -4,6 +4,8 @@ import { Platform, View, type NativeSyntheticEvent, type TextInputKeyPressEventD
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FIELD_BOX_METRICS, fieldBoxShapeStyle, resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -41,6 +43,10 @@ export type PasswordFieldProps = Readonly<{
  */
 export const PasswordField = React.memo(function PasswordField(props: PasswordFieldProps) {
     const { theme } = useUnistyles();
+    // On a configuration page the password shares the page's one field shape (`fieldBox`) with the
+    // text fields beside it; sign-in and recovery screens keep their larger frame.
+    const pageField = useListPresentation() === 'page';
+    const pageColors = pageField ? resolveFieldBoxColors(theme, props.error ? 'invalid' : 'idle') : null;
     const [revealed, setRevealed] = React.useState(false);
     const [capsLockOn, setCapsLockOn] = React.useState(false);
     const errorId = `${props.testID}-error`;
@@ -71,7 +77,11 @@ export const PasswordField = React.memo(function PasswordField(props: PasswordFi
             {/* The reveal control lives inside the field frame so toggling it
                 changes no geometry, focus, selection or password-manager
                 association — only the glyph and the secure-entry flag. */}
-            <View style={[
+            <View style={pageColors ? [
+                fieldBoxShapeStyle,
+                styles.pageFrame,
+                { borderColor: pageColors.borderColor, backgroundColor: pageColors.backgroundColor },
+            ] : [
                 styles.frame,
                 { borderColor: props.error ? theme.colors.status.error : theme.colors.border.default },
             ]}>
@@ -81,9 +91,9 @@ export const PasswordField = React.memo(function PasswordField(props: PasswordFi
                     accessibilityLabel={props.label}
                     aria-describedby={describedBy}
                     aria-invalid={Boolean(props.error)}
-                    style={[styles.input, { color: theme.colors.text.primary }]}
+                    style={[styles.input, pageColors ? styles.pageInput : null, { color: pageColors?.valueColor ?? theme.colors.text.primary }]}
                     placeholder={props.placeholder}
-                    placeholderTextColor={theme.colors.text.secondary}
+                    placeholderTextColor={pageColors?.placeholderColor ?? theme.colors.text.secondary}
                     value={props.value}
                     onChangeText={props.onChangeText}
                     onKeyPress={onKeyPress}
@@ -105,7 +115,7 @@ export const PasswordField = React.memo(function PasswordField(props: PasswordFi
                     aria-pressed={revealed}
                     accessibilityLabel={revealed ? t('settingsAccount.nativePassword.hidePassword') : t('settingsAccount.nativePassword.showPassword')}
                     onPress={() => setRevealed((current) => !current)}
-                    style={styles.reveal}
+                    style={[styles.reveal, pageColors ? styles.pageReveal : null]}
                 >
                     <Icon name={revealed ? 'eye-slash' : 'eye'} size={18} color={theme.colors.text.secondary} />
                 </HappierPressable>
@@ -151,6 +161,23 @@ const styles = StyleSheet.create((theme) => ({
         height: REVEAL_TARGET,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    pageFrame: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingRight: 2,
+    },
+    pageInput: {
+        fontSize: FIELD_BOX_METRICS.fontSizePx,
+        lineHeight: FIELD_BOX_METRICS.lineHeightPx,
+        paddingVertical: 0,
+        minHeight: FIELD_BOX_METRICS.lineHeightPx,
+    },
+    // The reveal glyph fits the page field; on touch platforms the shared pressable still gives it
+    // the native target size.
+    pageReveal: {
+        width: FIELD_BOX_METRICS.minHeightPx - 2,
+        height: FIELD_BOX_METRICS.minHeightPx - 2,
     },
     supporting: {
         fontSize: 12,

@@ -9,6 +9,7 @@ import {
     resolveTeamsDirectoryViewState,
     type TeamsDirectoryViewState,
 } from '@/components/settings/teams/teamsDirectoryViewState';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import { useServerCredentialAccountScopeResolutions } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { retryServerCredentialAccountScope } from '@/sync/domains/scope/serverCredentialAccountScope';
 import { useTeamsSettingsAdmission } from '@/hooks/teams/useTeamsSettingsAdmission';
@@ -157,7 +158,7 @@ export function useTeamsDirectory(options?: Readonly<{
         const names: Record<string, string | undefined> = {};
         for (const home of admittedHomes) {
             const profile = getServerProfileById(home.serverId);
-            names[home.serverId] = (profile?.name ?? '').trim() || profile?.serverUrl || home.serverId;
+            names[home.serverId] = resolveHomeDisplayLabel(profile, home.serverId);
         }
         return names;
     }, [admittedHomes]);

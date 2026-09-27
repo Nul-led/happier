@@ -157,7 +157,6 @@ describe('QualifiedAccountDetailView', () => {
     const STATUS_PILL_VARIANTS: ReadonlyArray<
         readonly [ConnectedServiceCredentialHealthStatusV1, StatusPillVariant]
     > = [
-        ['connected', 'success'],
         ['refreshing', 'success'],
         ['refresh_failed_retryable', 'warning'],
         ['needs_reauth', 'danger'],
@@ -171,6 +170,13 @@ describe('QualifiedAccountDetailView', () => {
             expect(statusPillVariantOf(screen.root)).toBe(variant);
         },
     );
+
+    it('keeps a healthy account quiet: its status is a plain header fact, not a pill', async () => {
+        const screen = await renderDetail({ status: 'connected' });
+
+        expect(statusPillVariantOf(screen.root)).toBeUndefined();
+        expect(screen.findByTestId('qualified-account-detail:status-pill')).toBeTruthy();
+    });
 
     it('names the qualified id "Account id" and the provider-side id "Provider account id"', async () => {
         const screen = await renderDetail({
@@ -202,8 +208,8 @@ describe('QualifiedAccountDetailView', () => {
             status: 'connected',
         });
 
-        expect(hasTitle(screen.root, 'Codex • work@example.com')).toBe(true);
-        expect(hasTitle(screen.root, 'Codex • acct-77')).toBe(false);
+        expect(hasTitle(screen.root, 'work@example.com')).toBe(true);
+        expect(hasTitle(screen.root, 'acct-77')).toBe(false);
     });
 
     it('keeps a resolved account label ahead of the provider email', async () => {
@@ -217,7 +223,7 @@ describe('QualifiedAccountDetailView', () => {
             status: 'connected',
         });
 
-        expect(hasTitle(screen.root, 'Codex • Work account')).toBe(true);
+        expect(hasTitle(screen.root, 'Work account')).toBe(true);
     });
 
     it('omits the email and provider-account rows when those identity fields are unknown', async () => {

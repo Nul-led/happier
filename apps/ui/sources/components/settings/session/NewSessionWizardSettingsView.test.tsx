@@ -59,25 +59,20 @@ describe('NewSessionWizardSettingsView', () => {
         const { NewSessionWizardSettingsView } = await import('./NewSessionWizardSettingsView');
         const screen = await renderSettingsView(React.createElement(NewSessionWizardSettingsView));
 
-        expect(screen.findRowByTitle('Select AI Profile')).toBeTruthy();
-        expect(screen.findRowByTitle('Select AI Backend')).toBeTruthy();
-        expect(screen.findRowByTitle('Select AI Model')).toBeTruthy();
-        expect(screen.findRowByTitle('Select Machine')).toBeTruthy();
-        expect(screen.findRowByTitle('Select Working Directory')).toBeTruthy();
-        expect(screen.findRowByTitle('Select Permission Mode')).toBeTruthy();
-
-        const rows = screen.findAllByType('Item' as any).filter((item) => typeof item.props.testID === 'string');
-        expect(rows.map((row) => [row.props.testID, row.props.subtitle])).toEqual([
-            ['settings-new-session-wizard-columns', 'Stack every wizard selector in one column.'],
-            ['settings-new-session-wizard-profiles', 'Auto'],
-            ['settings-new-session-wizard-backends', 'Auto'],
-            ['settings-new-session-wizard-models', 'Dropdown'],
-            ['settings-new-session-wizard-machines', 'Auto'],
-            ['settings-new-session-wizard-paths', 'Auto'],
-            ['settings-new-session-wizard-permissions', 'Auto'],
+        const steps = screen.findAll((node) => typeof node.props?.testID === 'string'
+            && node.props.testID.startsWith('settings-new-session-wizard-')
+            && Array.isArray(node.props.options));
+        expect(steps.map((step) => [step.props.testID, step.props.title, step.props.value])).toEqual([
+            ['settings-new-session-wizard-profiles', 'Profile', 'auto'],
+            ['settings-new-session-wizard-backends', 'Agent', 'auto'],
+            ['settings-new-session-wizard-models', 'Model', 'dropdown'],
+            ['settings-new-session-wizard-machines', 'Machine', 'auto'],
+            ['settings-new-session-wizard-paths', 'Folder', 'auto'],
+            ['settings-new-session-wizard-permissions', 'Permissions', 'auto'],
         ]);
+        expect(screen.findRow('settings-new-session-wizard-columns')?.props.subtitle).toBe('Stack every wizard selector in one column.');
 
-        screen.pressRowByTitle('DropdownItem:Select Machine:Dropdown');
+        steps.find((step) => step.props.testID === 'settings-new-session-wizard-machines')?.props.onChange('dropdown');
         expect(setPresentation).toHaveBeenCalledWith({
             models: 'dropdown',
             machines: 'dropdown',

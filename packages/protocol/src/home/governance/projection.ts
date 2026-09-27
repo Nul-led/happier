@@ -137,7 +137,12 @@ export const HomeGovernanceProjectionV1Schema = z.object({
 
 export type HomeGovernanceProjectionV1 = z.infer<typeof HomeGovernanceProjectionV1Schema>;
 
-/** The complete non-administrative Home projection available to any active viewer. */
+/**
+ * The complete non-administrative Home projection available to any active viewer.
+ *
+ * The last three facts are optional: a Home that predates them omits them, and
+ * a current Home omits them for a viewer that is not an active Account there.
+ */
 export const HomeGovernanceEligibilityV1Schema = z.object({
   teamsEnabled: z.boolean(),
   createTeam: z.boolean(),

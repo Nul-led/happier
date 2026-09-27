@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
-import { resolveAccountHealthDotColor } from './account/accountBlockModel';
 import { installConnectedServicesCommonModuleMocks } from './connectedServicesTestHelpers';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,6 +60,7 @@ vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
 
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     useAppShellPluginUiProjection: () => ({ machineId: null, serverId: null }),
+    useProjectedPluginLocalizedTextResolver: () => (_pluginId: string, value: unknown) => (typeof value === 'string' ? value : ''),
     useProjectedConnectedServicesRegistry: () => ({
         scopeKey: 'server-1',
         status: registryState.status,
@@ -79,6 +79,7 @@ vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
         errorReason: null,
         entries: registryState.entries,
     }),
+    getGeneratedLegacyConnectedServiceRegistryFallback: () => null,
     installConnectedAccountDescriptorProjection: vi.fn(),
 }));
 
@@ -94,9 +95,8 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', ()
     }),
 }));
 
-vi.mock('./ConnectedServiceQuotaSummaryCardSection', () => ({
-    ConnectedServiceQuotaSummaryCardSection: (props: Record<string, unknown>) =>
-        React.createElement('ConnectedServiceQuotaSummaryCardSection', props),
+vi.mock('./account/QualifiedAccountBlock', () => ({
+    QualifiedAccountBlock: (props: Record<string, unknown>) => React.createElement('QualifiedAccountBlock', props),
 }));
 
 vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
@@ -105,8 +105,8 @@ vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
 }));
 
 vi.mock('./ConnectedServicesProviderStateSharingSettings', () => ({
-    ConnectedServicesProviderStateSharingDefaultsGroup: (props: Record<string, unknown>) =>
-        React.createElement('ConnectedServicesProviderStateSharingDefaultsGroup', props),
+    ConnectedServicesProviderStateSharingDisclosure: (props: Record<string, unknown>) =>
+        React.createElement('ConnectedServicesProviderStateSharingDisclosure', props),
 }));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -121,15 +121,17 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
         React.createElement('ItemGroup', props, children),
 }));
 
-// `Item` owns the fixed leading slot; render `leftElement` so the brand mark and
-// the overlaid health dot are actually mounted and inspectable in the tree.
+// `Item` owns the fixed leading slot; render `leftElement` and `titleAccessory` so the brand mark
+// and the state pill are actually mounted and inspectable in the tree.
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: { leftElement?: React.ReactNode }) => React.createElement('Item', props, props.leftElement),
+    Item: (props: { leftElement?: React.ReactNode; titleAccessory?: React.ReactNode }) =>
+        React.createElement('Item', props, props.leftElement, props.titleAccessory),
 }));
 
 // The generic fallback glyph draws through Hugeicons/Phosphor primitives; a host
 // stand-in keeps the resolved `name` assertable without the drawing stack.
-vi.mock('@/components/ui/icons/Icon', () => ({
+vi.mock('@/components/ui/icons/Icon', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
     Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
 }));
 
@@ -181,8 +183,9 @@ async function renderView() {
     return tree;
 }
 
-async function renderRows() {
-    return (await renderView()).root.findAllByType('Item' as never);
+function serviceHeaders(tree: Awaited<ReturnType<typeof renderView>>) {
+    return tree.root.findAllByType('Item' as never)
+        .filter((row) => String(row.props.testID ?? '').startsWith('connected-services-service:'));
 }
 
 describe('ConnectedServicesSettingsView row presentation', () => {
@@ -195,35 +198,36 @@ describe('ConnectedServicesSettingsView row presentation', () => {
         profileState.connectedAccountGroupsV4 = [];
     });
 
-    it('orders provider rows attention-first, then by label', async () => {
-        const rows = await renderRows();
+    it('orders services attention-first, then by label, leaving services without accounts to the invitation', async () => {
+        const headers = serviceHeaders(await renderView());
 
-        expect(rows.map((row) => row.props.title)).toEqual([
+        expect(headers.map((row) => row.props.title)).toEqual([
             'OpenAI Codex', // needs_reauth -> error
             'Anthropic', // refresh_failed_retryable -> attention
-            'Acme Vault', // healthy, alphabetically before GitHub
             'GitHub', // healthy
         ]);
     });
 
-    it('overlays a health dot colored by the worst-of account health, and only for services with accounts', async () => {
-        const { theme } = (await import('react-native-unistyles')).useUnistyles();
-        const rows = await renderRows();
+    it('says a service needs a sign-in only when one of its accounts does', async () => {
+        const headers = serviceHeaders(await renderView());
+        const pillFor = (title: string) => headers.find((row) => row.props.title === title)!
+            .findAll((node) => String(node.props?.testID ?? '').endsWith(':needs-sign-in'));
 
-        const dotFor = (serviceKey: string) => rows
-            .flatMap((row) => row.findAllByProps({ testID: `connected-services-index:${serviceKey}:health-dot` } as never))
-            .at(0);
-
-        expect(dotFor('happier.agent.codex/openai-codex')?.props.color).toBe(resolveAccountHealthDotColor(theme, 'error'));
-        expect(dotFor('happier.agent.claude/anthropic')?.props.color).toBe(resolveAccountHealthDotColor(theme, 'attention'));
-        expect(dotFor('happier.scm.forge.github/github-account')?.props.color).toBe(resolveAccountHealthDotColor(theme, 'healthy'));
-        // No accounts at all is "not connected", not a health signal.
-        expect(dotFor('vault')).toBeUndefined();
+        expect(pillFor('OpenAI Codex')).not.toHaveLength(0);
+        expect(pillFor('Anthropic')).toHaveLength(0);
+        expect(pillFor('GitHub')).toHaveLength(0);
     });
 
     it('renders the service brand mark, falling back to the generic key glyph when no mark exists', async () => {
-        const rows = await renderRows();
-        const rowByTitle = (title: string) => rows.find((row) => row.props.title === title)!;
+        profileState.connectedAccountsV4 = [
+            ...PROFILES.map((profile) => ({ ...profile })),
+            {
+                ...PROFILES[0],
+                ref: { service: { pluginId: 'acme.connected-accounts-conformance', localId: 'vault' }, accountId: 'vault-1' },
+            },
+        ];
+        const headers = serviceHeaders(await renderView());
+        const rowByTitle = (title: string) => headers.find((row) => row.props.title === title)!;
 
         expect(rowByTitle('GitHub').findAllByType('SvgXml' as never)).toHaveLength(1);
         expect(rowByTitle('OpenAI Codex').findAllByType('SvgXml' as never)).toHaveLength(1);
@@ -233,19 +237,7 @@ describe('ConnectedServicesSettingsView row presentation', () => {
         expect(fallbackRow.findAllByType('Icon' as never)[0]?.props.name).toBe('key');
     });
 
-    it('heads the usage summary separately from the services group instead of repeating one title', async () => {
-        const tree = await renderView();
-
-        const servicesGroupTitle = tree.root.findAllByType('ItemGroup' as never)[0]?.props.title;
-        const summaryTitle = tree.root
-            .findAllByType('ConnectedServiceQuotaSummaryCardSection' as never)[0]?.props.title;
-
-        expect(servicesGroupTitle).toBe('connectedServices.title');
-        expect(summaryTitle).toBeTruthy();
-        expect(summaryTitle).not.toBe(servicesGroupTitle);
-    });
-
-    it('withholds the empty copy while the projected registry is still loading', async () => {
+    it('holds the invitation place while the machines are still asked for services', async () => {
         registryState.status = 'loading';
         registryState.entries = [];
         profileState.connectedServicesV2 = [];
@@ -253,13 +245,13 @@ describe('ConnectedServicesSettingsView row presentation', () => {
 
         const tree = await renderView();
 
-        expect(tree.root.findAll((node) => node.children.includes('connectedServices.list.empty'))).toHaveLength(0);
+        expect(tree.root.findAll((node) => node.props?.testID === 'connected-services-empty')).toHaveLength(0);
         expect(tree.root.findAll((node) =>
             node.props?.testID === 'connected-services-projection-loading',
         )).not.toHaveLength(0);
     });
 
-    it('withholds the empty copy when the projection failed, keeping the failure row alone', async () => {
+    it('explains a failed service read instead of claiming there is nothing to connect', async () => {
         registryState.status = 'error';
         registryState.errorReason = 'daemon_unreachable';
         registryState.entries = [];
@@ -268,9 +260,18 @@ describe('ConnectedServicesSettingsView row presentation', () => {
 
         const tree = await renderView();
 
-        expect(tree.root.findAll((node) => node.children.includes('connectedServices.list.empty'))).toHaveLength(0);
+        expect(tree.root.findAll((node) => node.props?.testID === 'connected-services-empty')).toHaveLength(0);
         expect(tree.root.findAll((node) =>
             node.props?.testID === 'connected-services-projection-error',
         )).not.toHaveLength(0);
+    });
+
+    it('says truthfully that services come from online machines when none is offering any', async () => {
+        registryState.entries = [];
+        profileState.connectedAccountsV4 = [];
+
+        const tree = await renderView();
+
+        expect(tree.root.findAll((node) => node.props?.testID === 'connected-services-empty')).not.toHaveLength(0);
     });
 });

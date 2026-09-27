@@ -56,4 +56,26 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
         await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeA)).resolves.toBe(true);
         await expect(TokenStorage.getRecoveryKeyReminderDismissed(homeB)).resolves.toBe(true);
     });
+
+    it('keeps an account service reminder apart from every Home reminder, and pending only when recorded', async () => {
+        const { TokenStorage } = await import('./tokenStorage');
+        // A dual-role server: the account service and the Home share one server identity.
+        const home = { serverUrl: 'https://accounts.example.test', serverId: 'srv_same' };
+        const service = { kind: 'account_service' as const, serverIdentityId: 'srv_same' };
+        const otherService = { kind: 'account_service' as const, serverIdentityId: 'srv_other' };
+
+        await expect(TokenStorage.setRecoveryKeyReminderDismissed(true, home)).resolves.toBe(true);
+        // No reminder exists for a service until one is recorded.
+        await expect(TokenStorage.getRecoveryKeyReminderPending(service)).resolves.toBe(false);
+
+        await expect(TokenStorage.setRecoveryKeyReminderDismissed(false, service)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderPending(service)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderPending(otherService)).resolves.toBe(false);
+        // The Home reminder is untouched by the service's.
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(home)).resolves.toBe(true);
+
+        await expect(TokenStorage.setRecoveryKeyReminderDismissed(true, service)).resolves.toBe(true);
+        await expect(TokenStorage.getRecoveryKeyReminderPending(service)).resolves.toBe(false);
+        await expect(TokenStorage.getRecoveryKeyReminderDismissed(home)).resolves.toBe(true);
+    });
 });

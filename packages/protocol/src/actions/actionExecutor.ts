@@ -1,4 +1,10 @@
 import { isSessionFollowActionIdV1 } from '../sessions/follow/actions.js';
+import {
+  AgentsAcpBackendsDeleteInputV1Schema,
+  AgentsAcpBackendsUpsertInputV1Schema,
+  applyAcpBackendDeleteV1,
+  applyAcpBackendUpsertV1,
+} from '../acp/catalog/catalogMutationsV1.js';
 import { SESSION_TOOL_ANSWER_DELIVERY_KIND } from '../sessions/messages/sessionMessageMeta.js';
 import { isSessionReadStateActionIdV1, SESSION_READ_STATE_ACTION_INPUT_SCHEMAS_V1 } from '../sessions/readState/actions.js';
 import {
@@ -6782,6 +6788,52 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             request: parsed.data as Parameters<NonNullable<ActionExecutorDeps['daemonPromptRegistryInstall']>>[0]['request'],
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           }));
+        }
+
+        if (actionId === 'agents.acp.backends.upsert' || actionId === 'agents.acp.backends.delete') {
+          if (!deps.updateAccountAcpCatalogSettings) {
+            return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
+          }
+          // The catalog owner decides; the host only persists what it returns, so this and the
+          // Settings editor store identical results.
+          const settlement: { refusal?: Readonly<{ code: string; message: string }>; result?: unknown } = {};
+          if (actionId === 'agents.acp.backends.upsert') {
+            const parsed = AgentsAcpBackendsUpsertInputV1Schema.safeParse(data);
+            if (!parsed.success) return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+            const nowMs = Date.now();
+            const persisted = await deps.updateAccountAcpCatalogSettings({
+              mutate: (current) => {
+                const outcome = applyAcpBackendUpsertV1({ settings: current, backend: parsed.data.backend, nowMs });
+                if (!outcome.ok) {
+                  settlement.refusal = { code: outcome.code, message: outcome.message };
+                  return current;
+                }
+                settlement.result = { backend: outcome.backend };
+                return outcome.settings;
+              },
+              ...(ctx.signal ? { signal: ctx.signal } : {}),
+            });
+            if (settlement.refusal) return { ok: false, errorCode: settlement.refusal.code, error: settlement.refusal.message };
+            if (!persisted.ok) return { ok: false, errorCode: persisted.errorCode, error: persisted.error };
+            return { ok: true, result: settlement.result };
+          }
+          const parsed = AgentsAcpBackendsDeleteInputV1Schema.safeParse(data);
+          if (!parsed.success) return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          const persisted = await deps.updateAccountAcpCatalogSettings({
+            mutate: (current) => {
+              const outcome = applyAcpBackendDeleteV1({ settings: current, backendId: parsed.data.backendId });
+              if (!outcome.ok) {
+                settlement.refusal = { code: outcome.code, message: outcome.code };
+                return current;
+              }
+              settlement.result = { backendId: parsed.data.backendId, deleted: true };
+              return outcome.settings;
+            },
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          if (settlement.refusal) return { ok: false, errorCode: settlement.refusal.code, error: settlement.refusal.message };
+          if (!persisted.ok) return { ok: false, errorCode: persisted.errorCode, error: persisted.error };
+          return { ok: true, result: settlement.result };
         }
 
         if (actionId === 'prompt_doc.update') {

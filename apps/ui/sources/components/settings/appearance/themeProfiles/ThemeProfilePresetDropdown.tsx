@@ -39,9 +39,8 @@ export const ThemeProfilePresetDropdown = React.memo(function ThemeProfilePreset
             connectToTrigger={true}
             rowKind="item"
             itemTrigger={{
-                title: t('settingsAppearance.themeProfiles.presetSource'),
-                subtitle: props.selectedOption?.title ?? t('settingsAppearance.themeProfiles.presetSourceSubtitle'),
-                icon: <Icon name="stack-simple" size={29} color={theme.colors.accent.indigo} />,
+                title: t('settingsAppearance.themeProfiles.startFrom'),
+                subtitle: t('settingsAppearance.themeProfiles.startFromDescription'),
                 showSelectedSubtitle: false,
                 itemProps: { testID: 'settings-theme-profile-preset-source' },
             }}

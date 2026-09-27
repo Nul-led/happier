@@ -174,6 +174,7 @@ export function installSessionSettingsEntryModuleMocks(
             keyHint: () => ({}),
             timestamp: () => ({}),
             logo: () => ({}),
+            pageTitle: () => ({}),
         },
     }));
 
@@ -198,9 +199,17 @@ export function installSessionSettingsEntryModuleMocks(
             return await sessionSettingsEntryState.options.storageModule(importOriginal as MockImportOriginal);
         }
         const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        const original = await (importOriginal as MockImportOriginal)<typeof import('@/sync/domains/state/storage')>();
         return createStorageModuleMock({
             importOriginal,
             overrides: {
+                // Boundary fixture: the read-only reader answers from the same keyed settings as the
+                // mutable one (pages also read derived state, such as the effective list layout, this way).
+                useSetting: ((key: string) => (
+                    key in sessionSettingsEntryState.settingsState
+                        ? sessionSettingsEntryState.settingsState[key]
+                        : original.useSetting(key as never)
+                )) as unknown as typeof import('@/sync/domains/state/storage')['useSetting'],
                 // Boundary fixture: route settings tests only need keyed mutable storage semantics.
                 useSettingMutable: ((key: string) => [
                     key in sessionSettingsEntryState.settingsState

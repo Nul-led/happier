@@ -79,6 +79,18 @@ const owner = Object.freeze({
   },
 });
 
+/** The inline field of a descriptor row (the row is a mocked Item, so its field is its right element). */
+function fieldInput(screen: Awaited<ReturnType<typeof renderScreen>>, rowTestID: string) {
+  const row = screen.tree.findAll((node) => node.props.testID === rowTestID && node.props.rightElement !== undefined)[0];
+  if (!row) throw new Error(`missing field row ${rowTestID}`);
+  return row.props.rightElement as React.ReactElement<any>;
+}
+
+async function typeIntoField(screen: Awaited<ReturnType<typeof renderScreen>>, rowTestID: string, text: string) {
+  await act(async () => { fieldInput(screen, rowTestID).props.onChangeText(text); });
+  await act(async () => { fieldInput(screen, rowTestID).props.onBlur(); });
+}
+
 describe('RealtimeProviderFields', () => {
   it('holds the shared playback lease for a native catalog preview and releases it on completion', async () => {
     audioPreview.create.mockImplementation(() => audioPreview);
@@ -312,11 +324,9 @@ describe('RealtimeProviderFields', () => {
     expect(audioPreview.play).not.toHaveBeenCalled();
   });
 
-  it('merges an async prompt result into the latest same-provider config instead of reviving a stale snapshot', async () => {
-    let resolvePrompt!: (value: string | null) => void;
-    const prompt = new Promise<string | null>((resolve) => { resolvePrompt = resolve; });
+  it('merges an inline text value into the latest same-provider config instead of reviving a stale snapshot', async () => {
     const { Modal } = await import('@/modal');
-    vi.mocked(Modal.prompt).mockImplementationOnce(async () => await prompt);
+    vi.mocked(Modal.prompt).mockClear();
     const descriptor = parseRealtimeSettingsDescriptor('fixture_realtime', {
       kind: 'voice.provider-settings.v1', modes: ['byo'],
       credential: { kind: 'api_key', catalog: null }, links: {},
@@ -332,12 +342,62 @@ describe('RealtimeProviderFields', () => {
       credentialStatus: 'ready', catalog: { phase: 'idle' as const }, onRequestCatalog: vi.fn(),
     });
     const screen = await renderScreen(render(initial));
-    act(() => screen.tree.findByProps({ testID: 'voice-realtime-field-instructions' }).props.onPress());
-    await vi.waitFor(() => expect(Modal.prompt).toHaveBeenCalled());
+    await act(async () => { fieldInput(screen, 'voice-realtime-field-instructions').props.onChangeText('new guidance'); });
     await screen.update(render(latest));
-    await act(async () => { resolvePrompt('new guidance'); });
-    await vi.waitFor(() => expect(onConfigChange).toHaveBeenCalled());
+    await act(async () => { fieldInput(screen, 'voice-realtime-field-instructions').props.onBlur(); });
+    expect(Modal.prompt).not.toHaveBeenCalled();
     expect(onConfigChange).toHaveBeenLastCalledWith({ ...latest, instructions: 'new guidance' });
+  });
+
+  it('edits provider key terms inline and saves them as a de-duplicated list', async () => {
+    const termsOwner = {
+      schemaVersion: 1,
+      defaultConfig: { keyterms: [] as string[] },
+      parseConfig(value: unknown) { return value && typeof value === 'object' ? value as any : null; },
+    };
+    const descriptor = parseRealtimeSettingsDescriptor('fixture_realtime', {
+      kind: 'voice.provider-settings.v1', modes: ['byo'],
+      credential: { kind: 'api_key', catalog: null }, links: {},
+      fields: [{ kind: 'keyterms', path: 'keyterms', titleKey: 'fixture.keyterms' }],
+    });
+    if (!descriptor) throw new Error('invalid fixture descriptor');
+    const onConfigChange = vi.fn();
+    const { RealtimeProviderFields } = await import('./RealtimeProviderFields');
+    const screen = await renderScreen(React.createElement(RealtimeProviderFields, {
+      providerId: 'fixture_realtime', descriptor, owner: termsOwner,
+      config: termsOwner.defaultConfig, onConfigChange, credentialStatus: 'ready',
+      catalog: { phase: 'idle' }, onRequestCatalog: vi.fn(),
+    }));
+    await typeIntoField(screen, 'voice-realtime-field-keyterms', 'Happier, daemon ,happier');
+    expect(onConfigChange).toHaveBeenLastCalledWith({ keyterms: ['happier', 'daemon'] });
+  });
+
+  it('types a custom voice id inline after choosing Custom in the voice menu', async () => {
+    const catalogOwner = {
+      schemaVersion: 1,
+      defaultConfig: { voice: { kind: 'catalog', id: 'voice_a' } },
+      parseConfig(value: unknown) { return value && typeof value === 'object' ? value as any : null; },
+    };
+    const descriptor = parseRealtimeSettingsDescriptor('fixture_realtime', {
+      kind: 'voice.provider-settings.v1', modes: ['byo'],
+      credential: { kind: 'api_key', catalog: 'voices' }, links: {},
+      fields: [{ kind: 'voice_catalog', path: 'voice', titleKey: 'fixture.voice', customIdAllowed: true }],
+    });
+    if (!descriptor) throw new Error('invalid fixture descriptor');
+    const { Modal } = await import('@/modal');
+    vi.mocked(Modal.prompt).mockClear();
+    const onConfigChange = vi.fn();
+    const { RealtimeProviderFields } = await import('./RealtimeProviderFields');
+    const screen = await renderScreen(React.createElement(RealtimeProviderFields, {
+      providerId: 'fixture_realtime', descriptor, owner: catalogOwner,
+      config: catalogOwner.defaultConfig, onConfigChange, credentialStatus: 'ready',
+      catalog: { phase: 'ready', rows: [{ id: 'voice_a', name: 'Voice A' }] },
+      onRequestCatalog: vi.fn(),
+    }));
+    act(() => screen.tree.findByProps({ testID: 'voice-realtime-field-voice' }).props.onSelect('__custom__'));
+    await typeIntoField(screen, 'voice-realtime-field-voice.custom', 'my-cloned-voice');
+    expect(Modal.prompt).not.toHaveBeenCalled();
+    expect(onConfigChange).toHaveBeenLastCalledWith({ voice: { kind: 'custom', id: 'my-cloned-voice' } });
   });
 
   it('keeps provider-declared advanced VAD tuning collapsed until explicitly expanded', async () => {
@@ -421,9 +481,9 @@ describe('RealtimeProviderFields', () => {
     expect(Modal.alertAsync).not.toHaveBeenCalled();
   });
 
-  it('enforces provider-declared numeric step metadata before persisting', async () => {
+  it('enforces provider-declared numeric step metadata on the inline field before persisting', async () => {
     const { Modal } = await import('@/modal');
-    vi.mocked(Modal.prompt).mockResolvedValueOnce('1.23');
+    vi.mocked(Modal.alert).mockClear();
     const speedOwner = {
       schemaVersion: 1,
       defaultConfig: { speed: 1 },
@@ -442,9 +502,13 @@ describe('RealtimeProviderFields', () => {
       config: speedOwner.defaultConfig, onConfigChange, credentialStatus: 'ready',
       catalog: { phase: 'idle' }, onRequestCatalog: vi.fn(),
     }));
-    act(() => screen.tree.findByProps({ testID: 'voice-realtime-field-speed' }).props.onPress());
-    await vi.waitFor(() => expect(Modal.alert).toHaveBeenCalled());
+    await typeIntoField(screen, 'voice-realtime-field-speed', '1.23');
+    expect(Modal.alert).toHaveBeenCalled();
     expect(onConfigChange).not.toHaveBeenCalled();
+    expect(fieldInput(screen, 'voice-realtime-field-speed').props.value).toBe('1');
+
+    await typeIntoField(screen, 'voice-realtime-field-speed', '1.25');
+    expect(onConfigChange).toHaveBeenLastCalledWith({ speed: 1.25 });
   });
 
   it('renders language hints from canonical locale facts instead of raw translation keys', async () => {

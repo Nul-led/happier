@@ -231,7 +231,7 @@ describe('TeamMembersScreen', () => {
         expect(harness.requestsFor(MEMBERS_LIST_PATH).at(-1)?.input).toMatchObject({ query: 'nobody-here' });
     });
 
-    it('exposes the roster filters as one keyboard-operable radio group', async () => {
+    it('narrows the roster through one labelled select that asks the Home for the chosen filter', async () => {
         const serverId = await addHome(teamSummaryFixture({
             viewerRole: 'member',
             capabilities: teamCapabilitiesFixture({}),
@@ -241,20 +241,31 @@ describe('TeamMembersScreen', () => {
         });
 
         const screen = await renderMembers(serverId);
-        await waitForTestId(screen, 'team-members-filter:all');
+        await waitForTestId(screen, 'team-members-row:membership-1');
 
-        const selected = screen.findByTestId('team-members-filter:all');
-        expect([selected?.props.accessibilityRole, selected?.props.role]).toContain('radio');
-        expect(selected?.props.accessibilityState).toMatchObject({ checked: true });
+        // One choice among five role/status filters: a field select showing the current choice.
+        const findMenu = () => screen.tree.root.findAll((node) => node.props?.testID === 'team-members-filter'
+            && Array.isArray(node.props?.items))[0];
+        const menu = findMenu() as unknown as {
+            props: {
+                selectedId: string;
+                items: ReadonlyArray<{ id: string }>;
+                itemTrigger: { title: string };
+                onSelect: (id: string) => void;
+            };
+        };
+        expect(menu.props.selectedId).toBe('all');
+        expect(menu.props.itemTrigger.title).toBe('teams.members.filterLabel');
+        expect(menu.props.items.map((item) => item.id)).toEqual(['all', 'owners_admins', 'members', 'guests', 'suspended']);
 
-        let ancestor = selected?.parent ?? null;
-        while (ancestor
-            && ancestor.props.accessibilityRole !== 'radiogroup'
-            && ancestor.props.role !== 'radiogroup') {
-            ancestor = ancestor.parent;
-        }
-        expect(ancestor).not.toBeNull();
-        expect(ancestor?.props.accessibilityLabel ?? ancestor?.props['aria-label']).toBe('teams.tabs.members');
+        harness.answer(serverId, MEMBERS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        await React.act(async () => {
+            menu.props.onSelect('suspended');
+        });
+        await waitForTestId(screen, 'team-members-empty');
+        expect(harness.requestsFor(MEMBERS_LIST_PATH).at(-1)?.input).toMatchObject({ filter: 'suspended' });
+        expect((findMenu() as unknown as { props: { selectedId: string } }).props.selectedId)
+            .toBe('suspended');
     });
 
     it('refreshes the canonical roster when returning from Add member', async () => {

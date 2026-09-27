@@ -265,6 +265,10 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'memory.get_window',
     'memory.ensure_up_to_date',
   ],
+  agent_acp_catalog: [
+    'agents.acp.backends.upsert',
+    'agents.acp.backends.delete',
+  ],
   prompt_library: [
     'prompt_doc.update',
     'prompt_bundle.update',
@@ -557,6 +561,7 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.account_sessions,
   ...ACTION_ID_FAMILIES_V1.account_security,
   ...ACTION_ID_FAMILIES_V1.account_api_tokens,
+  ...ACTION_ID_FAMILIES_V1.agent_acp_catalog,
   ...ACTION_ID_FAMILIES_V1.identity_github_apps,
   ...ACTION_ID_FAMILIES_V1.identity_providers,
   ...ACTION_ID_FAMILIES_V1.machine_pools,

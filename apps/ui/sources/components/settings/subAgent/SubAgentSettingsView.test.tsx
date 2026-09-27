@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderSettingsView } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
@@ -14,6 +15,9 @@ let notifyParentOnCompletionState: boolean | null = null;
 let pluginProjectionByIdState: Record<string, any> = {};
 const routerPushSpy = vi.fn();
 const notifyParentOnCompletionSetter = vi.fn();
+const guidanceEntriesSetter = vi.fn();
+const guidanceMaxCharsSetter = vi.fn();
+const modalConfirm = vi.fn(async () => false);
 
 installSettingsViewCommonModuleMocks({
     icons: () => ({
@@ -29,6 +33,10 @@ installSettingsViewCommonModuleMocks({
             },
         });
     },
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({ spies: { confirm: modalConfirm as any } }).module;
+    },
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
@@ -41,8 +49,8 @@ installSettingsViewCommonModuleMocks({
         return createStorageModuleStub({
             useSettingMutable: (key: string) => {
                 if (key === 'executionRunsGuidanceEnabled') return [guidanceEnabledState, vi.fn()];
-                if (key === 'executionRunsGuidanceMaxChars') return [guidanceMaxCharsState, vi.fn()];
-                if (key === 'executionRunsGuidanceEntries') return [guidanceEntriesState, vi.fn()];
+                if (key === 'executionRunsGuidanceMaxChars') return [guidanceMaxCharsState, guidanceMaxCharsSetter];
+                if (key === 'executionRunsGuidanceEntries') return [guidanceEntriesState, guidanceEntriesSetter];
                 if (key === 'executionRunsNotifyParentOnCompletionDefault') return [notifyParentOnCompletionState, notifyParentOnCompletionSetter];
                 return [null, vi.fn()];
             },
@@ -92,7 +100,7 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
 }));
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
+    ItemGroup: ({ children, action }: any) => React.createElement('ItemGroup', null, action, children),
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
@@ -136,8 +144,12 @@ vi.mock('@/agents/backendCatalog/getResolvedBackendCatalogEntries', () => ({
     ],
 }));
 
-vi.mock('./guidance/showSubAgentGuidanceRuleEditorModal', () => ({
-    showSubAgentGuidanceRuleEditorModal: vi.fn(async () => null),
+vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModelsState', () => ({
+    useNewSessionPreflightModelsState: () => ({
+        preflightModels: null,
+        modelOptions: [],
+        probe: { phase: 'idle', refreshedAt: null, refresh: () => {} },
+    }),
 }));
 
 vi.mock('@/platform/randomUUID', () => ({
@@ -165,6 +177,10 @@ describe('SubAgentSettingsView', () => {
         pluginProjectionByIdState = {};
         routerPushSpy.mockReset();
         notifyParentOnCompletionSetter.mockReset();
+        guidanceEntriesSetter.mockReset();
+        guidanceMaxCharsSetter.mockReset();
+        modalConfirm.mockReset();
+        modalConfirm.mockImplementation(async () => false);
     });
 
     it('renders an execution-runs-disabled state when execution runs are not enabled', async () => {
@@ -175,15 +191,11 @@ describe('SubAgentSettingsView', () => {
         expect(enableItem).toBeTruthy();
     });
 
-    it('renders a Subagents status row and routes it to Features settings', async () => {
-        executionRunsEnabledState = true;
+    it('leads to Features from the off state', async () => {
         const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
 
         const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
-        const statusItem = screen.findRowByTitle('subAgentGuidance.settings.overview.happierStatusTitle');
-        expect(statusItem).toBeTruthy();
-
-        screen.pressRowByTitle('subAgentGuidance.settings.overview.happierStatusTitle');
+        screen.pressRowByTitle('subAgentGuidance.settings.disabled.enableExecutionRuns.title');
 
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/features');
     });
@@ -223,17 +235,114 @@ describe('SubAgentSettingsView', () => {
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/session');
     });
 
-    it('routes the related custom ACP backends entry to the providers settings screen', async () => {
+    it('routes the related Agents entry to the Agents collection', async () => {
         executionRunsEnabledState = true;
         const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
 
         const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
-        const backendsItem = screen.findRowByTitle('subAgentGuidance.settings.related.backendsTitle');
-        expect(backendsItem).toBeTruthy();
-
-        screen.pressRowByTitle('subAgentGuidance.settings.related.backendsTitle');
+        screen.pressRowByTitle('subAgentGuidance.settings.related.agentsTitle');
 
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/agents');
+    });
+
+    it('edits the custom-rules budget in place, keeping it within its bounds', async () => {
+        executionRunsEnabledState = true;
+        guidanceMaxCharsState = 4000;
+        const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
+
+        const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
+        const budgetRow = () => screen.findByTestId('sub-agent-guidance-character-budget');
+        expect(budgetRow()?.props.rightElement?.props.value).toBe('4000');
+        await act(async () => {
+            budgetRow()!.props.rightElement.props.onChangeText('90000');
+        });
+        await act(async () => {
+            budgetRow()!.props.rightElement.props.onBlur();
+        });
+
+        expect(guidanceMaxCharsSetter).toHaveBeenCalledWith(50_000);
+    });
+
+    it('adds a rule in place: a draft editor opens in the rules and saving appends it', async () => {
+        executionRunsEnabledState = true;
+        guidanceEnabledState = true;
+        guidanceEntriesState = [{ id: 'rule-1', description: 'Existing rule', enabled: true }];
+        const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
+
+        const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
+        // The editor's fields are row controls (`Item` `rightElement`), found through their row.
+        const descriptionRowTitle = 'subAgentGuidance.ruleEditor.descriptionField.label';
+        expect(screen.findRowByTitle(descriptionRowTitle)).toBeNull();
+        await act(async () => {
+            screen.pressRowByTitle('subAgentGuidance.settings.rules.addRuleTitle');
+        });
+
+        const description = screen.findRowByTitle(descriptionRowTitle)?.props.rightElement;
+        expect(description?.props.testID).toBe('sub-agent-guidance-rule-editor.description');
+        await act(async () => {
+            description.props.onChangeText('Delegate UI reviews');
+        });
+        await act(async () => {
+            await screen.findByTestId('sub-agent-guidance-rule-editor.save')!.props.onPress();
+        });
+
+        expect(guidanceEntriesSetter).toHaveBeenCalledWith([
+            { id: 'rule-1', description: 'Existing rule', enabled: true },
+            expect.objectContaining({ id: 'guidance_uuid-test', description: 'Delegate UI reviews' }),
+        ]);
+    });
+
+    it('asks before dropping a typed draft rule when another rule is opened', async () => {
+        executionRunsEnabledState = true;
+        guidanceEnabledState = true;
+        guidanceEntriesState = [{ id: 'rule-1', description: 'Existing rule', enabled: true }];
+        const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
+
+        const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
+        const descriptionRowTitle = 'subAgentGuidance.ruleEditor.descriptionField.label';
+        await act(async () => {
+            screen.pressRowByTitle('subAgentGuidance.settings.rules.addRuleTitle');
+        });
+        await act(async () => {
+            screen.findRowByTitle(descriptionRowTitle)!.props.rightElement.props.onChangeText('Delegate UI reviews');
+        });
+
+        // Keep editing: the draft and its text stay.
+        await act(async () => {
+            screen.pressRowByTitle('Existing rule');
+        });
+        expect(modalConfirm).toHaveBeenCalledTimes(1);
+        expect(screen.findRowByTitle(descriptionRowTitle)?.props.rightElement.props.value).toBe('Delegate UI reviews');
+
+        // Discard: the other rule opens and the draft is gone.
+        modalConfirm.mockImplementation(async () => true);
+        await act(async () => {
+            screen.pressRowByTitle('Existing rule');
+        });
+        expect(screen.findRowByTitle(descriptionRowTitle)?.props.rightElement.props.value).toBe('Existing rule');
+        expect(screen.findRowByTitle('subAgentGuidance.ruleEditor.header.newRule')).toBeNull();
+    });
+
+    it('edits a rule in place and deletes it from its editor', async () => {
+        executionRunsEnabledState = true;
+        guidanceEnabledState = true;
+        guidanceEntriesState = [
+            { id: 'rule-1', description: 'Keep this rule', enabled: true },
+            { id: 'rule-2', description: 'Remove this rule', enabled: true },
+        ];
+        const { SubAgentSettingsView } = await import('./SubAgentSettingsView');
+
+        const screen = await renderSettingsView(React.createElement(SubAgentSettingsView));
+        await act(async () => {
+            screen.pressRowByTitle('Remove this rule');
+        });
+        await act(async () => {
+            await screen.findByTestId('sub-agent-guidance-rule-editor.delete')!.props.onPress();
+        });
+
+        expect(guidanceEntriesSetter).toHaveBeenCalledWith([
+            { id: 'rule-1', description: 'Keep this rule', enabled: true },
+        ]);
     });
 
     it('renders configured ACP backend titles in rule subtitles', async () => {

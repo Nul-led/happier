@@ -9,6 +9,7 @@ import {
     normalizeServerSelectionSettingsForProfileScopeIds,
 } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 
 type MachineListStatus = 'idle' | 'loading' | 'signedOut' | 'error';
 
@@ -58,8 +59,10 @@ export function useActiveSelectionMachineGroups(params: Readonly<{
     const visibleMachineGroups = React.useMemo(() => {
         const serverNameById = new Map<string, string>();
         for (const server of params.serverProfiles) {
-            serverNameById.set(server.id, server.name);
-            serverNameById.set(resolveServerProfileScopeId(server), server.name);
+            // The Home label owner: its name, "Personal Home", else the address only to tell Homes apart.
+            const label = resolveHomeDisplayLabel(server, server.id);
+            serverNameById.set(server.id, label);
+            serverNameById.set(resolveServerProfileScopeId(server), label);
         }
         return visibleMachineServerIds.map((serverId) => {
             const machines = resolveServerScopedMachines({

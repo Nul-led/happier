@@ -111,3 +111,13 @@ export const SELECTION_LIST_CARD_CONTENT_INSET_PX = 7;
  */
 export const SELECTION_LIST_CARD_COLUMN_GAP_PX = 4;
 export const SELECTION_LIST_CARD_ROW_GAP_PX = 8;
+
+/**
+ * Size caps for a popover whose whole body is one SelectionList picker (a machine or path list):
+ * wide enough that a row keeps its title, subtitle and trailing status on one line. The popover
+ * still clamps to the viewport, so these are caps, not fixed sizes.
+ */
+export const SELECTION_LIST_LARGE_POPOVER_SIZE = {
+    maxWidthCap: 560,
+    maxHeightCap: 560,
+} as const;

@@ -45,6 +45,46 @@ describe('keyboardShortcutsSettingsModel', () => {
         expect(model.commandRows.every((row) => row.titleKey.startsWith('settingsKeyboard.commands.'))).toBe(true);
     });
 
+    it('groups every command once, by the part of the app it acts on, in reading order', () => {
+        const model = buildKeyboardShortcutSettingsModel({
+            settings: baseSettings,
+            platform: 'macos',
+            surface: 'native',
+        });
+
+        expect(model.commandGroups.map((group) => group.id)).toEqual([
+            'general', 'sessions', 'composer', 'transcript', 'splitView', 'browser',
+        ]);
+        const groupOf = (commandId: string) => model.commandGroups
+            .find((group) => group.rows.some((row) => row.commandId === commandId))?.id;
+        expect(groupOf('commandPalette.open')).toBe('general');
+        expect(groupOf('workflow.run')).toBe('general');
+        expect(groupOf('session.new')).toBe('sessions');
+        expect(groupOf('sessions.selection.clear')).toBe('sessions');
+        expect(groupOf('permission.cycle')).toBe('composer');
+        expect(groupOf('transcript.scroll.top')).toBe('transcript');
+        expect(groupOf('splitCanvas.splitRight')).toBe('splitView');
+        expect(groupOf('browser.reload')).toBe('browser');
+        const grouped = model.commandGroups.flatMap((group) => group.rows.map((row) => row.commandId));
+        expect([...grouped].sort()).toEqual(model.commandRows.map((row) => row.commandId).sort());
+    });
+
+    it('keeps the registry default beside a custom shortcut so the row can say what reset restores', () => {
+        const model = buildKeyboardShortcutSettingsModel({
+            settings: {
+                ...baseSettings,
+                keyboardShortcutOverridesV1: { 'commandPalette.open': [{ binding: 'Alt+P' }] },
+            },
+            platform: 'macos',
+            surface: 'native',
+        });
+
+        const row = model.commandRows.find((entry) => entry.commandId === 'commandPalette.open');
+        expect(row?.defaultLabel).toBe('Option+P');
+        expect(row?.registryDefaultLabel).toBe('Cmd+K');
+        expect(row?.hasOverride).toBe(true);
+    });
+
     it('shows registry defaults even when single-key shortcuts are currently inactive', () => {
         const model = buildKeyboardShortcutSettingsModel({
             settings: {

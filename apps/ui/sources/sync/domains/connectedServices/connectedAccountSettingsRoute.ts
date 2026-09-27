@@ -110,9 +110,18 @@ function resolveRouteFocus(params: Readonly<{
     return { valid: true, focus: null };
 }
 
+/** Query flag that opens a service page on its new-account draft. */
+const CONNECTED_ACCOUNT_ADD_PARAM = 'add';
+
+/** Whether a service page was opened to add an account (`?add=1`). */
+export function readConnectedAccountAddRequest(params: Readonly<Record<string, unknown>>): boolean {
+    return readSingleRouteParam(params[CONNECTED_ACCOUNT_ADD_PARAM]) === '1';
+}
+
 export function buildConnectedAccountSettingsRoute(
     service: PluginContributionIdentityV1,
     focus: ConnectedAccountSettingsRouteFocus | null = null,
+    options: Readonly<{ add?: boolean }> = {},
 ) {
     const parsed = PluginContributionIdentityV1Schema.parse(service);
     const parsedFocus = focus === null
@@ -137,6 +146,7 @@ export function buildConnectedAccountSettingsRoute(
             ...(parsedFocus?.kind === 'group'
                 ? { groupId: parsedFocus.groupId }
                 : {}),
+            ...(options.add && parsedFocus === null ? { [CONNECTED_ACCOUNT_ADD_PARAM]: '1' } : {}),
         },
     } as const;
 }

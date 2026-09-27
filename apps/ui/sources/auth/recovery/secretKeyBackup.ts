@@ -22,6 +22,19 @@ function invalidSecretKeyError(result: ReturnType<typeof parseRecoveryKey>): Err
  * @param secretKey - Base64url encoded 32-byte secret key
  * @returns Formatted string like "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
  */
+/**
+ * The display form of a recovery secret held as base64url text or raw bytes, grouped exactly as the
+ * backup disclosure shows it. The one owner of how a recovery key reads on screen and on the clipboard.
+ */
+export function formatRecoveryKeyForDisplay(secret: string | Uint8Array): string {
+  return formatSecretKeyForBackup(typeof secret === 'string' ? secret : encodeBase64(secret, 'base64url'));
+}
+
+/** The same grouping with every character masked. It needs no secret: a recovery key is 32 bytes. */
+export function maskRecoveryKeyForDisplay(formatted: string = formatRecoveryKey(new Uint8Array(32))): string {
+  return formatted.replace(/[A-Za-z0-9]/g, '•');
+}
+
 export function formatSecretKeyForBackup(secretKey: string): string {
   const result = parseRecoveryKey(secretKey);
   if (!result.ok) throw new Error('Invalid secret key format');

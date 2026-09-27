@@ -111,6 +111,16 @@ export async function revokeAuthenticatedHomeLink(input: Readonly<{
  * approved transport fail closed without publishing an untrusted directory row. Pure-Iroh
  * descriptors acquire the shared verified Lane06 origin through HomeEnrollmentTransport.
  */
+/**
+ * Whether a Home this device knows can be linked: linking publishes its connection descriptor,
+ * so a Home that publishes none (no address other devices can reach) cannot be. The same check
+ * the link itself fails closed on, so a surface never offers a link that cannot succeed.
+ */
+export function canPublishAuthenticatedHomeLink(homeServerIdentityId: string): boolean {
+    const identity = homeServerIdentityId.trim();
+    return identity ? resolveLinkedHomeProfile(identity) !== null : false;
+}
+
 export async function provisionAuthenticatedHomeLink(
     input: ProvisionAuthenticatedHomeLinkInput,
 ): Promise<AuthenticatedHomeLinkProvisionResult> {

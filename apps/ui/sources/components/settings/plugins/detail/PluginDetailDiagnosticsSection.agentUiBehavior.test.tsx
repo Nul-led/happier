@@ -9,13 +9,16 @@ installSettingsViewCommonModuleMocks({
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({
-            translate: (key) => {
+            translate: (key, params?: Readonly<Record<string, unknown>>) => {
                 const translations: Readonly<Record<string, string>> = {
                     'settingsPlugins.diagnosticsTitle': 'Plugin diagnostics',
                     'settingsPlugins.registryDiagnosticsTitle': 'Registry diagnostics',
                     'settingsPlugins.agentUiDiagnosticsTitle': 'Agent interface diagnostics',
                 };
-                return translations[key] ?? key;
+                // Keep interpolated values (the technical code) visible, as the
+                // real `t` does, so the assertions read what the row shows.
+                const values = params ? Object.values(params).map(String).join(' ') : '';
+                return [translations[key] ?? key, values].filter(Boolean).join(' ');
             },
         });
     },

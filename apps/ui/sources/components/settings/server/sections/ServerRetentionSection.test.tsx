@@ -65,7 +65,6 @@ describe('ServerRetentionSection', () => {
         expect(items[0]?.props.testID).toBe('server-retention-summary');
         expect(items[0]?.props.title).toBe('server.retention.sessionNotice');
         expect(items[0]?.props.mode).toBe('info');
-        expect(items[0]?.props.icon.props.name).toBe('clock-counter-clockwise');
         expect(items.some((item) => item.props.testID === 'server-retention-row-accountChanges')).toBe(true);
         expect(items.some((item) => item.props.testID === 'server-retention-row-publicShareAccessLogs')).toBe(true);
         expect(items.some((item) => item.props.testID === 'server-retention-row-terminalAuthRequests')).toBe(true);

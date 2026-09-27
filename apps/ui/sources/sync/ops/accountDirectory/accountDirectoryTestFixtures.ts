@@ -1,3 +1,4 @@
+import type { AccountDirectoryMeResponseV1 } from '@happier-dev/protocol';
 import { createHomeCredentialDestinationDigestV1, type AccountDirectoryHomeEntryV1, type AuthEntryProjectionV1 } from '@happier-dev/protocol';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
@@ -26,6 +27,10 @@ export function createDirectoryHttpFixture() {
         approval: 'required' as 'required' | 'approved' | 'rejected' | 'expired',
         mode: 'plain' as 'plain' | 'e2ee',
         directoryStatus: 200, loginAssertionStatus: 200, exchangeStatus: 200, exchangeError: 'invalid_request',
+        me: {
+            v: 1 as const, accountId: 'account-directory', displayName: 'Ada Lovelace' as string | null, avatar: null as string | null,
+            linkedAuthenticationMethods: [{ providerId: 'github', login: 'ada' as string | null }],
+        } as AccountDirectoryMeResponseV1,
         calls: [] as Array<{ endpoint: string; path: string; init?: RequestInit }>,
     };
     const token = `header.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'account-home' })), 'base64')}.signature`;
@@ -45,6 +50,8 @@ export function createDirectoryHttpFixture() {
         if (path === '/v1/account-directory/homes') return json(
             state.directoryStatus === 200 ? { v: 1, homes: state.homes, preferredHomeServerIdentityId: state.preferredHomeServerIdentityId }
                 : { error: 'invalid_token' }, state.directoryStatus);
+        if (path === '/v1/account-directory/me') return json(
+            state.directoryStatus === 200 ? state.me : { error: 'invalid_token' }, state.directoryStatus);
         if (path.includes('/login-assertion')) {
             if (state.loginAssertionStatus !== 200) {
                 return json({ error: 'invalid_token' }, state.loginAssertionStatus);

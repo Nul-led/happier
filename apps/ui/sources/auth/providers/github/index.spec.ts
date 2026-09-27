@@ -53,7 +53,8 @@ describe('githubAuthProvider', () => {
     it('exposes expected static provider metadata', () => {
         expect(githubAuthProvider.id).toBe('github');
         expect(githubAuthProvider.displayName).toBe('GitHub');
-        expect(githubAuthProvider.badgeIconName).toBe('logo-github');
+        // The badge is a glyph the app ships, so every surface that marks GitHub can draw it.
+        expect(githubAuthProvider.badgeIconName).toBe('github-logo');
         expect(githubAuthProvider.supportsProfileBadge).toBe(true);
         expect(githubAuthProvider.connectButtonColor).toBe('#24292e');
     });

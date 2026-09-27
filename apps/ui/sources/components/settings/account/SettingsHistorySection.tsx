@@ -11,7 +11,11 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { areAccountSettingsScopesEqual, type AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { StyleSheet } from 'react-native-unistyles';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
@@ -35,7 +39,10 @@ function formatRecordedAt(value: string): string {
 export const SettingsHistorySection = React.memo(function SettingsHistorySection(params: Readonly<{
     credentials: AuthCredentials | null;
     encryption: Encryption | null;
+    /** Injected by the enclosing `ItemGroup`: this section is one disclosure row of it. */
+    showDivider?: boolean;
 }>) {
+    const [expanded, setExpanded] = React.useState(false);
     const [snapshots, setSnapshots] = React.useState<Readonly<{ scope: AccountSettingsScope | null }> & (
         | Readonly<{ owner: AuthCredentials | null; status: 'loading' }>
         | Readonly<{ owner: AuthCredentials; status: 'empty' }>
@@ -173,11 +180,38 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
         })();
     };
 
+    const newestVersion = visibleSnapshots.status === 'ready' ? visibleSnapshots.versions[0] : undefined;
+    const newestRecordedAt = newestVersion === undefined || visibleSnapshots.status !== 'ready'
+        ? undefined
+        : visibleSnapshots.recordedAtByVersion.get(newestVersion);
+    const summary = visibleSnapshots.status === 'ready'
+        ? t('settingsAccount.history.summary', {
+            count: visibleSnapshots.versions.length,
+            latest: newestRecordedAt ? formatRecordedAt(newestRecordedAt) : String(newestVersion),
+        })
+        : visibleSnapshots.status === 'empty'
+            ? t('settingsAccount.history.empty')
+            : visibleSnapshots.status === 'unavailable'
+                ? t('settingsAccount.history.unavailable')
+                : t('settingsAccount.history.loading');
+
     return (
-        <ItemGroup
-            title={t('settingsAccount.history.title')}
-            footer={t('settingsAccount.history.footer')}
+        <ExpandableItem
+            testID="settings-account-history"
+            expanded={expanded}
+            onExpandedChange={setExpanded}
+            showDivider={params.showDivider}
+            header={({ headerProps }) => (
+                <Item
+                    {...headerProps}
+                    title={t('settingsAccount.history.title')}
+                    subtitle={summary}
+                />
+            )}
         >
+            <SectionContentRow>
+                <Text style={styles.explanation}>{t('settingsAccount.history.footer')}</Text>
+            </SectionContentRow>
             {visibleSnapshots.status === 'loading' ? (
                 <Item title={t('settingsAccount.history.loading')} showChevron={false} />
             ) : null}
@@ -207,6 +241,15 @@ export const SettingsHistorySection = React.memo(function SettingsHistorySection
                     />
                 );
             }) : null}
-        </ItemGroup>
+        </ExpandableItem>
     );
 });
+
+const styles = StyleSheet.create((theme) => ({
+    explanation: {
+        ...Typography.default('regular'),
+        color: theme.colors.text.secondary,
+        fontSize: 13,
+        lineHeight: 18,
+    },
+}));

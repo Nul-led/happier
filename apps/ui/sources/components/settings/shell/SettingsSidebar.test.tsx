@@ -60,7 +60,13 @@ vi.mock('@/sync/domains/state/storage', async () => {
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key) => key });
+    // Page search words are translation keys; resolve them in English (as the catalog owner test does)
+    // so a page is found by its words. Every other key renders as itself.
+    const { settingsSearchKeywordsTranslations } = await import('@/text/translations/settingsSearchKeywordsTranslations');
+    const english: Record<string, string> = settingsSearchKeywordsTranslations.en.settingsSearchKeywords;
+    return createTextModuleMock({
+        translate: (key) => (key.startsWith('settingsSearchKeywords.') ? english[key.slice('settingsSearchKeywords.'.length)] : undefined) ?? key,
+    });
 });
 
 vi.mock('react-native-unistyles', async () => {
@@ -159,18 +165,18 @@ describe('SettingsSidebar', () => {
         expect(rail.indexOf('item.appearance')).toBeLessThan(rail.indexOf('section.groupAiAndAgents'));
     });
 
-    it('seats the whole rail on the base surface, scroller included', async () => {
+    it('seats the whole rail on the tinted inset plane (paper shell), scroller included', async () => {
         const { SettingsSidebar } = await import('./SettingsSidebar');
         const screen = await renderScreen(React.createElement(SettingsSidebar));
 
         const root: any = screen.findByTestId('settings-sidebar');
-        expect(flattenStyle(root.props.style).backgroundColor).toBe(lightTheme.colors.surface.base);
+        expect(flattenStyle(root.props.style).backgroundColor).toBe(lightTheme.colors.surface.inset);
 
         // `ItemList` paints the canvas plane by default and covers the rail below the search
         // field, so the caller override is what actually makes the rail white.
         const scroller: any = screen.findAllByType('ScrollView')[0];
         expect(scroller).toBeTruthy();
-        expect(flattenStyle(scroller.props.style).backgroundColor).toBe(lightTheme.colors.surface.base);
+        expect(flattenStyle(scroller.props.style).backgroundColor).toBe(lightTheme.colors.surface.inset);
     });
 
     it('reveals the canonical scroll-edge affordances once the rail overflows', async () => {
@@ -191,11 +197,11 @@ describe('SettingsSidebar', () => {
         // plane — any other colour would read as a band rather than a fade.
         const fade: any = screen.findAllByType('LinearGradient')[0];
         expect(fade).toBeTruthy();
-        expect(fade.props.colors).toContain(lightTheme.colors.surface.base);
+        expect(fade.props.colors).toContain(lightTheme.colors.surface.inset);
         expect(collectIconNames(screen)).toContain('caret-down');
     });
 
-    it('marks the active row with a recessed chip and a weight change, not colour alone', async () => {
+    it('marks the active row with a raised chip and a weight change, not colour alone', async () => {
         pathnameState.value = '/settings/appearance';
 
         const { SettingsSidebar } = await import('./SettingsSidebar');
@@ -206,10 +212,10 @@ describe('SettingsSidebar', () => {
 
         // Grey chip on the white rail, and it comes from the app-wide selection token: the rail
         // must not become a second decision-maker for what "selected" looks like.
-        expect(selected.backgroundColor).toBe(lightTheme.colors.surface.selected);
-        expect(selected.backgroundColor).not.toBe(lightTheme.colors.surface.base);
+        expect(selected.backgroundColor).toBe(lightTheme.colors.surface.elevated);
+        expect(selected.backgroundColor).not.toBe(lightTheme.colors.surface.inset);
         expect(selected.borderRadius).toBeGreaterThan(0);
-        expect(plain.backgroundColor).not.toBe(lightTheme.colors.surface.selected);
+        expect(plain.backgroundColor).not.toBe(lightTheme.colors.surface.elevated);
 
         // WCAG 1.4.11: a ~1.09:1 fill cannot be the only selection indicator.
         const selectedWeight = resolveRowTitleWeight(screen, 'settings-sidebar.item.appearance');
@@ -289,6 +295,17 @@ describe('SettingsSidebar', () => {
 
         expect(requestDecision).toHaveBeenCalledTimes(1);
         expect(routerPushSpy).not.toHaveBeenCalled();
+    });
+
+    it('says so when a search matches nothing instead of leaving the rail blank', async () => {
+        const { SettingsSidebar } = await import('./SettingsSidebar');
+        const screen = await renderScreen(React.createElement(SettingsSidebar));
+
+        await act(async () => {
+            screen.changeTextByTestId('settings-sidebar.searchInput', 'zzqxv-no-such-setting');
+        });
+
+        expect(screen.findByTestId('settings-sidebar.searchEmpty')).toBeTruthy();
     });
 
     it('finds the appearance page when searching for sidebar', async () => {

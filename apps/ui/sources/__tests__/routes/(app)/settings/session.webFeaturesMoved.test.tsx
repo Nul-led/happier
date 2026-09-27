@@ -47,20 +47,16 @@ describe('Session composer settings (web features moved)', () => {
         const SessionComposerSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsScreen));
 
-        const titles = screen.findAllByType('Item' as any).map((item) => item.props.title);
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const dropdownTriggerTitles = dropdowns
-            .map((dropdown) => dropdown.props?.itemTrigger?.title)
-            .filter((title): title is string => typeof title === 'string');
+        const items = screen.findAllByType('Item' as any);
+        const titles = items.map((item) => item.props.title);
 
-        expect(titles).toContain('settingsFeatures.enterToSend');
-        expect([...titles, ...dropdownTriggerTitles]).toContain('settingsFeatures.historyScope');
+        expect(titles).toContain('settingsSessionPages.composer.enterToSendTitle');
+        expect(titles).toContain('settingsFeatures.historyScope');
 
-        const historyDropdown = dropdowns.find((dropdown) => {
-            const ids = (dropdown.props.items ?? []).map((item: { id?: string }) => item.id);
-            return ids.includes('global') && ids.includes('perSession');
-        });
-
-        expect(historyDropdown).toBeTruthy();
+        // Message history is a web-only segmented choice between per-session and global history.
+        const historyRow = items.find((item) => item.props.testID === 'settings-composer-history-scope');
+        expect(historyRow?.props.title).toBe('settingsFeatures.historyScope');
+        const historyIds = (historyRow?.props.rightElement?.props.tabs ?? []).map((tab: { id?: string }) => tab.id);
+        expect(historyIds).toEqual(['perSession', 'global']);
     });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  getGeneratedLegacyConnectedServiceRegistryFallback,
   getLegacyConnectedServiceRegistryEntry,
   getQualifiedConnectedServiceRegistryEntry,
   getConnectedServiceRegistrySnapshot,
@@ -233,6 +234,25 @@ describe('connectedServiceRegistry', () => {
     });
     expect(getQualifiedConnectedServiceRegistryEntry({
       pluginId: 'acme.vertical-a', localId: 'novel-cloud',
+    })).toBeNull();
+  });
+
+  it('names a built-in service from its stored qualified identity while no machine publishes it', () => {
+    install([]);
+
+    // The account's `ref.service` distinguishes the two Claude services exactly;
+    // an offline machine must not collapse either into the generic title.
+    expect(getGeneratedLegacyConnectedServiceRegistryFallback({
+      pluginId: 'happier.agent.claude', localId: 'anthropic',
+    })).toMatchObject({ displayNameKey: 'connectedServices.serviceNames.anthropic', executable: false });
+    expect(getGeneratedLegacyConnectedServiceRegistryFallback({
+      pluginId: 'happier.agent.claude', localId: 'claude-subscription',
+    })).toMatchObject({ displayNameKey: 'connectedServices.serviceNames.claudeSubscription', executable: false });
+    expect(getLegacyConnectedServiceRegistryEntry('openai-codex').displayNameKey)
+      .toBe('connectedServices.serviceNames.openaiCodex');
+    // A service with no released built-in identity has nothing to name it by.
+    expect(getGeneratedLegacyConnectedServiceRegistryFallback({
+      pluginId: 'external.plugin', localId: 'gateway',
     })).toBeNull();
   });
 

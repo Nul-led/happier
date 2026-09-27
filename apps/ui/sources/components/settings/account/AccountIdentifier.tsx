@@ -1,0 +1,74 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { Modal } from '@/modal';
+import { t } from '@/text';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+
+/**
+ * The Account ID this device is signed in with on the current Home, with a copy action. It is the
+ * identifier that tells two devices apart when they are signed in to different Accounts.
+ */
+export const AccountIdentifier = React.memo(function AccountIdentifier(props: Readonly<{ accountId: string }>) {
+    const copyFeedback = useTemporaryCopyFeedback();
+    const copy = React.useCallback(async () => {
+        if (!await setClipboardStringSafe(props.accountId)) {
+            Modal.alert(t('common.error'), t('items.failedToCopyToClipboard'));
+            return;
+        }
+        copyFeedback.markCopied();
+    }, [copyFeedback, props.accountId]);
+
+    return (
+        <View testID="settings-account-id" style={styles.row}>
+            <Text style={styles.label}>{t('settingsAccount.accountIdLabel')}</Text>
+            <Text style={styles.value} numberOfLines={1} ellipsizeMode="middle" selectable>
+                {props.accountId}
+            </Text>
+            {copyFeedback.isCopied() ? (
+                <CopiedPill visible testID="settings-account-id-copied" />
+            ) : (
+                <IconButton
+                    testID="settings-account-id-copy"
+                    accessibilityLabel={t('settingsAccount.accountIdCopy')}
+                    tooltip={t('settingsAccount.accountIdCopy')}
+                    iconName="copy"
+                    variant="plain"
+                    size={24}
+                    iconSize={14}
+                    onPress={() => { void copy(); }}
+                />
+            )}
+        </View>
+    );
+});
+
+const styles = StyleSheet.create((theme) => ({
+    row: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        minWidth: 0,
+    },
+    label: {
+        ...Typography.default('regular'),
+        fontSize: 13,
+        lineHeight: 18,
+        color: theme.colors.text.secondary,
+        flexShrink: 0,
+    },
+    value: {
+        ...Typography.mono(),
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: theme.colors.text.secondary,
+        flexShrink: 1,
+        minWidth: 0,
+    },
+}));

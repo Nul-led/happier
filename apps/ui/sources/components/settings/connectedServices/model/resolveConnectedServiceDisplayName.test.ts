@@ -28,15 +28,16 @@ describe('resolveConnectedServiceDisplayName', () => {
 
 describe('resolveConnectedServiceShortName', () => {
     it('does not maintain an unprojected static short-name registry', () => {
-        expect(resolveConnectedServiceShortName('openai-codex', (key) => key)).toBe('connectedServices.fallbackName');
-        expect(resolveConnectedServiceShortName('claude-subscription', (key) => key)).toBe('connectedServices.fallbackName');
+        // No brand short name exists without a projection; the full localized name stands in.
+        expect(resolveConnectedServiceShortName('openai-codex', (key) => key)).toBe('connectedServices.serviceNames.openaiCodex');
+        expect(resolveConnectedServiceShortName('claude-subscription', (key) => key)).toBe('connectedServices.serviceNames.claudeSubscription');
     });
 
     it('falls back to the localized display name when the registry has no short name', () => {
         const entry = getLegacyConnectedServiceRegistryEntry('bitbucket');
 
         expect(entry.shortName).toBeUndefined();
-        expect(resolveConnectedServiceShortName('bitbucket', (key) => key)).toBe('connectedServices.fallbackName');
+        expect(resolveConnectedServiceShortName('bitbucket', (key) => key)).toBe('connectedServices.serviceNames.bitbucket');
     });
 });
 
@@ -93,6 +94,17 @@ describe('resolveQualifiedConnectedServiceRegistryDisplayName', () => {
             }],
         }, { pluginId: 'external.plugin', localId: 'gateway' }, (key) => key))
             .toBe('External Gateway');
+    });
+
+    it('names an unpublished built-in service from its qualified identity, not the generic title', () => {
+        expect(resolveQualifiedConnectedServiceRegistryDisplayName({ entries: [] }, {
+            pluginId: 'happier.agent.claude',
+            localId: 'claude-subscription',
+        }, (key) => key)).toBe('connectedServices.serviceNames.claudeSubscription');
+        expect(resolveQualifiedConnectedServiceRegistryDisplayName({ entries: [] }, {
+            pluginId: 'happier.agent.claude',
+            localId: 'anthropic',
+        }, (key) => key)).toBe('connectedServices.serviceNames.anthropic');
     });
 
     it('fails closed to the generic service title when no applied descriptor matches', () => {

@@ -1,6 +1,7 @@
 import { resolveProjectedLocalizedText } from '@/components/plugins/surfaces/resolvePluginDisplayString';
 import type { PluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import {
+    getGeneratedLegacyConnectedServiceRegistryFallback,
     getLegacyConnectedServiceRegistryEntry,
     type ConnectedServiceDisplayNameKey,
     type ConnectedServiceRegistryEntry,
@@ -43,7 +44,7 @@ export function resolveQualifiedConnectedServiceRegistryDisplayName(
     const entry = registry.entries.find((candidate) => (
         candidate.service?.pluginId === service.pluginId
         && candidate.service.localId === service.localId
-    ));
+    )) ?? getGeneratedLegacyConnectedServiceRegistryFallback(service);
     return entry
         ? resolveConnectedServiceRegistryEntryDisplayName(entry, translate, localizePluginText)
         : translate('connectedServices.fallbackName');

@@ -97,6 +97,8 @@ const ALLOW_SAME_STRING_VALUES = new Set<string>([
     'bearer',
     'Happier Cloud',
     'GitHub CLI',
+    // A file-format name, like JSON: every locale writes it this way.
+    'Markdown',
     'Launchpad',
     'xterm.js WebView',
     // Technical ids that should remain unchanged across locales.
@@ -115,8 +117,6 @@ const ALLOW_SAME_KEY_PREFIXES: ReadonlyArray<string> = [
     'agentInput.geminiPermissionMode.',
     'agentInput.geminiModel.',
     'profiles.builtInNames.',
-    // Desktop overlay settings copy is temporarily shared in English across locale files.
-    'settingsDesktop.overlay.',
     // Built-in theme preset names are product names, not descriptive UI copy.
     'settingsAppearance.themeProfiles.presets.',
     // Machine transfer exposure labels are technical transport terms.
@@ -158,19 +158,26 @@ const ALLOW_SAME_STRING_KEYS = new Set<string>([
     'settingsAgents.plugins.claude.fields.claudeRemoteDebugCategories.options.1p.title',
     // Technical field labels that are commonly shared across locales.
     'settings.relayAccess.fields.tokenLabel',
-    // New Live Activities strategy labels are intentionally shared English placeholders for now.
-    'settingsNotifications.activitySurfaces.liveActivities.strategyTitle',
-    'settingsNotifications.activitySurfaces.liveActivities.dynamicPrimaryTitle',
-    'settingsNotifications.activitySurfaces.liveActivities.pinnedPrimaryTitle',
-    'settingsNotifications.activitySurfaces.liveActivities.sessionSpecificTitle',
-    'settingsFeatures.expLiveActivities',
-    'settingsNotifications.activitySurfaces.liveActivities.title',
-    'settingsNotifications.activitySurfaces.privacyTitle',
 ]);
 
 const ALLOW_SAME_STRING_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<string>>> = {
     // These are correctly translated in some locales even though they match English.
     'common.no': new Set(['es', 'it', 'ca']),
+    // Italian writes "Privacy" as English does.
+    'settingsNotifications.activitySurfaces.privacyTitle': new Set(['it']),
+    // Desktop overlay: the word each locale's own UI uses is spelled like the English one.
+    'settingsDesktop.overlay.compactStylePanelTitle': new Set(['de', 'es', 'pl']), // "Panel" is the German, Spanish and Polish word for a UI panel.
+    'settingsDesktop.overlay.densityCompactTitle': new Set(['fr']), // French "Compact" (adjective).
+    'settingsDesktop.overlay.interactionTitle': new Set(['fr']), // French "Interaction".
+    'settingsDesktop.overlay.placementTitle': new Set(['fr']), // French "Placement".
+    // Session settings pages: true cognates, the word each locale uses in its own UI.
+    'settingsSessionPages.runtime.terminalSection': new Set(['fr', 'de', 'es', 'pt', 'ca', 'pl']),
+    'settingsSessionPages.wizard.steps.backends': new Set(['fr', 'de', 'ca', 'pl']),
+    'settingsSessionPages.wizard.steps.models': new Set(['ca', 'pl']),
+    'settingsSessionPages.wizard.steps.machines': new Set(['fr']),
+    'settingsSessionPages.wizard.steps.paths': new Set(['pl']),
+    // German developer UI says "Tools" (the lane's other German strings use it too).
+    'settingsSessionPages.transcript.toolsSection': new Set(['de']),
     'common.error': new Set(['es', 'ca']),
     'tools.fullView.error': new Set(['es', 'ca']),
     'status.error': new Set(['es']),
@@ -246,6 +253,27 @@ const ALLOW_SAME_STRING_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<stri
     'settingsVoice.realtimeProviders.options.manual': new Set(['es', 'pt', 'ca']),
     // Catalan: "Model" is the Catalan word too.
     'settingsVoice.realtimeProviders.fields.model.title': new Set(['ca']),
+    // Configuration surfaces (U8): true cognates on the redesigned settings and detail pages, the
+    // word each locale's own UI uses. "Agent" as the executable agent (repo vocabulary), "Argument(s)"
+    // for command-line arguments, "No" as `common.no`, "Online/Offline", "Team" and "Account" as the
+    // ratified product nouns, "Status", "Details", "Name", "Optional", "Person", "Machine".
+    'settingsAgents.customAcp.agentSection': new Set(['pl', 'fr', 'ca', 'de']),
+    'settingsAgents.customAcp.argumentPlaceholder': new Set(['pl', 'fr', 'ca', 'de']),
+    'settingsAgents.customAcp.argsTitle': new Set(['fr', 'ca']),
+    'settingsAgents.customAcp.descriptionTitle': new Set(['fr']),
+    'settingsAgents.customAcp.supportsModes': new Set(['fr', 'ca']),
+    'settingsAgents.customAcp.hintNo': new Set(['es', 'it', 'ca']),
+    'settingsAgents.customAcp.nameTitle': new Set(['de']),
+    'settingsAgents.customAcp.optionalPlaceholder': new Set(['de']),
+    'machineDetailPage.online': new Set(['pl', 'it', 'pt', 'de']),
+    'machineDetailPage.offline': new Set(['pl', 'it', 'pt', 'de']),
+    'machineDetailPage.placeholderTitle': new Set(['fr']),
+    'profilesPage.descriptionTitle': new Set(['fr']),
+    'automationPages.run.statusTitle': new Set(['pt', 'de']),
+    'detailPages.person.placeholderTitle': new Set(['de']),
+    'sessionPages.info.detailsTitle': new Set(['de']),
+    'teams.create.detailsSection': new Set(['it', 'de']),
+    'homeGovernance.accountSection': new Set(['it']),
 };
 
 function isProviderPluginTitleKey(key: string): boolean {

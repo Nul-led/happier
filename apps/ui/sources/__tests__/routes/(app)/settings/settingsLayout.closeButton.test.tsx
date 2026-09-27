@@ -5,8 +5,10 @@ import { renderScreen } from '@/dev/testkit';
 
 const deviceTypeState = vi.hoisted(() => ({ value: 'tablet' as 'phone' | 'tablet' }));
 
+// The window-size adapter: the hook and its imperative read must report the same device type.
 vi.mock('@/utils/platform/responsive', () => ({
     useDeviceType: () => deviceTypeState.value,
+    getDeviceType: () => deviceTypeState.value,
 }));
 
 vi.mock('react-native', async () => {

@@ -14,6 +14,16 @@ import {
 
 const updatePromptDocSpy = vi.fn(async () => {});
 const setPromptFoldersSpy = vi.fn();
+/** Whether the screen currently asks the navigator to hold a departure (the unsaved-changes guard). */
+const preventRemoveState = vi.hoisted(() => ({ last: null as boolean | null }));
+
+// The navigator's remove interception is the navigation library boundary; record what the screen asks for.
+vi.mock('@react-navigation/native', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@react-navigation/native')>(),
+    usePreventRemove: (preventRemove: boolean) => {
+        preventRemoveState.last = preventRemove;
+    },
+}));
 const promptExternalLinksState = vi.hoisted(() => ({
     value: {
         v: 1,
@@ -122,31 +132,6 @@ vi.mock('@/components/ui/markdown/editor/MarkdownCodeEditorField', () => ({
     }),
 }));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemRowActions', () => ({
-    ItemRowActions: (props: any) => React.createElement('ItemRowActions', props),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-    TextInput: 'TextInput',
-}));
-
-vi.mock('@/components/ui/settingsSurface/SettingsActionFooter', () => ({
-    SettingsActionFooter: (props: any) => React.createElement('SettingsActionFooter', props),
-}));
-
 vi.mock('@/sync/sync', () => ({
     sync: {
         getCredentials: () => ({ ok: true }),
@@ -174,24 +159,48 @@ describe('PromptDocEditorScreen', () => {
         };
     });
 
-    it('falls back to the docs list when saving from a deep-linked editor without back history', async () => {
+    it('saves an edited prompt in place and keeps its editor open', async () => {
         const { PromptDocEditorScreen } = await import('./PromptDocEditorScreen');
         const screen = await renderScreen(React.createElement(PromptDocEditorScreen, { artifactId: 'doc-1' }));
-        const footer = screen.findByType('SettingsActionFooter');
+
+        expect(screen.findByTestId('promptDoc.save')?.props.disabled).toBe(true);
+        await act(async () => {
+            screen.changeTextByTestId('promptDoc.title', 'Renamed');
+        });
+        expect(screen.findByTestId('promptDoc.save')?.props.disabled).toBe(false);
 
         await act(async () => {
-            footer.props.onPrimaryPress();
+            await screen.findByTestId('promptDoc.save')?.props.onPress();
         });
 
         expect(updatePromptDocSpy).toHaveBeenCalledWith({
             artifactId: 'doc-1',
-            title: 'Doc title',
+            title: 'Renamed',
             markdown: 'existing markdown',
             folderId: 'folder-1',
             tags: ['alpha', 'beta'],
         });
-        expect(promptLibrarySettingsRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/docs');
+        expect(promptLibrarySettingsRouterReplaceSpy).not.toHaveBeenCalled();
         expect(promptLibrarySettingsRouterBackSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('promptDoc.save')?.props.disabled).toBe(true);
+    });
+
+    it('opens a new prompt in the collection once its draft is saved', async () => {
+        const { PromptDocEditorScreen } = await import('./PromptDocEditorScreen');
+        const screen = await renderScreen(React.createElement(PromptDocEditorScreen, { artifactId: null }));
+
+        await act(async () => {
+            screen.changeTextByTestId('promptDoc.title', 'Fresh');
+        });
+        expect(preventRemoveState.last).toBe(true);
+        await act(async () => {
+            await screen.findByTestId('promptDoc.save')?.props.onPress();
+        });
+
+        expect(promptLibrarySettingsRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/docs/new-doc');
+        expect(promptLibrarySettingsRouterBackSpy).not.toHaveBeenCalled();
+        // The saved draft has nothing left to lose, so opening the saved prompt is not held for a decision.
+        expect(preventRemoveState.last).toBe(false);
     });
 
     it('navigates to the external export screen for an existing prompt doc', async () => {
@@ -203,16 +212,15 @@ describe('PromptDocEditorScreen', () => {
         expect(promptLibrarySettingsRouterPushSpy).toHaveBeenCalledWith('/(app)/settings/prompts/docs/doc-1/export');
     });
 
-    it('renders linked exports and a settings footer for existing docs', async () => {
+    it('renders linked exports and the organisation fields for existing docs', async () => {
         const { PromptDocEditorScreen } = await import('./PromptDocEditorScreen');
         const screen = await renderScreen(React.createElement(PromptDocEditorScreen, { artifactId: 'doc-1' }));
-        const footer = screen.findByType('SettingsActionFooter');
 
-        expect(screen.findByTestId('promptDoc.link.0')?.props.subtitle).toContain('Laptop');
+        expect(screen.findByTestId('promptDoc.link.0')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Laptop');
         expect(screen.findByTestId('promptDoc.folderName')?.props.value).toBe('Ops');
         expect(screen.findByTestId('promptDoc.tags')?.props.value).toBe('alpha, beta');
-        expect(footer.props.primaryTestID).toBe('promptDoc.save');
-        expect(footer.props.secondaryTestID).toBe('promptDoc.cancel');
+        expect(screen.findByTestId('promptDoc.save')).toBeTruthy();
     });
 
     it('preserves dirty prompt doc fields when prompt-folder settings refresh', async () => {
@@ -247,13 +255,12 @@ describe('PromptDocEditorScreen', () => {
     it('renders a title input, markdown editor, and save action for new docs', async () => {
         const { PromptDocEditorScreen } = await import('./PromptDocEditorScreen');
         const screen = await renderScreen(React.createElement(PromptDocEditorScreen, { artifactId: null }));
-        const footer = screen.findByType('SettingsActionFooter');
 
         expect(screen.findByTestId('promptDoc.title')).toBeTruthy();
         expect(screen.findByTestId('promptDoc.editor')).toBeTruthy();
         expect(screen.findByTestId('promptDoc.folderName')).toBeTruthy();
         expect(screen.findByTestId('promptDoc.tags')).toBeTruthy();
-        expect(footer.props.primaryTestID).toBe('promptDoc.save');
+        expect(screen.findByTestId('promptDoc.save')).toBeTruthy();
         expect(screen.findAllByTestId('promptDoc.manageExternalAssets')).toHaveLength(0);
     });
 });

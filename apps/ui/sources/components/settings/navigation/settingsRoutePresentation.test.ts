@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveSettingsRouteAnimation, resolveSettingsRoutePresentation } from './settingsRoutePresentation';
+import {
+    resolveSettingsRouteAnimation,
+    resolveSettingsRoutePresentation,
+    resolveSettingsRouteWebModalStyle,
+} from './settingsRoutePresentation';
 
 describe('resolveSettingsRoutePresentation', () => {
     it('keeps settings as a full-screen screen on phones (reached via the bottom tab bar)', () => {
@@ -31,5 +35,20 @@ describe('resolveSettingsRouteAnimation', () => {
         // `undefined` means "use the platform default modal animation"; crucially it is NOT
         // 'none', so the modal animates in while the phone tab still does not.
         expect(resolveSettingsRouteAnimation({ deviceType: 'tablet' })).toBeUndefined();
+    });
+});
+
+describe('resolveSettingsRouteWebModalStyle', () => {
+    it('gives the desktop web settings modal one fixed height, so it never resizes with its content', () => {
+        // Route modals size to their content by default; settings content (search results, a short
+        // page) changes as you use it, so the card would jump. A fixed height is its own min and max.
+        const style = resolveSettingsRouteWebModalStyle({ deviceType: 'tablet', platformOs: 'web' });
+        expect(style?.height).toBe('var(--happier-route-modal-max-height)');
+        expect(style?.width).toEqual(expect.any(String));
+    });
+
+    it('leaves phones and native platforms without a web modal style', () => {
+        expect(resolveSettingsRouteWebModalStyle({ deviceType: 'phone', platformOs: 'web' })).toBeUndefined();
+        expect(resolveSettingsRouteWebModalStyle({ deviceType: 'tablet', platformOs: 'ios' })).toBeUndefined();
     });
 });

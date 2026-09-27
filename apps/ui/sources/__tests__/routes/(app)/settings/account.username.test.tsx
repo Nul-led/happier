@@ -95,7 +95,7 @@ describe('Settings → Account (username)', () => {
         standardCleanup();
     });
 
-    it('shows a Username item and saves it when friendsAllowUsername is enabled', async () => {
+    it('offers choosing a username from the identity header and saves it when friendsAllowUsername is enabled', async () => {
         storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
 
         const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -129,10 +129,10 @@ describe('Settings → Account (username)', () => {
 
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderSettingsView(<AccountScreen />);
-        expect(screen.findRowByTitle('profile.username')).toBeTruthy();
+        expect(screen.findRowByTitle('settingsAccount.chooseUsername')?.props.testID).toBe('settings-account-username');
 
         await act(async () => {
-            await screen.pressRowByTitle('profile.username');
+            await screen.pressRowByTitle('settingsAccount.chooseUsername');
         });
 
         expect(modalMockRef.current.spies.prompt).toHaveBeenCalled();

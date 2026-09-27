@@ -99,15 +99,16 @@ describe('VoiceUiSection', () => {
       setVoiceOrbEnabled: vi.fn(),
     }));
 
-    const scopeMenu = screen.tree.root.findAllByType('DropdownMenu' as any)
-      .find((menu) => menu.props.selectedId === 'global');
-    expect(scopeMenu).toBeDefined();
-    expect(scopeMenu?.props.items.map((item: { id: string }) => item.id)).toEqual([
+    // Two short, always-visible choices: a segmented row, not a menu.
+    const scopeChoice = screen.tree.root.findAll((node) => node.props?.testIDPrefix === 'settings.voice.ui.scopeDefault')[0];
+    expect(scopeChoice).toBeDefined();
+    expect(scopeChoice?.props.value).toBe('global');
+    expect(scopeChoice?.props.options.map((option: { id: string }) => option.id)).toEqual([
       'global',
       'session',
     ]);
 
-    scopeMenu?.props.onSelect('session');
+    scopeChoice?.props.onChange('session');
 
     expect(setVoice).toHaveBeenCalledWith({
       ...voice,
@@ -141,23 +142,14 @@ describe('VoiceUiSection', () => {
 
     const descriptiveRows = screen.tree.root.findAllByType('Item' as any)
       .filter((item) => typeof item.props.subtitle === 'string');
-    expect(descriptiveRows.map((item) => item.props.subtitleLines)).toEqual([
-      0,
-      0,
-      0,
-      0,
-    ]);
+    // Three switches with their own descriptions, four segmented choices describing the chosen
+    // option, the snippet switch and the other-sessions snippet choice.
+    expect(descriptiveRows).toHaveLength(9);
+    expect(descriptiveRows.every((item) => item.props.subtitleLines === 0)).toBe(true);
 
     const descriptiveTriggers = screen.tree.root.findAllByType('DropdownMenu' as any)
       .map((menu) => menu.props.itemTrigger)
       .filter((trigger) => typeof trigger?.subtitle === 'string');
-    expect(descriptiveTriggers.map((trigger) => trigger.itemProps?.subtitleLines)).toEqual([
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-    ]);
+    expect(descriptiveTriggers.map((trigger) => trigger.itemProps?.subtitleLines)).toEqual([0]);
   });
 });

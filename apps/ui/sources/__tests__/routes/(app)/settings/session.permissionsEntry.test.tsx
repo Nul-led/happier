@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { renderSettingsView, standardCleanup } from '@/dev/testkit';
@@ -39,19 +40,14 @@ describe('Session settings (Permissions entry)', () => {
         expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/(app)/settings/session/runtime');
     });
 
-    it('shows the detailed behavior hub before legacy session controls', async () => {
+    it('ends with the links to the detailed session pages, after the settings on this page', async () => {
         const mod = await import('@/app/(app)/settings/session');
         const SessionSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
 
         const groupTitles = screen.findAllByType('ItemGroup' as any).map((group) => group.props.title);
 
-        expect(groupTitles.indexOf('settingsSession.detailedBehavior.title')).toBeLessThan(
-            groupTitles.indexOf('settingsSession.rootGroups.launchDefaults.title'),
-        );
-        expect(groupTitles.indexOf('settingsSession.detailedBehavior.title')).toBeLessThan(
-            groupTitles.indexOf('settingsSession.rootGroups.listOrganization.title'),
-        );
+        expect(groupTitles[groupTitles.length - 1]).toBe('settingsSession.detailedBehavior.title');
     });
 
     it('regroups root settings by user intent instead of one large session list section', async () => {
@@ -62,19 +58,24 @@ describe('Session settings (Permissions entry)', () => {
         const groupTitles = screen.findAllByType('ItemGroup' as any).map((group) => group.props.title);
 
         expect(groupTitles).toEqual([
-            'settingsSession.detailedBehavior.title',
             'settingsSession.rootGroups.launchDefaults.title',
             'settingsSession.rootGroups.listOrganization.title',
             'settingsSession.rootGroups.rowDetails.title',
             'settingsSession.rootGroups.activitySignals.title',
             'settingsSession.rootGroups.mobileLayout.title',
             'settingsSession.rootGroups.agentPersonalization.title',
+            'settingsSession.detailedBehavior.title',
         ]);
         expect(groupTitles).not.toContain('settingsSession.sessionCreation.title');
         expect(groupTitles).not.toContain('settingsSession.sessionList.title');
     });
 
     it('places session list controls into focused root groups', async () => {
+        // Every list-organization row shows: the Active/Inactive layout with project grouping (grouping,
+        // ordering) and session folders enabled (folder sort).
+        sessionSettingsEntryState.settingsState.sessionListSectionModeV1 = 'activity';
+        sessionSettingsEntryState.settingsState.sessionListActiveGroupingV1 = 'project';
+        sessionSettingsEntryState.options.featureEnabled = (featureId) => featureId === 'sessions.folders';
         const mod = await import('@/app/(app)/settings/session');
         const SessionSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
@@ -90,13 +91,13 @@ describe('Session settings (Permissions entry)', () => {
         };
 
         const expectedPlacements = new Map<string, string>([
-            ['settingsSession.sessionCreation.wizardModeTitle', 'settingsSession.rootGroups.launchDefaults.title'],
+            ['settingsSession.sessionCreation.startWithTitle', 'settingsSession.rootGroups.launchDefaults.title'],
             ['settingsSession.sessionCreation.rememberLastProjectSelectionsTitle', 'settingsSession.rootGroups.launchDefaults.title'],
             ['settingsSession.sessionCreation.rememberLastEngineSelectionsTitle', 'settingsSession.rootGroups.launchDefaults.title'],
             ['settingsAppearance.sessionListDensity.title', 'settingsSession.rootGroups.listOrganization.title'],
             ['settingsSession.sessionList.orderingTitle', 'settingsSession.rootGroups.listOrganization.title'],
             ['settingsSession.sessionList.folderSortModeTitle', 'settingsSession.rootGroups.listOrganization.title'],
-            ['settingsSession.sessionList.sectionModeTitle', 'settingsSession.rootGroups.listOrganization.title'],
+            ['settingsSession.sessionList.layoutTitle', 'settingsSession.rootGroups.listOrganization.title'],
             ['settingsFeatures.sessionListActiveGrouping', 'settingsSession.rootGroups.listOrganization.title'],
             ['settingsFeatures.sessionListInactiveGrouping', 'settingsSession.rootGroups.listOrganization.title'],
             ['settingsFeatures.hideInactiveSessions', 'settingsSession.rootGroups.listOrganization.title'],
@@ -147,7 +148,7 @@ describe('Session settings (Permissions entry)', () => {
         expect(titles).not.toContain('settingsSession.defaultPermissions.applyPermissionChangesTitle');
     });
 
-    it('renders wizard mode as a toggle in the new-session modal group', async () => {
+    it('offers how new sessions start as a visible composer-or-wizard choice', async () => {
         const mod = await import('@/app/(app)/settings/session');
         const SessionSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
@@ -155,10 +156,16 @@ describe('Session settings (Permissions entry)', () => {
         expect(screen.findAllByType('DropdownMenu' as any).some((dropdown) =>
             dropdown.props.itemTrigger?.title === 'settingsSession.sessionCreation.modalModeTitle'
         )).toBe(false);
-        expect(screen.findRowByTitle('settingsSession.sessionCreation.wizardModeTitle')).toBeTruthy();
+        const startWith = screen.findByProps({ testIDPrefix: 'settings-session-startWith' });
+        // Search opens this row by its declared anchor.
+        expect(screen.root.findAll((node: any) => node.props?.setting?.anchor === 'session.startWith').length).toBeGreaterThan(0);
+        expect(startWith.props.value).toBe('composer');
+        expect(startWith.props.options.map((option: { id: string }) => option.id)).toEqual(['composer', 'wizard']);
         expect(screen.findRowByTitle('settingsSession.sessionCreation.wizardDispositionTitle')).toBeNull();
 
-        screen.pressRowByTitle('settingsSession.sessionCreation.wizardModeTitle');
+        await act(async () => {
+            startWith.props.onChange('wizard');
+        });
         expect(sessionSettingsEntryState.settingsState.useEnhancedSessionWizard).toBe(true);
     });
 

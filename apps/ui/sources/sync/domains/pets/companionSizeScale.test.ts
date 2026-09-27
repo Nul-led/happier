@@ -4,7 +4,6 @@ import {
     PET_COMPANION_SIZE_SCALE_DEFAULT,
     normalizePetCompanionSizeScale,
     petCompanionSizeScaleToPercent,
-    resolvePetCompanionSizeScaleFromTrackPosition,
 } from './companionSizeScale';
 
 describe('companionSizeScale', () => {
@@ -16,15 +15,7 @@ describe('companionSizeScale', () => {
         expect(normalizePetCompanionSizeScale(99)).toBe(1.5);
     });
 
-    it('resolves percent labels and track positions from the normalized scale range', () => {
+    it('resolves percent labels from the normalized scale range', () => {
         expect(petCompanionSizeScaleToPercent(1.25)).toBe(125);
-        expect(resolvePetCompanionSizeScaleFromTrackPosition({
-            locationX: 0,
-            trackWidth: 200,
-        })).toBe(0.75);
-        expect(resolvePetCompanionSizeScaleFromTrackPosition({
-            locationX: 200,
-            trackWidth: 200,
-        })).toBe(1.5);
     });
 });

@@ -150,6 +150,28 @@ describe('plugin-ui Button renders real React Native pressable semantics', () =>
     mount.unmount();
   });
 
+  it('paints the focus ring for keyboard focus only, not for focus a pointer press leaves behind', async () => {
+    const context = createSurfaceContext({ contrast: 'high' });
+    const mount = mountSurface(<Button title="Refresh findings" onPress={() => {}} />, context);
+    const button = findButton(mount.container) as HTMLButtonElement;
+    const ring = resolveRenderedBorderColor(context.theme.colors.text);
+    // The browser's focus-visible heuristic is the platform boundary: a pointer press focuses
+    // the control without making its focus visible.
+    const matches = button.matches.bind(button);
+    const matchesSpy = vi.spyOn(button, 'matches').mockImplementation((selector: string) => (
+      selector === ':focus-visible' ? false : matches(selector)
+    ));
+
+    await act(async () => { button.focus(); });
+    expect(getComputedStyle(button).borderTopColor).not.toBe(ring);
+
+    await act(async () => { button.blur(); });
+    matchesSpy.mockRestore();
+    await act(async () => { button.focus(); });
+    expect(getComputedStyle(button).borderTopColor).toBe(ring);
+    mount.unmount();
+  });
+
   it('shows a pending indicator while an async press is unresolved and swallows further presses', async () => {
     let settle: () => void = () => {};
     const pending = new Promise<void>((resolve) => { settle = resolve; });

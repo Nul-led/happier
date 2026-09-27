@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPassThroughModule } from '@/dev/testkit/mocks/components';
 import { renderScreen } from '@/dev/testkit';
@@ -509,7 +510,10 @@ describe('PromptAssetExportScreen', () => {
 
     const screen = await renderPromptAssetExportScreen('doc-1');
 
-    await screen.pressByTestIdAsync('promptAssetExport.delete');
+    // Delete sits in the header's `⋯` menu beside Export.
+    await act(async () => {
+      await screen.findByTestId('promptAssetExport.menu')?.props.onSelect('delete');
+    });
 
     expect(machinePromptAssetsDeleteMock).toHaveBeenCalledWith(
       'machine-1',
@@ -553,7 +557,7 @@ describe('PromptAssetExportScreen', () => {
 
     const screen = await renderPromptAssetExportScreen('doc-1');
 
-    expect(screen.findAllByTestId('promptAssetExport.delete')).toHaveLength(0);
+    expect(screen.findAllByTestId('promptAssetExport.menu')).toHaveLength(0);
   });
 
   it('does not export a project-scoped prompt asset until a workspace path is selected', async () => {

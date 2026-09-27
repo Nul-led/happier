@@ -328,6 +328,23 @@ export function getQualifiedConnectedServiceRegistryEntry(
   )) ?? null;
 }
 
+/**
+ * The localized name of each released built-in service, for the one moment its
+ * descriptor is not projected (no online machine publishes it). Each stored
+ * account records its exact qualified service, and every released scalar id
+ * maps to exactly one of them, so the name is known without the descriptor.
+ * A projected descriptor title always wins over this.
+ */
+const LEGACY_CONNECTED_SERVICE_DISPLAY_NAME_KEYS: Readonly<Record<ConnectedServiceId, ConnectedServiceDisplayNameKey>> = {
+  'openai-codex': 'connectedServices.serviceNames.openaiCodex',
+  openai: 'connectedServices.serviceNames.openai',
+  anthropic: 'connectedServices.serviceNames.anthropic',
+  'claude-subscription': 'connectedServices.serviceNames.claudeSubscription',
+  gemini: 'connectedServices.serviceNames.gemini',
+  github: 'connectedServices.serviceNames.github',
+  bitbucket: 'connectedServices.serviceNames.bitbucket',
+};
+
 function createLegacyConnectedServiceRegistryFallback(
   serviceId: string,
 ): ConnectedServiceRegistryEntry {
@@ -338,6 +355,7 @@ function createLegacyConnectedServiceRegistryFallback(
       ? {
           service: legacy.compatibility.service,
           legacyServiceId: legacy.serviceId,
+          displayNameKey: LEGACY_CONNECTED_SERVICE_DISPLAY_NAME_KEYS[legacy.serviceId],
         }
       : {}),
     connectCommand: `happier connect ${serviceId}`,

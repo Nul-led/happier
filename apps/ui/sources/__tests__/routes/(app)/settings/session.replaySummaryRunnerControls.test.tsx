@@ -35,14 +35,6 @@ vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModel
     }),
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'server-a' }),
-}));
-
-vi.mock('@/sync/store/hooks', () => ({
-    useAllMachines: () => [],
-}));
-
 beforeEach(() => {
     resetSessionSettingsEntryState();
     executionRunsEnabledState.enabled = true;
@@ -59,6 +51,23 @@ afterEach(() => {
     resetSessionSettingsEntryState();
 });
 
+const MAX_SEED_CHARS_FIELD_TEST_ID = 'settings-session-replay-maxSeedChars-input';
+
+type ScreenLike = Readonly<{ findAll: (predicate: (node: any) => boolean) => any[] }>;
+
+/** The budget row (a `FieldValueItem`); `Item` is a host element here, so its field is its `rightElement`. */
+function maxSeedCharsRows(screen: ScreenLike) {
+    return screen.findAll((node) => (
+        node.type === 'Item' && node.props?.rightElement?.props?.testID === MAX_SEED_CHARS_FIELD_TEST_ID
+    ));
+}
+
+function maxSeedCharsField(screen: ScreenLike) {
+    const [row] = maxSeedCharsRows(screen);
+    if (!row) throw new Error('Missing the max seed chars field');
+    return row.props.rightElement.props;
+}
+
 describe('Session resume settings (Replay summary runner controls)', () => {
     it('renders a max seed chars input when replay is enabled', async () => {
         executionRunsEnabledState.enabled = true;
@@ -69,7 +78,7 @@ describe('Session resume settings (Replay summary runner controls)', () => {
 
         const screen = await renderScreen(React.createElement(SessionResumeSettingsScreen));
 
-        expect(screen.findAllByTestId('settings-session-replay-maxSeedChars-input')).toHaveLength(1);
+        expect(maxSeedCharsRows(screen)).toHaveLength(1);
     });
 
     it('renders summary runner inputs when replay is enabled, strategy is summary_plus_recent, and execution runs are enabled', async () => {
@@ -117,10 +126,10 @@ describe('Session resume settings (Replay summary runner controls)', () => {
         const screen = await renderScreen(React.createElement(mod.default));
 
         await act(async () => {
-            screen.findByTestId('settings-session-replay-maxSeedChars-input')!.props.onChangeText(typed);
+            maxSeedCharsField(screen).onChangeText(typed);
         });
         await act(async () => {
-            screen.findByTestId('settings-session-replay-maxSeedChars-input')!.props.onBlur();
+            maxSeedCharsField(screen).onBlur();
         });
 
         expect(sessionSettingsEntryState.settingsState.sessionReplayMaxSeedChars).toBe(stored);
@@ -138,13 +147,14 @@ describe('Session resume settings (Replay summary runner controls)', () => {
 
         const expectedRange =
             `settingsSession.replayResume.maxSeedCharsRange(min=${HAPPIER_REPLAY_SEED_MIN_CHARS},max=${HAPPIER_REPLAY_SEED_MAX_CHARS})`;
-        const input = screen.findByTestId('settings-session-replay-maxSeedChars-input');
+        const [row] = maxSeedCharsRows(screen);
         // A field that silently moves an out-of-range number to the nearest
-        // limit has to name its bounds, and the visible label is not attached
-        // to it.
-        expect(input?.props.accessibilityLabel).toBe('settingsSession.replayResume.maxSeedCharsTitle');
-        expect(input?.props.accessibilityHint).toBe(expectedRange);
-        expect(screen.findByTestId('settings-session-replay-maxSeedChars-range')?.props.children).toBe(expectedRange);
+        // limit has to name its bounds, visibly (the row's description) and
+        // on the field itself, because the visible label is not attached to it.
+        expect(row?.props.title).toBe('settingsSessionPages.resume.maxSeedCharsTitle');
+        expect(row?.props.subtitle).toBe(expectedRange);
+        expect(maxSeedCharsField(screen).accessibilityLabel).toBe('settingsSessionPages.resume.maxSeedCharsTitle');
+        expect(maxSeedCharsField(screen).accessibilityHint).toBe(expectedRange);
     });
 
     it('does not render the recent-messages control that cannot affect any outcome', async () => {

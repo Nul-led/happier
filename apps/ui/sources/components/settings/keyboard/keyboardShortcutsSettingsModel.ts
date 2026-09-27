@@ -20,15 +20,53 @@ export type KeyboardShortcutSettingsCommandRow = Readonly<{
     commandId: KeyboardCommandId;
     titleKey: KeyboardCommandSettingsTitleKey;
     bindingValue: string | null;
+    /** The shortcut that runs the command now (a custom one when set, else the registry default). */
     defaultLabel: string | null;
+    /** The registry default, which reset restores. */
+    registryDefaultLabel: string | null;
     disabled: boolean;
     hasOverride: boolean;
 }>;
+
+/** The part of the app a command acts on; settings list commands under these headings. */
+export type KeyboardShortcutCommandGroupId = 'general' | 'sessions' | 'composer' | 'transcript' | 'splitView' | 'browser';
+
+export type KeyboardShortcutSettingsCommandGroup = Readonly<{
+    id: KeyboardShortcutCommandGroupId;
+    rows: readonly KeyboardShortcutSettingsCommandRow[];
+}>;
+
+export const KEYBOARD_SHORTCUT_COMMAND_GROUP_ORDER: readonly KeyboardShortcutCommandGroupId[] = [
+    'general', 'sessions', 'composer', 'transcript', 'splitView', 'browser',
+];
+
+/** Commands are grouped by their id's area; anything new and unrecognised lands under General. */
+export function resolveKeyboardShortcutCommandGroupId(commandId: KeyboardCommandId): KeyboardShortcutCommandGroupId {
+    const area = commandId.split('.')[0];
+    switch (area) {
+        case 'session':
+        case 'sessions':
+            return 'sessions';
+        case 'composer':
+        case 'mode':
+        case 'permission':
+            return 'composer';
+        case 'transcript':
+            return 'transcript';
+        case 'splitCanvas':
+            return 'splitView';
+        case 'browser':
+            return 'browser';
+        default:
+            return 'general';
+    }
+}
 
 export type KeyboardShortcutSettingsModel = Readonly<{
     shortcutsEnabled: boolean;
     singleKeyShortcutsEnabled: boolean;
     commandRows: readonly KeyboardShortcutSettingsCommandRow[];
+    commandGroups: readonly KeyboardShortcutSettingsCommandGroup[];
     conflicts: readonly KeyboardShortcutSettingsConflict[];
 }>;
 
@@ -190,11 +228,19 @@ export function buildKeyboardShortcutSettingsModel(params: Readonly<{
         const defaultLabel = effectiveBinding
             ? formatKeybindingLabel(effectiveBinding, params.platform)
             : null;
+        const registryBinding = getActiveEffectiveBindings({
+            commandId: command.id,
+            overrides: {},
+            platform: params.platform,
+            surface: params.surface,
+            singleKeyShortcutsEnabled,
+        })[0] ?? getEffectiveBindings(command.id, {})[0] ?? null;
         return {
             commandId: command.id,
             titleKey: command.settingsTitleKey,
             bindingValue: effectiveBinding?.binding ?? null,
             defaultLabel,
+            registryDefaultLabel: registryBinding ? formatKeybindingLabel(registryBinding, params.platform) : null,
             disabled: disabledIds.has(command.id),
             hasOverride: Boolean(overrides[command.id]?.length),
         };
@@ -204,6 +250,9 @@ export function buildKeyboardShortcutSettingsModel(params: Readonly<{
         shortcutsEnabled: params.settings.keyboardShortcutsV2Enabled === true,
         singleKeyShortcutsEnabled,
         commandRows,
+        commandGroups: KEYBOARD_SHORTCUT_COMMAND_GROUP_ORDER
+            .map((id) => ({ id, rows: commandRows.filter((row) => resolveKeyboardShortcutCommandGroupId(row.commandId) === id) }))
+            .filter((group) => group.rows.length > 0),
         conflicts: [
             ...buildBrowserReservedConflicts({
                 surface: params.surface,

@@ -52,6 +52,13 @@ export type PopoverPortalOptions = Readonly<{
      */
     anchorAlignVertical?: 'start' | 'center' | 'end';
     /**
+     * Top/bottom placements in portal mode: size the popover to its content, between
+     * `CONTENT_SIZED_POPOVER_WIDTH` and the max-width cap, instead of a fixed width. With
+     * `anchorAlign: 'end'` its right edge stays on the anchor's right edge. For compact pickers
+     * opened from a chip or button whose content is narrower than a full picker.
+     */
+    sizeToContent?: boolean;
+    /**
      * Layout strategy for top/bottom placements in portal mode.
      * - anchored: position and size the popover relative to the anchor
      * - boundary: align the popover to the effective boundary's left edge and width

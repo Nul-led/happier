@@ -1456,6 +1456,15 @@ export type ActionExecutorDeps = Readonly<{
     caller: ActionCaller;
   }>) => Promise<unknown>;
 
+  /**
+   * Compare-and-set the Account's custom ACP catalog (`acpCatalogSettingsV1`) through the host's
+   * Account settings writer. `mutate` receives the latest stored value and returns the next one;
+   * the host applies it once, with its own encryption mode and version handling.
+   */
+  updateAccountAcpCatalogSettings?: (args: Readonly<{
+    mutate: (current: unknown) => unknown;
+    signal?: AbortSignal;
+  }>) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
   promptDocUpdate?: (args: Readonly<{
     artifactId: string;
     title: string;

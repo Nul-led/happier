@@ -5,6 +5,7 @@ import { acceptPasswordTextV1, encodePasswordCredentialFieldV1 } from '@happier-
 import { authenticatePlainPassword, preloginEmailPassword, unlockEmailPassword } from '@/sync/api/auth/emailPassword';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
+import type { ServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 
 export type EmailPasswordLoginTarget = ResolvedHomeAuthenticationTarget & Readonly<{
     runtimeOrigin?: string;
@@ -17,6 +18,15 @@ export type EmailPasswordLoginInput = Readonly<{
     password: string;
     signal?: AbortSignal;
     isCurrent?: () => boolean;
+    /**
+     * Sign in to an account service instead of the Home: the server mints its restricted
+     * Account Directory credential. Plain Accounts ask the password route for it; E2EE Accounts
+     * redeem their unlocked key at the Account Directory Key Challenge, bound to the exact
+     * Account the unlock named (never creating one).
+     */
+    credentialTarget?: 'account_directory';
+    /** The exact feature observation the caller already verified, reused by the key redeem. */
+    verifiedServerFeaturesSnapshot?: ServerFeaturesSnapshot & { status: 'ready' };
 }>;
 
 export async function loginEmailPassword(input: EmailPasswordLoginInput): Promise<AuthCredentials> {
@@ -43,7 +53,12 @@ export async function loginEmailPassword(input: EmailPasswordLoginInput): Promis
     const prelogin = await preloginEmailPassword(request, input.email);
     assertCurrent();
     if (prelogin.kind === 'plain_password') {
-        const credentials = await authenticatePlainPassword(request, { v: 1, email: input.email, password: input.password });
+        const credentials = await authenticatePlainPassword(request, {
+            v: 1,
+            email: input.email,
+            password: input.password,
+            ...(input.credentialTarget ? { credentialTarget: input.credentialTarget } : {}),
+        });
         assertCurrent();
         return credentials;
     }
@@ -78,8 +93,18 @@ export async function loginEmailPassword(input: EmailPasswordLoginInput): Promis
             isCurrent: input.isCurrent,
             secret,
             expectedAccountId: unlocked.expectedAccountId,
-            issuedChallenge: unlocked.challenge,
             requireKeyChallengeV2: true,
+            ...(input.credentialTarget === 'account_directory'
+                // The unlock challenge is Home-purpose; the directory credential is redeemed at
+                // its own Key Challenge, for the Account the unlock named and no other.
+                ? {
+                    credentialTarget: 'account_directory' as const,
+                    requireExistingAccount: true as const,
+                    ...(input.verifiedServerFeaturesSnapshot
+                        ? { verifiedServerFeaturesSnapshot: input.verifiedServerFeaturesSnapshot }
+                        : {}),
+                }
+                : { issuedChallenge: unlocked.challenge }),
         });
         assertCurrent();
         return { token: authenticated.token, secret: encodePasswordCredentialFieldV1(secret) };

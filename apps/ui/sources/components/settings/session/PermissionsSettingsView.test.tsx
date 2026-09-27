@@ -117,23 +117,39 @@ describe('PermissionsSettingsView', () => {
     it('renders session storage defaults and updates both global and per-agent settings', async () => {
         const { PermissionsSettingsView } = await import('./PermissionsSettingsView');
         const screen = await renderSettingsView(React.createElement(PermissionsSettingsView));
-        const titles = screen.findAllByType('Item' as any).map((item) => item.props.title);
-        expect(titles).toContain('settingsSession.defaultStorage.globalTitle');
-        expect(titles).toContain('agent.codex');
+        const choice = (prefix: string) => screen.findAll((node) => node.props?.testIDPrefix === prefix)[0] ?? null;
 
-        expect(screen.findRowByTitle('DropdownItem:settingsSession.defaultStorage.globalTitle:sessionsList.storageDirectTab')).toBeTruthy();
-        screen.pressRowByTitle('DropdownItem:settingsSession.defaultStorage.globalTitle:sessionsList.storageDirectTab');
+        const global = choice('settings-permissions-storage-global');
+        expect(global?.props.title).toBe('settingsSession.defaultStorage.globalTitle');
+        expect(global?.props.value).toBe('persisted');
+        global?.props.onChange('direct');
         expect(setDefaultPersistenceMode).toHaveBeenCalledWith('direct');
 
-        expect(screen.findRowByTitle('DropdownItem:agent.codex:sessionsList.storageDirectTab')).toBeTruthy();
-        screen.pressRowByTitle('DropdownItem:agent.codex:sessionsList.storageDirectTab');
+        const codex = choice('settings-permissions-storage-codex');
+        expect(codex?.props.title).toBe('agent.codex');
+        // No override yet: the agent follows the global default.
+        expect(codex?.props.value).toBe('global');
+        codex?.props.onChange('direct');
         expect(setDefaultPersistenceModeByTargetKey).toHaveBeenCalledWith({
             [resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' })]: 'direct',
         });
 
-        expect(screen.findRowByTitle('DropdownItem:agent.codex:settingsSession.defaultStorage.useGlobalDefault')).toBeTruthy();
-        screen.pressRowByTitle('DropdownItem:agent.codex:settingsSession.defaultStorage.useGlobalDefault');
+        codex?.props.onChange('global');
         expect(setDefaultPersistenceModeByTargetKey).toHaveBeenCalledWith({});
+    });
+
+    it('chooses where prompts appear and when permission changes apply', async () => {
+        const { PermissionsSettingsView } = await import('./PermissionsSettingsView');
+        const screen = await renderSettingsView(React.createElement(PermissionsSettingsView));
+        const choice = (prefix: string) => screen.findAll((node) => node.props?.testIDPrefix === prefix)[0] ?? null;
+
+        expect(choice('settings-permissions-prompt-surface')?.props.value).toBe('composer');
+        choice('settings-permissions-prompt-surface')?.props.onChange('transcript');
+        expect(setPermissionPromptSurface).toHaveBeenCalledWith('transcript');
+
+        expect(choice('settings-permissions-apply-timing')?.props.value).toBe('immediate');
+        choice('settings-permissions-apply-timing')?.props.onChange('next_prompt');
+        expect(setPermissionModeApplyTiming).toHaveBeenCalledWith('next_prompt');
     });
 
     it('does not render prompt personalization controls inside permissions settings', async () => {

@@ -219,13 +219,11 @@ describe('ActionSettingsDetailView', () => {
             selectionKey: 'actions.settings',
             options: undefined,
         });
+        // The page opens on the action itself (entity header with its on/off switch); the surface
+        // filter sits between the header and the surfaces, outside any section sheet.
         expect(capture.searchHeaders).toHaveLength(1);
-        expect(capture.itemListsWithSearchHeader).toBe(0);
         expect(capture.itemGroupsWithSearchHeader).toBe(0);
-        expect(capture.renderOrder.indexOf('search')).toBeLessThan(
-            capture.renderOrder.indexOf('settings-actions:action:review.start:summary'),
-        );
-        expect(await screen.findByTestId('settings-actions:approval-mode-help')).toBeTruthy();
+        expect(await screen.findByTestId('settings-actions:action:review.start:summary')).toBeTruthy();
         const summarySwitch = capture.switches.find((switchProps) =>
             switchProps.testID === 'settings-actions:action:review.start:enabled',
         );

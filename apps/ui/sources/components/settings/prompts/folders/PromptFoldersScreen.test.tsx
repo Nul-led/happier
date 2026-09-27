@@ -76,18 +76,6 @@ vi.mock('@/components/ui/layout/layout', () => ({
   useLayoutMaxWidthStyle: () => ({ maxWidth: 960 }),
 }));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-  ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-  ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-  Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
-}));
-
 vi.mock('@/components/ui/lists/ItemRowActions', () => ({
   ItemRowActions: (props: any) => React.createElement('ItemRowActions', props),
 }));

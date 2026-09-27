@@ -106,6 +106,8 @@ export async function requestNativeEmailVerification(
         email: string;
         continuationId?: string;
         admission?: TeamInvitationAccountAdmissionV1;
+        /** Proving the mailbox to create an account-service sign-in; the mailed link says so. */
+        purpose?: 'account_service';
     }>,
 ): Promise<void> {
     NativeAuthEmailAcceptedResponseV1Schema.parse(await post(
@@ -116,6 +118,7 @@ export async function requestNativeEmailVerification(
             email: input.email,
             ...(input.continuationId ? { continuationId: input.continuationId } : {}),
             ...(input.admission ? { admission: input.admission } : {}),
+            ...(input.purpose ? { purpose: input.purpose } : {}),
         }),
     ));
 }

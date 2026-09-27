@@ -33,12 +33,14 @@ export {
     type SelectionListVirtualizedOptionSourceItem,
 } from './_types';
 
+export { SELECTION_LIST_LARGE_POPOVER_SIZE } from './_constants';
 export { SelectionList } from './SelectionList';
 export { SelectionListScreen, type SelectionListScreenProps } from './SelectionListScreen';
 export {
     createDefaultDynamicSectionCache,
     type SelectionListDynamicSectionCache,
 } from './selectionListDynamicSectionCache';
+export { filterSelectionListSections } from './filterSelectionListSections';
 export { renderSelectionListAccessory } from './renderSelectionListAccessory';
 export { resolvePopoverSelectionListHeightBehavior } from './resolvePopoverSelectionListHeightBehavior';
 export {

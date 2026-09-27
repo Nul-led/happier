@@ -3,7 +3,6 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderSettingsView, standardCleanup } from '@/dev/testkit';
-import { BUILT_IN_THEME_PROFILES } from '@/theme/profiles/builtInThemeProfiles';
 import { installSessionSettingsEntryModuleMocks, resetSessionSettingsEntryState } from './sessionSettingsEntryTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -136,147 +135,31 @@ afterEach(() => {
 });
 
 describe('Appearance settings item density', () => {
-    const findDropdownByTriggerTestId = (
-        screen: Awaited<ReturnType<typeof renderSettingsView>>,
-        testID: string,
-    ) => screen.findAllByType('DropdownMenu' as any)
-        .find((node: any) => node.props?.itemTrigger?.itemProps?.testID === testID);
-
-    it('renders one current-theme dropdown outside adaptive mode and slot dropdowns in adaptive mode', async () => {
-        shared.settingsState.themePreference = 'light';
+    it('shows every item density as a visible choice and updates the local setting', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default));
 
-        const currentThemeDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-selector-trigger');
-        const lightDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-light-selector-trigger');
-        const darkDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-dark-selector-trigger');
-        expect(currentThemeDropdown).toBeTruthy();
-        expect(lightDropdown).toBeUndefined();
-        expect(darkDropdown).toBeUndefined();
-        expect(currentThemeDropdown?.props?.selectedId).toBe('light');
-        expect(currentThemeDropdown?.props?.items.map((item: any) => item.id)).toEqual([
-            'adaptive',
-            'light',
-            'dark',
-            ...BUILT_IN_THEME_PROFILES.map((definition) => definition.profile.id),
-        ]);
-
-        shared.settingsState.themePreference = 'adaptive';
-        const adaptiveScreen = await renderSettingsView(React.createElement(mod.default));
-        const adaptiveLightDropdown = findDropdownByTriggerTestId(adaptiveScreen, 'settings-theme-light-selector-trigger');
-        const adaptiveDarkDropdown = findDropdownByTriggerTestId(adaptiveScreen, 'settings-theme-dark-selector-trigger');
-        expect(adaptiveLightDropdown).toBeTruthy();
-        expect(adaptiveDarkDropdown).toBeTruthy();
-        expect(adaptiveLightDropdown?.props?.items.map((item: any) => item.id)).toEqual([
-            'light',
-            ...BUILT_IN_THEME_PROFILES
-                .filter((definition) => definition.preferredMode === 'light')
-                .map((definition) => definition.profile.id),
-        ]);
-    });
-
-    it('assigns a curated dark theme from the current-theme dropdown and switches to dark mode', async () => {
-        shared.settingsState.themePreference = 'light';
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
-
-        const themeDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-selector-trigger');
+        const itemDensityChoice = screen.findByProps({ testIDPrefix: 'settings-appearance-itemDensity' });
+        expect(itemDensityChoice.props.value).toBe('comfortable');
+        expect(itemDensityChoice.props.options.map((option: any) => option.id)).toEqual(['comfortable', 'cozy', 'compact']);
 
         await act(async () => {
-            themeDropdown!.props.onSelect('premiumDark');
-        });
-
-        const themeProfiles = shared.settingsState.themeProfiles as { activeProfileIds: { light: string | null; dark: string | null }; profiles: Array<{ id: string; overrides: { dark: Record<string, string> } }> };
-        expect(shared.settingsState.themePreference).toBe('dark');
-        expect(themeProfiles.activeProfileIds).toEqual({ light: null, dark: 'premiumDark' });
-        expect(themeProfiles.profiles).toEqual([]);
-        expect(shared.setTheme).toHaveBeenCalledWith('dark');
-    });
-
-    it('applies status bar style immediately when switching to dark mode', async () => {
-        shared.settingsState.themePreference = 'light';
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
-
-        const themeDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-selector-trigger');
-        expect(themeDropdown).toBeTruthy();
-        expect(themeDropdown?.props?.selectedId).toBe('light');
-
-        await act(async () => {
-            themeDropdown!.props.onSelect('dark');
-        });
-
-        expect(shared.settingsState.themePreference).toBe('dark');
-        expect(shared.setTheme).toHaveBeenCalledWith('dark');
-        expect(shared.setStatusBarStyle).toHaveBeenCalledWith('light', true);
-    });
-
-    it('wraps web theme changes in a view transition', async () => {
-        shared.settingsState.themePreference = 'light';
-        Object.defineProperty(globalThis, 'document', {
-            configurable: true,
-            value: {
-                documentElement: {
-                    animate: shared.documentElementAnimate,
-                },
-                startViewTransition: shared.startViewTransition,
-            } as unknown as Document,
-        });
-
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
-
-        const themeDropdown = findDropdownByTriggerTestId(screen, 'settings-theme-selector-trigger');
-        expect(themeDropdown).toBeTruthy();
-        expect(themeDropdown?.props?.selectedId).toBe('light');
-
-        await act(async () => {
-            themeDropdown!.props.onSelect('dark');
-        });
-
-        expect(shared.settingsState.themePreference).toBe('dark');
-        expect(shared.startViewTransition).toHaveBeenCalledOnce();
-        expect(shared.documentElementAnimate).toHaveBeenCalledWith(
-            { clipPath: ['inset(0 0 100% 0)', 'inset(0)'] },
-            expect.objectContaining({
-                pseudoElement: '::view-transition-new(root)',
-            }),
-        );
-    });
-
-    it('renders the item density dropdown and updates the local setting', async () => {
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
-
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const itemDensityDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.itemDensity');
-        expect(itemDensityDropdown).toBeTruthy();
-        expect(itemDensityDropdown?.props?.selectedId).toBe('comfortable');
-
-        const itemIds = itemDensityDropdown?.props?.items?.map((item: any) => item.id) ?? [];
-        expect(itemIds).toEqual(['comfortable', 'cozy', 'compact']);
-
-        await act(async () => {
-            itemDensityDropdown!.props.onSelect('cozy');
+            itemDensityChoice.props.onChange('cozy');
         });
 
         expect(shared.settingsState.uiItemDensity).toBe('cozy');
     });
 
-    it('renders the content width dropdown and updates the local setting', async () => {
+    it('shows every content width as a visible choice and updates the local setting', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default));
 
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const contentWidthDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.contentWidth');
-        expect(contentWidthDropdown).toBeTruthy();
-        expect(contentWidthDropdown?.props?.selectedId).toBe('compact');
-
-        const itemIds = contentWidthDropdown?.props?.items?.map((item: any) => item.id) ?? [];
-        expect(itemIds).toEqual(['compact', 'medium', 'full']);
+        const contentWidthChoice = screen.findByProps({ testIDPrefix: 'settings-appearance-contentWidth' });
+        expect(contentWidthChoice.props.value).toBe('compact');
+        expect(contentWidthChoice.props.options.map((option: any) => option.id)).toEqual(['compact', 'medium', 'full']);
 
         await act(async () => {
-            contentWidthDropdown!.props.onSelect('full');
+            contentWidthChoice.props.onChange('full');
         });
 
         expect(shared.settingsState.uiContentWidthMode).toBe('full');
@@ -305,5 +188,15 @@ describe('Appearance settings item density', () => {
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
         const workspaceModeDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.mobileWorkspaceExperience');
         expect(workspaceModeDropdown).toBeUndefined();
+    });
+
+    it('keeps session list organisation on the Sessions page, not Appearance', async () => {
+        const mod = await import('@/app/(app)/settings/appearance');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+
+        const titles = screen.findAllByType('Item' as any).map((node: any) => node.props.title);
+        expect(titles).not.toContain('settingsFeatures.hideInactiveSessions');
+        expect(titles).not.toContain('settingsFeatures.sessionListActiveGrouping');
+        expect(titles).not.toContain('settingsFeatures.sessionListInactiveGrouping');
     });
 });

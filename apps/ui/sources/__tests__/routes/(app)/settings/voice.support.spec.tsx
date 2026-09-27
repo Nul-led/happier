@@ -31,6 +31,30 @@ function VoiceSettingsIntentDetailsScreen(props: Readonly<{ intent: VoiceSetting
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+type SettingsScreen = Awaited<ReturnType<typeof renderSettingsView>>;
+
+/**
+ * Types into an inline value row (`FieldValueItem`) and leaves the field, which commits the value.
+ * `Item` is a host element in this suite, so the row's field is its `rightElement`.
+ */
+async function commitInlineField(
+    screen: SettingsScreen,
+    matchesRow: (row: { props: Record<string, any> }) => boolean,
+    text: string,
+): Promise<void> {
+    const field = () => {
+        const row = screen.findAll((node) => (node.type as unknown) === 'Item' && matchesRow(node))[0];
+        if (!row?.props.rightElement?.props?.onChangeText) throw new Error('Missing the inline field row');
+        return row.props.rightElement.props;
+    };
+    await act(async () => {
+        field().onChangeText(text);
+    });
+    await act(async () => {
+        field().onBlur();
+    });
+}
+
 const setVoiceProviderId = vi.fn();
 const setVoice = vi.fn();
 const decryptSecretValue = vi.fn<(value: unknown) => string | null>(() => null);
@@ -159,6 +183,22 @@ afterEach(() => {
     modalMockRef.current?.spies.prompt.mockClear();
     standardCleanup();
 });
+
+/** Picks an option other than the current one on the segmented row titled `title`. */
+async function chooseOtherSegmentedOption(
+    screen: Readonly<{ findAll: (predicate: (node: any) => boolean) => any[] }>,
+    title: string,
+) {
+    const choice = screen.findAll((node) => (
+        Array.isArray(node.props?.options) && typeof node.props?.onChange === 'function' && node.props?.title === title
+    ))[0];
+    expect(choice).toBeTruthy();
+    const next = choice.props.options.find((option: { id: string }) => option.id !== choice.props.value);
+    expect(next).toBeTruthy();
+    await act(async () => {
+        choice.props.onChange(next.id);
+    });
+}
 
 describe('VoiceSettingsScreen (server voice unsupported)', () => {
     it('keeps Happier Voice visible but disabled without destroying the unavailable hosted selection', async () => {
@@ -402,11 +442,8 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         voiceState.providerId = 'local_conversation';
 
         const screen = await renderSettingsView(<VoiceSettingsIntentDetailsScreen intent="conversations" />);
-        expect(screen.findRowByTitle('settingsVoice.local.conversationMode')).toBeTruthy();
-
-        await act(async () => {
-            await screen.pressRowByTitle('settingsVoice.local.conversationMode');
-        });
+        // Two short, always-visible options: choosing one is a single tap on a segmented row.
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.conversationMode');
 
         expect(modalMockRef.current.spies.confirm).not.toHaveBeenCalled();
     });
@@ -436,18 +473,11 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
 
         const screen = await renderSettingsView(<VoiceSettingsIntentDetailsScreen intent="conversations" />);
 
-        const pressByTitle = async (title: string) => {
-            expect(screen.findRowByTitle(title)).toBeTruthy();
-            await act(async () => {
-                await screen.pressRowByTitle(title);
-            });
-        };
-
-        await pressByTitle('settingsVoice.local.mediatorAgentSource');
-        await pressByTitle('settingsVoice.local.mediatorPermissionPolicy');
-        await pressByTitle('settingsVoice.local.mediatorChatModelSource');
-        await pressByTitle('settingsVoice.local.mediatorCommitModelSource');
-        await pressByTitle('settingsVoice.local.mediatorVerbosity');
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.mediatorAgentSource');
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.mediatorPermissionPolicy');
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.mediatorChatModelSource');
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.mediatorCommitModelSource');
+        await chooseOtherSegmentedOption(screen, 'settingsVoice.local.mediatorVerbosity');
 
         expect(modalMockRef.current.spies.confirm).not.toHaveBeenCalled();
     });
@@ -523,14 +553,10 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         voiceState.providerId = 'local_conversation';
         voiceState.providers.local_conversation.config.conversationMode = 'agent';
 
-        modalMockRef.current.spies.prompt.mockResolvedValueOnce('999999');
-
         const screen = await renderSettingsView(<VoiceSettingsIntentDetailsScreen intent="conversations" />);
         expect(screen.findRowByTitle('settingsVoice.local.mediatorIdleTtl')).toBeTruthy();
 
-        await act(async () => {
-            await screen.pressRowByTitle('settingsVoice.local.mediatorIdleTtl');
-        });
+        await commitInlineField(screen, (row) => row.props.title === 'settingsVoice.local.mediatorIdleTtl', '999999');
 
         expect(setVoice).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -606,15 +632,15 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
 
         voiceState.providerId = 'happier.voice.elevenlabs/realtime-elevenlabs';
         voiceState.providers['happier.voice.elevenlabs/realtime-elevenlabs'].config.billingMode = 'byo';
-        modalMockRef.current.spies.prompt.mockResolvedValueOnce('0.65');
-
         const screen = await renderSettingsView(<VoiceSettingsIntentDetailsScreen intent="conversations" />);
         expect(screen.findByTestId('voice-realtime-field-tts-voiceSettings-similarityBoost')).toBeTruthy();
         expect(screen.findByTestId('voice-realtime-field-tts-voiceSettings-useSpeakerBoost')).toBeNull();
 
-        await act(async () => {
-            await screen.pressRowByTitle('settingsVoice.byo.realtime.voiceSettings.similarityBoost.title');
-        });
+        await commitInlineField(
+            screen,
+            (row) => row.props.testID === 'voice-realtime-field-tts-voiceSettings-similarityBoost',
+            '0.65',
+        );
 
         await vi.waitFor(() => {
             expect(setVoice).toHaveBeenCalledWith(expect.objectContaining({

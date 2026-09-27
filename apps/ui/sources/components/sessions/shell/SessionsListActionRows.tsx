@@ -80,14 +80,10 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
     const compactDestinations = useCompactAppDestinations({
         browseExistingSessionsEnabled: props.externalSessionsEnabled,
     });
-    const destinations = React.useMemo(() => compactDestinations.filter((destination) => (
-        isCompactAppDestinationVisible(destination)
-        && (
-            destination.kind === 'plugin'
-            || destination.id === SEARCH_DESTINATION_ID
-            || destination.id === BROWSE_EXISTING_SESSIONS_DESTINATION_ID
-        )
-    )), [compactDestinations]);
+    const destinations = React.useMemo(
+        () => compactDestinations.filter(isCompactAppDestinationVisible),
+        [compactDestinations],
+    );
     if (destinations.length === 0) return null;
 
     return (
@@ -99,11 +95,11 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
             {destinations.map((destination) => (
                 <Item
                     key={destination.id}
-                    testID={destination.kind === 'builtin'
-                        ? destination.id === SEARCH_DESTINATION_ID
-                            ? 'sessions-search-all-button'
-                            : 'external-sessions-browse-button'
-                        : `compact-app-destination:${destination.id}`}
+                    testID={destination.id === SEARCH_DESTINATION_ID
+                        ? 'sessions-search-all-button'
+                        : destination.id === BROWSE_EXISTING_SESSIONS_DESTINATION_ID
+                            ? 'external-sessions-browse-button'
+                            : `compact-app-destination:${destination.id}`}
                     title={destination.title}
                     subtitle={destination.kind === 'plugin' && destination.availability === 'unavailable'
                         ? resolveReasonCopy({

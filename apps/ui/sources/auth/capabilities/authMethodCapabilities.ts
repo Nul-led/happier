@@ -26,6 +26,11 @@ export type HomeAuthenticationExecution =
          * Home's effective-method owner and carried on its `provision` action.
          */
         recommendedProvisionMode?: 'plain' | 'e2ee';
+        /**
+         * Carried on `login` only when the Home can mail a reset link now. Absent
+         * means "Forgot password" could never arrive, so it is not offered.
+         */
+        passwordReset?: 'email';
     }>
     | Readonly<{ kind: 'oauth'; providerId: string; mode: 'keyed' | 'keyless' }>;
 
@@ -145,8 +150,12 @@ export function projectAuthEntryMethodCapabilities(
         return [{
             method,
             action,
-            execution: execution.kind === 'email_password' && row.recommendedProvisionMode
-                ? { ...execution, recommendedProvisionMode: row.recommendedProvisionMode }
+            execution: execution.kind === 'email_password'
+                ? {
+                    ...execution,
+                    ...(row.recommendedProvisionMode ? { recommendedProvisionMode: row.recommendedProvisionMode } : {}),
+                    ...(row.passwordReset ? { passwordReset: row.passwordReset } : {}),
+                }
                 : execution,
         }];
     });

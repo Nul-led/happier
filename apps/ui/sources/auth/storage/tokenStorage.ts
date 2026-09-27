@@ -38,6 +38,7 @@ const PENDING_EXTERNAL_CONNECT_GLOBAL_KEY = 'pending_external_connect__global';
 const AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_KEY = 'auth_auto_redirect_suppressed_until';
 const AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_GLOBAL_KEY = 'auth_auto_redirect_suppressed_until_global';
 const RECOVERY_KEY_REMINDER_DISMISSED_KEY = 'recovery_key_reminder_dismissed';
+const ACCOUNT_SERVICE_RECOVERY_KEY_REMINDER_DISMISSED_KEY = 'account_service_recovery_key_reminder_dismissed';
 const PENDING_PERSONAL_HOME_BOOTSTRAP_SEED_KEY = 'pending_personal_home_bootstrap_seed';
 
 /**
@@ -114,6 +115,29 @@ export function subscribeHomeCredentialMutations(
     return () => {
         homeCredentialMutationListeners.delete(listener);
     };
+}
+
+const accountDirectoryCredentialMutationListeners = new Set<() => void>();
+
+/**
+ * Observe writes to the stored Account Service sign-ins (sign-in, sign-out, replacement), so
+ * surfaces that state "signed in" re-read instead of keeping a stale answer.
+ */
+export function subscribeAccountDirectoryCredentialMutations(listener: () => void): () => void {
+    accountDirectoryCredentialMutationListeners.add(listener);
+    return () => {
+        accountDirectoryCredentialMutationListeners.delete(listener);
+    };
+}
+
+function emitAccountDirectoryCredentialMutation(): void {
+    for (const listener of [...accountDirectoryCredentialMutationListeners]) {
+        try {
+            listener();
+        } catch {
+            // Persistence success is authoritative; an observer cannot fail the write.
+        }
+    }
 }
 
 /** Explicit Account Service endpoint/identity key. */
@@ -635,14 +659,26 @@ function getAuthAutoRedirectSuppressedUntilGlobalKey(): string {
     return scopedStorageId(AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_GLOBAL_KEY, scope);
 }
 
-type RecoveryKeyReminderTarget = Readonly<{
-    serverUrl: string;
-    serverId?: string;
-}>;
+/**
+ * Whose recovery key a reminder is about: a Home Account (by the Home it lives on) or an Account
+ * on an account service (by the service's identity). The two never share a key, so a dual-role
+ * server's account-service reminder cannot overwrite, or duplicate, that server's Home reminder.
+ */
+export type RecoveryKeyReminderTarget =
+    | Readonly<{ kind?: 'home'; serverUrl: string; serverId?: string }>
+    | Readonly<{ kind: 'account_service'; serverIdentityId: string }>;
 
 async function getRecoveryKeyReminderDismissedKey(
     target?: RecoveryKeyReminderTarget,
 ): Promise<string | null> {
+    if (target?.kind === 'account_service') {
+        const identity = target.serverIdentityId.trim();
+        if (!identity) return null;
+        return scopedStorageId(
+            `${ACCOUNT_SERVICE_RECOVERY_KEY_REMINDER_DISMISSED_KEY}__svc_${sanitizeScopeToken(identity)}`,
+            readStorageScopeFromEnv(),
+        );
+    }
     const keys = target
         ? await getServerScopedKeys(
             RECOVERY_KEY_REMINDER_DISMISSED_KEY,
@@ -1691,6 +1727,7 @@ async function writeAccountDirectoryCredentialRecords(
             const after = records.find((record) => accountDirectoryCredentialRecordMatchesTarget(record, custody.target))?.credentials.token;
             if (before !== after) custody.revision += 1;
         }
+        emitAccountDirectoryCredentialMutation();
         return true;
     } catch {
         return false;
@@ -2787,6 +2824,24 @@ export const TokenStorage = {
             const stored = await readNativeSecureStoreString(key);
             recoveryKeyReminderDismissedCacheByKey.set(key, stored ?? '0');
             return parseRecoveryKeyReminderDismissedRaw(stored);
+        } catch {
+            return false;
+        }
+    },
+
+    /**
+     * Whether a reminder was recorded and not yet dismissed. Unlike a Home Account, whose reminder
+     * applies whenever its key is held here, an account-service reminder exists only once its
+     * creation recorded one.
+     */
+    async getRecoveryKeyReminderPending(target: RecoveryKeyReminderTarget): Promise<boolean> {
+        const key = await getRecoveryKeyReminderDismissedKey(target);
+        if (!key) return false;
+        try {
+            const raw = Platform.OS === 'web'
+                ? resolveWebStorageBackend()?.getItem(key) ?? null
+                : await readNativeSecureStoreString(key);
+            return raw === '0';
         } catch {
             return false;
         }

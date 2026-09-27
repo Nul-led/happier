@@ -53,7 +53,9 @@ describe('Session settings (native enter-to-send)', () => {
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsScreen));
 
         const items = screen.findAllByType('Item' as any);
-        const enterToSendItem = items.find((item) => item.props?.title === 'settingsFeatures.enterToSend');
+        // The row is the declared Composer › Typing setting (`SettingRow`), titled from its declaration.
+        const enterToSendItem = items.find((item) => item.props?.testID === 'settings-composer-enter-to-send');
+        expect(enterToSendItem?.props?.title).toBe('settingsSessionPages.composer.enterToSendTitle');
 
         expect(enterToSendItem).toBeTruthy();
         expect(enterToSendItem?.props?.subtitle).toBe('settingsSession.inputBehavior.enterToSendEnabledNativeSubtitle');

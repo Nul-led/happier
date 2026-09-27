@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { McpValueRefV1 } from '@happier-dev/protocol';
 import { McpValueRefV1Schema } from '@happier-dev/protocol';
@@ -7,7 +6,6 @@ import { McpValueRefV1Schema } from '@happier-dev/protocol';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type PatchKind = 'env' | 'header';
 
@@ -43,12 +41,10 @@ export type McpBindingOverridesValuePatchGroupProps = Readonly<{
 export const McpBindingOverridesValuePatchGroup = React.memo(function McpBindingOverridesValuePatchGroup(
     props: McpBindingOverridesValuePatchGroupProps,
 ) {
-    const { theme } = useUnistyles();
     const entries = React.useMemo(() => Object.entries(props.patch).sort((a, b) => a[0].localeCompare(b[0])), [props.patch]);
     const existingKeys = React.useMemo(() => new Set(Object.keys(props.patch)), [props.patch]);
 
     const isEnv = props.kind === 'env';
-    const iconName = isEnv ? 'code' : 'key';
 
     const groupTitle = isEnv ? t('settings.mcpServersOverridesEnvPatchTitle') : t('settings.mcpServersOverridesHeadersPatchTitle');
     const emptyTitle = isEnv ? t('settings.mcpServersOverridesEnvPatchEmptyTitle') : t('settings.mcpServersOverridesHeadersPatchEmptyTitle');
@@ -64,7 +60,6 @@ export const McpBindingOverridesValuePatchGroup = React.memo(function McpBinding
                 <Item
                     title={emptyTitle}
                     subtitle={emptySubtitle}
-                    icon={<Icon name={iconName} size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                 />
             ) : null}
@@ -74,7 +69,6 @@ export const McpBindingOverridesValuePatchGroup = React.memo(function McpBinding
                     key={key}
                     title={key}
                     subtitle={describePatchedValue(value)}
-                    icon={<Icon name={iconName} size={29} color={value === null ? theme.colors.state.danger.foreground : theme.colors.accent.indigo} />}
                     onPress={() => {
                         if (value === null) {
                             props.setPatch((prev) => {
@@ -112,7 +106,6 @@ export const McpBindingOverridesValuePatchGroup = React.memo(function McpBinding
             <Item
                 title={addTitle}
                 subtitle={addSubtitle}
-                icon={<Icon name="plus-circle" size={29} color={theme.colors.state.success.foreground} />}
                 onPress={() => {
                     props.openValueRefModal({
                         kind: props.kind,
@@ -128,7 +121,6 @@ export const McpBindingOverridesValuePatchGroup = React.memo(function McpBinding
             <Item
                 title={deleteTitle}
                 subtitle={deleteSubtitle}
-                icon={<Icon name="minus-circle" size={29} color={theme.colors.state.danger.foreground} />}
                 onPress={props.onPressDeleteKey}
                 destructive
             />

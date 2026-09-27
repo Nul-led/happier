@@ -5,6 +5,12 @@ import {
   SetSessionAccessContextRequestV1Schema, SetSessionAccessContextResponseV1Schema,
 } from '../sessions/access/sessionAccessOperationsV1.js';
 import {
+  AgentsAcpBackendsDeleteInputV1Schema,
+  AgentsAcpBackendsDeleteOutputV1Schema,
+  AgentsAcpBackendsUpsertInputV1Schema,
+  AgentsAcpBackendsUpsertOutputV1Schema,
+} from '../acp/catalog/catalogMutationsV1.js';
+import {
   SessionAccessGrantSetActionInputV1Schema,
   SessionPublicLinkCreateActionInputV1Schema, SessionPublicLinkSettingsV1Schema,
   SessionPublicLinkGetActionResultV1Schema, SessionPublicLinkRemoveActionResultV1Schema,
@@ -2742,6 +2748,9 @@ const RESULT_REQUIRED_DEFERRED_APPROVAL_ACTION_IDS = [
 
 const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
   ...MANAGED_GITHUB_APP_ACTION_IDS_V1,
+  // An agent saving or removing a custom ACP agent waits for the decision and reads the stored
+  // definition (or the catalog owner's typed refusal) back.
+  ...ACTION_ID_FAMILIES_V1.agent_acp_catalog,
   ...WORKFLOW_READ_ACTION_IDS,
   'machines.pools.list',
   'machines.pools.get',
@@ -9299,6 +9308,58 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     inputSchema: MemoryEnsureUpToDateInputSchema,
   },
   {
+    id: 'agents.acp.backends.upsert',
+    title: 'Save custom ACP agent',
+    description: 'Add or replace one custom ACP agent (a command that speaks the Agent Client Protocol) in the Account agent catalog. Names must be unique; an existing id is replaced.',
+    safety: 'danger',
+    placements: [],
+    bindings: { mcpToolName: 'agents_acp_backends_upsert' },
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+    },
+    outputSchema: AgentsAcpBackendsUpsertOutputV1Schema,
+    inputSchema: AgentsAcpBackendsUpsertInputV1Schema,
+    inputHints: {
+      title: 'Save custom ACP agent',
+      fields: [
+        { path: 'backend.id', title: 'Id', widget: 'text', required: true },
+        { path: 'backend.name', title: 'Name', widget: 'text', required: true },
+        { path: 'backend.title', title: 'Title', widget: 'text', required: true },
+        { path: 'backend.command', title: 'Command', widget: 'text', required: true },
+        { path: 'backend.args', title: 'Arguments', widget: 'text_list', listSeparator: 'comma' },
+      ],
+    },
+  },
+  {
+    id: 'agents.acp.backends.delete',
+    title: 'Delete custom ACP agent',
+    description: 'Remove one custom ACP agent from the Account agent catalog.',
+    safety: 'danger',
+    placements: [],
+    bindings: { mcpToolName: 'agents_acp_backends_delete' },
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+    },
+    outputSchema: AgentsAcpBackendsDeleteOutputV1Schema,
+    inputSchema: AgentsAcpBackendsDeleteInputV1Schema,
+    inputHints: {
+      title: 'Delete custom ACP agent',
+      fields: [
+        { path: 'backendId', title: 'Id', widget: 'text', required: true },
+      ],
+    },
+  },
+  {
     id: 'prompt_doc.update',
     title: 'Update prompt document',
     description: 'Update a prompt document stored in the Happier prompt library.',
@@ -11061,6 +11122,8 @@ const ACTION_EXECUTION_PLACEMENT_BY_ID: ReadonlyMap<ActionId, ActionExecutionPla
     ...ACTION_ID_FAMILIES_V1.session_access,
     'prompt_doc.update',
     'prompt_bundle.update',
+    // The custom ACP catalog is an Account setting: no machine has to be reachable to edit it.
+    ...ACTION_ID_FAMILIES_V1.agent_acp_catalog,
     ...ACTION_ID_FAMILIES_V1.approvals,
     ...ACTION_ID_FAMILIES_V1.plugin_permission_grants,
     ...ACTION_ID_FAMILIES_V1.plugin_webhooks,
@@ -12044,6 +12107,8 @@ const ACTION_PLUGIN_CALLER_POLICY_BY_ID: Readonly<
   'session.terminalComposer.clear': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'session.pendingInput.interruptAndRun': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'session.usageLimit.consumeResetCredit': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
+  'agents.acp.backends.upsert': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
+  'agents.acp.backends.delete': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'prompt_doc.update': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'prompt_bundle.update': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'prompt_asset.export': HOST_DOMAIN_PLUGIN_CALLER_POLICY,

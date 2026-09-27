@@ -19,3 +19,10 @@ export function normalizeAccountDirectoryEndpoint(value: string): string | null 
         return null;
     }
 }
+
+/** How a sign-in service without a presented name is shown: its host, never its full URL. */
+export function formatAccountServiceHost(value: string): string {
+    const normalized = normalizeAccountDirectoryEndpoint(value);
+    if (!normalized) return String(value ?? '').trim();
+    return new URL(normalized).host;
+}

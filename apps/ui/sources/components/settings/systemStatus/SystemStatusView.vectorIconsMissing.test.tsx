@@ -148,6 +148,11 @@ vi.mock('@/sync/domains/state/storage', async () => {
         useRealtimeStatus: () => 'connected',
         useSocketStatus: () => ({ status: 'connected', lastError: null, lastErrorAt: null }),
         useLastSyncAt: () => null,
+        // The active Home connection health reads these (another program's `useConnectionHealth` change).
+        useEndpointConnectivity: () => ({ status: 'online', reason: null, attempt: 1, nextRetryAt: null, lastConnectedAt: null, lastDisconnectedAt: null, lastErrorMessage: null }),
+        useSyncError: () => null,
+        useMachineListForServer: () => [],
+        useMachineListStatusForServer: () => 'loaded',
         useMachineListByServerId: () => ({
             srv_1: [],
         }),

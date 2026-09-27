@@ -74,6 +74,7 @@ vi.mock('expo-router', async () => {
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => true,
+    desktopHostKind: () => 'tauri',
 }));
 
 vi.mock('@/utils/platform/platform', () => ({

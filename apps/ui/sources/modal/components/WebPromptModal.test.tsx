@@ -19,10 +19,6 @@ vi.mock('./BaseModal', () => ({
 
 installModalComponentCommonModuleMocks();
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 function getTextContent(node: any): string {
     const child = node?.findByType?.('Text' as any);
     const value = child?.props?.children;

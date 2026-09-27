@@ -105,6 +105,7 @@ vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
     }],
   }),
   getQualifiedConnectedServiceRegistryEntry: () => null,
+  getGeneratedLegacyConnectedServiceRegistryFallback: () => null,
   getLegacyConnectedServiceRegistryEntry: () => ({
     serviceId: 'acme-gateway-account',
     connectCommand: 'happier connect acme-gateway-account',

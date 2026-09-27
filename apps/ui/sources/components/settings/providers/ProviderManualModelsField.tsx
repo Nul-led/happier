@@ -1,9 +1,10 @@
 import * as React from 'react';
 
-import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
+/** Manual model ids, one per line: the page's multiline field, with its refusal beneath it. */
 export const ProviderManualModelsField = React.forwardRef<React.ElementRef<typeof TextInput>, Readonly<{
     value: string;
     onChangeText: (value: string) => void;
@@ -11,18 +12,17 @@ export const ProviderManualModelsField = React.forwardRef<React.ElementRef<typeo
     errorText?: string | null;
 }>>(function ProviderManualModelsField(props, ref) {
     return (
-        <MachineSetupTextField
+        <FieldTextInput
             ref={ref}
             testID="provider-manual-model-ids"
-            label={t('settingsProviders.models.addFieldLabel')}
+            accessibilityLabel={t('settingsProviders.models.addFieldLabel')}
             value={props.value}
             placeholder={t('settingsProviders.models.addPlaceholder')}
             multiline
-            autoCapitalize="none"
-            autoCorrect={false}
+            monospace
+            minLines={4}
             editable={props.editable}
-            errorText={props.errorText ?? undefined}
-            inputStyle={{ minHeight: 112, textAlignVertical: 'top' }}
+            error={props.errorText ?? undefined}
             onChangeText={props.onChangeText}
         />
     );

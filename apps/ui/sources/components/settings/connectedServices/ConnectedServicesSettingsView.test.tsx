@@ -144,7 +144,15 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement),
+}));
+
+// Account blocks own their own quota reads; the index decides only which accounts it lists.
+vi.mock('./account/QualifiedAccountBlock', () => ({
+    QualifiedAccountBlock: (props: any) => React.createElement('QualifiedAccountBlock', props),
+}));
+vi.mock('./account/AccountBlock', () => ({
+    AccountBlock: (props: any) => React.createElement('AccountBlock', props),
 }));
 
 vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
@@ -152,13 +160,14 @@ vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
 }));
 
 vi.mock('./ConnectedServicesProviderStateSharingSettings', () => ({
-    ConnectedServicesProviderStateSharingDefaultsGroup: (props: any) => React.createElement('ConnectedServicesProviderStateSharingDefaultsGroup', props),
+    ConnectedServicesProviderStateSharingDisclosure: (props: any) => React.createElement('ConnectedServicesProviderStateSharingDisclosure', props),
 }));
 
 vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
     getLegacyConnectedServiceRegistryEntry: (serviceId: string) => connectedServiceRegistryState.entries.find((entry) => entry.legacyServiceId === serviceId)
         ?? connectedServiceRegistryState.legacyEntriesByServiceId[serviceId]
         ?? { serviceId, connectCommand: `happier connect ${serviceId}`, supportsOauth: false },
+    getGeneratedLegacyConnectedServiceRegistryFallback: () => null,
     getConnectedServiceRegistrySnapshot: () => ({
         scopeKey: 'server-1', status: connectedServiceRegistryState.status, errorReason: connectedServiceRegistryState.errorReason,
         entries: connectedServiceRegistryState.entries,
@@ -214,12 +223,8 @@ describe('ConnectedServicesSettingsView', () => {
         connectedServicesModuleState.options.text = async () => {
             const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
             return createTextModuleMock({
-                translate: (key, params) => {
-                    if (key === 'connectedServices.list.connectedCount') {
-                        return `${(params as { count?: number } | undefined)?.count ?? 0} connected`;
-                    }
-                    return key;
-                },
+                // Interpolated values stay visible so a test can see what a sentence names.
+                translate: (key, params) => (params ? `${key} ${Object.values(params).join(' ')}` : key),
             });
         };
         profileState.connectedServicesV2 = [
@@ -301,11 +306,11 @@ describe('ConnectedServicesSettingsView', () => {
 
         const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
         const screen = await renderScreen(<ConnectedServicesSettingsView />);
-        const error = screen.tree.root.findByProps({
-            testID: 'connected-services-projection-error',
+        const details = screen.tree.root.findByProps({
+            testID: 'connected-services-projection-error.action',
         } as never);
 
-        await pressTestInstanceAsync(error);
+        await pressTestInstanceAsync(details);
         const supportBody = String(modalAlertSpy.mock.calls[0]?.[1] ?? '');
         expect(supportBody).toContain('connectedServices.errors.generic');
         expect(supportBody).not.toContain('/private/plugin/registry');
@@ -318,10 +323,8 @@ describe('ConnectedServicesSettingsView', () => {
 
         const tree = (await renderScreen(React.createElement(ConnectedServicesSettingsView))).tree;
 
-        expect(tree.root.findAll((node) =>
-            node.children.includes('connectedServices.list.empty'),
-        )).toHaveLength(0);
-        expect(tree.findAllByType('Item' as any).length).toBeGreaterThan(0);
+        expect(tree.root.findAllByProps({ testID: 'connected-services-empty' } as never)).toHaveLength(0);
+        expect(tree.root.findAllByProps({ testID: 'connected-services-connect' } as never)).not.toHaveLength(0);
     });
 
     it('renders default-auth rows from the live qualified external Agent projection', async () => {
@@ -383,6 +386,17 @@ describe('ConnectedServicesSettingsView', () => {
             teamNameById: { 'team-1': 'Acme' },
         });
         expect(row?.props.currentTeamCredentialResourceKeys).toEqual(new Set(['team-1:resource-1']));
+    });
+
+    it('lets search reach the per-agent default sign-in rows through the first of them', async () => {
+        const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+        const { CONNECTED_SERVICES_SETTINGS } = await import('./connectedServicesSettings');
+
+        const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
+        const rows = tree.root.findAllByType('ConnectedServicesDefaultAuthRow' as never);
+
+        expect(rows[0]?.props.setting?.anchor).toBe(CONNECTED_SERVICES_SETTINGS.settings.agentDefaults.anchor);
+        expect(rows.slice(1).every((row) => row.props.setting === undefined)).toBe(true);
     });
 
     it('preserves the released bundled Agent routing id as the default-auth settings key', async () => {
@@ -460,9 +474,9 @@ describe('ConnectedServicesSettingsView', () => {
         const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
         const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
 
-        expect(tree.root.findAllByType('Item' as never).some(
-            (item) => item.props.title === 'OpenAI Codex',
-        )).toBe(true);
+        // A service without accounts is offered in the connect invitation, not as its own sheet.
+        const invitation = tree.root.findAllByProps({ testID: 'connected-services-connect' } as never)[0]!;
+        expect(invitation.props.subtitle).toContain('OpenAI Codex');
         await tree.root
             .findAllByType('ConnectedServicesDefaultAuthRow' as never)[0]
             .props.onOpenConnectedServicesSettings('openai-codex');
@@ -529,14 +543,12 @@ describe('ConnectedServicesSettingsView', () => {
 
         const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
         const tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
-        const rows = tree.findAllByType('Item' as never);
-        const builtInRow = rows.find((item) => item.props.title === 'connectedServices.names.openaiCodex');
-        const projectedRow = rows
-            .find((item) => item.props.title === 'Acme Vault');
+        const invitation = tree.root.findAllByProps({ testID: 'connected-services-connect' } as never)[0]!;
 
-        expect(builtInRow).toBeTruthy();
-        expect(projectedRow).toBeTruthy();
-        await pressTestInstanceAsync(projectedRow!);
+        expect(invitation.props.subtitle).toContain('connectedServices.names.openaiCodex');
+        expect(invitation.props.subtitle).toContain('Acme Vault');
+        await tree.root.findByProps({ testID: 'connected-services-connect-menu' } as never)
+            .props.onSelect('acme.connected-accounts-conformance/vault');
 
         expect(ConnectedServiceIdSchema.safeParse('vault').success).toBe(false);
         expect(connectedServicesModuleState.routerPushSpy).toHaveBeenCalledWith({
@@ -548,7 +560,7 @@ describe('ConnectedServicesSettingsView', () => {
         });
     });
 
-    it('counts retryable refresh-failure profiles as connected on the provider summary row', async () => {
+    it('lists every account of a released legacy service, the one needing a new sign-in first', async () => {
         profileState.connectedServicesV2 = [
             {
                 serviceId: 'openai-codex',
@@ -563,8 +575,10 @@ describe('ConnectedServicesSettingsView', () => {
 
         const tree = (await renderScreen(React.createElement(ConnectedServicesSettingsView))).tree;
 
-        const row = tree.findAllByType('Item' as any)
-            .find((node) => node.props?.subtitle === '2 connected');
-        expect(row?.props?.subtitle).toBe('2 connected');
+        expect(tree.root.findAllByType('AccountBlock' as never).map((block) => block.props.profileId))
+            .toEqual(['reauth', 'retryable', 'connected']);
+        expect(tree.root.findAllByProps({
+            testID: 'connected-services-service:happier.agent.codex/openai-codex:sign-in-again',
+        } as never)).not.toHaveLength(0);
     });
 });

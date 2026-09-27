@@ -1,3 +1,5 @@
+import { CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS } from '@/utils/platform/viewportClass';
+
 export type SettingsRoutePresentation = 'containedModal' | 'modal' | undefined;
 
 /**
@@ -41,4 +43,21 @@ export function resolveSettingsRouteAnimation(params: Readonly<{
     deviceType: 'phone' | 'tablet';
 }>): SettingsRouteAnimation {
     return params.deviceType === 'phone' ? 'none' : undefined;
+}
+
+/**
+ * The desktop web card for the settings modal. Route modals size to their content by default
+ * (`theme.css`), but settings content changes as you use it — a filtered rail, a short page — and a
+ * card that grows and shrinks under the pointer is disorienting. Settings takes the route-modal
+ * viewport cap as its fixed height instead: one size, whatever the rail or page holds.
+ */
+export function resolveSettingsRouteWebModalStyle(params: Readonly<{
+    deviceType: 'phone' | 'tablet';
+    platformOs: string;
+}>): Readonly<{ width: string; height: string }> | undefined {
+    if (params.platformOs !== 'web' || params.deviceType === 'phone') return undefined;
+    return {
+        width: `min(${CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS.expanded}px, calc(100vw - 64px))`,
+        height: 'var(--happier-route-modal-max-height)',
+    };
 }

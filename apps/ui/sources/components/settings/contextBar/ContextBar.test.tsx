@@ -52,11 +52,11 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props, props.subtitle ?? null),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
 }));
 
-vi.mock('@/components/ui/text/Text', () => ({
-    TextInput: (props: any) => React.createElement('TextInput', props),
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({
+    FieldTextInput: (props: any) => React.createElement('TextInput', props),
 }));
 
 vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({

@@ -51,8 +51,13 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}) },
+// Every glyph goes through the `Icon` seam, which `dev/vitestSetup.ts` replaces with a host stand-in.
+// Here the stand-in renders a primitive text child instead, so the check below sees one reach the tree
+// through a real item icon (`renderDropdownItemIcon`). The Ionicons stand-in above no longer renders:
+// no icon family draws with Ionicons.
+vi.mock('@/components/ui/icons/Icon', () => ({
+    Icon: () => <>{'.'}</>,
+    ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
 }));
 
 vi.mock('expo-clipboard', () => ({

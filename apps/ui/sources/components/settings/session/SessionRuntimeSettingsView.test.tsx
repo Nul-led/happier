@@ -46,7 +46,7 @@ describe('SessionRuntimeSettingsView', () => {
         const { SessionRuntimeSettingsView } = await import('./SessionRuntimeSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionRuntimeSettingsView));
 
-        expect(screen.findRowByTitle('profiles.tmux.spawnSessionsTitle')).toBeTruthy();
+        expect(screen.findRowByTitle('settingsSessionPages.runtime.tmuxTitle')).toBeTruthy();
         expect(screen.findRowByTitle('settingsSession.terminalConnect.legacySecretExportTitle')).toBeNull();
     });
 });

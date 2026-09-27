@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { useUnistyles, StyleSheet } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { McpServerBindingV1Schema, type McpServerBindingTargetV1, type McpServerBindingV1 } from '@happier-dev/protocol';
 
 import { McpBindingTargetFields, describeBindingTarget } from '@/components/settings/mcpServers/McpBindingTargetFields';
 import { InlineAddExpander } from '@/components/ui/forms/InlineAddExpander';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
@@ -13,7 +12,6 @@ import { t } from '@/text';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { McpWorkspaceRootPickerModal } from './McpWorkspaceRootPickerModal';
 import { createDefaultMcpBindingTarget, resolveMcpBindingTargetTypeChange } from './resolveMcpBindingTarget';
-import { Icon } from '@/components/ui/icons/Icon';
 
 function createDraftBinding(serverId: string, machines: readonly Machine[]): McpServerBindingV1 {
     const now = Date.now();
@@ -35,7 +33,6 @@ export const McpServerBindingDraftExpander = React.memo(function McpServerBindin
     onAddBinding: (binding: McpServerBindingV1) => void;
     expandedContainerStyle?: React.ComponentProps<typeof InlineAddExpander>['expandedContainerStyle'];
 }>) {
-    const { theme } = useUnistyles();
     const [isOpen, setIsOpen] = React.useState(false);
     const [draftBinding, setDraftBinding] = React.useState<McpServerBindingV1>(() => createDraftBinding(props.serverId, props.machines));
     const draftBindingParse = React.useMemo(() => McpServerBindingV1Schema.safeParse(draftBinding), [draftBinding]);
@@ -132,8 +129,7 @@ export const McpServerBindingDraftExpander = React.memo(function McpServerBindin
     }, [draftBindingParse, props, resetDraftBinding]);
 
     return (
-        <ItemGroup>
-            <InlineAddExpander
+        <InlineAddExpander
                 isOpen={isOpen}
                 onOpenChange={(nextOpen) => {
                     setIsOpen(nextOpen);
@@ -145,7 +141,6 @@ export const McpServerBindingDraftExpander = React.memo(function McpServerBindin
                 }}
                 title={t('settings.mcpServersAddApplyRule')}
                 subtitle={t('settings.mcpServersAddApplyRuleSubtitle')}
-                icon={<Icon name="plus-circle" size={29} color={theme.colors.state.success.foreground} />}
                 helpText={t('settings.mcpServersAddApplyRuleHelp')}
                 onCancel={handleCancel}
                 onSave={handleSave}
@@ -165,7 +160,6 @@ export const McpServerBindingDraftExpander = React.memo(function McpServerBindin
                     onOpenWorkspacePicker={openDraftWorkspacePicker}
                 />
             </InlineAddExpander>
-        </ItemGroup>
     );
 });
 

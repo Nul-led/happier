@@ -16,7 +16,6 @@ const capture = vi.hoisted(() => ({
     items: [] as Array<Record<string, unknown>>,
     searchHeaders: [] as Array<Record<string, unknown>>,
     statusTexts: [] as Array<Record<string, unknown>>,
-    notices: [] as Array<Record<string, unknown>>,
     groupTitles: [] as Array<unknown>,
     windowWidth: 800,
     setRawSettings: vi.fn(),
@@ -25,7 +24,6 @@ const capture = vi.hoisted(() => ({
         this.items = [];
         this.searchHeaders = [];
         this.statusTexts = [];
-        this.notices = [];
         this.groupTitles = [];
         this.windowWidth = 800;
         this.setRawSettings.mockReset();
@@ -130,13 +128,6 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
     },
 }));
 
-vi.mock('@/components/ui/lists/ItemInfoNotice', () => ({
-    ItemInfoNotice: (props: Record<string, unknown>) => {
-        capture.notices.push(props);
-        return React.createElement('ItemInfoNotice', props);
-    },
-}));
-
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: Record<string, unknown> & { children?: React.ReactNode }) => {
         capture.items.push(props);
@@ -227,8 +218,8 @@ describe('ActionsSettingsView', () => {
             selectionKey: 'actions.settings',
             options: undefined,
         });
-        expect(capture.notices.some((notice) => (
-            notice.testID === 'settings-actions:contributed:machine-selection-required'
+        expect(capture.items.some((item) => (
+            item.testID === 'settings-actions:contributed:machine-selection-required'
         ))).toBe(false);
         expect(capture.items.some((item) => item.testID === 'settings-actions:action:com.acme.a/actions/review/a')).toBe(false);
 

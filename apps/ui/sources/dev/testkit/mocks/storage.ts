@@ -37,6 +37,23 @@ function createVitestMutableSetter(): MutableSetter {
     return vi.fn<MutableSetter>();
 }
 
+/**
+ * Adds `extra` to a module mock without spreading it. `mergeModuleMock` keeps the original module's
+ * live getters; a spread would read them once, and inside an import cycle that read happens before
+ * the original module has initialized (the real `storage` store would be captured as `undefined`).
+ */
+function extendModuleMock(module: StorageModule, extra: Partial<StorageModule>): StorageModule {
+    const out: Record<PropertyKey, unknown> = {};
+    for (const key of Reflect.ownKeys(module)) {
+        const descriptor = Object.getOwnPropertyDescriptor(module, key);
+        if (descriptor) Object.defineProperty(out, key, { ...descriptor, configurable: true });
+    }
+    for (const [key, value] of Object.entries(extra)) {
+        Object.defineProperty(out, key, { value, writable: true, enumerable: true, configurable: true });
+    }
+    return out as StorageModule;
+}
+
 export async function createStorageModuleMock(options: CreateStorageModuleMockOptions): Promise<StorageModule> {
     const module = await mergeModuleMock<StorageModule>(options);
     const overrides = options.overrides as Partial<StorageModule>;
@@ -47,30 +64,27 @@ export async function createStorageModuleMock(options: CreateStorageModuleMockOp
         Object.prototype.hasOwnProperty.call(overrides, 'useSetting')
         || Object.prototype.hasOwnProperty.call(overrides, 'useSettingMutable')
     )
-        ? {
-            ...module,
+        ? extendModuleMock(module, {
             useCurrentSecretBindingsByProfileIdMutable:
                 createUseCurrentSecretBindingsByProfileIdMutableMock(module.useSetting, {
                     createMutableSetter: createVitestMutableSetter,
                 }),
-        }
+        })
         : module;
     const storageOverride = (options.overrides as { storage?: unknown }).storage;
     if (isStorageStoreLike(storageOverride)) {
         const storage = adaptStorageStoreLike(storageOverride);
-        return {
-            ...moduleWithCurrentSecretBindings,
+        return extendModuleMock(moduleWithCurrentSecretBindings, {
             storage,
             getStorage: () => storage,
-        };
+        });
     }
     if (typeof (options.overrides as { getStorage?: unknown }).getStorage === 'function') {
         return moduleWithCurrentSecretBindings;
     }
-    return {
-        ...moduleWithCurrentSecretBindings,
+    return extendModuleMock(moduleWithCurrentSecretBindings, {
         getStorage: () => moduleWithCurrentSecretBindings.storage,
-    };
+    });
 }
 
 export async function createPartialStorageModuleMock(

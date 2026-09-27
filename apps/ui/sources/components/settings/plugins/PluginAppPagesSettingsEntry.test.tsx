@@ -3,11 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 
-type MockItemProps = Record<string, unknown> & Readonly<{
-    title?: React.ReactNode;
-    subtitle?: React.ReactNode;
-}>;
-
 const routerPush = vi.hoisted(() => vi.fn());
 const activatePluginAppPage = vi.hoisted(() => vi.fn());
 
@@ -25,18 +20,6 @@ vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({ router: { push: routerPush } }).module;
 });
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: MockItemProps) => React.createElement('Item', props, props.title, props.subtitle),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: (props: React.PropsWithChildren) => React.createElement('ItemGroup', props, props.children),
-}));
-
-vi.mock('@/components/ui/icons/Icon', () => ({
-    Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
-}));
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -76,7 +59,9 @@ describe('PluginAppPagesSettingsEntry', () => {
     it('renders localized plugin-runtime copy instead of the raw unavailable reason', async () => {
         const { PluginAppPagesSettingsEntry } = await import('./PluginAppPagesSettingsEntry');
         const screen = await renderScreen(<PluginAppPagesSettingsEntry />);
-        const entry = screen.findByTestId('settings.plugins.appPages.plugin:acme.notes:notes');
+        // The outermost instance with the testID is the real Item row, so its
+        // props are the copy this entry hands the row.
+        const entry = screen.findAllByTestId('settings.plugins.appPages.plugin:acme.notes:notes')[0];
 
         expect(entry?.props.subtitle).toBe('localized:pluginRuntime.disabledByPolicy');
         expect(screen.getTextContent()).not.toContain('feature_disabled');

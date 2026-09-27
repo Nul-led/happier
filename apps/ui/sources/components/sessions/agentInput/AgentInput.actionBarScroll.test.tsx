@@ -31,7 +31,9 @@ function getOrderedTestIdsWithin(
     root: renderer.ReactTestInstance,
     testIds: readonly string[],
 ) {
-    return root.findAll((node: any) => typeof node?.props?.testID === 'string')
+    // Host nodes only: the react-native stub's `Pressable` is a forwardRef composite that passes
+    // its `testID` to a host `Pressable`, so counting composites would list every control twice.
+    return root.findAll((node: any) => typeof node?.type === 'string' && typeof node?.props?.testID === 'string')
         .map((node: any) => node.props.testID)
         .filter((testID: string) => testIds.includes(testID));
 }
@@ -214,9 +216,12 @@ function mockCommonDeps() {
 }
 
 function mockSettings() {
-    vi.doMock('@/sync/domains/state/storage', async (importOriginal) => {
-    const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-    return createPartialStorageModuleMock(importOriginal, {
+    // A full stub, not an `importOriginal` partial: the real storage graph cycles back to
+    // `storage` through modules the AgentInput import has already started loading, and that
+    // cross-chain cycle never settles while the partial factory awaits the original.
+    vi.doMock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({
     useSetting: (key: string) => {
                 if (key === 'profiles') return [];
                 if (key === 'agentInputEnterToSend') return true;

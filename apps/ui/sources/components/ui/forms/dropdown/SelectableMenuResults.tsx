@@ -327,6 +327,7 @@ export function SelectableMenuResults(props: {
                             ]}
                             testID={optionTestID}
                             title={item.title}
+                            titleStyle={item.rowTitleStyle}
                             subtitle={item.subtitleNode ?? item.subtitle}
                             accessibilityLabel={item.accessibilityLabel}
                             accessibilityRole={item.checked === undefined ? props.itemProps?.accessibilityRole : 'radio'}

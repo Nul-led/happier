@@ -997,10 +997,8 @@ test.describe('packed candidate: targeted projection app-page client Action', ()
         requiredTestIds: ['settings.voice.section.privacy'],
         timeoutMs: 180_000,
       });
-      await page.getByTestId('settings.voice.privacy.currentUiContextMode').click();
-      await expect(page.getByTestId('dropdown-option-on_demand'))
-        .toHaveCount(1, { timeout: 120_000 });
-      await page.getByTestId('dropdown-option-on_demand').click();
+      await expect(page.getByTestId('settings.voice.privacy.currentUiContextMode:on_demand')).toHaveCount(1, { timeout: 120_000 });
+      await page.getByTestId('settings.voice.privacy.currentUiContextMode:on_demand').click();
 
       const triagePath = '/plugins/happier.triage/triage?happier_hmr=0';
       await gotoDomContentLoadedWithRetries(
@@ -1838,9 +1836,8 @@ test.describe('packed candidate: targeted projection app-page client Action', ()
         requiredTestIds: ['settings.voice.section.privacy'],
         timeoutMs: 180_000,
       });
-      await page.getByTestId('settings.voice.privacy.currentUiContextMode').click();
-      await expect(page.getByTestId('dropdown-option-off')).toHaveCount(1, { timeout: 120_000 });
-      await page.getByTestId('dropdown-option-off').click();
+      await expect(page.getByTestId('settings.voice.privacy.currentUiContextMode:off')).toHaveCount(1, { timeout: 120_000 });
+      await page.getByTestId('settings.voice.privacy.currentUiContextMode:off').click();
 
       await gotoDomContentLoadedWithRetries(
         page,
@@ -1896,9 +1893,8 @@ test.describe('packed candidate: targeted projection app-page client Action', ()
         requiredTestIds: ['settings.voice.section.privacy'],
         timeoutMs: 180_000,
       });
-      await page.getByTestId('settings.voice.privacy.currentUiContextMode').click();
-      await expect(page.getByTestId('dropdown-option-on_demand')).toHaveCount(1, { timeout: 120_000 });
-      await page.getByTestId('dropdown-option-on_demand').click();
+      await expect(page.getByTestId('settings.voice.privacy.currentUiContextMode:on_demand')).toHaveCount(1, { timeout: 120_000 });
+      await page.getByTestId('settings.voice.privacy.currentUiContextMode:on_demand').click();
 
       await gotoDomContentLoadedWithRetries(
         page,
@@ -1953,9 +1949,8 @@ test.describe('packed candidate: targeted projection app-page client Action', ()
         requiredTestIds: ['settings.voice.section.privacy'],
         timeoutMs: 180_000,
       });
-      await page.getByTestId('settings.voice.privacy.currentUiContextMode').click();
-      await expect(page.getByTestId('dropdown-option-automatic')).toHaveCount(1, { timeout: 120_000 });
-      await page.getByTestId('dropdown-option-automatic').click();
+      await expect(page.getByTestId('settings.voice.privacy.currentUiContextMode:automatic')).toHaveCount(1, { timeout: 120_000 });
+      await page.getByTestId('settings.voice.privacy.currentUiContextMode:automatic').click();
 
       await gotoDomContentLoadedWithRetries(
         page,

@@ -43,6 +43,13 @@ vi.mock('@/components/ui/lists/virtualized', () => ({
 }));
 vi.mock('@expo/vector-icons', () => createExpoVectorIconsMock());
 vi.mock('@/modal', () => modalMock.module);
+// The History page is a settings page: its header reads the current route.
+vi.mock('expo-router', async () => {
+  const { createExpoRouterMock } = await vi.importActual<typeof import('@/dev/testkit/mocks/router')>(
+    '@/dev/testkit/mocks/router',
+  );
+  return createExpoRouterMock({ pathname: '/settings/voice-history' }).module;
+});
 
 vi.mock('@/sync/domains/state/storage', () => {
   const storage = createLiveStorageStoreMock(() => ({

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { renderSettingsView, standardCleanup } from '@/dev/testkit';
@@ -18,6 +19,17 @@ afterEach(() => {
     standardCleanup();
     resetSessionSettingsEntryState();
 });
+
+type SettingsScreen = Awaited<ReturnType<typeof renderSettingsView>>;
+
+/** The resume-prompt segmented row: `Item` is a host element here, its segmented control is the `rightElement`. */
+function resumePromptChoice(screen: SettingsScreen) {
+    const row = screen.findAll((node) => (
+        (node.type as unknown) === 'Item' && node.props?.testID === 'settings-session-usage-limit-recovery-resume-prompt'
+    ))[0];
+    if (!row) throw new Error('Missing the resume prompt choice');
+    return row;
+}
 
 describe('Session settings (prompt personalization)', () => {
     it('renders prompt personalization controls on the root session settings screen', async () => {
@@ -69,14 +81,14 @@ describe('Session settings (prompt personalization)', () => {
         const ProviderLimitsSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(ProviderLimitsSettingsScreen));
 
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const resumePromptDropdown = dropdowns.find((node: any) =>
-            node.props?.itemTrigger?.title === 'settingsSession.usageLimitRecovery.resumePromptTitle');
-        expect(resumePromptDropdown).toBeTruthy();
-        expect(resumePromptDropdown?.props?.selectedId).toBe('standard');
-        expect(resumePromptDropdown?.props?.items?.map((item: any) => item.id)).toEqual(['standard', 'custom', 'off']);
+        const resumePrompt = resumePromptChoice(screen);
+        expect(resumePrompt.props.title).toBe('settingsSession.usageLimitRecovery.resumePromptTitle');
+        expect(resumePrompt.props.rightElement.props.activeTabId).toBe('standard');
+        expect(resumePrompt.props.rightElement.props.tabs.map((tab: any) => tab.id)).toEqual(['standard', 'custom', 'off']);
 
-        resumePromptDropdown!.props.onSelect('off');
+        await act(async () => {
+            resumePrompt.props.rightElement.props.onSelectTab('off');
+        });
 
         expect(sessionSettingsEntryState.settingsState.usageLimitRecoverySettingsV1).toEqual({
             v: 1,
@@ -101,12 +113,9 @@ describe('Session settings (prompt personalization)', () => {
         const ProviderLimitsSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(ProviderLimitsSettingsScreen));
 
-        const dropdowns = screen.findAllByType('DropdownMenu' as any);
-        const resumePromptDropdown = dropdowns.find((node: any) =>
-            node.props?.itemTrigger?.title === 'settingsSession.usageLimitRecovery.resumePromptTitle');
-        expect(resumePromptDropdown).toBeTruthy();
-
-        resumePromptDropdown!.props.onSelect('custom');
+        await act(async () => {
+            resumePromptChoice(screen).props.rightElement.props.onSelectTab('custom');
+        });
 
         expect(sessionSettingsEntryState.settingsState.usageLimitRecoverySettingsV1).toEqual({
             v: 1,
@@ -133,14 +142,19 @@ describe('Session settings (prompt personalization)', () => {
 
         const inputRow = screen.findRowByTitle('settingsSession.usageLimitRecovery.customResumePromptTitle');
         expect(inputRow).toBeTruthy();
-        const input = (inputRow as any)?.props?.subtitle;
+        // `Item` is a host element here, so the inline field is the row's `rightElement`.
+        const input = (inputRow as any)?.props?.rightElement;
         expect(input?.props?.placeholder).toBe('settingsSession.usageLimitRecovery.customResumePromptPlaceholder');
         expect(input?.props?.maxLength).toBe(2000);
 
-        input.props.onChangeText('  Resume exactly where you stopped.  ');
+        await act(async () => {
+            input.props.onChangeText('  Resume exactly where you stopped.  ');
+        });
         // The draft is local state; commit happens on blur/submit. Re-grab the row after re-render.
-        const updatedInput = (screen.findRowByTitle('settingsSession.usageLimitRecovery.customResumePromptTitle') as any)?.props?.subtitle;
-        updatedInput.props.onBlur();
+        const updatedInput = (screen.findRowByTitle('settingsSession.usageLimitRecovery.customResumePromptTitle') as any)?.props?.rightElement;
+        await act(async () => {
+            updatedInput.props.onBlur();
+        });
 
         expect(sessionSettingsEntryState.settingsState.usageLimitRecoverySettingsV1).toEqual({
             v: 1,

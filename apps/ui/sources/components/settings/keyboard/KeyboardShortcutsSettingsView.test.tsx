@@ -6,6 +6,7 @@ import { renderSettingsView, standardCleanup } from '@/dev/testkit';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 
 const applySettingsSpy = vi.fn();
+const routerSetParamsSpy = vi.fn();
 const modalShowSpy = vi.fn();
 const modalAlertSpy = vi.fn();
 let settingsFixture: typeof settingsDefaults;
@@ -20,6 +21,10 @@ vi.mock('react-native', async () => {
 });
 
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { setParams: routerSetParamsSpy } }).module;
+});
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
@@ -85,6 +90,7 @@ describe('KeyboardShortcutsSettingsView', () => {
     afterEach(() => {
         standardCleanup();
         applySettingsSpy.mockClear();
+        routerSetParamsSpy.mockClear();
         modalShowSpy.mockReset();
         modalAlertSpy.mockReset();
         capturedShortcutModalProps = null;
@@ -100,8 +106,42 @@ describe('KeyboardShortcutsSettingsView', () => {
         expect(screen.findByTestId('settings-keyboard-shortcut-row-commandPalette.open')).toBeTruthy();
         expect(screen.findByTestId('settings-keyboard-shortcut-row-commandPalette.open')?.props.title)
             .toBe('settingsKeyboard.commands.commandPaletteOpen');
+        // Closed, a command shows its keys; its controls live inside the expanded row.
+        expect(screen.findByTestId('settings-keyboard-shortcut-reset-commandPalette.open')).toBeFalsy();
+        await screen.pressByTestIdAsync('settings-keyboard-shortcut-row-commandPalette.open');
         expect(screen.findByTestId('settings-keyboard-shortcut-reset-commandPalette.open')).toBeTruthy();
-        expect(screen.findByTestId('settings-keyboard-shortcuts-conflicts')).toBeTruthy();
+        // The duplicate Mod+K binding names both commands in one conflict row.
+        const conflict = screen.findByTestId('settings-keyboard-shortcuts-conflict-duplicate:commandPalette.open:session.new');
+        expect(conflict?.props.title).toBe('settingsKeyboard.commands.commandPaletteOpen · settingsKeyboard.commands.sessionNew');
+    });
+
+    it('opens a conflict at the command it names: the row expands and the page reveals it', async () => {
+        const { KeyboardShortcutsSettingsView } = await import('./KeyboardShortcutsSettingsView');
+        const screen = await renderSettingsView(<KeyboardShortcutsSettingsView />);
+
+        expect(screen.findByTestId('settings-keyboard-shortcut-reset-commandPalette.open')).toBeFalsy();
+        await screen.pressByTestIdAsync('settings-keyboard-shortcuts-conflict-duplicate:commandPalette.open:session.new');
+
+        expect(screen.findByTestId('settings-keyboard-shortcut-reset-commandPalette.open')).toBeTruthy();
+        // The command's own search anchor scrolls it into view and pulses it.
+        expect(routerSetParamsSpy).toHaveBeenLastCalledWith({ setting: 'keyboard.commandPalette.open' });
+    });
+
+    it('lists commands under their app-area sections and offers reset only when there is something to restore', async () => {
+        const { KeyboardShortcutsSettingsView } = await import('./KeyboardShortcutsSettingsView');
+        const screen = await renderSettingsView(<KeyboardShortcutsSettingsView />);
+
+        const sectionTitles = screen.findAllByType('ItemGroup' as any).map((group) => group.props.title);
+        expect(sectionTitles).toEqual(expect.arrayContaining([
+            'settingsKeyboard.groupApp',
+            'settingsKeyboard.groupSessions',
+            'settingsKeyboard.groupComposer',
+            'settingsKeyboard.groupTranscript',
+        ]));
+
+        await screen.pressByTestIdAsync('settings-keyboard-shortcut-row-composer.focus');
+        expect(screen.findByTestId('settings-keyboard-shortcut-set-composer.focus')).toBeTruthy();
+        expect(screen.findByTestId('settings-keyboard-shortcut-reset-composer.focus')).toBeFalsy();
     });
 
     it('updates account settings for switches, per-command disable, and reset', async () => {
@@ -116,6 +156,7 @@ describe('KeyboardShortcutsSettingsView', () => {
         enabledSwitch?.props.onValueChange(true);
         expect(applySettingsSpy).toHaveBeenCalledWith({ keyboardShortcutsV2Enabled: true });
 
+        await screen.pressByTestIdAsync('settings-keyboard-shortcut-row-commandPalette.open');
         const disabledCommandSwitch = screen.findByTestId('settings-keyboard-shortcut-enabled-commandPalette.open');
         disabledCommandSwitch?.props.onValueChange(true);
         expect(applySettingsSpy).toHaveBeenCalledWith({
@@ -137,6 +178,7 @@ describe('KeyboardShortcutsSettingsView', () => {
         const { KeyboardShortcutsSettingsView } = await import('./KeyboardShortcutsSettingsView');
         const screen = await renderSettingsView(<KeyboardShortcutsSettingsView />);
 
+        await screen.pressByTestIdAsync('settings-keyboard-shortcut-row-commandPalette.open');
         await screen.pressByTestIdAsync('settings-keyboard-shortcut-set-commandPalette.open');
 
         expect(modalShowSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -163,6 +205,7 @@ describe('KeyboardShortcutsSettingsView', () => {
         const { KeyboardShortcutsSettingsView } = await import('./KeyboardShortcutsSettingsView');
         const screen = await renderSettingsView(<KeyboardShortcutsSettingsView />);
 
+        await screen.pressByTestIdAsync('settings-keyboard-shortcut-row-commandPalette.open');
         await screen.pressByTestIdAsync('settings-keyboard-shortcut-set-commandPalette.open');
 
         await act(async () => {

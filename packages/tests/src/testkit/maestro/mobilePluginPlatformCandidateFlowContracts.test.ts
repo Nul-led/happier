@@ -121,9 +121,9 @@ describe('Plugin Platform exact-candidate native Maestro flow contracts', () => 
       'new-session-composer-send',
       'settings-connect-terminal-scan',
       'settings.voice.privacy.currentUiContextMode',
-      'dropdown-option-off',
-      'dropdown-option-automatic',
-      'dropdown-option-on_demand',
+      '"settings.voice.privacy.currentUiContextMode:off"',
+      '"settings.voice.privacy.currentUiContextMode:automatic"',
+      '"settings.voice.privacy.currentUiContextMode:on_demand"',
       'packed-targeted-provider-title',
       'packed-targeted-context-action',
     ]) {
@@ -172,12 +172,13 @@ describe('Plugin Platform exact-candidate native Maestro flow contracts', () => 
     expect(normal).toContain('${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_ISSUE_B_TITLE}');
     expect(normal).toContain('voice-surface:sidebar');
     expect(normal).toContain('voice-surface-toggle:sidebar');
-    expect(normal).toContain('dropdown-option-off');
-    expect(normal).toContain('dropdown-option-on_demand');
-    expect(normal).toContain('dropdown-option-automatic');
+    expect(normal).toContain('settings.voice.privacy.currentUiContextMode:off');
+    expect(normal).toContain('settings.voice.privacy.currentUiContextMode:on_demand');
+    expect(normal).toContain('settings.voice.privacy.currentUiContextMode:automatic');
     expect(normal).toContain('- back');
     expect(normal).toContain('settings.voice.provider.${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_ADAPTER_ID}.local');
-    expect(normal).toContain('dropdown-option-${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_CONVERSATION_MODE}');
+    expect(normal).toContain('settings.voice.local.conversationMode:${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_CONVERSATION_MODE}');
+    expect(normal).toContain('settings.voice.local.mediatorAgentSource:agent');
     expect(normal).toContain('dropdown-option-${HAPPIER_E2E_TRIAGE_GITHUB_VOICE_QA_VOICE_AGENT_ID}');
     expect(normal).toContain('happier_voice_e2e_text_turn=UCX_VOICE_READ_A');
     expect(normal).toContain('happier_voice_e2e_text_turn=UCX_VOICE_OPEN_B');

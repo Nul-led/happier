@@ -14,7 +14,8 @@ import type { DaemonProviderCurrentSelectionRecoveryV1 } from '@happier-dev/prot
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { SessionModelProjectionGroup } from '@/components/sessions/modelPicker/buildSessionModelPickerSections';
 import type { OptionPickerOverlayProps } from '@/components/sessions/pickers/OptionPickerOverlay';
-import { createResolvedAgentCatalogEntryFixture, renderScreen } from '@/dev/testkit';
+import { createResolvedAgentCatalogEntryFixture } from '@/dev/testkit/fixtures/agentCatalogFixtures';
+import { renderScreen } from '@/dev/testkit';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 import { settingsParse } from '@/sync/domains/settings/settings';
 
@@ -45,6 +46,13 @@ const confirmationHookInputs: Array<Readonly<{
     serverId: string | null;
     agentTargetKey: string | null;
 }>> = [];
+
+// Hoisted, unlike the helper's registration below: the static `@/dev/testkit` imports reach the
+// model-picker presentation (via the sync graph), so the key-echoing text mock must exist first.
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string) => key });
+});
 
 resetProfileEditFormTestState();
 installProfileEditFormModuleMocks({

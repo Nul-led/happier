@@ -160,7 +160,7 @@ describe('HomeAdministrationPeopleScreen', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
-        screen.changeTextByTestId('home-people-search:input', 'grace');
+        screen.changeTextByTestId('home-people-search', 'grace');
 
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-row:grace');
@@ -188,7 +188,7 @@ describe('HomeAdministrationPeopleScreen', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
-        screen.changeTextByTestId('home-people-search:input', 'grace');
+        screen.changeTextByTestId('home-people-search', 'grace');
 
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-unsupported');
@@ -210,7 +210,7 @@ describe('HomeAdministrationPeopleScreen', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
-        screen.changeTextByTestId('home-people-search:input', 'nobody');
+        screen.changeTextByTestId('home-people-search', 'nobody');
 
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-empty');

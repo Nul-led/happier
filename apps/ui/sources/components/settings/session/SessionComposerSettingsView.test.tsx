@@ -56,37 +56,48 @@ vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: (props: Record<string, unknown>) => React.createElement('Switch', props),
 }));
 
-vi.mock('@/components/ui/icons/Icon', () => ({
-    Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
-}));
+function findChoice(screen: Awaited<ReturnType<typeof renderSettingsView>>, testIDPrefix: string) {
+    return screen.findAll((node) => node.props?.testIDPrefix === testIDPrefix)[0] ?? null;
+}
 
 describe('SessionComposerSettingsView', () => {
     it('shows explicit resume and fresh ordinary-entry choices and persists the selection', async () => {
         const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
+        const draftEntry = findChoice(screen, 'settings-new-session-draft-entry');
 
-        expect(screen.findRow('settings-new-session-draft-entry-resume')?.props.rightElement).toBeTruthy();
-        expect(screen.findRowByTitle('Resume previous draft')).toBeTruthy();
-        expect(screen.findRowByTitle('Always start fresh')).toBeTruthy();
+        expect(draftEntry?.props.value).toBe('resumePrevious');
+        expect(draftEntry?.props.options.map((option: { id: string; label: string }) => [option.id, option.label])).toEqual([
+            ['resumePrevious', 'Resume draft'],
+            ['alwaysFresh', 'Start fresh'],
+        ]);
 
-        screen.pressRowByTitle('Always start fresh');
+        draftEntry?.props.onChange('alwaysFresh');
         expect(setNewSessionDraftEntryMode).toHaveBeenCalledWith('alwaysFresh');
     });
 
-    it('renders the inactive-session resume policy dropdown and persists changes', async () => {
+    it('offers the inactive-session resume policies and persists changes', async () => {
         const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
-        const menu = screen.findAllByType('DropdownMenu').find((candidate) => (
-            candidate.props.itemTrigger?.title === 'Automatic resume after sending'
-        ));
+        const policy = findChoice(screen, 'settings-composer-inactive-resume');
 
-        expect(menu?.props).toMatchObject({
-            selectedId: 'online_only',
-            itemTrigger: { title: 'Automatic resume after sending' },
+        expect(policy?.props).toMatchObject({
+            value: 'online_only',
+            title: 'Automatic resume after sending',
         });
-        expect(menu?.props.items.map((item: { id: string }) => item.id)).toEqual(['when_available', 'online_only', 'manual']);
+        expect(policy?.props.options.map((option: { id: string }) => option.id)).toEqual(['when_available', 'online_only', 'manual']);
 
-        menu?.props.onSelect('when_available');
+        policy?.props.onChange('when_available');
         expect(setSessionInactiveResumePolicy).toHaveBeenCalledWith('when_available');
+    });
+
+    it('keeps steering and pending-queue choices visible but locked, with the reason, while nothing can use them', async () => {
+        const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
+        const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
+
+        // The default send mode queues in the agent: steering applies, the pending queue does not.
+        expect(findChoice(screen, 'settings-composer-busy-steer')?.props.disabled).toBe(false);
+        expect(findChoice(screen, 'settings-composer-pending-drain')?.props.disabled).toBe(true);
+        expect(findChoice(screen, 'settings-composer-pending-timing')?.props.disabled).toBe(true);
     });
 });

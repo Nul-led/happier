@@ -87,6 +87,28 @@ describe('isUniversalSearchTargetCurrent', () => {
         },
     );
 
+    it('keeps a settings search result current while its page is offered, including one row on it', () => {
+        const settingsPages = new Map([
+            ['settings', { id: 'settings', route: '/settings' } as never],
+            ['appearance', { id: 'appearance', route: '/settings/appearance' } as never],
+            ['session', { id: 'session', route: '/settings/session' } as never],
+        ]);
+        const check = (route: string) => isUniversalSearchTargetCurrent({
+            target: { kind: 'settingsPage', route },
+            accountScope: null,
+            workspaces: [],
+            settingsPages,
+            resolveSessionWorkspaceTarget: () => null,
+            isWorkspaceScopeReachable: () => true,
+        });
+        expect(check('/settings/appearance')).toBe(true);
+        expect(check('/settings/appearance?setting=appearance.density')).toBe(true);
+        // A row on a sub-page opens that sub-page, under its catalog page.
+        expect(check('/settings/session/runtime?setting=session.runtime.tmux')).toBe(true);
+        // A page that is no longer offered is not reached through the Overview's route.
+        expect(check('/settings/pets?setting=pets.enabled')).toBe(false);
+    });
+
     it('keeps project currentness owned by workspace refs', () => {
         expect(isUniversalSearchTargetCurrent({
             target: {

@@ -6,6 +6,7 @@ import type { GetSessionFollowResponse } from '@happier-dev/protocol';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
 import { installSettingsViewCommonModuleMocks } from '@/components/settings/settingsViewTestHelpers';
 import { t } from '@/text';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 
 import { AccountSessionFollowEditor } from './AccountSessionFollowEditor';
 import { createAccountSessionFollowController, type AccountSessionFollowTransport } from './accountSessionFollowController';
@@ -63,6 +64,24 @@ describe('Account Follow editor', () => {
         await act(async () => { screen.findByTestId('session-follow-enabled')?.props.onValueChange(true); });
         expect(screen.findByTestId('session-follow-level-important')?.props.accessibilityState?.checked).toBe(true);
         expect(writes).toEqual(['set:important', 'set:all_messages', 'remove', 'set:important']);
+        await screen.unmount();
+    });
+
+    it('chooses the notification level with a segmented control on a page', async () => {
+        const onSet = vi.fn();
+        const screen = await renderSettingsView(
+            <ListPresentationProvider value="page">
+                <AccountSessionFollowEditor state={{
+                    projection: { follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: true }, isSessionOwner: false, capabilities: { manageFollow: true }, voiceInitialSnapshotPending: false },
+                    draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
+                }} voiceReadiness="eligible" archived={false} onSet={onSet}
+                onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}} />
+            </ListPresentationProvider>,
+        );
+
+        expect(screen.findByTestId('session-follow-level-important')).toBeNull();
+        await screen.pressByTestIdAsync('session-follow-level:all_messages');
+        expect(onSet).toHaveBeenCalledWith({ notificationLevel: 'all_messages', includeInVoice: true });
         await screen.unmount();
     });
 

@@ -98,7 +98,8 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
+    // Page rows carry their field as the row control; render it so the field is reachable.
+    Item: (props: Record<string, unknown>) => React.createElement('Item', props, props.rightElement as React.ReactNode),
 }));
 
 vi.mock('@/components/ui/lists/SelectableRow', () => ({

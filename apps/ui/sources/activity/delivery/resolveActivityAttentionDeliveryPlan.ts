@@ -195,6 +195,20 @@ function buildEffectivePolicy(params: Readonly<{
     return policy;
 }
 
+/**
+ * The notification policy in effect on this device: the Account's policy with this device's
+ * overrides applied. Delivery decisions and settings summaries read the same answer.
+ */
+export function resolveEffectiveAttentionDeliveryPolicy(params: Readonly<{
+    accountSettings: Partial<AccountSettings> | Readonly<Record<string, unknown>>;
+    localSettings: Partial<LocalSettings> | Readonly<Record<string, unknown>>;
+}>): AttentionDeliveryPolicyV1 {
+    return buildEffectivePolicy({
+        accountSettings: params.accountSettings,
+        overrides: readDeviceOverrides(params.localSettings),
+    });
+}
+
 function resolveActivitySurface(
     surface: ActivityAttentionSurface | null | undefined,
     channel: ActivityAttentionDeliveryChannel,

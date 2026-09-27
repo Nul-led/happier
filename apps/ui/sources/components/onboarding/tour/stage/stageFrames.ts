@@ -75,7 +75,7 @@ export const stageFrames = [
         id: 'machines-settings.spotlight',
         surface: 'machines-settings',
         device: 'desktop',
-        spotlight: 'settings.machines.openWizard.setupThisComputer',
+        spotlight: 'settings.machines.addMenu.trigger',
         zoom: 1.55,
         dim: 0.5,
     },

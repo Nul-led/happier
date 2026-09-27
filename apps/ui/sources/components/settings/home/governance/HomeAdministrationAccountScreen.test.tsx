@@ -305,9 +305,9 @@ describe('HomeAdministrationAccountScreen', () => {
         await waitForHomeGovernance(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
         const pending = screen.findByTestId('home-account-disable');
         expect(pending?.props.accessibilityState).toMatchObject({ busy: true, disabled: true });
-        // The canonical Item primitive removes activation while busy, so the
-        // same pointer/touch target cannot submit a second request.
-        expect(pending?.props.onPress ?? pending?.props.onClick).toBeUndefined();
+        // The busy button is inert: activating the same target again cannot
+        // submit a second request.
+        await screen.pressByTestIdAsync('home-account-disable');
         expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
 
         await act(async () => {
@@ -317,7 +317,7 @@ describe('HomeAdministrationAccountScreen', () => {
         await waitForHomeGovernance(() => {
             const settled = screen.findByTestId('home-account-disable');
             expect(settled?.props.accessibilityState?.busy).not.toBe(true);
-            expect(settled?.props.onPress ?? settled?.props.onClick).toBeTypeOf('function');
+            expect(settled?.props.accessibilityState?.disabled).not.toBe(true);
         });
     });
 

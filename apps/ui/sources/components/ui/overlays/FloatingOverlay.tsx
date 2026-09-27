@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 import {
     Platform,
     View,
@@ -259,7 +260,7 @@ export const FloatingOverlay = React.memo((props: FloatingOverlayProps) => {
         </Animated.View>
     );
 
-    if (!arrowCfg || !arrowSide) return overlay;
+    if (!arrowCfg || !arrowSide) return <ListPresentationProvider value="grouped">{overlay}</ListPresentationProvider>;
 
     const arrowSize = arrowCfg.size;
     const protrusion = arrowSize / 2;
@@ -342,7 +343,7 @@ export const FloatingOverlay = React.memo((props: FloatingOverlayProps) => {
             <View testID="floating-overlay-arrow" style={arrowWrapperStyle}>
                 <View style={arrowBoxStyle} />
             </View>
-            {overlay}
+            <ListPresentationProvider value="grouped">{overlay}</ListPresentationProvider>
         </Animated.View>
     );
 });

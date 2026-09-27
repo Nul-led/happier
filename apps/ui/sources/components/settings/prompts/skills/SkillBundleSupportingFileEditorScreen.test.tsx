@@ -60,34 +60,6 @@ vi.mock('@/components/ui/markdown/editor/MarkdownCodeEditorField', () => ({
     }),
 }));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-    TextInput: 'TextInput',
-}));
-
-vi.mock('@/components/ui/settingsSurface/SettingsActionFooter', () => ({
-    SettingsActionFooter: (props: any) => React.createElement('SettingsActionFooter', props, [
-        React.createElement('Pressable', {
-            key: 'primary',
-            testID: props.primaryTestID,
-            onPress: props.onPrimaryPress,
-        }),
-        React.createElement('Pressable', {
-            key: 'secondary',
-            testID: props.secondaryTestID,
-            onPress: props.onSecondaryPress,
-        }),
-    ]),
-}));
-
 vi.mock('@/sync/ops/promptLibrary/promptBundles', () => ({
     readPromptBundleUtf8Entry: (body: any, path: string) => {
         const entry = Array.isArray(body?.entries)
