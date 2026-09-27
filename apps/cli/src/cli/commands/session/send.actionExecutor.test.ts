@@ -20,7 +20,7 @@ describe('happier session send (action executor)', () => {
 
     const output = captureConsoleJsonOutput();
     try {
-      await handleSessionCommand(['send', 'sess-1', 'Hello', '--permission-mode', 'read_only', '--model', 'gpt-4o', '--wait', '--timeout', '30', '--json'], {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--permission-mode', 'read_only', '--model', 'gpt-4o', '--local-id', 'claim-1', '--wait', '--timeout', '30', '--json'], {
         readCredentialsFn: async () => ({
           token: 'token_test',
           encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -35,6 +35,7 @@ describe('happier session send (action executor)', () => {
           message: 'Hello',
           permissionModeOverride: 'read-only',
           modelOverride: 'gpt-4o',
+          localId: 'claim-1',
           wait: true,
           timeoutSeconds: 30,
         }),
@@ -59,6 +60,16 @@ describe('happier session send (action executor)', () => {
       .rejects.toMatchObject({ code: 'invalid_arguments' });
 
     expect(readCredentialsFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank local id before sending', async () => {
+    execute.mockClear();
+    const readCredentialsFn = vi.fn(async () => null);
+    const { cmdSessionSend } = await import('./send');
+    await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', '  '], { readCredentialsFn }))
+      .rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -58,6 +58,7 @@ describe('createActionExecutor (session control)', () => {
       {
         sessionId: 's1',
         message: 'Hello',
+        localId: 'claim-1',
         permissionModeOverride: 'read_only',
         modelOverride: 'gpt-4o',
         requestedAction: { v: 1, kind: 'send_now' },
@@ -71,6 +72,7 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 's1',
       message: 'Hello',
+      localId: 'claim-1',
       permissionModeOverride: 'read_only',
       modelOverride: 'gpt-4o',
       requestedAction: { v: 1, kind: 'send_now' },
@@ -94,6 +96,18 @@ describe('createActionExecutor (session control)', () => {
       message: 'Hello',
       requestedAction: { v: 1, kind: 'steer_if_active' },
     }));
+  });
+
+  it('rejects a caller-chosen local id outside the CLI surface', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 's1', message: 'Hello', localId: 'claim-1' },
+      { surface: 'mcp', defaultSessionId: null },
+    )).resolves.toEqual({ ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
   it('preserves exact nonblank opaque model override bytes when sending a message', async () => {
