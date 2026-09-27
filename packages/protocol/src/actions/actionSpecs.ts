@@ -868,7 +868,6 @@ const ActionOptionsResolveInputSchema = z.object({
 const SessionSendMessageInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   message: z.string().min(1),
-  localId: PendingLocalIdSchema.optional(),
   requestedAction: PendingRequestedActionV1Schema.optional(),
   permissionModeOverride: z.string().trim().min(1).optional(),
   modelOverride: z.union([

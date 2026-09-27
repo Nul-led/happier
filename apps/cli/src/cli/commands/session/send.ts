@@ -2,7 +2,7 @@ import chalk from 'chalk';
 
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import type { PermissionIntent } from '@happier-dev/agents';
-import { readPendingLocalId } from '@happier-dev/protocol';
+import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@happier-dev/protocol';
 
 import type { Credentials } from '@/persistence';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
@@ -36,7 +36,11 @@ export async function cmdSessionSend(
   const localIdFlagIndex = argv.indexOf('--local-id');
   const localIdRaw = localIdFlagIndex >= 0 ? argv[localIdFlagIndex + 1] : undefined;
   const localId = readPendingLocalId(localIdRaw);
-  if (localIdFlagIndex >= 0 && localId === null) {
+  if (localIdFlagIndex >= 0 && (
+    localId === null
+    || localIdRaw?.startsWith('-')
+    || isSessionAgentTransitionDividerLocalId(localId)
+  )) {
     const err = new Error('Invalid --local-id');
     (err as Error & { code?: string }).code = 'invalid_arguments';
     throw err;

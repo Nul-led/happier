@@ -72,6 +72,26 @@ describe('happier session send (action executor)', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each(['--wait', '--timeout'])('rejects %s as a missing local id value', async (nextFlag) => {
+    execute.mockClear();
+    const readCredentialsFn = vi.fn(async () => null);
+    const { cmdSessionSend } = await import('./send');
+    await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', nextFlag], { readCredentialsFn }))
+      .rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects the reserved transition local id before sending', async () => {
+    execute.mockClear();
+    const readCredentialsFn = vi.fn(async () => null);
+    const { cmdSessionSend } = await import('./send');
+    await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', 'agent-transition:claim-1'], { readCredentialsFn }))
+      .rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['uses the default timeout when --timeout is omitted', ['send', 'sess-1', 'Hello', '--json'], 300],
     ['clamps an explicit timeout to the supported maximum', ['send', 'sess-1', 'Hello', '--timeout', '9999', '--json'], 3600],
