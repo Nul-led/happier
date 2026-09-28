@@ -870,7 +870,6 @@ export async function runCodex(opts: {
         state,
         existingSessionId: opts.existingSessionId,
         uiLogPrefix: '[codex]',
-        terminalAgentLabel: 'codex',
         startupMetadataOverrides: createStartupMetadataOverrides(opts),
         metadataKeysToUnsetOnAttach: codexBackendMode === 'acp'
             ? undefined
