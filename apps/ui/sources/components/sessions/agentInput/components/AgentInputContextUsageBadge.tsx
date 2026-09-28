@@ -92,7 +92,7 @@ export const AgentInputContextUsageBadge = React.memo(function AgentInputContext
                     ];
                 }}
             >
-                <Text testID="agent-input-context-usage-label" style={styles.label} numberOfLines={1}>
+                <Text style={styles.label} numberOfLines={1}>
                     {t('agentInput.context.badgeLabel')}
                 </Text>
                 <TokenUsageRing
