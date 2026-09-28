@@ -2,6 +2,9 @@
 mod autostart;
 
 #[cfg(desktop)]
+mod dock_icon;
+
+#[cfg(desktop)]
 mod menu;
 
 #[cfg(desktop)]
@@ -97,6 +100,7 @@ pub fn run() {
                 tray::register(app)?;
                 pet_overlay::register(app)?;
                 window_chrome::register(app)?;
+                dock_icon::apply();
             }
 
             #[cfg(desktop)]

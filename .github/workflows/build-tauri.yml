@@ -655,6 +655,16 @@ jobs:
             --ui-dir "apps/ui" \
             --tauri-target "${TAURI_TARGET}"
 
+      - name: Re-lay-out the DMG window (macOS)
+        # Tauri cannot set the DMG icon size or hide the volume's dot-files; see
+        # scripts/pipeline/tauri/relayout-macos-dmg.mjs. Must run before notarization,
+        # and re-signs the DMG because Tauri already signed the original.
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_id.outputs.identity }}
+        run: |
+          node scripts/pipeline/tauri/relayout-macos-dmg.mjs --ui-dir "apps/ui" --show-hidden-files
+
       - name: Notarize macOS artifacts (updater + DMG) (macOS)
         if: runner.os == 'macOS' && steps.signing.outputs.apple_ready == 'true'
         env:
