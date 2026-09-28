@@ -185,7 +185,7 @@ async function expectThisComputerReady(app: DesktopApp, machineId: string, timeo
         if (error instanceof Error) error.message += `\nreadiness proofs seen: ${JSON.stringify(proofs.map((call) => ({ method: call.method, ok: call.ack?.ok ?? null, error: call.ack?.error ?? null, injected: call.injected })))}`;
         throw error;
     }
-    await expect(app.page.getByTestId('desktop-setup-panel:panel')).toHaveCount(0, { timeout: timeoutMs });
+    await expect(app.page.getByTestId('desktop-setup-panel:veil')).toHaveCount(0, { timeout: timeoutMs });
     await expect(app.page.getByTestId('desktop-setup-panel:blocked')).toHaveCount(0);
 }
 
@@ -341,7 +341,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await ensureAccountReadyForConnect({ page: app.page, timeoutMs: 180_000 });
             // R11: while this computer is still being set up the shell is already usable, and
             // leaving the Home does not pause setup (its owner is the shell, not the Home route).
-            await expect.poll(async () => (await app.page.getByTestId('desktop-setup-panel:panel').count()) > 0
+            await expect.poll(async () => (await app.page.getByTestId('desktop-setup-panel:veil').count()) > 0
                 && await app.page.getByTestId('nav-settings').first().isVisible(), {
                 message: 'the shell was never usable while the setup panel was up',
                 timeout: 120_000,
@@ -390,7 +390,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await app.page.getByTestId('web-modal-button-0').click();
             await expect(title).toHaveCount(0);
             await expect(app.page.getByTestId('nav-settings').first()).toBeVisible();
-            await expect(app.page.getByTestId('desktop-setup-panel:panel')).toHaveCount(0, { timeout: 60_000 });
+            await expect(app.page.getByTestId('desktop-setup-panel:veil')).toHaveCount(0, { timeout: 60_000 });
             // The Home says, in one sentence with one action, that this computer stays with B (R17).
             await expect(app.page.getByTestId('relay-drift-banner')).toContainText(shortAccountId(accountB.accountId), { timeout: 60_000 });
             // The same recovery action must remain readable inside the narrow desktop sidebar.
@@ -584,7 +584,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await expect(blocked).toBeVisible({ timeout: 60_000 });
 
             await app.page.getByTestId('desktop-setup-panel:continue-without').click();
-            await expect(app.page.getByTestId('desktop-setup-panel:panel')).toHaveCount(0, { timeout: 60_000 });
+            await expect(app.page.getByTestId('desktop-setup-panel:veil')).toHaveCount(0, { timeout: 60_000 });
             await app.page.getByTestId('nav-settings').first().click();
             await expect(app.page).toHaveURL(/\/settings/, { timeout: 60_000 });
         } catch (error) {
