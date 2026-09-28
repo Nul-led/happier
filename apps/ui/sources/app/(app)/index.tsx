@@ -128,8 +128,9 @@ function Authenticated() {
     }, [router, sessionId]);
 
     if (isTauriDesktop()) {
-        // R11 — the app opens straight away. This computer's setup runs at the shell and never
-        // blocks the Home; the Home only presents it, docked under its own content.
+        // R11 — setup runs at the shell and never blocks the rest of the app. The Home presents it
+        // as the blurred setup veil over the Home content area only: the sidebar, header chrome,
+        // navigation and every other route stay usable.
         return (
             <View style={styles.desktopHome}>
                 <View style={styles.desktopHomeContent}>
@@ -462,9 +463,10 @@ function NotAuthenticated() {
 }
 
 const styles = StyleSheet.create((theme) => ({
-    // Desktop Home: its own content, with this computer's setup panel docked under it (R11).
+    // Desktop Home: its own content, with this computer's setup veil over that area only (R11).
     desktopHome: {
         flex: 1,
+        position: 'relative',
     },
     desktopHomeContent: {
         flex: 1,

@@ -1112,29 +1112,29 @@ describe('DesktopLocalSetupRuntime — the lifecycle runs at the shell, the Home
         // A cold deep link (a session, settings, the inbox) never renders the Home route.
         const { screen, showHome } = await renderShell(false);
         expect(spies.startSetup).toHaveBeenCalledTimes(1);
-        expect(screen.findByTestId('desktop-setup-panel:panel')).toBeNull();
+        expect(screen.findByTestId('desktop-setup-panel:veil')).toBeNull();
 
         await showHome(true);
-        expect(screen.findByTestId('desktop-setup-panel:panel')).not.toBeNull();
+        expect(screen.findByTestId('desktop-setup-panel:veil')).not.toBeNull();
 
         // Leaving the Home and coming back neither restarts nor duplicates the lifecycle.
         await showHome(false);
         await showHome(true);
         expect(spies.startSetup).toHaveBeenCalledTimes(1);
-        expect(screen.findByTestId('desktop-setup-panel:panel')).not.toBeNull();
+        expect(screen.findByTestId('desktop-setup-panel:veil')).not.toBeNull();
     });
 
     it('shows nothing on the Home once the machine is proved ready, and nothing at all without a lifecycle', async () => {
         spies.inspect.mockImplementation(async () => READY_INSPECTION);
         const { screen } = await renderShell(true);
         expect(spies.machineRpc).toHaveBeenCalled();
-        const panel = screen.findByTestId('desktop-setup-panel:panel');
+        const panel = screen.findByTestId('desktop-setup-panel:veil');
         // Proved ready: nothing to present (at most the panel's own departure beat).
         expect(panel == null || panel.props.pointerEvents === 'none').toBe(true);
 
         standardCleanup();
         const { DesktopLocalSetupPanel } = await import('./DesktopLocalSetupPanel');
         const bare = await renderScreen(React.createElement(DesktopLocalSetupPanel));
-        expect(bare.findByTestId('desktop-setup-panel:panel')).toBeNull();
+        expect(bare.findByTestId('desktop-setup-panel:veil')).toBeNull();
     });
 });

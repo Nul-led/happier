@@ -57,11 +57,13 @@ export const UpdateRow = React.memo(function UpdateRow(props: Readonly<{
     showDivider?: boolean;
     /** The row lives on this computer, where the desktop app can open its log file. */
     isThisComputer?: boolean;
+    /** Sessions are running on the row's machine now (a quiet note on service-restarting rows). */
+    sessionsRunning?: boolean;
 }>) {
     const { theme } = useUnistyles();
     const { item } = props;
     const compact = props.presentation === 'popover';
-    const presentation = describeUpdateItem(item);
+    const presentation = describeUpdateItem(item, { sessionsRunning: props.sessionsRunning });
     const iconSize = compact ? ICON_SIZE.sm : ICON_SIZE.xl;
     const onRun = props.onRun;
     const run = React.useCallback(() => {
@@ -136,7 +138,7 @@ export const UpdateRow = React.memo(function UpdateRow(props: Readonly<{
         <View style={styles.row} testID={`updates.row.${item.id}`}>
             <Item
                 title={item.title}
-                subtitle={presentation.command ? `${presentation.subtitle}\n${presentation.command}` : presentation.subtitle}
+                subtitle={[presentation.subtitle, presentation.note, presentation.command].filter(Boolean).join('\n')}
                 subtitleLines={0}
                 icon={icon}
                 density={compact ? 'compact' : undefined}
@@ -160,7 +162,7 @@ export const UpdateRow = React.memo(function UpdateRow(props: Readonly<{
                 copy={presentation.command ?? undefined}
                 onLongPress={props.onLongPress}
                 showDivider={props.showDivider}
-                accessibilityLabel={`${rowLabel}, ${presentation.subtitle}`}
+                accessibilityLabel={[rowLabel, presentation.subtitle, presentation.note].filter(Boolean).join(', ')}
                 accessibilityState={{ busy: item.state === 'running' }}
             />
             {percent != null ? (

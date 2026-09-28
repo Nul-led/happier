@@ -439,6 +439,49 @@ describe('useRelayDriftBanner', () => {
         expect(cancelMock).toHaveBeenCalledWith('task_1');
     });
 
+    it('keeps an executor start failure visible instead of making the action appear inert', async () => {
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        const startMock = vi.fn(async (spec: unknown) => {
+            const kind = (spec as { kind?: string }).kind;
+            if (kind === 'daemon.service.status.v1') {
+                return 'status_read_1';
+            }
+            throw new Error('setup bridge failed');
+        });
+        state.runner = createSystemTaskRunner({
+            mode: 'dev',
+            bridge: withStatusReadsAnswered({
+                start: startMock,
+                async subscribe() { return () => {}; },
+                async cancel() {},
+                async respond() {},
+            }),
+        });
+        state.cachedDoctorSnapshot = {
+            cachedAt: 1,
+            snapshot: {
+                capturedAt: '2026-03-29T00:00:00.000Z',
+                server: { activeServerId: 'server-a', serverUrl: '', publicServerUrl: '', webappUrl: '' },
+                accountId: null,
+                settings: { activeServerId: 'server-a', servers: [], knownAccountIds: [] },
+            },
+        };
+
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await renderer.act(async () => {
+            await banner?.onPress();
+        });
+
+        expect((banner as RelayDriftBanner | null)?.actionHint).toBe('settings.systemTaskStartFailed');
+    });
+
     it('infers the active webapp url when repairing Happier Cloud relay drift', async () => {
         const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
         const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');

@@ -50,7 +50,7 @@ function groupWhere(group: UpdatesGroup): string {
 const SummaryHeader = React.memo(function SummaryHeader(props: Readonly<{ model: UpdatesContentModel; presentation: Presentation }>) {
     const { model } = props;
     const isTablet = useIsTablet();
-    const header = describeUpdatesHeader(model.summary, model.batch, model.checkedAt);
+    const header = describeUpdatesHeader(model.summary, model.batch, model);
     const compact = props.presentation === 'popover';
     // On a phone-width screen the actions sit under the words, so the title and the freshness
     // line (the live region) keep the full width instead of truncating beside two buttons.
@@ -144,6 +144,7 @@ const UpdatesGroupSection = React.memo(function UpdatesGroupSection(props: Reado
                         onRun={model.runItem}
                         onLongPress={skipVersion ?? undefined}
                         isThisComputer={group.kind === 'thisComputer'}
+                        sessionsRunning={group.kind === 'machine' && group.machineId != null && model.sessionsRunningOn.has(group.machineId)}
                     />
                 ))
             )}
@@ -188,7 +189,7 @@ export const UpdatesContent = React.memo(function UpdatesContent(props: Readonly
     const secondaryActions = model.summary.actionableCount >= 2 && !model.batch;
     // The calm empty state only when every row proved it is current (the header's own decision).
     const nothingToShow = compact
-        && describeUpdatesHeader(model.summary, model.batch, model.checkedAt).empty
+        && describeUpdatesHeader(model.summary, model.batch, model).empty
         && !model.whatsNewUnread;
 
     return (
@@ -202,7 +203,7 @@ export const UpdatesContent = React.memo(function UpdatesContent(props: Readonly
                                 <Icon name="check-circle" size={25} color={theme.colors.state.success.foreground} />
                             </View>
                         )}
-                        title={describeUpdatesHeader(model.summary, model.batch, model.checkedAt).title}
+                        title={describeUpdatesHeader(model.summary, model.batch, model).title}
                         subtitle={model.summary.status === 'unknown'
                             ? t('updates.summary.unknownDescription')
                             : model.summary.status === 'offline'

@@ -31,11 +31,10 @@ export function resolveDesktopCloseDaemonDecision(input: Readonly<{
     /** Agent sessions running on THIS computer — the only ones stopping this daemon would end. */
     activeLocalSessionCount: number;
     /**
-     * Whether the count above could describe this daemon at all: the app knows its own account,
-     * and the relay validated the daemon's credentials for that same account. Sessions are read
-     * from the app's store, which holds only the relay and account the app is on and is emptied on
-     * sign-out — so a daemon paired elsewhere, or an app with no account, reports zero sessions
-     * for a computer that may be running several.
+     * Whether the count above could describe this daemon at all: the app's session snapshot has
+     * loaded, the service owns the reachable daemon with the inspected machine id, the daemon is
+     * on the app's active relay, and that relay validated its credentials for the app's account.
+     * Otherwise zero sessions may only mean they are unseen.
      */
     canSeeDaemonSessions: boolean;
 }>): DesktopCloseDaemonDecision {

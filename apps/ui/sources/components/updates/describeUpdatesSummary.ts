@@ -21,9 +21,15 @@ export type UpdatesHeaderPresentation = Readonly<{
 export function describeUpdatesHeader(
     summary: UpdatesSummary,
     batch: UpdateAllProgress | null,
-    checkedAt: number | null,
+    facts: Readonly<{ checkedAt: number | null; uncheckedMachineCount: number }>,
 ): UpdatesHeaderPresentation {
-    const checked = checkedAt ? t('updates.summary.checkedAt', { time: formatLastSeen(checkedAt) }) : t('updates.summary.notCheckedYet');
+    // Under a result: which machines were not asked yet when some were not, otherwise when things
+    // were last checked; "Not checked yet" only when nothing has been checked at all.
+    const checked = facts.uncheckedMachineCount > 0
+        ? t('updates.summary.uncheckedMeta')
+        : facts.checkedAt
+            ? t('updates.summary.checkedAt', { time: formatLastSeen(facts.checkedAt) })
+            : t('updates.summary.notCheckedYet');
     const base = { showUpdateAll: false, showStop: false, empty: false };
     if (batch) {
         return {
@@ -53,7 +59,7 @@ export function describeUpdatesHeader(
         case 'checking':
             return { ...base, title: t('updates.summary.checking'), meta: checked };
         case 'unchecked':
-            return { ...base, title: t('updates.summary.unchecked'), meta: t('updates.summary.uncheckedMeta') };
+            return { ...base, title: t('updates.summary.unchecked'), meta: checked };
         case 'unknown':
             return { ...base, title: t('updates.summary.unknown'), meta: checked };
         case 'offline':

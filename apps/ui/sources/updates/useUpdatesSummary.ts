@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { useAllMachines } from '@/sync/domains/state/storage';
+import { useActiveServerAccountScope, useAllMachines } from '@/sync/domains/state/storage';
 
 import { buildUpdatesSummary, isSameUpdatesSummary, type UpdatesSummary } from './items/buildUpdatesSummary';
 import { useMachinesCapabilitySnapshots } from './machineCapabilitySnapshots';
@@ -23,8 +23,10 @@ export function useUpdatesSummary(): UpdatesSummary {
     const machines = useAllMachines();
     // The server these machines belong to: its runs and its cached detects, never another server's.
     const serverId = useActiveServerSnapshot().serverId;
+    const activeScope = useActiveServerAccountScope();
+    const completionScope = activeScope?.serverId === serverId ? activeScope : null;
     const runs = useMachineUpdateRuns(serverId);
-    const completions = useUnseenUpdateCompletions();
+    const completions = useUnseenUpdateCompletions(completionScope);
     // Observes (never fetches) the cached detects: K6 agent facts and helper latest versions that
     // the installables background owner keeps fresh, and each daemon's `tool.systemTasks` kinds.
     const machineIds = React.useMemo(() => machines.map((machine) => machine.id), [machines]);

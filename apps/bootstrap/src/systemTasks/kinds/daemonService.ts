@@ -124,7 +124,7 @@ export function createDaemonServiceStartHandler() {
       message: 'Start daemon service',
     };
 
-    await controlDaemonService(parsed.releaseRing, { action: 'start', takeover: false }, cli);
+    await controlDaemonService(parsed.releaseRing, { action: 'start', takeover: false }, { ...cli, signal: context.signal });
 
     const startedStatus = await waitForStartedDaemonService({
       readDaemonStatus: () => readDaemonStatus(parsed.releaseRing, cli),
@@ -155,7 +155,7 @@ export function createDaemonServiceStartHandler() {
 export function createDaemonServiceStopHandler() {
   return async function* (
     params: unknown,
-    _context: Readonly<{ signal: AbortSignal }>,
+    context: Readonly<{ signal: AbortSignal }>,
   ): AsyncGenerator<Readonly<{ type: 'progress'; stepId: string; message?: string }>, DaemonServiceTaskResult, void> {
     const parsed = parseDaemonServiceParams(params);
     yield {
@@ -167,7 +167,7 @@ export function createDaemonServiceStopHandler() {
     // One acquisition and one version read for the whole run: the command that stops the service
     // and the read that proves it stopped must be the same CLI.
     const cli = await resolveVersionedLocalHappierCli({ releaseRing: parsed.releaseRing });
-    await controlDaemonService(parsed.releaseRing, { action: 'stop', takeover: false }, cli);
+    await controlDaemonService(parsed.releaseRing, { action: 'stop', takeover: false }, { ...cli, signal: context.signal });
 
     const status = await readDaemonStatus(parsed.releaseRing, cli);
     if (status.daemonRunning || status.service.running) {
@@ -195,7 +195,7 @@ export function createDaemonServiceStopHandler() {
 export function createDaemonServiceAutostartSetHandler() {
   return async function* (
     params: unknown,
-    _context: Readonly<{ signal: AbortSignal }>,
+    context: Readonly<{ signal: AbortSignal }>,
   ): AsyncGenerator<Readonly<{ type: 'progress'; stepId: string; message?: string }>, DaemonServiceTaskResult, void> {
     const parsed = parseDaemonServiceAutostartParams(params);
     yield {
@@ -207,7 +207,7 @@ export function createDaemonServiceAutostartSetHandler() {
     };
 
     const cli = await resolveVersionedLocalHappierCli({ releaseRing: parsed.releaseRing });
-    await setDaemonServiceAutostart(parsed.releaseRing, parsed.autostart, cli);
+    await setDaemonServiceAutostart(parsed.releaseRing, parsed.autostart, { ...cli, signal: context.signal });
 
     const status = await readDaemonStatus(parsed.releaseRing, cli);
     if (status.service.autostart === null) {

@@ -7631,6 +7631,188 @@ describe('createCodexAppServerRuntime', () => {
         });
     });
 
+    it('rehydrates a pending async Codex question into AskUserQuestion when the resumed turn is steerable', async () => {
+        const { root } = await createRuntimeFixture(
+            'happier-codex-app-server-runtime-rehydrate-async-user-action-',
+            { emitResumeTurnStartedBeforeResponse: true },
+        );
+        const input = {
+            codexAsyncQuestionV1: {
+                v: 1,
+                itemId: 'async_question_pending',
+                questions: [{ title: 'Choose an environment', options: ['Production'] }],
+            },
+            questions: [{
+                id: '["happier-codex-async-question","async_question_pending",0]',
+                header: 'Question 1',
+                question: 'Choose an environment',
+                options: [{ label: 'Production', description: '' }],
+                multiSelect: false,
+                freeform: {},
+            }],
+        };
+        const answers = {
+            '["happier-codex-async-question","async_question_pending",0]': ['Production'],
+        };
+        let agentState: any = {
+            requests: {
+                async_question_pending: {
+                    tool: 'AskUserQuestion',
+                    kind: 'user_action',
+                    arguments: input,
+                    createdAt: 1,
+                },
+            },
+            completedRequests: {},
+        };
+        const enqueueSessionUserMessage = vi.fn(async () => {});
+        const sendCodexMessageCommitted = vi.fn(async () => ({ seq: 1 }));
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => {
+                agentState = {
+                    ...agentState,
+                    requests: {},
+                    completedRequests: {
+                        async_question_pending: {
+                            tool: 'AskUserQuestion',
+                            arguments: input,
+                            createdAt: 1,
+                            completedAt: 2,
+                            status: 'approved',
+                            decision: 'approved',
+                            structuredAnswersV1: answers,
+                        },
+                    },
+                };
+                return { decision: 'approved' as const, answers };
+            }),
+            cancelPendingRequest: vi.fn(() => false),
+        };
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: {
+                updateMetadata: vi.fn(),
+                enqueueSessionUserMessage,
+                sendCodexMessage: vi.fn(),
+                sendCodexMessageCommitted,
+                getAgentStateSnapshot: () => agentState,
+                updateAgentState: vi.fn(async (updater: (current: typeof agentState) => typeof agentState) => {
+                    agentState = updater(agentState);
+                }),
+            } as any,
+            permissionHandler: permissionHandler as any,
+        } as any);
+
+        await runtime.startOrLoad({ resumeId: 'thread-resume-active' });
+
+        await waitForCondition(() => enqueueSessionUserMessage.mock.calls.length === 1, {
+            timeoutMs: 500,
+            intervalMs: 10,
+            label: 'rehydrated Codex async question reply admission',
+        });
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'async_question_pending',
+            'AskUserQuestion',
+            input,
+        );
+        expect(enqueueSessionUserMessage).toHaveBeenCalledWith(expect.objectContaining({
+            localId: 'codex-async-question:async_question_pending',
+            requestedAction: { v: 1, kind: 'steer_if_active' },
+        }));
+        expect(sendCodexMessageCommitted).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'async_question_pending',
+            output: { status: 'answered', answers },
+        }), {
+            localId: 'codex-async-question-result:async_question_pending',
+        });
+    });
+
+    it('cancels a pending async Codex question when resume has no steerable provider turn', async () => {
+        const { root } = await createRuntimeFixture('happier-codex-app-server-runtime-cancel-stale-async-user-action-');
+        const input = {
+            codexAsyncQuestionV1: {
+                v: 1,
+                itemId: 'async_question_stale',
+                questions: [{ title: 'Choose an environment', options: ['Production'] }],
+            },
+            questions: [{
+                id: '["happier-codex-async-question","async_question_stale",0]',
+                header: 'Question 1',
+                question: 'Choose an environment',
+                options: [{ label: 'Production', description: '' }],
+                multiSelect: false,
+                freeform: {},
+            }],
+        };
+        let agentState: any = {
+            requests: {
+                async_question_stale: {
+                    tool: 'AskUserQuestion',
+                    kind: 'user_action',
+                    arguments: input,
+                    createdAt: 1,
+                },
+            },
+            completedRequests: {},
+        };
+        const sendCodexMessageCommitted = vi.fn(async () => ({ seq: 1 }));
+        const permissionHandler = {
+            handleToolCall: vi.fn(),
+            cancelPendingRequest: vi.fn((requestId: string) => {
+                if (requestId !== 'async_question_stale') return false;
+                agentState = {
+                    ...agentState,
+                    requests: {},
+                    completedRequests: {
+                        async_question_stale: {
+                            tool: 'AskUserQuestion',
+                            arguments: input,
+                            createdAt: 1,
+                            completedAt: 2,
+                            status: 'canceled',
+                            decision: 'abort',
+                        },
+                    },
+                };
+                return true;
+            }),
+        };
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: {
+                updateMetadata: vi.fn(),
+                enqueueSessionUserMessage: vi.fn(async () => {}),
+                sendCodexMessage: vi.fn(),
+                sendCodexMessageCommitted,
+                getAgentStateSnapshot: () => agentState,
+                updateAgentState: vi.fn(async (updater: (current: typeof agentState) => typeof agentState) => {
+                    agentState = updater(agentState);
+                }),
+            } as any,
+            permissionHandler: permissionHandler as any,
+        } as any);
+
+        await runtime.startOrLoad({ resumeId: 'thread-resume-finished' });
+
+        await waitForCondition(() => permissionHandler.cancelPendingRequest.mock.calls.length === 1, {
+            timeoutMs: 500,
+            intervalMs: 10,
+            label: 'stale Codex async question cancellation',
+        });
+        expect(permissionHandler.handleToolCall).not.toHaveBeenCalled();
+        expect(agentState.requests).toEqual({});
+        expect(sendCodexMessageCommitted).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'async_question_stale',
+            output: { status: 'cancelled' },
+        }), {
+            localId: 'codex-async-question-result:async_question_stale',
+        });
+    });
+
     it('applies session mode, model, reasoning, and Fast overrides through app-server requests and republishes metadata', async () => {
         const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-controls-');
 

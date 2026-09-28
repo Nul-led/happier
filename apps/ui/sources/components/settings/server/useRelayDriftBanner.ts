@@ -4,6 +4,7 @@ import { getDefaultSystemTaskRunner } from '@/components/systemTasks';
 import { useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
 import { presentSetupServiceConsent } from '@/setup/presentSetupServiceConsent';
 import { presentUnmanagedCliConsent } from '@/setup/presentUnmanagedCliConsent';
+import { presentRelayReconciliationConsent } from '@/setup/presentRelayReconciliationConsent';
 import { useDesktopLocalInspection } from '@/setup/useDesktopLocalInspection';
 import { isTauriDesktop } from '@/utils/platform/tauri';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
@@ -44,6 +45,10 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
             : {}),
         onServiceConsentRequired: presentSetupServiceConsent,
         onUnmanagedCliConsentRequired: presentUnmanagedCliConsent,
+        // Keep the explicit drift action self-contained. The account/relay consent presenter is
+        // part of this surface's user action; loading it through a deferred chunk made a native
+        // click fail with an unhandled "Load failed" while leaving the banner unchanged.
+        confirm: presentRelayReconciliationConsent,
         // The repair changed the runtime these facts describe; re-read rather than keep
         // classifying the state the user just repaired.
         onSucceeded: refreshLocalInspection,
@@ -58,7 +63,12 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         }
         // Repair is the same explicit-target executor every other caller starts (SB6), sequenced
         // by the one desktop-side owner, which asks first when the move is an account move (D1).
-        await setupStart();
+        try {
+            await setupStart();
+        } catch {
+            // The task hook retains the start error so the banner can render a recoverable status.
+            // Do not leak an unhandled promise rejection from a button press.
+        }
     }, [isRepairStarting, isRepairUnavailable, repairTaskSnapshot, setupStart]);
 
     const cancelRepair = setupTask.cancel;
@@ -102,6 +112,8 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
                     actionDisabled: true,
                     actionHint: t('settings.systemTaskBridgeUnavailable'),
                 }
+                : setupTask.startError
+                    ? { actionHint: t('settings.systemTaskStartFailed') }
                 : {}),
             onPress: handleStartRepair,
             ...(daemonRelayUrl
@@ -122,5 +134,6 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         repairTaskSnapshot,
         summary,
         switchToServerUrl,
+        setupTask.startError,
     ]);
 }

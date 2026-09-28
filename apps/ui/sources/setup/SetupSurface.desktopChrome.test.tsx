@@ -30,8 +30,8 @@ describe('SetupSurface desktop chrome', () => {
     it('leaves window controls and titlebar dragging with the app shell it sits in (R11)', async () => {
         const screen = await renderScreen(<SetupSurface run={null} facts={FACTS} />);
 
-        // A Home panel inside the running shell: that shell keeps its one controls and drag owners.
-        expect(screen.findByTestId('setup-surface:panel')).not.toBeNull();
+        // A veil over the Home content inside the running shell: that shell keeps its one controls and drag owners.
+        expect(screen.findByTestId('setup-surface:veil')).not.toBeNull();
         expect(screen.findByTestId('setup-surface-desktop-chrome')).toBeNull();
         expect(screen.findByTestId('desktop-main-content-drag-surface')).toBeNull();
     });

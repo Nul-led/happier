@@ -10,7 +10,9 @@ import type { DesktopCliChannel } from './deriveDesktopLocalSetupSnapshot';
  */
 export function formatShortAccountId(accountId: string): string {
     const id = accountId.trim();
-    return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+    // Shortened in the MIDDLE: the label often ends a sentence ("… as cmuijuzr…."), and a trailing
+    // ellipsis followed by that sentence's period read as a typo in every locale.
+    return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
 }
 
 /**

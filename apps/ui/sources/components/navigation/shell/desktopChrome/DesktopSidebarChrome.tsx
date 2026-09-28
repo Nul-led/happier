@@ -252,7 +252,6 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                             <UpdatesEntry
                                 variant="pill"
                                 testID="desktop-sidebar-updates-pill"
-                                compactLabel={props.sidebarWidthPx != null && props.sidebarWidthPx < DESKTOP_SIDEBAR_CHROME_ACTIONS_COMPACT_THRESHOLD_PX}
                             />
                         </View>
                         <View style={styles.statusControlWrapper}>

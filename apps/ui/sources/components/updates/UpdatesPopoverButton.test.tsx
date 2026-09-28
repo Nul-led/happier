@@ -1,11 +1,14 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { UpdatesSummary } from '@/updates/items/buildUpdatesSummary';
+import { storage } from '@/sync/domains/state/storageStore';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { UpdatesPopoverButton } from './UpdatesPopoverButton';
+import { UpdateRow } from './UpdateRow';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -17,8 +20,11 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-const routerMock = createExpoRouterMock();
-vi.mock('expo-router', () => routerMock.module);
+const routerMock = vi.hoisted(() => ({ spies: { push: vi.fn() } }));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: routerMock.spies.push } }).module;
+});
 
 // Machines are storage-owned facts; the default is none.
 const machinesState = vi.hoisted(() => ({ value: [] as Machine[] }));
@@ -39,6 +45,27 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
     FloatingOverlay: (props: Record<string, unknown>) => React.createElement('FloatingOverlay', props, props.children as React.ReactNode),
 }));
 
+// Machine RPC (a network boundary) and the modal host (a presentation boundary): Update is the
+// consent, so no modal may be asked for.
+const rpc = vi.hoisted(() => ({ invoke: vi.fn(async (_machineId: string, request: { method: string }) => ({
+    supported: true,
+    response: {
+        ok: true,
+        result: request.method === 'start'
+            ? { taskId: 't1' }
+            : { events: [], nextCursor: 0, pendingPrompt: null, result: { protocolVersion: 1, taskId: 't1', ok: true, data: { started: true } } },
+    },
+})) }));
+vi.mock('@/sync/ops', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    machineCapabilitiesInvoke: rpc.invoke,
+}));
+const modal = vi.hoisted(() => ({ confirm: vi.fn(async () => true) }));
+vi.mock('@/modal', async (importOriginal) => {
+    const actual = await importOriginal<{ Modal: Record<string, unknown> }>();
+    return { ...actual, Modal: { ...actual.Modal, confirm: modal.confirm } };
+});
+
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key: string) => key });
@@ -48,8 +75,13 @@ const NONE: UpdatesSummary = { actionableCount: 0, failedCount: 0, runningCount:
 const TWO: UpdatesSummary = { actionableCount: 2, failedCount: 0, runningCount: 0, phase: 'available', status: 'available', visible: true };
 
 describe('UpdatesPopoverButton', () => {
+    beforeEach(() => {
+        storage.setState({ profileScope: { serverId: getActiveServerSnapshot().serverId, accountId: 'account-a' } });
+    });
+    afterEach(() => {
+        storage.setState({ profileScope: null });
+    });
     it('is absent at zero, and a closed pill renders no detail content', async () => {
-        const { UpdatesPopoverButton } = await import('./UpdatesPopoverButton');
         const screen = await renderScreen(<UpdatesPopoverButton summary={NONE} variant="pill" testID="pill" />);
         expect(screen.findAllHostsByTestId('pill')).toHaveLength(0);
 
@@ -61,7 +93,6 @@ describe('UpdatesPopoverButton', () => {
 
     it('opens the real content in the popover density, and removes it again on close', async () => {
         routerMock.spies.push.mockClear();
-        const { UpdatesPopoverButton } = await import('./UpdatesPopoverButton');
         const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
 
         await act(async () => {
@@ -78,7 +109,6 @@ describe('UpdatesPopoverButton', () => {
 
     it('on the phone header, goes to Settings › Updates instead of opening a popover', async () => {
         routerMock.spies.push.mockClear();
-        const { UpdatesPopoverButton } = await import('./UpdatesPopoverButton');
         const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="header" testID="header" />);
         await act(async () => {
             await screen.findByTestId('header')?.props.onPress({});
@@ -93,7 +123,6 @@ describe('UpdatesPopoverButton', () => {
             metadata: { host: 'studio', platform: 'darwin', happyCliVersion: '0.2.12', happyHomeDir: '/h/.happier', homeDir: '/h' },
         } as Machine];
         try {
-            const { UpdatesPopoverButton } = await import('./UpdatesPopoverButton');
             const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
             await act(async () => {
                 await screen.findByTestId('pill')?.props.onPress({});
@@ -103,5 +132,56 @@ describe('UpdatesPopoverButton', () => {
         } finally {
             machinesState.value = [];
         }
+    });
+
+    it('the sidebar entry is a compact mark with a count; its sentence is the accessible name and the tooltip', async () => {
+        const FAILED: UpdatesSummary = { actionableCount: 0, failedCount: 3, runningCount: 0, phase: 'failed', status: 'failed', visible: true };
+        const screen = await renderScreen(<UpdatesPopoverButton summary={FAILED} variant="pill" testID="pill" />);
+        const pill = screen.findByTestId('pill');
+        expect(pill?.props.accessibilityLabel).toBe('updates.a11y.pillFailed');
+        expect(screen.findAllByTestId('pill').find((node) => node.props.webTooltip)?.props.webTooltip).toBe('updates.pill.failed');
+        // No words in the chrome: only the mark and the count.
+        expect(screen.findAll((node) => typeof node.type === 'string' && node.props?.children === 'updates.pill.failed')).toHaveLength(0);
+        expect(screen.findAll((node) => typeof node.type === 'string' && node.props?.children === '3').length).toBeGreaterThan(0);
+    });
+
+    it('pressing Update on another machine runs it inline: no confirmation, the popover stays open', async () => {
+        modal.confirm.mockClear();
+        rpc.invoke.mockClear();
+        machinesState.value = [{
+            id: 'studio', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: Date.now(),
+            metadata: {
+                host: 'studio', platform: 'darwin', happyCliVersion: '0.2.12', happyHomeDir: '/h/.happier', homeDir: '/h',
+                cliUpdate: {
+                    currentVersion: '0.2.12', latestVersion: '0.2.13', channel: 'stable', installSource: 'managed',
+                    updateCommand: 'happier self update', canUpdateRemotely: true, lastUpdate: null,
+                },
+            },
+        } as Machine];
+        try {
+            const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
+            await act(async () => {
+                await screen.findByTestId('pill')?.props.onPress({});
+            });
+            await screen.pressByTestIdAsync('updates.row.studio:happier-cli.action');
+            expect(modal.confirm).not.toHaveBeenCalled();
+            expect(rpc.invoke).toHaveBeenCalledWith('studio', expect.objectContaining({ id: 'tool.systemTasks', method: 'start' }), expect.anything());
+            expect(screen.findAllByTestId('updates.content.popover').length).toBeGreaterThan(0);
+        } finally {
+            machinesState.value = [];
+        }
+    });
+
+    it('the row\'s session-impact note is part of its accessible name', async () => {
+        const item = {
+            id: 'studio:happier-cli', subject: { kind: 'happier-cli' }, machineId: 'studio', title: 'Happier CLI',
+            currentVersion: '0.2.12', latestVersion: '0.2.13', state: 'available', progressPercent: null, step: null,
+            managedBy: 'happier', action: { kind: 'run', verb: 'update' }, failure: null, skipped: false,
+        } as const;
+        const screen = await renderScreen(
+            <UpdateRow item={item} where="studio" presentation="popover" secondaryAction={false} onRun={() => {}} sessionsRunning />,
+        );
+        const labels = screen.findAll((node) => typeof node.props?.accessibilityLabel === 'string').map((node) => String(node.props.accessibilityLabel));
+        expect(labels.some((label) => label.includes('updates.row.restartsService'))).toBe(true);
     });
 });

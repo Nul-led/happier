@@ -17,8 +17,7 @@ function item(overrides: Partial<UpdateItem> & Pick<UpdateItem, 'id'>): UpdateIt
         action: { kind: 'none' },
         failure: null,
         skipped: false,
-        vendorUpdater: false,
-        ...overrides,
+            ...overrides,
     };
 }
 

@@ -179,7 +179,7 @@ describe('agent CLI rows (K6)', () => {
             machineId: 'm1', agentId: 'claude', title: 'Claude Code', online: true, task: IDLE_TASK,
             data: { available: true, version: '2.1.3', latestVersion: '2.1.4', installSource: 'native', updateSupported: true, updateCommand: '/usr/local/bin/claude update' },
         });
-        expect(vendor).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' }, vendorUpdater: true });
+        expect(vendor).toMatchObject({ state: 'available', action: { kind: 'run', verb: 'update' } });
     });
 
     it('never offers Update to a daemon that does not say updateSupported (it would install beside the person’s CLI)', () => {
@@ -234,5 +234,16 @@ describe('helper installable rows', () => {
         });
         expect(unknown).toMatchObject({ state: 'unknown', failure: { kind: 'latestUnknown' } });
         expect(JSON.stringify(unknown)).not.toContain('rate limited');
+    });
+});
+
+describe('an update the runtime found already current', () => {
+    it('reads up to date even while the cached latest version still says otherwise', () => {
+        const row = buildAgentCliUpdateItem({
+            machineId: 'm1', agentId: 'claude', title: 'Claude Code', online: true,
+            task: { running: false, step: null, errorMessage: null, alreadyCurrent: true },
+            data: { available: true, version: '2.1.281', latestVersion: '2.1.283', installSource: 'managed', updateSupported: true, updateCommand: null },
+        });
+        expect(row).toMatchObject({ state: 'upToDate', alreadyCurrent: true, action: { kind: 'none' } });
     });
 });

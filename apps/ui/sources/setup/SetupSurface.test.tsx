@@ -304,18 +304,29 @@ describe('SetupSurface ways out of a blocked state (U4/R17)', () => {
     });
 });
 
-describe('SetupSurface as a Home panel (R11)', () => {
-    it('sits in the Home layout, never over it: no overlay, no ground filling the route', async () => {
+describe('SetupSurface over the Home content (R11)', () => {
+    it('is the blurred veil over the area its host gives it, with the column anchored and centred', async () => {
         const run = runState({ events: [progress('setup.thisComputer.configureRelay', 120)] });
         const screen = await renderScreen(<SetupSurface run={run} facts={facts()} />);
 
-        const panel = screen.findByTestId('setup-surface:panel');
-        expect(panel).not.toBeNull();
-        const style = Object.assign({}, ...[panel?.props.style].flat().filter(Boolean));
-        expect(style.position).toBeUndefined();
-        expect(style.flex).toBeUndefined();
-        // The Home around it keeps taking input.
-        expect(panel?.props.pointerEvents).not.toBe('none');
+        // The host (the Home route) sizes it, so it covers the Home content and nothing else.
+        const veil = screen.findByTestId('setup-surface:veil');
+        expect(veil).not.toBeNull();
+        const veilStyle = Object.assign({}, ...[veil?.props.style].flat().filter(Boolean));
+        expect(veilStyle.position).toBe('absolute');
+        expect(screen.findByTestId('setup-surface:veilGlass')).not.toBeNull();
+
+        // The installer-style composition: one centred column the mark anchors, not a card.
+        const column = screen.root.findAll((node) => {
+            const style = Object.assign({}, ...[node.props.style].flat().filter(Boolean));
+            return style.maxWidth === 420;
+        })[0];
+        const columnStyle = Object.assign({}, ...[column?.props.style].flat().filter(Boolean));
+        expect(columnStyle.alignItems).toBe('center');
+        expect(columnStyle.borderWidth).toBeUndefined();
+        const scroller = screen.findByTestId('setup-surface:working');
+        const content = Object.assign({}, ...[scroller?.props.contentContainerStyle].flat().filter(Boolean));
+        expect(content.paddingTop).toBeGreaterThan(0);
     });
 });
 
@@ -487,7 +498,7 @@ describe('SetupSurface departure (reveal)', () => {
         );
 
         // The Home is live throughout: the beat is the panel leaving, never a delay in front of it.
-        expect(screen.findByTestId('setup-surface:panel')?.props.pointerEvents).toBe('none');
+        expect(screen.findByTestId('setup-surface:veil')?.props.pointerEvents).toBe('none');
         expect(onExited).not.toHaveBeenCalled();
 
         await act(async () => {
@@ -512,7 +523,7 @@ describe('SetupSurface departure (reveal)', () => {
             <SetupSurface run={SUCCEEDED} facts={facts()} onExited={onExited} />,
         );
 
-        expect(screen.findByTestId('setup-surface:panel')?.props.pointerEvents).not.toBe('none');
+        expect(screen.findByTestId('setup-surface:veil')?.props.pointerEvents).not.toBe('none');
         await act(async () => {
             await new Promise((resolve) => setTimeout(resolve, SETUP_SURFACE_EXIT_MS + 40));
         });
@@ -539,7 +550,7 @@ describe('SetupSurface departure (reveal)', () => {
             );
         });
 
-        const panel = screen.findByTestId('setup-surface:panel');
+        const panel = screen.findByTestId('setup-surface:veil');
         const style = Object.assign({}, ...[panel?.props.style].flat().filter(Boolean));
         expect(style.opacity).toBe(1);
         expect(panel?.props.pointerEvents).not.toBe('none');

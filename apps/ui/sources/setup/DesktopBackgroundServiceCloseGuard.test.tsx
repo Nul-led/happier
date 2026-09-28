@@ -11,6 +11,15 @@ const state = vi.hoisted(() => ({
     daemonAccountId: 'acct_app' as string | null,
     /** The account the app itself is signed in to on its active relay (H4). */
     appAccountId: 'acct_app' as string | null,
+    appRelayUrl: 'https://relay.example.test',
+    appLocalRelayUrl: null as string | null,
+    sessionsReady: true,
+    runtimeConvergence: {
+        controlReachable: true,
+        serviceOwnsRunningDaemon: true,
+        machineIdMatches: true,
+        cliVersionMatches: true,
+    },
     inspectionFailed: false,
     /** F9 — nothing has asked for an inspection yet, so there is nothing to peek at. */
     noInspection: false,
@@ -79,8 +88,15 @@ vi.mock('./desktopSetupCoordinator', () => ({
                 : {
                     status: 'resolved',
                     facts: {
+                        server: {
+                            serverUrl: 'https://relay.example.test',
+                            publicServerUrl: 'https://relay.example.test',
+                            localServerUrl: null,
+                            comparableKey: 'https://relay.example.test',
+                        },
                         service: { installed: true, running: true, autostart: state.autostart },
                         auth: { machineId: state.machineId, validatedAccountId: state.daemonAccountId },
+                        runtimeConvergence: state.runtimeConvergence,
                     },
                 }),
     },
@@ -90,8 +106,17 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     getActiveServerAccountScope: () => (state.appAccountId ? { serverId: 'relay-example', accountId: state.appAccountId } : null),
 }));
 
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({
+        serverId: 'relay-example',
+        serverUrl: state.appRelayUrl,
+        activeLocalRelayUrl: state.appLocalRelayUrl,
+        generation: 1,
+    }),
+}));
+
 vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => ({ getState: () => ({ sessions: state.sessions }) }),
+    getStorage: () => ({ getState: () => ({ sessions: state.sessions, isDataReady: state.sessionsReady }) }),
 }));
 
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({
@@ -126,6 +151,15 @@ describe('DesktopBackgroundServiceCloseGuard', () => {
         state.machineId = 'machine-local-1';
         state.daemonAccountId = 'acct_app';
         state.appAccountId = 'acct_app';
+        state.appRelayUrl = 'https://relay.example.test';
+        state.appLocalRelayUrl = null;
+        state.sessionsReady = true;
+        state.runtimeConvergence = {
+            controlReachable: true,
+            serviceOwnsRunningDaemon: true,
+            machineIdMatches: true,
+            cliVersionMatches: true,
+        };
         state.inspectionFailed = false;
         state.noInspection = false;
         state.finishThrows = false;
@@ -223,6 +257,42 @@ describe('DesktopBackgroundServiceCloseGuard', () => {
         // The app's session store only holds its own relay and account, so it cannot see what this
         // daemon is running. Stopping it would end agent sessions nobody was asked about.
         state.daemonAccountId = 'acct_other';
+
+        await mountAndQuit();
+
+        expect(presentConsentMock).toHaveBeenCalledTimes(1);
+        expect(stopBackgroundServiceMock).not.toHaveBeenCalled();
+    });
+
+    it('asks when the app is on another relay even if the account id is the same', async () => {
+        state.appRelayUrl = 'https://other-relay.example.test';
+
+        await mountAndQuit();
+
+        expect(presentConsentMock).toHaveBeenCalledTimes(1);
+        expect(stopBackgroundServiceMock).not.toHaveBeenCalled();
+    });
+
+    it('asks while the active relay session snapshot has not loaded', async () => {
+        state.sessionsReady = false;
+
+        await mountAndQuit();
+
+        expect(presentConsentMock).toHaveBeenCalledTimes(1);
+        expect(stopBackgroundServiceMock).not.toHaveBeenCalled();
+    });
+
+    it('asks when the inspection cannot identify the running daemon machine', async () => {
+        state.machineId = null;
+
+        await mountAndQuit();
+
+        expect(presentConsentMock).toHaveBeenCalledTimes(1);
+        expect(stopBackgroundServiceMock).not.toHaveBeenCalled();
+    });
+
+    it('asks when the service does not own the daemon whose sessions the app can see', async () => {
+        state.runtimeConvergence.serviceOwnsRunningDaemon = false;
 
         await mountAndQuit();
 

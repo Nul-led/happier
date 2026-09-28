@@ -25,7 +25,8 @@ function useDeparture(visible: boolean): Readonly<{ mounted: boolean; exiting: b
 }
 
 /**
- * R11 — the Home's view of this computer's setup: a calm, non-blocking panel in the Home layout.
+ * R11 — the Home's view of this computer's setup: the setup veil over the Home content area only
+ * (the sidebar, navigation and every other route stay usable).
  * It owns no lifecycle — `DesktopLocalSetupRuntime` at the shell does — so leaving the Home never
  * pauses setup, and returning shows the same run. It renders nothing when there is nothing to say.
  */

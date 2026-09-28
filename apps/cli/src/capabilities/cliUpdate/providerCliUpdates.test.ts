@@ -65,12 +65,14 @@ describe.skipIf(process.platform === 'win32')('withProviderCliUpdates', () => {
       nodePlatform: 'linux',
       latestVersionTtlMs: 60_000,
       buildContext: async () => ({ cliSnapshot: null }),
+      // The registry is a network boundary; tests that need a latest version supply one.
+      fetchLatestVersion: async () => ({ latestVersion: null, heldVersion: null }),
       ...overrides,
     };
   }
 
   it('reports the install owner, its update command and a cached latest version', async () => {
-    const fetchLatestVersion = vi.fn(async () => '2.2.0');
+    const fetchLatestVersion = vi.fn(async () => ({ latestVersion: '2.2.0', heldVersion: null }));
     const cap = withProviderCliUpdates(
       createInstalledCliCapability({ resolvedPath: launcher, version: () => '2.1.0' }),
       'claude',
@@ -199,4 +201,63 @@ describe.skipIf(process.platform === 'win32')('withProviderCliUpdates', () => {
       result: { previousVersion: '2.1.0', version: '2.2.0' },
     });
   }, 30_000);
+
+  it('names the release-age hold instead of reporting an unchanged managed update as unverified', async () => {
+    const managedCommand = join(home, 'tools', 'providers', 'qwen', 'current', 'bin', 'qwen');
+    const cap = withProviderCliUpdates(
+      {
+        descriptor: { id: 'cli.qwen', kind: 'cli', title: 'Qwen CLI' },
+        detect: async () => ({ available: true, resolvedPath: managedCommand, resolutionSource: 'managed', version: '0.24.5' }),
+      },
+      'qwen',
+      deps({
+        installProviderCli: async () => ({
+          ok: true,
+          alreadyInstalled: false,
+          logPath: null,
+          plan: {
+            providerId: 'qwen', title: 'Qwen CLI', binaries: ['qwen'], platform: 'linux', docsUrl: null, commands: [],
+            requiresAdmin: false, installMode: 'managed_package',
+            managedInstall: { kind: 'managed_package', packageName: '@qwen-code/qwen-code', binaryName: 'qwen' },
+          },
+        }),
+        fetchLatestVersion: async () => ({
+          latestVersion: '0.24.5',
+          heldVersion: { version: '0.24.6', minimumReleaseAgeMs: 24 * 60 * 60_000 },
+        }),
+      }),
+    );
+
+    await expect(cap.detect({ request: { id: 'cli.qwen', params: { includeLatestVersion: true } }, context: { cliSnapshot: null } }))
+      .resolves.toMatchObject({ installSource: 'managed', latestVersion: '0.24.5' });
+    await expect(cap.invoke!({ method: 'install', params: { intent: 'update' } })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'update-held-by-release-age',
+        message: "0.24.6 is less than a day old; Happier installs it once it's a day old.",
+      },
+    });
+  });
+
+  it('treats an unchanged version that is already the latest as up to date', async () => {
+    // Observed 2026-09-26: a retried `claude update` printed "Claude Code is up to date (2.1.283)".
+    const cap = withProviderCliUpdates(
+      createInstalledCliCapability({ resolvedPath: launcher, version: () => '2.1.283' }),
+      'claude',
+      deps({
+        installProviderCli: (params) => installProviderCli({
+          ...params,
+          logDir: join(root, 'logs'),
+          deps: { runCommand: async () => succeeded() },
+        }),
+        fetchLatestVersion: async () => ({ latestVersion: '2.1.283', heldVersion: null }),
+      }),
+    );
+
+    await expect(cap.invoke!({ method: 'install', params: { intent: 'update', allowVendorRecipeExecution: true } }))
+      .resolves.toMatchObject({
+        ok: true,
+        result: { previousVersion: '2.1.283', version: '2.1.283', latestVersion: '2.1.283', alreadyCurrent: true },
+      });
+  });
 });

@@ -3,22 +3,17 @@ import { useRouter } from 'expo-router';
 
 import { useReleaseNotesLauncher, useReleaseNotesUnread } from '@/changelog/releaseNotes';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { prefetchMachineCapabilities } from '@/hooks/server/useMachineCapabilitiesCache';
 import { ensureMachineUpdateFactsBackground } from '@/capabilities/ensureAgentInstallablesBackground';
-import { buildMachineUpdateFactsRequest } from '@/capabilities/requests';
-import { Modal } from '@/modal';
-import { useAllMachines } from '@/sync/domains/state/storage';
-import { t } from '@/text';
+import { useActiveServerAccountScope, useAllMachines } from '@/sync/domains/state/storage';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { storage } from '@/sync/domains/state/storageStore';
 import { resolveSessionMachineId } from '@/sync/domains/session/directSessions/resolveSessionMachineId';
 
 import { buildMachineUpdateGroups, readUpdatableInstallables, type UpdatesGroup } from './buildMachineUpdateGroups';
 import { buildUpdatesSummary, planUpdateAll, type UpdatesSummary } from './items/buildUpdatesSummary';
-import { resolveUpdateConfirmation } from './items/resolveUpdateConfirmation';
 import type { UpdateItem } from './items/updateItem';
 import { useMachinesCapabilitySnapshots } from './machineCapabilitySnapshots';
-import { markUpdateCompletionsSeen, runMachineItemUpdate, useMachineUpdateRuns, useUnseenUpdateCompletions } from './machineUpdateRuns';
+import { markUpdateCompletionsSeen, refreshMachineUpdateFacts, runMachineItemUpdate, useMachineUpdateRuns, useUnseenUpdateCompletions } from './machineUpdateRuns';
 import { useAppUpdateStatus } from './useAppUpdateStatus';
 import { useThisComputerCliUpdate } from './useThisComputerCliUpdate';
 
@@ -29,7 +24,12 @@ export type UpdateAllProgress = Readonly<{ done: number; total: number; stopping
 export type UpdatesContentModel = Readonly<{
     summary: UpdatesSummary;
     groups: readonly UpdatesGroup[];
+    /** The newest check behind these rows: the app's own, or any machine's update facts. */
     checkedAt: number | null;
+    /** Online machines whose tools have not all answered yet (the header's "not checked" line). */
+    uncheckedMachineCount: number;
+    /** Machines with sessions running now: their service-restarting rows say so, quietly. */
+    sessionsRunningOn: ReadonlySet<string>;
     runItem: (item: UpdateItem) => Promise<void>;
     updateAll: () => Promise<void>;
     stopAfterCurrent: () => void;
@@ -41,14 +41,14 @@ export type UpdatesContentModel = Readonly<{
     whatsNewUnread: boolean;
 }>;
 
-/** Sessions running on these machines right now, read at press time from the canonical session state. */
-function countRunningSessions(machineIds: readonly string[]): number {
-    const ids = new Set(machineIds);
-    let count = 0;
-    for (const session of Object.values(storage.getState().sessions)) {
-        if (session.active && ids.has(resolveSessionMachineId(session.metadata ?? null) ?? '')) count += 1;
+/** The machines with an active session, as one stable key (the canonical session state). */
+function selectSessionsRunningKey(state: ReturnType<typeof storage.getState>): string {
+    const ids = new Set<string>();
+    for (const session of Object.values(state.sessions)) {
+        const machineId = session.active ? resolveSessionMachineId(session.metadata ?? null) : null;
+        if (machineId) ids.add(machineId);
     }
-    return count;
+    return [...ids].sort().join('\u0000');
 }
 
 /**
@@ -65,12 +65,13 @@ export function useUpdatesContentModel(): UpdatesContentModel {
     const machines = useAllMachines();
     // One server scope for the rows, their facts, their runs and their refreshes.
     const serverId = useActiveServerSnapshot().serverId;
+    const activeScope = useActiveServerAccountScope();
+    const updateScope = activeScope?.serverId === serverId ? activeScope : null;
     const runs = useMachineUpdateRuns(serverId);
     const releaseNotes = useReleaseNotesUnread();
     const releaseNotesLauncher = useReleaseNotesLauncher();
 
     const installables = React.useMemo(readUpdatableInstallables, []);
-    const request = React.useMemo(buildMachineUpdateFactsRequest, []);
 
     const onlineMachineIds = React.useMemo(() => {
         const ids = machines.filter((machine) => machine.id !== thisComputer.machineId && isMachineOnline(machine)).map((machine) => machine.id);
@@ -86,11 +87,7 @@ export function useUpdatesContentModel(): UpdatesContentModel {
         void ensureMachineUpdateFactsBackground({ serverId, machineIds: onlineKey ? onlineKey.split('\u0000') : [] });
     }, [onlineKey, serverId]);
 
-    const refreshMachine = React.useCallback((machineId: string, runServerId: string) => {
-        void prefetchMachineCapabilities({ machineId, serverId: runServerId, request: { ...request, bypassCache: true } });
-    }, [request]);
-
-    const { groups, remotes, uncheckedMachineCount } = React.useMemo(() => {
+    const { groups, remotes, uncheckedMachineCount, factsCheckedAt } = React.useMemo(() => {
         const built = buildMachineUpdateGroups({
             machines,
             thisMachineId: thisComputer.machineId,
@@ -100,16 +97,16 @@ export function useUpdatesContentModel(): UpdatesContentModel {
             installables,
         });
         const app: UpdatesGroup = { id: 'app', kind: 'app', machineName: null, machineId: null, online: true, items: [appItem] };
-        return { groups: [app, ...built.groups], remotes: built.remotes, uncheckedMachineCount: built.uncheckedMachineCount };
+        return { groups: [app, ...built.groups], remotes: built.remotes, uncheckedMachineCount: built.uncheckedMachineCount, factsCheckedAt: built.checkedAt };
     }, [appItem, installables, machines, runs, snapshots, thisComputer.item, thisComputer.machineId]);
 
     const allItems = React.useMemo(() => groups.flatMap((group) => group.items), [groups]);
     // Open Updates shows every result, so the pill's "Updated" is seen; a completion that lands
     // while the surface stays open is seen too (its row says so).
-    const completions = useUnseenUpdateCompletions();
+    const completions = useUnseenUpdateCompletions(updateScope);
     React.useEffect(() => {
-        markUpdateCompletionsSeen();
-    }, [completions]);
+        markUpdateCompletionsSeen(updateScope);
+    }, [completions, updateScope]);
     // The same coverage the always-mounted summary ranks with, so the open header never says
     // "Up to date" while the pill says some tools were not checked.
     const summary = React.useMemo(
@@ -121,57 +118,19 @@ export function useUpdatesContentModel(): UpdatesContentModel {
         () => new Map(remotes.map((remote) => [remote.machine.id, remote.lastUpdateSignature])),
         [remotes],
     );
-    const machineNameById = React.useMemo(
-        () => new Map(groups.filter((group) => group.machineId).map((group) => [group.machineId as string, group.machineName ?? ''])),
-        [groups],
-    );
-
     const executeItem = React.useCallback(async (item: UpdateItem) => {
         if (item.subject.kind === 'app') return app.run();
         if (item.subject.kind === 'happier-cli' && item.machineId === thisComputer.machineId) return thisComputer.run();
         const machineId = item.machineId;
-        if (!machineId) return;
-        await runMachineItemUpdate(item, {
-            serverId,
-            lastUpdateSignature: lastUpdateSignatureByMachine.get(machineId),
-            refresh: () => refreshMachine(machineId, serverId),
-        });
-    }, [app, lastUpdateSignatureByMachine, refreshMachine, serverId, thisComputer]);
+        if (!machineId || !updateScope) return;
+        await runMachineItemUpdate(item, { scope: updateScope, lastUpdateSignature: lastUpdateSignatureByMachine.get(machineId) });
+    }, [app, lastUpdateSignatureByMachine, thisComputer, updateScope]);
 
-    /** Consequential remote actions go through the established confirmation owner; local ones do not. */
-    const confirmRemote = React.useCallback(async (targets: ReadonlyArray<Readonly<{ machineId: string; name: string }>>) => {
-        if (targets.length === 0) return true;
-        const running = countRunningSessions(targets.map((target) => target.machineId));
-        const message = t('updates.confirmRemote.message', { machines: targets.map((target) => target.name).join(', ') });
-        return await Modal.confirm(
-            t('updates.confirmRemote.title'),
-            running > 0 ? `${message} ${t('updates.confirmRemote.sessions', { count: running })}` : message,
-            { confirmText: t('updates.action.update'), cancelText: t('common.cancel') },
-        );
-    }, []);
-
-    /** K6 — a vendor's own updater runs code from that vendor: the person confirms it first. */
-    const confirmVendor = React.useCallback(async (names: readonly string[]) => {
-        if (names.length === 0) return true;
-        return await Modal.confirm(
-            t('updates.confirmVendor.title'),
-            t('updates.confirmVendor.message', { names: names.join(', ') }),
-            { confirmText: t('updates.action.update'), cancelText: t('common.cancel') },
-        );
-    }, []);
-
+    // Pressing Update (or Update all) is the consent: the row runs inline, with its progress in place.
     const runItem = React.useCallback(async (item: UpdateItem) => {
         if (item.action.kind !== 'run') return;
-        const confirmation = resolveUpdateConfirmation(item, thisComputer.machineId);
-        if (confirmation === 'vendor') {
-            if (!(await confirmVendor([item.title]))) return;
-        } else if (confirmation === 'remote') {
-            const machineId = item.machineId as string;
-            const confirmed = await confirmRemote([{ machineId, name: machineNameById.get(machineId) ?? machineId }]);
-            if (!confirmed) return;
-        }
         await executeItem(item);
-    }, [confirmRemote, confirmVendor, executeItem, machineNameById, thisComputer.machineId]);
+    }, [executeItem]);
 
     const [batch, setBatch] = React.useState<UpdateAllProgress | null>(null);
     const stopRef = React.useRef(false);
@@ -182,17 +141,6 @@ export function useUpdatesContentModel(): UpdatesContentModel {
         if (batch) return;
         const plan = planUpdateAll(itemsRef.current);
         if (plan.total === 0) return;
-        const remoteTargets = plan.machines
-            .filter((machine) => machine.machineId !== thisComputer.machineId)
-            .map((machine) => ({ machineId: machine.machineId, name: machineNameById.get(machine.machineId) ?? machine.machineId }));
-        if (!(await confirmRemote(remoteTargets))) return;
-        const byIdForConfirm = new Map(itemsRef.current.map((item) => [item.id, item]));
-        const vendorNames = plan.machines
-            .flatMap((machine) => machine.itemIds)
-            .map((itemId) => byIdForConfirm.get(itemId))
-            .filter((item): item is UpdateItem => item?.vendorUpdater === true)
-            .map((item) => item.title);
-        if (!(await confirmVendor([...new Set(vendorNames)]))) return;
 
         stopRef.current = false;
         let done = 0;
@@ -221,7 +169,7 @@ export function useUpdatesContentModel(): UpdatesContentModel {
             })(),
         ]);
         setBatch(null);
-    }, [app, batch, confirmRemote, confirmVendor, executeItem, machineNameById, thisComputer.machineId]);
+    }, [app, batch, executeItem]);
 
     const stopAfterCurrent = React.useCallback(() => {
         stopRef.current = true;
@@ -230,18 +178,27 @@ export function useUpdatesContentModel(): UpdatesContentModel {
 
     const checkNow = React.useCallback(() => {
         void app.checkNow();
-        for (const machineId of onlineKey ? onlineKey.split('\u0000') : []) refreshMachine(machineId, serverId);
-    }, [app, onlineKey, refreshMachine, serverId]);
+        for (const machineId of onlineKey ? onlineKey.split('\u0000') : []) refreshMachineUpdateFacts(serverId, machineId);
+    }, [app, onlineKey, serverId]);
 
     const openWhatsNew = React.useCallback(() => {
         if (releaseNotesLauncher.open()) return;
         router.push('/(app)/changelog');
     }, [releaseNotesLauncher, router]);
 
+    const sessionsRunningKey = storage(selectSessionsRunningKey);
+    const sessionsRunningOn = React.useMemo(
+        () => new Set(sessionsRunningKey ? sessionsRunningKey.split('\u0000') : []),
+        [sessionsRunningKey],
+    );
+    const checkedAt = app.checkedAt == null && factsCheckedAt == null ? null : Math.max(app.checkedAt ?? 0, factsCheckedAt ?? 0);
+
     return React.useMemo(() => ({
         summary,
         groups,
-        checkedAt: app.checkedAt,
+        checkedAt,
+        uncheckedMachineCount,
+        sessionsRunningOn,
         runItem,
         updateAll,
         stopAfterCurrent,
@@ -250,5 +207,5 @@ export function useUpdatesContentModel(): UpdatesContentModel {
         skipAppVersion: app.skipVersion,
         openWhatsNew,
         whatsNewUnread: releaseNotes.hasUnread,
-    }), [app.checkedAt, app.skipVersion, batch, checkNow, groups, openWhatsNew, releaseNotes.hasUnread, runItem, stopAfterCurrent, summary, updateAll]);
+    }), [app.skipVersion, batch, checkNow, checkedAt, groups, openWhatsNew, releaseNotes.hasUnread, runItem, sessionsRunningOn, stopAfterCurrent, summary, uncheckedMachineCount, updateAll]);
 }

@@ -50,6 +50,8 @@ export function createCliUpdateHandler() {
         if (!serviceDaemonRunning) {
           return null;
         }
+        // The update owner checks cancellation before activation. Once activated, its restart
+        // and possible restore must settle before reporting cancellation, not race a rollback.
         return async ({ expectedVersion }) => {
           await controlDaemonService(releaseRing, { action: 'restart', takeover: false }, service);
           const restartedStatus = await readDaemonStatus(releaseRing, service);

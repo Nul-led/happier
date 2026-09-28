@@ -7,6 +7,9 @@ import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTa
 import { desktopSetupCoordinator } from '@/setup/desktopSetupCoordinator';
 import { cliAcquisitionFailureStatus } from '@/setup/setupStageModel';
 import { t } from '@/text';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { buildUpdateItemId } from '@/updates/items/updateItem';
+import { recordUpdateCompleted } from '@/updates/updateCompletions';
 
 import { buildLocalDaemonServiceSystemTaskSpec } from './buildLocalDaemonServiceSystemTaskSpec';
 
@@ -69,6 +72,10 @@ function createCliUpdateAction(runner: SystemTaskRunner): CliUpdateAction {
             if (isRunInFlight(runner, state) || runner.mode === 'unavailable') {
                 return;
             }
+            // The initiating account owns completion even if every observing surface unmounts.
+            const scope = getActiveServerAccountScope();
+            const inspection = desktopSetupCoordinator.readInspectionSnapshot();
+            const machineId = inspection.status === 'resolved' ? inspection.facts.auth.machineId : null;
             set({ ...state, starting: true, startError: null });
             try {
                 const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'));
@@ -77,6 +84,9 @@ function createCliUpdateAction(runner: SystemTaskRunner): CliUpdateAction {
                 // this computer sees the version the service now runs.
                 const unsubscribe = runner.subscribe(taskId, undefined, (result) => {
                     queueMicrotask(() => unsubscribe());
+                    if (result.ok && scope) {
+                        recordUpdateCompleted(scope, buildUpdateItemId(machineId ?? 'this-computer', { kind: 'happier-cli' }));
+                    }
                     // A finished update, or another one already running on this computer (K5
                     // `cli_update_in_progress`): either way the answer is what the CLI now reports.
                     if (result.ok || isUpdateInProgressElsewhere(result.error)) {

@@ -11,7 +11,10 @@ import {
   resolveProviderCliLatestVersionSource,
   resolveProviderCliNpmPackageName,
 } from '@happier-dev/agents';
-import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime';
+import { fetchGitHubLatestRelease, requestJson } from '@happier-dev/release-runtime';
+
+import { compareVersions } from '../update/index.js';
+import { readManagedPnpmMinimumReleaseAgeMs } from './managedPnpm.js';
 
 import { resolveHomeDirFromEnvironment, type ProviderCliResolutionSource } from './resolution.js';
 
@@ -145,27 +148,83 @@ function extractVersion(value: unknown): string | null {
   return match?.[0] ?? null;
 }
 
-function buildNpmLatestUrl(packageName: string): string {
-  return `https://registry.npmjs.org/${packageName.replace('/', '%2F')}/latest`;
+function buildNpmPackageUrl(packageName: string): string {
+  return `https://registry.npmjs.org/${packageName.replace('/', '%2F')}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export type ProviderCliLatestVersionFacts = Readonly<{
+  /** The newest version this install's owner would install now; `null` = unknown. */
+  latestVersion: string | null;
+  /** A newer published version the owner's release-age rule still holds back. */
+  heldVersion: Readonly<{ version: string; minimumReleaseAgeMs: number }> | null;
+}>;
+
+type LatestVersionDeps = Readonly<{
+  fetchJson?: (url: string) => Promise<unknown>;
+  fetchGitHubLatestRelease?: typeof fetchGitHubLatestRelease;
+  readMinimumReleaseAgeMs?: (env: NodeJS.ProcessEnv) => Promise<number | null>;
+}>;
+
+async function defaultFetchJson(url: string): Promise<unknown> {
+  return await requestJson<unknown>({ url, headers: { accept: 'application/json', 'user-agent': 'happier-cli' } });
 }
 
 /**
- * Reads the newest published version from the catalog's latest-version source
- * (the managed owner's source, else the vendor npm package). Resolves `null`
- * when the catalog declares no source or the payload carries no version, and
- * rejects on transport/registry failure so callers can decide what to cache.
+ * The managed installer (`pnpm add <pkg>`) resolves the `latest` tag but, under pnpm's
+ * release-age rule, installs the newest stable version up to it that is at least that old.
+ */
+function selectManagedPackageVersion(params: Readonly<{
+  packument: unknown;
+  minimumReleaseAgeMs: number;
+  nowMs: number;
+}>): ProviderCliLatestVersionFacts {
+  const packument = isRecord(params.packument) ? params.packument : {};
+  const distTags = isRecord(packument['dist-tags']) ? packument['dist-tags'] : {};
+  const latest = extractVersion(distTags.latest);
+  const times = isRecord(packument.time) ? packument.time : {};
+  if (!latest) return { latestVersion: null, heldVersion: null };
+  const cutoff = params.nowMs - params.minimumReleaseAgeMs;
+  const publishedAt = (version: string): number => {
+    const raw = times[version];
+    return typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
+  };
+  const latestPublishedAt = publishedAt(latest);
+  if (!Number.isFinite(latestPublishedAt) || latestPublishedAt <= cutoff) {
+    return { latestVersion: latest, heldVersion: null };
+  }
+  const installable = Object.keys(times)
+    .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+    .filter((version) => compareVersions(version, latest) < 0 && publishedAt(version) <= cutoff)
+    .sort(compareVersions)
+    .at(-1) ?? null;
+  return {
+    latestVersion: installable,
+    heldVersion: { version: latest, minimumReleaseAgeMs: params.minimumReleaseAgeMs },
+  };
+}
+
+/**
+ * The newest version the owner of this install would install. A Happier-managed package
+ * follows the managed installer's release-age rule; npm, native and other installs report
+ * the catalog's latest-version source (GitHub latest release or the npm `latest` tag).
+ * Rejects on transport/registry failure so callers can decide what to cache.
  */
 export async function fetchProviderCliLatestVersion(params: Readonly<{
   providerId: AgentId;
+  installSource: ProviderCliInstallSource;
   env?: NodeJS.ProcessEnv;
-  deps?: Readonly<{
-    fetchImpl?: typeof fetch;
-    fetchGitHubLatestRelease?: typeof fetchGitHubLatestRelease;
-  }>;
-}>): Promise<string | null> {
-  const source = resolveProviderCliLatestVersionSource(getProviderCliRuntimeSpec(params.providerId));
-  if (!source) return null;
+  now?: () => number;
+  deps?: LatestVersionDeps;
+}>): Promise<ProviderCliLatestVersionFacts> {
+  const spec = getProviderCliRuntimeSpec(params.providerId);
+  const source = resolveProviderCliLatestVersionSource(spec);
+  if (!source) return { latestVersion: null, heldVersion: null };
   const env = params.env ?? process.env;
+  const fetchJson = params.deps?.fetchJson ?? defaultFetchJson;
 
   if (source.kind === 'github_release') {
     const release = await (params.deps?.fetchGitHubLatestRelease ?? fetchGitHubLatestRelease)({
@@ -173,18 +232,21 @@ export async function fetchProviderCliLatestVersion(params: Readonly<{
       userAgent: 'happier-cli',
       githubToken: env.GITHUB_TOKEN,
     });
-    const tag = release && typeof release === 'object' ? (release as { tag_name?: unknown }).tag_name : null;
-    return extractVersion(tag);
+    const tag = isRecord(release) ? release.tag_name : null;
+    return { latestVersion: extractVersion(tag), heldVersion: null };
   }
 
-  const fetchImpl = params.deps?.fetchImpl ?? globalThis.fetch;
-  const url = buildNpmLatestUrl(source.packageName);
-  const response = await fetchImpl(url, {
-    headers: { accept: 'application/json', 'user-agent': 'happier-cli' },
-  });
-  if (!response.ok) {
-    throw new Error(`[npm] failed to resolve latest ${source.packageName} (${response.status})`);
+  if (params.installSource === 'managed' && spec.managedInstall?.kind === 'managed_package') {
+    const minimumReleaseAgeMs = await (params.deps?.readMinimumReleaseAgeMs ?? readManagedPnpmMinimumReleaseAgeMs)(env);
+    if (minimumReleaseAgeMs) {
+      return selectManagedPackageVersion({
+        packument: await fetchJson(buildNpmPackageUrl(source.packageName)),
+        minimumReleaseAgeMs,
+        nowMs: (params.now ?? Date.now)(),
+      });
+    }
   }
-  const payload = (await response.json()) as { version?: unknown } | null;
-  return extractVersion(payload?.version);
+
+  const payload = await fetchJson(`${buildNpmPackageUrl(source.packageName)}/latest`);
+  return { latestVersion: extractVersion(isRecord(payload) ? payload.version : null), heldVersion: null };
 }

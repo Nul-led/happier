@@ -393,6 +393,30 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await expect(app.page.getByTestId('desktop-setup-panel:panel')).toHaveCount(0, { timeout: 60_000 });
             // The Home says, in one sentence with one action, that this computer stays with B (R17).
             await expect(app.page.getByTestId('relay-drift-banner')).toContainText(shortAccountId(accountB.accountId), { timeout: 60_000 });
+            // The same recovery action must remain readable inside the narrow desktop sidebar.
+            await app.page.setViewportSize({ width: 1042, height: 680 });
+            const driftCard = app.page.getByTestId('relay-drift-banner');
+            const driftAction = app.page.getByTestId('relay-drift-banner-primary');
+            await expect.poll(async () => {
+                const card = await driftCard.boundingBox();
+                const action = await driftAction.boundingBox();
+                return Boolean(card && action && action.x >= card.x && action.x + action.width <= card.x + card.width);
+            }).toBe(true);
+            await expect.poll(() => driftAction.evaluate((button) => {
+                const bounds = button.getBoundingClientRect();
+                const text = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+                let node: Node | null;
+                while ((node = text.nextNode())) {
+                    if (!node.textContent?.trim()) continue;
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    for (const line of range.getClientRects()) {
+                        if (line.left < bounds.left || line.right > bounds.right || line.top < bounds.top || line.bottom > bounds.bottom) return false;
+                    }
+                }
+                return true;
+            })).toBe(true);
+            await app.page.setViewportSize({ width: 1280, height: 820 });
             expect(tasksOfKind(app.host, 'setup.thisComputer.v1').filter((task) => task.snapshot.result?.ok === true)).toEqual([]);
             expect(computer.stateFingerprint()).toEqual(before);
             expect(readRunningDaemonPids(computer)).toEqual(daemonPidsBefore);

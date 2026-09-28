@@ -25,6 +25,8 @@ export type UpdateRunObservation = Readonly<{
     errorMessage: string | null;
     /** The failed run's log file on its machine, when the executor reported one. */
     logPath?: string | null;
+    /** The last run found the tool already current (nothing to install). */
+    alreadyCurrent?: boolean;
 }>;
 
 /** The command that updates a Happier CLI whose daemon predates K5 facts (0.2 `self update` is POSIX-only). */
@@ -51,7 +53,6 @@ function baseItem(params: Readonly<{
         action: { kind: 'none' },
         failure: null,
         skipped: false,
-        vendorUpdater: false,
     };
 }
 
@@ -90,6 +91,10 @@ function resolveRow(item: UpdateItem, params: Readonly<{
             action: { kind: 'run', verb: 'retry' },
             logPath: params.task.logPath ?? null,
         };
+    }
+    if (params.task.alreadyCurrent) {
+        // The machine itself just said so; a cached latest version cannot override it.
+        return { ...item, state: 'upToDate', alreadyCurrent: true };
     }
     if (params.manual) {
         return { ...item, state, managedBy: 'user', action: state === 'available' || state === 'unknown' ? params.manual : { kind: 'none' } };
@@ -237,13 +242,12 @@ export function buildAgentCliUpdateItem(params: Readonly<{
     const installSource = readString(data.installSource);
     const command = readString(data.updateCommand);
     const userManaged = !updateSupported && ((installSource != null && installSource !== 'managed') || command != null);
-    const resolved = resolveRow(item, {
+    return resolveRow(item, {
         online: params.online,
         task: params.task,
         canRun: updateSupported,
         manual: userManaged ? { kind: 'manual', command } : null,
     });
-    return updateSupported && installSource === 'native' ? { ...resolved, vendorUpdater: true } : resolved;
 }
 
 /** An agent CLI or helper whose detect errored on that machine: listed, versionless, "Couldn't check". */

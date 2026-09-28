@@ -660,7 +660,7 @@ describe('desktopSetupCoordinator', () => {
         expect(confirm).toHaveBeenCalledWith({
             kind: 'account',
             fromAccountLabel: 'alice',
-            toAccountLabel: 'acct_c_0…',
+            toAccountLabel: 'acct_c…6789',
             relayHost: 'relay.example.test',
             fromRelayHost: null,
         });
@@ -678,7 +678,7 @@ describe('desktopSetupCoordinator', () => {
         const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
 
         await expect(desktopSetupCoordinator.startSetup({ start: startExecutor, confirm })).resolves.toBeNull();
-        expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ kind: 'account', fromAccountLabel: 'acct_oth…' }));
+        expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ kind: 'account', fromAccountLabel: 'acct_other' }));
         expect(startExecutor).not.toHaveBeenCalled();
 
         confirm.mockImplementation(async () => 'move' as never);

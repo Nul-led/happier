@@ -42,7 +42,7 @@ export function normalizeBootstrapChannel(raw: unknown): Readonly<{
 /**
  * Bootstrap's contract over the process owner's `runCommandCapture`: resolves
  * `{ status, stdout, stderr }` (a signal-terminated child reports status 1),
- * rejects with `CommandTimeoutError` after `timeoutMs` (default 60 s), and rejects
+ * rejects with `CommandTimeoutError` after `timeoutMs` (default 60 s, zero delegates the deadline), and rejects
  * with the spawn error when the command cannot start.
  */
 export async function runCommandCapture(params: Readonly<{
@@ -50,8 +50,10 @@ export async function runCommandCapture(params: Readonly<{
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }>): Promise<CommandExecutionResult> {
-  const timeoutMs = Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000;
+  const timeoutMs = params.timeoutMs === 0 ? 0
+    : Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000;
   // A Windows command shim (an npm `happier.cmd`) cannot be spawned directly; the process owner's
   // invocation runs it through cmd.exe and is a no-op for everything else and on other platforms.
   const result = await runProcessCommandCapture({
@@ -59,10 +61,12 @@ export async function runCommandCapture(params: Readonly<{
     args: params.args,
     env: params.env,
     timeoutMs,
+    signal: params.signal,
     resolveCommandOnPath: false,
     windowsHide: false,
   });
   if (result.kind === 'timed-out') throw new CommandTimeoutError(params.command, timeoutMs);
+  if (result.kind === 'aborted') throw result.error;
   if (result.kind === 'spawn-failed') throw result.error;
   return {
     status: typeof result.status === 'number' ? result.status : 1,

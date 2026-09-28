@@ -550,10 +550,12 @@ runs beside it and never holds accounts, other machines, sessions or settings be
   reconciliation, the executor and the readiness proof — whichever route the app opened on, so a
   cold deep link into a session or Settings gets the same app-open work as the Home. Sign-out
   unmounts it.
-- **Presentation on the Home.** `DesktopLocalSetupPanel` docks the setup surface (progress, an
-  honest failure sentence, Retry or Update, Continue without this computer, Details) under the Home
-  content. It owns no state: leaving the Home never pauses setup, and returning shows the same run.
-  The panel never takes keyboard focus; its sentence is announced through a polite live region.
+- **Presentation on the Home.** `DesktopLocalSetupPanel` presents the setup surface (the setup
+  mark, one status sentence, Retry or Update, Continue without this computer, Details) as a blurred
+  veil over the Home content area only. The sidebar, header chrome, navigation and every other
+  route stay usable, and "Continue without this computer" takes the veil away for this run. It owns
+  no state: leaving the Home never pauses setup, and returning shows the same run. It never takes
+  keyboard focus; its sentence is announced through a polite live region.
 - **Consent** is asked by the operation that needs it, as the existing focused alerts; declining
   leaves the daemon untouched and the app usable.
 - **Fails closed.** Readiness still needs converged facts and one successful read-only machine RPC.
@@ -729,6 +731,15 @@ through the tracked exit lifecycle. An exit notification for an untracked PID do
 not authorize marker deletion. Failed terminal-exit staging retains tracking and
 marker evidence; visible-console startup awaits that cleanup and reports an
 incomplete retirement rather than allowing its rejection to escape.
+
+Development startup recovery uses `daemonProcessScopeIdentity.ts` to keep runners
+within their owning Happier home and daemon lifecycle. Markerless recovery requires
+recorded home and lifecycle identity; older runners without an explicit lifecycle
+identity require the recorded active-server identity and a matching server URL.
+An explicit lifecycle identity survives endpoint changes. Existing local markers
+can supply ownership evidence when process inventory is incomplete, but cannot
+override recorded foreign-home or foreign-scope facts. The child-environment
+builder publishes the resolved home even when the daemon inherited no home override.
 
 ### Model-capacity recovery (development)
 

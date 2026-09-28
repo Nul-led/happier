@@ -307,7 +307,7 @@ export function createSetupThisComputerKind(
       // R13 (a): the run's one relay context. The reads that must answer for the target before the
       // run may select it use `target`; every other command uses `selected`, which `server set`
       // points at the target. Neither inherits the server selection the app was launched with.
-      const scope = createSetupCliScope({ cli, target: relayTarget, processEnv: process.env });
+      const scope = createSetupCliScope({ cli, target: relayTarget, processEnv: process.env, signal: ctx.signal });
 
       ctx.emit({ type: 'progress', stepId: STEP.inspectService, message: 'Checking the background service' });
       const preview = await deps.previewServiceInstall(ring, scope.target);

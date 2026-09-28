@@ -109,6 +109,26 @@ export function normalizeCodexAsyncUserInputQuestionsToAskUserQuestionInput(para
         : { questions: [] };
 }
 
+export type CodexAsyncQuestionRequest = Readonly<{
+    itemId: string;
+    questions: unknown;
+    input: Readonly<Record<string, unknown>>;
+}>;
+
+export function readPendingCodexAsyncQuestionRequest(value: unknown): CodexAsyncQuestionRequest | null {
+    const request = asRecord(value);
+    if (!request || request.tool !== 'AskUserQuestion') return null;
+    const input = asRecord(request.arguments);
+    const marker = asRecord(input?.[CODEX_ASYNC_QUESTION_MARKER_KEY]);
+    if (marker?.v !== 1 || typeof marker.itemId !== 'string' || marker.itemId.trim().length === 0) return null;
+    if (!Array.isArray(marker.questions) || !input) return null;
+    return {
+        itemId: marker.itemId,
+        questions: marker.questions,
+        input,
+    };
+}
+
 export type CodexAsyncQuestionDelivery = Readonly<{
     itemId: string;
     questions: unknown;
@@ -137,7 +157,9 @@ export function isCodexAsyncQuestionDeliveryCompleted(value: unknown, itemId: st
     const input = asRecord(completed?.arguments);
     const marker = asRecord(input?.[CODEX_ASYNC_QUESTION_MARKER_KEY]);
     const delivery = asRecord(completed?.[CODEX_ASYNC_QUESTION_DELIVERY_KEY]);
-    return marker?.v === 1 && marker.itemId === itemId && delivery?.status === 'delivered';
+    if (marker?.v !== 1 || marker.itemId !== itemId) return false;
+    if (delivery?.status === 'delivered') return true;
+    return completed?.status === 'canceled' && completed.decision === 'abort';
 }
 
 export function markCodexAsyncQuestionDeliveryCompleted(value: unknown, itemId: string): unknown {

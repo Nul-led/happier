@@ -7,6 +7,7 @@ export type AppUpdateChannel = 'desktop' | 'native-store' | 'web-ui' | 'ota' | '
 
 export type AppUpdateFacts = Readonly<{
     platformOs: string;
+    desktopHost: boolean;
     title: string;
     native: Readonly<{ updateUrl: string | null; required: boolean }>;
     webUiUpdateAvailable: boolean;
@@ -29,7 +30,6 @@ const BASE: Omit<UpdateItem, 'title'> = {
     action: { kind: 'none' },
     failure: null,
     skipped: false,
-    vendorUpdater: false,
 };
 
 function wholePercent(fraction: number | null): number | null {
@@ -65,7 +65,7 @@ function buildDesktopItem(base: UpdateItem, desktop: DesktopUpdaterSnapshot): Up
                 action: { kind: 'run', verb: 'retry' },
             };
         case 'idle':
-            return base;
+            return { ...base, state: 'unchecked' };
     }
 }
 
@@ -89,7 +89,7 @@ export function buildAppUpdateItem(facts: AppUpdateFacts): AppUpdateItemModel {
     if (facts.platformOs === 'web' && facts.webUiUpdateAvailable) {
         return { channel: 'web-ui', item: { ...base, state: 'available', action: { kind: 'run', verb: 'reload' } } };
     }
-    if (facts.desktop.phase !== 'idle') {
+    if (facts.desktopHost || facts.desktop.phase !== 'idle') {
         return { channel: 'desktop', item: buildDesktopItem(base, facts.desktop) };
     }
     if (facts.ota.isDownloading) {

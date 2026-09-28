@@ -33,6 +33,7 @@ import {
   resolveProviderCliManagedCommandRelativePath,
   type ProviderCliCommandResolution,
 } from './resolution.js';
+import { resolveProviderInstallCommandTimeoutMs } from './installCommandTimeout.js';
 import { classifyProviderCliInstall } from './update.js';
 
 export type ProviderCliInstallCommand = Readonly<{
@@ -457,15 +458,6 @@ function buildVendorRecipePath(providerId: AgentId, env: NodeJS.ProcessEnv): str
   return [...uniqueEntries].join(delimiter);
 }
 
-function resolveVendorInstallTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const raw = typeof env.HAPPIER_VENDOR_INSTALL_TIMEOUT_MS === 'string'
-    ? env.HAPPIER_VENDOR_INSTALL_TIMEOUT_MS.trim()
-    : '';
-  if (raw === '0') return 0;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 250) return 180_000;
-  return Math.min(parsed, 900_000);
-}
 
 type LoggedCommandOutcome =
   | Readonly<{ kind: 'exited'; status: number | null; signal: NodeJS.Signals | null; stderr: string }>
@@ -499,6 +491,7 @@ async function runLoggedProviderCommand(params: Readonly<{
     appendCommandLog(params.logPath, params.cmd, params.args, '', result.message, null, null);
     return { kind: 'exec-failed', message: result.message };
   }
+  if (result.kind === 'aborted') throw result.error;
   if (result.kind === 'timed-out') {
     appendCommandLog(params.logPath, params.cmd, params.args, result.stdout, result.stderr, null, 'SIGTERM');
     appendLogLine(params.logPath, `# command timed out after ${params.timeoutMs}ms`);
@@ -1132,7 +1125,7 @@ export async function installProviderCli(params: Readonly<{
         if (!commandExistsOnPath(c.cmd, { env })) {
           return { ok: false, errorCode: 'command-not-found', errorMessage: `Command not found: ${c.cmd}`, plan, logPath };
         }
-        const timeoutMs = resolveVendorInstallTimeoutMs(env);
+        const timeoutMs = resolveProviderInstallCommandTimeoutMs(env);
         const childEnv = {
           ...process.env,
           ...env,
@@ -1289,7 +1282,7 @@ async function updateInstalledProviderCli(
 
     const logPath = resolveLogPath({ providerId: params.providerId, logDir: params.logDir, env });
     writeLogHeader(logPath, plan);
-    const timeoutMs = resolveVendorInstallTimeoutMs(env);
+    const timeoutMs = resolveProviderInstallCommandTimeoutMs(env);
     const outcome = await runLoggedProviderCommand({
       cmd: command.cmd,
       args: command.args,

@@ -5,6 +5,17 @@ import { resolveFileLogLevel } from '@/ui/logFileLevel';
 import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
 
 describe('buildSpawnChildProcessEnv', () => {
+  it('publishes the resolved daemon home even when the parent did not export it', () => {
+    for (const inheritedHome of [undefined, '/tmp/stale-home']) {
+      const params = {
+        processEnv: { HAPPIER_HOME_DIR: inheritedHome },
+        extraEnv: {},
+        homeDir: '/tmp/resolved-daemon-home',
+      };
+      expect(buildSpawnChildProcessEnv(params).HAPPIER_HOME_DIR).toBe('/tmp/resolved-daemon-home');
+    }
+  });
+
   const buildOnLinux = (params: Parameters<typeof buildSpawnChildProcessEnv>[0]) => {
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     try {

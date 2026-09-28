@@ -44,6 +44,7 @@ export function buildUpdatesSummary(
     let unknown = false;
     let offline = false;
     let checking = false;
+    let unchecked = coverage.uncheckedMachineCount > 0;
     let completed = false;
     for (const item of items) {
         if (isUpdateItemActionable(item)) actionableCount += 1;
@@ -54,6 +55,7 @@ export function buildUpdatesSummary(
         if (item.state === 'unknown') unknown = true;
         if (item.state === 'offline') offline = true;
         if (item.state === 'checking') checking = true;
+        if (item.state === 'unchecked') unchecked = true;
         const completion = completions.get(item.id);
         if (completion === 'done' || (completion === 'pendingRemote' && item.state === 'upToDate')) completed = true;
     }
@@ -78,7 +80,7 @@ export function buildUpdatesSummary(
         ? phase
         : checking
             ? 'checking'
-            : coverage.uncheckedMachineCount > 0
+            : unchecked
                 ? 'unchecked'
                 : unknown
                     ? 'unknown'

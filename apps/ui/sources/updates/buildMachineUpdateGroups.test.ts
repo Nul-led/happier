@@ -152,4 +152,15 @@ describe('buildMachineUpdateGroups (what the always-mounted pill counts)', () =>
         const row = groups.flatMap((group) => group.items).find((item) => item.id === `laptop:installable:${helper.key}`);
         expect(row).toMatchObject({ state: 'unknown', failure: { kind: 'latestUnknown' }, action: { kind: 'none' } });
     });
+
+    it('reports when the machines\' update facts were last checked (the header\'s "Checked …" line)', () => {
+        const at = (checkedAt: number): MachineCapabilitiesSnapshot => ({
+            response: { protocolVersion: 1, results: { 'tool.systemTasks': { ok: true, checkedAt, data: { kinds: [] } } } },
+        });
+        const { checkedAt } = buildMachineUpdateGroups({
+            machines: [machine('laptop'), machine('studio')], thisMachineId: 'laptop', thisComputerItem: null, runs: NO_RUNS,
+            snapshots: new Map([['laptop', at(1_000)], ['studio', at(5_000)]]),
+        });
+        expect(checkedAt).toBe(5_000);
+    });
 });

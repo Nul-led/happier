@@ -33,7 +33,13 @@ export function describeUpdatesEntry(summary: UpdatesSummary): PillCopy | null {
         case 'running':
             return { icon: 'spinner', label: t('updates.pill.running'), a11y: t('updates.a11y.pillRunning'), warning: false };
         case 'failed':
-            return { icon: 'warning-circle', label: t('updates.pill.failed'), a11y: t('updates.a11y.pillFailed'), warning: true };
+            return {
+                icon: 'warning-circle',
+                label: t('updates.pill.failed'),
+                count: summary.failedCount,
+                a11y: t('updates.a11y.pillFailed'),
+                warning: true,
+            };
         case 'ready':
             return { icon: 'arrows-clockwise', label: t('updates.pill.ready'), a11y: t('updates.a11y.pillReady'), warning: false };
         case 'completed':
@@ -85,15 +91,15 @@ function readWebRect(event: unknown): WebRect | null {
 
 /**
  * The Updates entry in chrome. It reads only the stable summary; the detail model mounts inside the
- * open popover. `pill` sits after the sidebar title (and in the signed-out desktop shell), `rail` is
- * the collapsed sidebar's icon with a count, `header` is the phone Home header's entry and pushes
- * Settings › Updates instead of opening a popover. Hidden when there is nothing to act on.
+ * open popover. `pill` sits after the sidebar title (and in the signed-out desktop shell) and `rail`
+ * in the collapsed sidebar: both are the same compact mark with a count, tinted warning when
+ * something failed and accent otherwise; the sentence is their accessible name and hover tooltip.
+ * `header` is the phone Home header's entry and pushes Settings › Updates instead of opening a
+ * popover. Hidden when there is nothing to act on.
  */
 export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(props: Readonly<{
     summary: UpdatesSummary;
     variant: 'pill' | 'rail' | 'header';
-    /** Narrow sidebar: keep the mark and the count, drop the words (the accessible name keeps them). */
-    compactLabel?: boolean;
     buttonSize?: number;
     testID?: string;
 }>) {
@@ -119,23 +125,27 @@ export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(pro
         ? <ActivitySpinner size={iconMatchedSpinnerSize(size)} color={color} />
         : <Icon name={(copy?.icon ?? 'arrow-circle-up') as IconName} size={size} color={color} />;
 
-    const trigger = props.variant === 'rail' ? (
-        <Pressable
-            testID={props.testID ?? 'updates.entry.rail'}
+    const buttonSize = props.buttonSize ?? 28;
+    const trigger = props.variant !== 'header' ? (
+        <PressableSurface
+            testID={props.testID ?? `updates.entry.${props.variant}`}
             accessibilityRole="button"
             accessibilityLabel={copy?.a11y ?? t('updates.title')}
             accessibilityState={{ expanded: open }}
+            webTooltip={copy?.label}
+            tooltipPlacement="bottom"
             hitSlop={8}
+            focusRingRadius={buttonSize / 2}
             onPress={onPress}
-            style={[styles.railButton, { width: props.buttonSize ?? 32, height: props.buttonSize ?? 32, borderRadius: (props.buttonSize ?? 32) / 2 }]}
+            style={[styles.railButton, { width: buttonSize, height: buttonSize, borderRadius: buttonSize / 2 }]}
         >
             <View style={styles.railGlyph}>
-                {mark(ICON_SIZE.sm, copy?.warning ? theme.colors.state.warning.foreground : theme.colors.chrome.header.foreground)}
+                {mark(ICON_SIZE.sm, copy?.warning ? theme.colors.state.warning.foreground : theme.colors.state.info.foreground)}
                 {copy?.count ? (
-                    <TabBadge variant="count" tone="neutral" size="compact" value={copy.count} style={styles.railBadge} />
+                    <TabBadge variant="count" tone={copy.warning ? 'alert' : 'neutral'} value={copy.count} style={styles.railBadge} />
                 ) : null}
             </View>
-        </Pressable>
+        </PressableSurface>
     ) : (
         <PressableSurface
             testID={props.testID ?? `updates.entry.${props.variant}`}
@@ -152,7 +162,8 @@ export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(pro
                 labelVariant="phrase"
                 leading={mark(ICON_SIZE.xs, copy?.warning ? theme.colors.state.warning.onTint : theme.colors.state.neutral.onTint)}
                 count={copy?.count}
-                label={props.compactLabel && copy?.count ? '' : (copy?.label ?? '')}
+                // The phone header keeps the mark and the count; the words only when there is no count.
+                label={copy?.count ? '' : (copy?.label ?? '')}
                 accessibilityLabel={copy?.a11y}
                 labelNumberOfLines={1}
             />
@@ -237,7 +248,6 @@ const styles = StyleSheet.create((theme) => ({
 /** Chrome mount point: reads the summary itself, so hosts pass no update plumbing. */
 export const UpdatesEntry = React.memo(function UpdatesEntry(props: Readonly<{
     variant: 'pill' | 'rail' | 'header';
-    compactLabel?: boolean;
     buttonSize?: number;
     testID?: string;
 }>) {

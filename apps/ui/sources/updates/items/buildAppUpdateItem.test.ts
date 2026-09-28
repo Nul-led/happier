@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { DesktopUpdaterSnapshot } from '@/desktop/updates/desktopUpdater';
 
 import { buildAppUpdateItem, type AppUpdateFacts } from './buildAppUpdateItem';
+import { buildUpdatesSummary } from './buildUpdatesSummary';
 
 const DESKTOP_IDLE: DesktopUpdaterSnapshot = {
     phase: 'idle',
@@ -18,6 +19,7 @@ const DESKTOP_IDLE: DesktopUpdaterSnapshot = {
 function facts(overrides: Partial<AppUpdateFacts> = {}): AppUpdateFacts {
     return {
         platformOs: 'web',
+        desktopHost: false,
         title: 'Happier',
         native: { updateUrl: null, required: false },
         webUiUpdateAvailable: false,
@@ -69,5 +71,13 @@ describe('buildAppUpdateItem (the "This app" row)', () => {
 
     it('with nothing to do the app is up to date (release notes are not an input)', () => {
         expect(buildAppUpdateItem(facts()).item).toMatchObject({ state: 'upToDate', action: { kind: 'none' } });
+    });
+
+    it('an idle desktop check is not proof the app is current, including when it is the only row', () => {
+        const model = buildAppUpdateItem({ ...facts(), desktopHost: true });
+        expect(model).toMatchObject({ channel: 'desktop', item: { state: 'unchecked', action: { kind: 'none' } } });
+        expect(buildUpdatesSummary([model.item])).toMatchObject({ status: 'unchecked', actionableCount: 0 });
+        const checked = buildAppUpdateItem({ ...facts(), desktopHost: true, desktop: { ...DESKTOP_IDLE, phase: 'upToDate', checkedAt: 1 } });
+        expect(buildUpdatesSummary([checked.item])).toMatchObject({ status: 'upToDate' });
     });
 });

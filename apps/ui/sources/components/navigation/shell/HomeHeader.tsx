@@ -168,7 +168,7 @@ function HeaderLeft(props: { showAutomations: boolean }) {
             {/* The phone's Updates entry sits where the logo is and pushes Settings › Updates; the
                 logo returns when there is nothing to act on. */}
             {updates.visible ? (
-                <UpdatesPopoverButton summary={updates} variant="header" compactLabel testID="home-header-updates-pill" />
+                <UpdatesPopoverButton summary={updates} variant="header" testID="home-header-updates-pill" />
             ) : logo}
             {props.showAutomations ? (
                 <Pressable

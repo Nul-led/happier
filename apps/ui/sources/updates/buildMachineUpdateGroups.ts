@@ -98,7 +98,13 @@ export function buildMachineUpdateGroups(params: Readonly<{
     runs: ReturnType<typeof useMachineUpdateRuns>;
     snapshots: ReadonlyMap<string, MachineCapabilitiesSnapshot | null>;
     installables?: readonly InstallableEntry[];
-}>): Readonly<{ groups: UpdatesGroup[]; remotes: RemoteMachineUpdateFacts[]; uncheckedMachineCount: number }> {
+}>): Readonly<{
+    groups: UpdatesGroup[];
+    remotes: RemoteMachineUpdateFacts[];
+    uncheckedMachineCount: number;
+    /** The newest answer to the update-facts request on any machine; `null` when none is cached. */
+    checkedAt: number | null;
+}> {
     const installables = params.installables ?? readUpdatableInstallables();
     const groups: UpdatesGroup[] = [];
     const machineId = params.thisMachineId;
@@ -144,7 +150,15 @@ export function buildMachineUpdateGroups(params: Readonly<{
     const uncheckedMachineCount = groups.filter((group) => (
         group.machineId != null && group.online && !hasAnswered(params.snapshots.get(group.machineId) ?? null, requestedIds)
     )).length;
-    return { groups, remotes, uncheckedMachineCount };
+    let checkedAt: number | null = null;
+    for (const group of groups) {
+        const snapshot = group.machineId != null ? params.snapshots.get(group.machineId) ?? null : null;
+        for (const id of requestedIds) {
+            const answeredAt = readProbe(snapshot, id)?.checkedAt;
+            if (typeof answeredAt === 'number' && answeredAt > (checkedAt ?? 0)) checkedAt = answeredAt;
+        }
+    }
+    return { groups, remotes, uncheckedMachineCount, checkedAt };
 }
 
 type SnapshotResults = MachineCapabilitiesSnapshot['response']['results'];

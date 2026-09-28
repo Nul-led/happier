@@ -12,6 +12,8 @@ export type UpdateItemPresentation = Readonly<{
     actionLabel: string | null;
     /** The widest label this row kind can show, laid out invisibly so swaps never move the title. */
     sizingLabel: string;
+    /** A quiet fact about what the action does, never a question (sessions reconnect after it). */
+    note: string | null;
 }>;
 
 function versionLine(item: UpdateItem): string | null {
@@ -36,7 +38,6 @@ function describeFailure(item: UpdateItem): string {
             return failure.message;
         case 'rolledBack':
             return t('updates.row.rolledBack', { kept: failure.kept, target: failure.target });
-        case 'lostConnection':
         case 'latestUnknown':
             return t('updates.row.latestUnknown');
     }
@@ -46,9 +47,12 @@ function describeStatus(item: UpdateItem): string {
     const versions = versionLine(item);
     const isApp = item.subject.kind === 'app';
     switch (item.state) {
+        case 'unchecked':
+            return t('updates.summary.notCheckedYet');
         case 'checking':
             return t('updates.row.checking');
         case 'upToDate':
+            if (item.alreadyCurrent) return t('updates.row.alreadyCurrent');
             return item.currentVersion ? t('updates.row.upToDateVersion', { version: item.currentVersion }) : t('updates.summary.upToDate');
         case 'available':
             if (item.skipped && item.latestVersion) return t('updates.row.skipped', { version: item.latestVersion });
@@ -64,7 +68,6 @@ function describeStatus(item: UpdateItem): string {
             if (item.step === 'restarting') return t('updates.row.restarting');
             if (item.step === 'restartingService') return t('updates.row.restartingService');
             if (item.step === 'reconnecting') return t('updates.row.waitingReconnect');
-            if (item.step === 'lostConnection') return t('updates.row.lostConnection');
             return item.latestVersion ? t('updates.row.updatingTo', { version: item.latestVersion }) : t('updates.row.updating');
         case 'ready':
             return item.latestVersion ? t('updates.row.readyVersion', { version: item.latestVersion }) : t('updates.row.ready');
@@ -95,8 +98,11 @@ function describeActionLabel(item: UpdateItem): string | null {
     }
 }
 
-/** The one place a row's words come from; the row itself only lays them out. */
-export function describeUpdateItem(item: UpdateItem): UpdateItemPresentation {
+/**
+ * The one place a row's words come from; the row itself only lays them out. `sessionsRunning`: the
+ * row's machine has sessions running now.
+ */
+export function describeUpdateItem(item: UpdateItem, context: Readonly<{ sessionsRunning?: boolean }> = {}): UpdateItemPresentation {
     const actionLabel = describeActionLabel(item);
     const command = item.action.kind === 'manual' ? item.action.command : null;
     const subtitle = item.action.kind === 'manual' && !command && item.state !== 'upToDate'
@@ -105,5 +111,9 @@ export function describeUpdateItem(item: UpdateItem): UpdateItemPresentation {
     const sizingLabel = item.subject.kind === 'app'
         ? t('updates.action.restart')
         : t('updates.action.update').length >= t('common.retry').length ? t('updates.action.update') : t('common.retry');
-    return { subtitle, command, actionLabel, sizingLabel };
+    // Another machine's Happier CLI update restarts its background service; its sessions reconnect.
+    const note = context.sessionsRunning === true && item.subject.kind === 'happier-cli' && item.action.kind === 'run'
+        ? t('updates.row.restartsService')
+        : null;
+    return { subtitle, command, actionLabel, sizingLabel, note };
 }

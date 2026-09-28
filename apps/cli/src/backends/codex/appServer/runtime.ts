@@ -64,6 +64,7 @@ import {
     looksLikeCodexApprovalRequestUserInput,
     markCodexAsyncQuestionDeliveryCompleted,
     normalizeCodexAsyncUserInputQuestionsToAskUserQuestionInput,
+    readPendingCodexAsyncQuestionRequest,
     readPendingCodexAsyncQuestionDelivery,
     type CodexAsyncQuestionDelivery,
     normalizeCodexRequestUserInputQuestionsToAskUserQuestionInput,
@@ -2231,6 +2232,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         });
     };
 
+    const buildItemStateKey = (scopeId: string, itemId: string): string => `${scopeId}:${itemId}`;
+
     const deliverCodexAsyncQuestionAnswers = async (
         delivery: CodexAsyncQuestionDelivery,
     ): Promise<boolean> => {
@@ -2256,6 +2259,68 @@ export function createCodexAppServerRuntime(params: Readonly<{
         return true;
     };
 
+    const handleCodexAsyncQuestion = async (questionParams: Readonly<{
+        itemId: string;
+        questions: unknown;
+        input: unknown;
+        itemKey: string;
+        persistedDelivery?: CodexAsyncQuestionDelivery | null;
+    }>): Promise<void> => {
+        const permissionHandler = params.permissionHandler;
+        if (!permissionHandler) return;
+        try {
+            await commitCodexAsyncQuestionRecord(questionParams.itemId, 'request', {
+                type: 'tool-call',
+                callId: questionParams.itemId,
+                name: 'AskUserQuestion',
+                input: questionParams.input,
+            });
+            if (questionParams.persistedDelivery) {
+                await deliverCodexAsyncQuestionAnswers(questionParams.persistedDelivery);
+                return;
+            }
+            const result = await permissionHandler.handleToolCall(
+                questionParams.itemId,
+                'AskUserQuestion',
+                questionParams.input,
+            );
+            const delivered = result.answers
+                ? await deliverCodexAsyncQuestionAnswers({
+                    itemId: questionParams.itemId,
+                    questions: questionParams.questions,
+                    answersByKey: result.answers,
+                })
+                : false;
+            if (!delivered) {
+                await commitCodexAsyncQuestionRecord(questionParams.itemId, 'result', {
+                    type: 'tool-call-result',
+                    callId: questionParams.itemId,
+                    output: { status: result.decision === 'abort' ? 'cancelled' : 'declined' },
+                });
+                await markCodexAsyncQuestionDelivered(questionParams.itemId);
+            }
+        } catch (error) {
+            // A repeated provider notification may safely retry deterministic transcript and
+            // pending-input identities after a transient failure.
+            handledAsyncQuestionItemKeys.delete(questionParams.itemKey);
+            throw error;
+        }
+    };
+
+    const cancelStaleCodexAsyncQuestion = async (itemId: string): Promise<boolean> => {
+        const canceled = params.permissionHandler?.cancelPendingRequest?.(
+            itemId,
+            'Codex async question could not be restored after session resume',
+        ) ?? false;
+        if (!canceled) return false;
+        await commitCodexAsyncQuestionRecord(itemId, 'result', {
+            type: 'tool-call-result',
+            callId: itemId,
+            output: { status: 'cancelled' },
+        });
+        return true;
+    };
+
     const recoverPersistedCodexAsyncQuestionAnswers = async (): Promise<void> => {
         if (typeof params.session.getAgentStateSnapshot !== 'function') return;
         const completedRequests = params.session.getAgentStateSnapshot()?.completedRequests;
@@ -2278,6 +2343,34 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     errorName: error instanceof Error ? error.name : typeof error,
                 });
             }
+        }
+    };
+
+    const recoverPendingCodexAsyncQuestions = async (): Promise<void> => {
+        const permissionHandler = params.permissionHandler;
+        if (!permissionHandler || typeof params.session.getAgentStateSnapshot !== 'function') return;
+        const requests = params.session.getAgentStateSnapshot()?.requests;
+        if (!requests) return;
+        const streamScopeId = threadId ?? 'resumed-thread';
+        for (const [requestId, request] of Object.entries(requests)) {
+            const pending = readPendingCodexAsyncQuestionRequest(request);
+            if (!pending || pending.itemId !== requestId) continue;
+            const itemKey = buildItemStateKey(streamScopeId, pending.itemId);
+            if (handledAsyncQuestionItemKeys.has(itemKey)) continue;
+            handledAsyncQuestionItemKeys.add(itemKey);
+            if (!canSteerPrompt()) {
+                const canceled = await cancelStaleCodexAsyncQuestion(pending.itemId);
+                if (!canceled) handledAsyncQuestionItemKeys.delete(itemKey);
+                continue;
+            }
+            startDetachedProviderProjection('async-user-input-recovery', () => (
+                handleCodexAsyncQuestion({
+                    itemId: pending.itemId,
+                    questions: pending.questions,
+                    input: pending.input,
+                    itemKey,
+                })
+            ));
         }
     };
 
@@ -2309,7 +2402,6 @@ export function createCodexAppServerRuntime(params: Readonly<{
         override(text);
     };
 
-    const buildItemStateKey = (scopeId: string, itemId: string): string => `${scopeId}:${itemId}`;
     const buildRawFallbackStateKey = (scopeId: string): string => `${scopeId}:raw-response-item`;
     const buildItemStreamKey = (scopeId: string, kind: 'assistant' | 'reasoning', itemId: string): string =>
         `${scopeId}:${kind}:${itemId}`;
@@ -2513,45 +2605,15 @@ export function createCodexAppServerRuntime(params: Readonly<{
             if (handledAsyncQuestionItemKeys.has(itemKey)) return;
             handledAsyncQuestionItemKeys.add(itemKey);
 
-            startDetachedProviderProjection('async-user-input-request', async () => {
-                try {
-                    await commitCodexAsyncQuestionRecord(update.itemId, 'request', {
-                        type: 'tool-call',
-                        callId: update.itemId,
-                        name: 'AskUserQuestion',
-                        input: toolInput,
-                    });
-                    if (persistedDelivery) {
-                        await deliverCodexAsyncQuestionAnswers(persistedDelivery);
-                        return;
-                    }
-                    const result = await params.permissionHandler!.handleToolCall(
-                        update.itemId,
-                        'AskUserQuestion',
-                        toolInput,
-                    );
-                    const delivered = result.answers
-                        ? await deliverCodexAsyncQuestionAnswers({
-                            itemId: update.itemId,
-                            questions: update.questions,
-                            answersByKey: result.answers,
-                        })
-                        : false;
-                    if (!delivered) {
-                        await commitCodexAsyncQuestionRecord(update.itemId, 'result', {
-                            type: 'tool-call-result',
-                            callId: update.itemId,
-                            output: { status: result.decision === 'abort' ? 'cancelled' : 'declined' },
-                        });
-                        await markCodexAsyncQuestionDelivered(update.itemId);
-                    }
-                } catch (error) {
-                    // A repeated provider notification may safely retry deterministic transcript and
-                    // pending-input identities after a transient failure.
-                    handledAsyncQuestionItemKeys.delete(itemKey);
-                    throw error;
-                }
-            });
+            startDetachedProviderProjection('async-user-input-request', () => (
+                handleCodexAsyncQuestion({
+                    itemId: update.itemId,
+                    questions: update.questions,
+                    input: toolInput,
+                    itemKey,
+                    persistedDelivery,
+                })
+            ));
             return;
         }
 
@@ -4646,6 +4708,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 reason: 'startOrLoad',
             });
         }
+        startDetachedProviderProjection('async-user-input-recovery', recoverPendingCodexAsyncQuestions);
         startDetachedProviderProjection('async-user-input-recovery', recoverPersistedCodexAsyncQuestionAnswers);
     };
 
