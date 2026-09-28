@@ -4,6 +4,7 @@ import type { PermissionResult } from '@/agent/permissions/permissionResult';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { AgentState, Metadata, PermissionMode } from '@/api/types';
+import { normalizePermissionModeToIntent } from '@/agent/runtime/permission/permissionModeCanonical';
 import { createKeyedStreamedTranscriptBridge } from '@/api/session/createKeyedStreamedTranscriptBridge';
 import type { StreamedTranscriptWriterSession } from '@/api/session/streamedTranscriptWriter';
 import { configuration } from '@/configuration';
@@ -81,6 +82,7 @@ import {
     createCodexAppServerClient,
     isCodexAppServerJsonLineTooLargeError,
     type DisposableCodexAppServerClient,
+    type CodexAppServerRequestOptions,
 } from './client/createCodexAppServerClient';
 import {
     readCodexAppServerResumeRecoveryTimeoutMs,
@@ -114,6 +116,7 @@ import {
     isCodexAppServerDefinitiveMethodNotFoundError,
     isCodexAppServerMethodNotFoundError,
     isCodexAppServerNoActiveTurnToSteerError,
+    isCodexAppServerManagedGranularApprovalRejection,
 } from './appServerCompatibility';
 import { readCodexRateLimitsSnapshot } from './readCodexRateLimitsSnapshot';
 import {
@@ -372,7 +375,7 @@ type PendingRawAssistantFinal = Readonly<{
 
 const CODEX_TRANSCRIPT_INITIAL_CHECKPOINT_DELAY_MS = 0;
 
-type CodexAppServerPermissionSupport = 'unknown' | 'supported' | 'legacy';
+type CodexAppServerPermissionSupport = 'unknown' | 'supported' | 'legacy' | 'legacy-managed-scalar';
 
 type CodexAppServerPromptOptions = Readonly<{
     metadata?: unknown;
@@ -1941,25 +1944,48 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const getCurrentPermissionMode = (): PermissionMode => params.getPermissionMode?.() ?? params.permissionMode ?? 'default';
 
-    const buildCurrentPermissionParams = (target: 'thread' | 'turn'): Record<string, unknown> => {
-        const permissionMode = getCurrentPermissionMode();
-        if (permissionMode === 'default') return {};
-        if (permissionSupport === 'legacy') {
-            return buildCodexAppServerLegacyPermissionParams({
-                permissionMode,
-                directory: params.directory,
-                target,
-            });
-        }
-        return buildCodexAppServerPermissionsParams({ permissionMode });
-    };
-
     const buildCurrentLegacyPermissionParams = (target: 'thread' | 'turn'): Record<string, unknown> => {
         const permissionMode = getCurrentPermissionMode();
         return buildCodexAppServerLegacyPermissionParams({
             permissionMode,
             directory: params.directory,
             target,
+            managedScalarFallback: permissionSupport === 'legacy-managed-scalar',
+        });
+    };
+
+    const buildCurrentPermissionParams = (target: 'thread' | 'turn'): Record<string, unknown> => {
+        const permissionMode = getCurrentPermissionMode();
+        if (permissionMode === 'default') return {};
+        if (permissionSupport === 'legacy' || permissionSupport === 'legacy-managed-scalar') {
+            return buildCurrentLegacyPermissionParams(target);
+        }
+        return buildCodexAppServerPermissionsParams({ permissionMode });
+    };
+
+    const requestWithManagedPermissionFallback = (
+        client: DisposableCodexAppServerClient,
+        method: 'thread/start' | 'thread/resume' | 'turn/start',
+        target: 'thread' | 'turn',
+        requestParams: Record<string, unknown>,
+        options?: CodexAppServerRequestOptions,
+    ): Promise<unknown> => {
+        const approvalPolicy = requestParams.approvalPolicy;
+        if (permissionSupport !== 'legacy'
+            || normalizePermissionModeToIntent(getCurrentPermissionMode()) !== 'safe-yolo'
+            || !approvalPolicy || typeof approvalPolicy !== 'object' || Array.isArray(approvalPolicy)
+            || !Object.prototype.hasOwnProperty.call(approvalPolicy, 'granular')
+            || requestParams.approvalsReviewer !== 'auto_review') {
+            return client.request(method, requestParams, options);
+        }
+        return client.request(method, requestParams, options).catch(async (error: unknown) => {
+            if (!isCodexAppServerManagedGranularApprovalRejection(error, method)) throw error;
+            permissionSupport = 'legacy-managed-scalar';
+            logger.warn('[codex-app-server] Managed policy rejected Auto granular approvals; using on-request with user review for this session');
+            return await client.request(method, {
+                ...requestParams,
+                ...buildCurrentLegacyPermissionParams(target),
+            }, options);
         });
     };
 
@@ -4473,7 +4499,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         };
         let response: unknown;
         try {
-            response = await client.request('thread/resume', requestParams, resumeRequestOptions);
+            response = await requestWithManagedPermissionFallback(client, 'thread/resume', 'thread', requestParams, resumeRequestOptions);
             if (Object.prototype.hasOwnProperty.call(requestParams, 'permissions')) {
                 permissionSupport = 'supported';
             }
@@ -4490,7 +4516,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 }
                 permissionSupport = 'legacy';
                 try {
-                    response = await client.request('thread/resume', {
+                    response = await requestWithManagedPermissionFallback(client, 'thread/resume', 'thread', {
                         threadId: requestedThreadId,
                         cwd: params.directory,
                         ...(currentModelId ? { model: currentModelId } : {}),
@@ -4636,7 +4662,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     };
                     let response: unknown;
                     try {
-                        response = await client.request('thread/start', requestParams);
+                        response = await requestWithManagedPermissionFallback(client, 'thread/start', 'thread', requestParams);
                         if (Object.prototype.hasOwnProperty.call(requestParams, 'permissions')) {
                             permissionSupport = 'supported';
                         }
@@ -4645,7 +4671,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                             throw error;
                         }
                         permissionSupport = 'legacy';
-                        response = await client.request('thread/start', {
+                        response = await requestWithManagedPermissionFallback(client, 'thread/start', 'thread', {
                             cwd: params.directory,
                             ...(currentModelId ? { model: currentModelId } : {}),
                             ...buildThreadServiceTierParams(currentServiceTier, hasServiceTierOverride),
@@ -5302,7 +5328,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     };
                     let response: unknown;
                     try {
-                        response = await client.request('turn/start', turnStartParams);
+                        response = await requestWithManagedPermissionFallback(client, 'turn/start', 'turn', turnStartParams);
                         if (Object.prototype.hasOwnProperty.call(turnStartParams, 'permissions')) {
                             permissionSupport = 'supported';
                         }
@@ -5314,18 +5340,21 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                 ...buildCurrentLegacyPermissionParams('turn'),
                             };
                             try {
-                                response = await client.request('turn/start', turnStartParams);
+                                response = await requestWithManagedPermissionFallback(client, 'turn/start', 'turn', turnStartParams);
                             } catch (legacyError) {
-                                if (input.length > 1 && isCodexAppServerInvalidParamsError(legacyError)) {
+                                if (input.length > 1 && isCodexAppServerInvalidParamsError(legacyError)
+                                    && !isCodexAppServerInvalidParamsForFieldError(legacyError, 'approval_policy')) {
                                     response = await client.request('turn/start', {
                                         ...turnStartParams,
+                                        ...buildCurrentLegacyPermissionParams('turn'),
                                         input: textOnlyInput,
                                     });
                                 } else {
                                     throw legacyError;
                                 }
                             }
-                        } else if (input.length > 1 && isCodexAppServerInvalidParamsError(error)) {
+                        } else if (input.length > 1 && isCodexAppServerInvalidParamsError(error)
+                            && !isCodexAppServerInvalidParamsForFieldError(error, 'approval_policy')) {
                             response = await client.request('turn/start', {
                                 ...turnStartParams,
                                 input: textOnlyInput,

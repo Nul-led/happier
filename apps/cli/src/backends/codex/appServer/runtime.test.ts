@@ -18,7 +18,7 @@ import {
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
-import type { Metadata } from '@/api/types';
+import type { Metadata, PermissionMode } from '@/api/types';
 import type { AgentMessage } from '@/agent';
 import type { SessionTurnLifecycle } from '@/agent/runtime/session/turn/types';
 import { createSessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
@@ -33,6 +33,7 @@ import {
     HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY,
 } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
 import { setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { normalizePermissionModeForAgentStart } from '@/settings/permissions/permissionModeSeed';
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
 import { logger } from '@/ui/logger';
 
@@ -153,6 +154,8 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     interruptTerminalDelayMs?: number;
     rejectSteerAsNoActiveTurn?: boolean;
     rejectPermissionsProfile?: boolean;
+    managedAllowedApprovalPolicies?: readonly string[];
+    ambiguousManagedApprovalRejection?: boolean;
     rejectGoalMethods?: boolean;
     rejectGoalMethodsAsInvalidRequest?: boolean;
     omitGoalGetResponse?: boolean;
@@ -208,6 +211,19 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         'let accountReadCount = 0;',
         'let interruptCount = 0;',
         'const resumedThreadIds = new Set();',
+        `const managedAllowedApprovalPolicies = ${JSON.stringify(params.managedAllowedApprovalPolicies ?? null)};`,
+        `const ambiguousManagedApprovalRejection = ${JSON.stringify(params.ambiguousManagedApprovalRejection === true)};`,
+        'const managedApprovalPolicyError = (policy) => {',
+        '    if (!managedAllowedApprovalPolicies || policy == null) return null;',
+        '    const granular = typeof policy === "object" && policy.granular != null;',
+        '    const requested = granular ? "granular" : policy;',
+        '    if (managedAllowedApprovalPolicies.includes(requested)) return null;',
+        '    const candidate = granular ? "Granular(GranularApprovalConfig { sandbox_approval: true, rules: true, skill_approval: false, request_permissions: true, mcp_elicitations: true })" : requested === "on-request" ? "OnRequest" : "Never";',
+        '    const allowed = managedAllowedApprovalPolicies.map((item) => item === "untrusted" ? "UnlessTrusted" : item === "on-request" ? "OnRequest" : item === "never" ? "Never" : "Granular");',
+        '    const tick = String.fromCharCode(96);',
+        '    const message = "invalid value for " + tick + "approval_policy" + tick + ": " + tick + candidate + tick + " is not in the allowed set [" + allowed.join(", ") + "] (set by system requirements)";',
+        '    return { code: -32602, message: ambiguousManagedApprovalRejection ? "invalid approval policy" : message };',
+        '};',
         'for await (const line of rl) {',
         '    if (!line.trim()) continue;',
         '    const msg = JSON.parse(line);',
@@ -226,6 +242,8 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32600, message: "Invalid request: invalid type: map, expected a string" } }) + "\\n");',
         '            continue;',
         '        }',
+        '        const managedError = managedApprovalPolicyError(msg.params?.approvalPolicy);',
+        '        if (managedError) { process.stdout.write(JSON.stringify({ id: msg.id, error: managedError }) + "\\n"); continue; }',
         '        if (msg.params?.persistExtendedHistory !== true || msg.params?.experimentalRawEvents !== true) {',
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32000, message: "missing thread/start flags" } }) + "\\n");',
         '            continue;',
@@ -264,6 +282,8 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32600, message: "Invalid request: invalid type: map, expected a string" } }) + "\\n");',
         '            continue;',
         '        }',
+        '        const managedError = managedApprovalPolicyError(msg.params?.approvalPolicy);',
+        '        if (managedError) { process.stdout.write(JSON.stringify({ id: msg.id, error: managedError }) + "\\n"); continue; }',
         '        if (msg.params?.persistExtendedHistory !== true || typeof msg.params?.excludeTurns !== "boolean") {',
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32000, message: "missing thread/resume flags" } }) + "\\n");',
         '            continue;',
@@ -543,6 +563,8 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: permissions unsupported" } }) + "\\n");',
         '            continue;',
         '        }',
+        '        const managedError = managedApprovalPolicyError(msg.params?.approvalPolicy);',
+        '        if (managedError) { process.stdout.write(JSON.stringify({ id: msg.id, error: managedError }) + "\\n"); continue; }',
         `        if (${JSON.stringify(params.rejectStructuredTurnInput === true)} && Array.isArray(msg.params?.input) && msg.params.input.length > 1) {`,
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: structured turn input unsupported" } }) + "\\n");',
         '            continue;',
@@ -1704,6 +1726,8 @@ describe('createCodexAppServerRuntime', () => {
             interruptTerminalDelayMs?: number;
             rejectSteerAsNoActiveTurn?: boolean;
             rejectPermissionsProfile?: boolean;
+            managedAllowedApprovalPolicies?: readonly string[];
+            ambiguousManagedApprovalRejection?: boolean;
             rejectGoalMethods?: boolean;
             rejectGoalMethodsAsInvalidRequest?: boolean;
             omitGoalGetResponse?: boolean;
@@ -1770,6 +1794,8 @@ describe('createCodexAppServerRuntime', () => {
             interruptTerminalDelayMs: options.interruptTerminalDelayMs,
             rejectSteerAsNoActiveTurn: options.rejectSteerAsNoActiveTurn,
             rejectPermissionsProfile: options.rejectPermissionsProfile,
+            managedAllowedApprovalPolicies: options.managedAllowedApprovalPolicies,
+            ambiguousManagedApprovalRejection: options.ambiguousManagedApprovalRejection,
             rejectGoalMethods: options.rejectGoalMethods,
             rejectGoalMethodsAsInvalidRequest: options.rejectGoalMethodsAsInvalidRequest,
             omitGoalGetResponse: options.omitGoalGetResponse,
@@ -2091,6 +2117,153 @@ describe('createCodexAppServerRuntime', () => {
             },
         });
         expect(turnStart?.params).not.toHaveProperty('permissions');
+    });
+
+    it('uses one managed scalar fallback after canonical Auto reaches a rejected legacy granular policy', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-auto-', {
+            rejectPermissionsProfile: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+        });
+        const permissionMode = normalizePermissionModeForAgentStart({ agentId: 'codex', value: 'acceptEdits' });
+        expect(permissionMode).toBe('safe-yolo');
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: permissionMode!,
+        });
+
+        await runtime.startOrLoad({});
+        await runtime.sendPrompt('managed-auto');
+
+        const requests = await readRequestLog(requestLogPath);
+        const starts = requests.filter((entry) => entry.method === 'thread/start');
+        expect(starts).toHaveLength(3);
+        expect(starts[0]?.params).toMatchObject({ permissions: { type: 'profile', id: ':workspace' } });
+        expect(starts[1]?.params).toMatchObject({ approvalPolicy: { granular: expect.any(Object) }, approvalsReviewer: 'auto_review' });
+        expect(starts[2]?.params).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write' });
+        const turns = requests.filter((entry) => entry.method === 'turn/start');
+        expect(turns).toHaveLength(1);
+        expect(turns[0]?.params).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'workspaceWrite' } });
+    });
+
+    it('uses the managed scalar fallback on thread resume before starting a turn', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-resume-', {
+            rejectPermissionsProfile: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: 'safe-yolo',
+        });
+
+        await runtime.startOrLoad({ resumeId: 'thread-managed-resume' });
+        await runtime.sendPrompt('managed-resume');
+
+        const requests = await readRequestLog(requestLogPath);
+        const resumes = requests.filter((entry) => entry.method === 'thread/resume');
+        expect(resumes).toHaveLength(3);
+        expect(resumes[2]?.params).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write' });
+        const turns = requests.filter((entry) => entry.method === 'turn/start');
+        expect(turns).toHaveLength(1);
+        expect(turns[0]?.params).toMatchObject({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } });
+    });
+
+    it('uses the same managed fallback when Auto first reaches a turn after thread start', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-turn-', {
+            rejectPermissionsProfile: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+        });
+        let permissionMode: PermissionMode = 'default';
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            getPermissionMode: () => permissionMode,
+        });
+
+        await runtime.startOrLoad({});
+        permissionMode = 'safe-yolo';
+        await runtime.sendPrompt('managed-turn');
+
+        const turns = (await readRequestLog(requestLogPath)).filter((entry) => entry.method === 'turn/start');
+        expect(turns).toHaveLength(3);
+        expect(turns[0]?.params).toMatchObject({ permissions: { type: 'profile', id: ':workspace' } });
+        expect(turns[1]?.params).toMatchObject({ approvalPolicy: { granular: expect.any(Object) }, approvalsReviewer: 'auto_review' });
+        expect(turns[2]?.params).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'workspaceWrite' } });
+    });
+
+    it('keeps the scalar policy when a managed turn also needs a text-only input retry', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-structured-turn-', {
+            rejectPermissionsProfile: true,
+            rejectStructuredTurnInput: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+        });
+        let permissionMode: PermissionMode = 'default';
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            getPermissionMode: () => permissionMode,
+        });
+
+        await runtime.startOrLoad({});
+        permissionMode = 'safe-yolo';
+        await runtime.sendPrompt('managed-structured-turn', {
+            metadata: {
+                happierStructuredInputV1: {
+                    vendorPluginMentions: [
+                        { displayName: 'Reviewer', vendorPluginRef: 'plugin://reviewer@codex' },
+                    ],
+                },
+            },
+        });
+
+        const turns = (await readRequestLog(requestLogPath)).filter((entry) => entry.method === 'turn/start');
+        expect(turns).toHaveLength(4);
+        expect(turns[3]?.params).toMatchObject({
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            input: [{ type: 'text', text: 'managed-structured-turn' }],
+        });
+    });
+
+    it('does not repeat a managed scalar policy that Codex also disallows', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-no-scalar-', {
+            rejectPermissionsProfile: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'never'],
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: 'safe-yolo',
+        });
+
+        await expect(runtime.startOrLoad({})).rejects.toThrow(/approval_policy/);
+        const starts = (await readRequestLog(requestLogPath)).filter((entry) => entry.method === 'thread/start');
+        expect(starts).toHaveLength(2);
+        expect(starts[1]?.params).toMatchObject({ approvalPolicy: { granular: expect.any(Object) } });
+    });
+
+    it('does not downgrade an ambiguous legacy approval rejection', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-managed-ambiguous-', {
+            rejectPermissionsProfile: true,
+            managedAllowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+            ambiguousManagedApprovalRejection: true,
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: 'safe-yolo',
+        });
+
+        await expect(runtime.startOrLoad({})).rejects.toThrow(/invalid approval policy/);
+        const starts = (await readRequestLog(requestLogPath)).filter((entry) => entry.method === 'thread/start');
+        expect(starts).toHaveLength(2);
     });
 
     it('falls back to legacy app-server permission fields when older Codex expects a string profile id', async () => {
