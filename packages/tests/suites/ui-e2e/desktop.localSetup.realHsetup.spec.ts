@@ -89,8 +89,9 @@ async function readAppCredentials(page: Page): Promise<Readonly<{ token: string;
     return { token: parsed.token, secret: Uint8Array.from(Buffer.from(parsed.secret, 'base64url')) };
 }
 
-function shortAccountId(accountId: string): string {
-    return accountId.length > 8 ? accountId.slice(0, 8) : accountId;
+function accountIdHint(accountId: string): RegExp {
+    // Prove both ends identify the same account without duplicating the UI's display formatter.
+    return new RegExp(accountId.slice(0, 6) + '[^ ]*' + accountId.slice(-4));
 }
 
 function relayHost(url: string): string {
@@ -382,7 +383,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await expect(title).toBeVisible({ timeout: 240_000 });
             const toLabel = /^Switch this computer to (.+)\?$/.exec((await title.textContent()) ?? '')?.[1] ?? '';
             const body = app.page.getByText(/^This computer is signed in to /);
-            await expect(body).toContainText(shortAccountId(accountB.accountId));
+            await expect(body).toContainText(accountIdHint(accountB.accountId));
             await expect(body).toContainText(toLabel);
             await expect(body).toContainText(relayHost(server.baseUrl));
 
@@ -392,7 +393,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
             await expect(app.page.getByTestId('nav-settings').first()).toBeVisible();
             await expect(app.page.getByTestId('desktop-setup-panel:veil')).toHaveCount(0, { timeout: 60_000 });
             // The Home says, in one sentence with one action, that this computer stays with B (R17).
-            await expect(app.page.getByTestId('relay-drift-banner')).toContainText(shortAccountId(accountB.accountId), { timeout: 60_000 });
+            await expect(app.page.getByTestId('relay-drift-banner')).toContainText(accountIdHint(accountB.accountId), { timeout: 60_000 });
             // The same recovery action must remain readable inside the narrow desktop sidebar.
             await app.page.setViewportSize({ width: 1042, height: 680 });
             const driftCard = app.page.getByTestId('relay-drift-banner');
@@ -483,7 +484,7 @@ test.describe('ui e2e: desktop local setup through the real hsetup (hermetic com
                 const body = app.page.getByText(/^This computer is signed in to /);
                 await expect(body).toContainText(relayHost(otherRelayUrl));
                 await expect(body).toContainText(relayHost(server.baseUrl));
-                await expect(body).toContainText(shortAccountId(otherAccount.accountId));
+                await expect(body).toContainText(accountIdHint(otherAccount.accountId));
                 await app.page.getByTestId('web-modal-button-1').click();
                 const converged = await expectConvergedOnAppRelay(app, computer, server.baseUrl);
                 expect(converged.daemonAccountId).toBe(converged.appAccountId);
