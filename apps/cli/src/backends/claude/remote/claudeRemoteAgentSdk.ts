@@ -69,6 +69,7 @@ import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
 import { parseCheckpointsCommand, parseRewindCommand } from './agentSdk/claudeAgentSdkSlashCommands';
 import {
     mapClaudeRateLimitEventToQuotaEvidence,
+    readClaudeRateLimitEventWindows,
     mapClaudeRateLimitEventToUsageDetails,
     type NormalizedProviderUsageLimitDetailsV1,
 } from '../connectedServices/mapClaudeRateLimitEventToUsageDetails';
@@ -194,7 +195,11 @@ export async function claudeRemoteAgentSdk(opts: {
     onCheckpointCaptured?: (checkpointId: string) => void;
     onCapabilities?: (caps: { slashCommands?: string[]; slashCommandDetails?: Array<{ command: string; description?: string }>; models?: unknown[] }) => void;
     onWorkStateSnapshot?: (snapshot: SessionWorkStateV1) => void | Promise<void>;
-    onRateLimitEvent?: (details: NormalizedProviderUsageLimitDetailsV1) => void | Promise<void>;
+    /** `observedWindows`: every window the same event reported, the limited one included. */
+    onRateLimitEvent?: (
+        details: NormalizedProviderUsageLimitDetailsV1,
+        observedWindows: readonly NormalizedProviderUsageLimitDetailsV1[],
+    ) => void | Promise<void>;
     /** Every quota window reported by one rate-limit event; they form one quota snapshot. */
     onQuotaEvidence?: (windows: readonly NormalizedProviderUsageLimitDetailsV1[]) => void | Promise<void>;
     onRuntimeAuthFailureEvent?: (error: unknown) => void | Promise<void>;
@@ -1784,7 +1789,7 @@ export async function claudeRemoteAgentSdk(opts: {
                 }
                 const rateLimitDetails = mapClaudeRateLimitEventToUsageDetails(message);
                 if (rateLimitDetails) {
-                    await opts.onRateLimitEvent?.(rateLimitDetails);
+                    await opts.onRateLimitEvent?.(rateLimitDetails, readClaudeRateLimitEventWindows(message));
                 }
             }
             if (inboundType === 'rate_limit_event') {

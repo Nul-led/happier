@@ -28,7 +28,7 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
         remainingPct: 18,
         usedPct: 82,
         valueLabel: '18% left',
-        ringValueLabel: '18',
+        ringValueLabel: '82',
         badgeLabel: '18% left',
         scopePrefix: null,
         primaryValueSemantics: 'remaining',
@@ -74,16 +74,26 @@ describe('AgentInputProviderUsageBadge', () => {
         const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={{
             ...viewModel(),
             windowRings: [
-                { window: 'session', meterId: 'five_hour', remainingPct: 90, usedPct: 10, ringValueLabel: '90', tone: 'neutral' },
-                { window: 'weekly', meterId: 'seven_day', remainingPct: 18, usedPct: 82, ringValueLabel: '18', tone: 'warning' },
+                { window: 'session', meterId: 'five_hour', usedPct: 10, ringValueLabel: '10', tone: 'neutral' },
+                { window: 'weekly', meterId: 'seven_day', usedPct: 82, ringValueLabel: '82', tone: 'warning' },
             ],
         }} />);
 
-        expect(screen.findByTestId('agent-input-provider-usage-value:session')?.props.children).toBe('90');
-        expect(screen.findByTestId('agent-input-provider-usage-value:weekly')?.props.children).toBe('18');
+        expect(screen.findByTestId('agent-input-provider-usage-value:session')?.props.children).toBe('10');
+        expect(screen.findByTestId('agent-input-provider-usage-value:weekly')?.props.children).toBe('82');
         expect(screen.findByTestId('agent-input-provider-usage-window-label:session')?.props.children).toBe('5h');
         expect(screen.findByTestId('agent-input-provider-usage-window-label:weekly')?.props.children).toBe('Week');
         expect(screen.findByTestId('agent-input-provider-usage-value')).toBeNull();
+    });
+
+    it('announces the single ring without window meters as the used percent it shows', async () => {
+        tokenUsageRingRenderSpy.mockClear();
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={viewModel()} />);
+
+        expect(screen.findByTestId('agent-input-provider-usage-value')?.props.children).toBe('82');
+        const { label } = tokenUsageRingRenderSpy.mock.calls.at(-1)![0] as { label: string };
+        expect(label).toContain('82% used');
+        expect(label).not.toContain('left');
     });
 
     it('keeps subscription details live while the usage popover remains open', async () => {

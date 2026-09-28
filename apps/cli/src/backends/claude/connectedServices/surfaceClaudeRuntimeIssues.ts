@@ -478,6 +478,10 @@ export async function surfaceClaudeRateLimitRuntimeIssue(
     session: RuntimeIssueSession,
     details: NormalizedProviderUsageLimitDetailsV1,
     logPrefix: string,
+    options?: Readonly<{
+        /** Every window the same provider event reported; the snapshot keeps them beside `details`. */
+        observedWindows?: readonly NormalizedProviderUsageLimitDetailsV1[];
+    }>,
 ): Promise<void> {
     const selection = resolveClaudeRuntimeIssueSelection(session);
     const enrichedDetailsPromise = enrichClaudeUsageDetailsWithRuntimeAccountIdentity(details);
@@ -539,7 +543,13 @@ export async function surfaceClaudeRateLimitRuntimeIssue(
             ...(effectiveGroupGeneration !== null ? { groupGeneration: effectiveGroupGeneration } : {}),
             ...(enrichedDetails.sourceProviderAccountId !== undefined ? { sourceProviderAccountId: enrichedDetails.sourceProviderAccountId } : {}),
             snapshot: buildClaudeRuntimeQuotaSnapshot({
-                windows: [enrichedDetails],
+                // The surfaced limit leads; the event's other windows stay in the account's usage.
+                windows: [
+                    enrichedDetails,
+                    ...(options?.observedWindows ?? []).filter((window) => (
+                        resolveClaudeQuotaProviderLimitId(window) !== resolveClaudeQuotaProviderLimitId(enrichedDetails)
+                    )),
+                ],
                 fetchedAt: occurredAt,
                 serviceId: connectedServiceId,
                 profileId,

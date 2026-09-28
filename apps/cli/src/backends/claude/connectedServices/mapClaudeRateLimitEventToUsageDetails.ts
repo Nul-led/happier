@@ -550,17 +550,16 @@ function buildPassiveQuotaEvidence(input: Readonly<{
 }
 
 /**
- * Passive quota evidence from an allowed Claude `rate_limit_event`, one entry per window. Current
- * Claude Code reports every window under `rate_limit_info.unifiedWindows` and leaves the top-level
- * `utilization` unset; older builds only carry the surfaced window's top-level `utilization`.
+ * Every usage window a Claude `rate_limit_event` reports, one entry per window, whatever its
+ * status. Current Claude Code reports every window under `rate_limit_info.unifiedWindows` and
+ * leaves the top-level `utilization` unset; older builds only carry the surfaced window's
+ * top-level `utilization`.
  */
-export function mapClaudeRateLimitEventToQuotaEvidence(event: unknown): readonly NormalizedProviderUsageLimitDetailsV1[] {
+export function readClaudeRateLimitEventWindows(event: unknown): readonly NormalizedProviderUsageLimitDetailsV1[] {
   const record = isRecord(event) ? event : null;
   if (record?.type !== 'rate_limit_event') return [];
   const info = isRecord(record.rate_limit_info) ? record.rate_limit_info : null;
   if (!info) return [];
-  const status = readString(info.status);
-  if (status !== 'allowed' && status !== 'allowed_warning') return [];
 
   const unifiedWindows = isRecord(info.unifiedWindows) ? info.unifiedWindows : {};
   const windowEvidence = Object.entries(unifiedWindows).flatMap(([windowId, window]) => {
@@ -582,4 +581,12 @@ export function mapClaudeRateLimitEventToQuotaEvidence(event: unknown): readonly
     utilization,
     resetAtMs: readTimestampMs(info.resetsAt ?? info.resets_at),
   })];
+}
+
+/** Passive quota evidence: the windows of an allowed Claude `rate_limit_event`. */
+export function mapClaudeRateLimitEventToQuotaEvidence(event: unknown): readonly NormalizedProviderUsageLimitDetailsV1[] {
+  const record = isRecord(event) ? event : null;
+  const info = isRecord(record?.rate_limit_info) ? record.rate_limit_info : null;
+  const status = readString(info?.status);
+  return status === 'allowed' || status === 'allowed_warning' ? readClaudeRateLimitEventWindows(event) : [];
 }

@@ -36,7 +36,6 @@ export type ConnectedServiceQuotaGaugeRingWindow = Exclude<ConnectedServiceQuota
 export type ConnectedServiceQuotaGaugeWindowRing = Readonly<{
     window: ConnectedServiceQuotaGaugeRingWindow;
     meterId: string;
-    remainingPct: number;
     usedPct: number;
     ringValueLabel: string;
     tone: ConnectedServiceQuotaGaugeTone;
@@ -226,7 +225,6 @@ function buildWindowRings(
         return row ? [{
             window,
             meterId: row.meterId,
-            remainingPct: row.remainingPct,
             usedPct: row.usedPct,
             // Used, like the context ring beside it; the fill and tone already follow the same meter.
             ringValueLabel: String(Math.round(row.usedPct)),

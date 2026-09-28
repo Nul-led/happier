@@ -68,6 +68,10 @@ describe('claudeRemoteAgentSdk work-state projection', () => {
             resetsAt: 1_768_100_000_000,
             rateLimitType: 'five_hour',
             utilization: 100,
+            unifiedWindows: {
+              five_hour: { utilization: 1, resetsAt: 1_768_100_000 },
+              seven_day: { utilization: 0.42, resetsAt: 1_768_500_000 },
+            },
           },
         },
         { type: 'result' },
@@ -89,7 +93,11 @@ describe('claudeRemoteAgentSdk work-state projection', () => {
       overage: null,
       action: null,
       connectedService: null,
-    });
+    }, [
+      // Every window the event reported travels with the limit, so its snapshot keeps them all.
+      expect.objectContaining({ providerLimitId: 'five_hour', utilization: 100 }),
+      expect.objectContaining({ providerLimitId: 'seven_day', utilization: 42 }),
+    ]);
     expect(onMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'rate_limit_event' }));
   });
 
@@ -237,7 +245,7 @@ describe('claudeRemoteAgentSdk work-state projection', () => {
       quotaScope: 'account',
       recoverability: 'wait',
       providerLimitId: 'rate_limit',
-    }));
+    }), []);
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'assistant',
       isApiErrorMessage: true,

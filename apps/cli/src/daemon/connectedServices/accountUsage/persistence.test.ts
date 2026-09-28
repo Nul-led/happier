@@ -284,6 +284,68 @@ describe('provider account usage persistence', () => {
     }
   });
 
+  it('confirms a queued in-band write that lands on a retry after the server first fails', async () => {
+    const module = await loadPersistenceModule();
+    expect(module).not.toBeNull();
+    let attempts = 0;
+    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
+      api: {
+        getAccountEncryptionMode: async () => 'plain',
+        registerProviderAccountUsageSnapshotPlain: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('server unavailable');
+        },
+      },
+      now: () => 1_000,
+      fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const onPersisted = vi.fn();
+    try {
+      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted });
+      await vi.waitFor(async () => {
+        await scheduler.flush(1_000);
+        expect(attempts).toBeGreaterThanOrEqual(2);
+      }, { timeout: 10_000 });
+      expect(onPersisted).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.dispose();
+    }
+  });
+
+  it('confirms a write queued behind an in-flight write that fails, once the queued write lands', async () => {
+    const module = await loadPersistenceModule();
+    expect(module).not.toBeNull();
+    const writes: Array<{ settle: (error?: Error) => void }> = [];
+    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
+      api: {
+        getAccountEncryptionMode: async () => 'plain',
+        registerProviderAccountUsageSnapshotPlain: () => new Promise<void>((resolve, reject) => {
+          writes.push({ settle: (error) => (error ? reject(error) : resolve()) });
+        }),
+      },
+      now: () => 1_000,
+      fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const firstPersisted = vi.fn();
+    const secondPersisted = vi.fn();
+    try {
+      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted: firstPersisted });
+      await vi.waitFor(() => expect(writes).toHaveLength(1));
+      await expect(scheduler.recordInBandSnapshot({ ...createSnapshot(), planLabel: 'Max' }, { onPersisted: secondPersisted }))
+        .resolves.toMatchObject({ status: 'enqueued' });
+
+      writes[0]!.settle(new Error('server unavailable'));
+      await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+      writes[writes.length - 1]!.settle();
+      await scheduler.flush(1_000);
+      // The record exists once any write for it lands, so both observations may now reference it.
+      expect(secondPersisted).toHaveBeenCalledOnce();
+      expect(firstPersisted).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.dispose();
+    }
+  });
+
   it('does not let a future-dated observation suppress a later current persistence write', async () => {
     const module = await loadPersistenceModule();
     expect(module).not.toBeNull();

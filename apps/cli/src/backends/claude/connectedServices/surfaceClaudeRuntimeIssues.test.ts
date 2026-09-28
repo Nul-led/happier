@@ -270,6 +270,53 @@ describe('surfaceClaudeRuntimeIssues runtime-auth projection', () => {
     }
   });
 
+  it('keeps the other windows of a rejected event in its quota snapshot, led by the rejected window', async () => {
+    const previousSelectionEnv = process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
+    delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
+    const window = {
+      v: 1 as const,
+      retryAfterMs: null,
+      quotaScope: 'account' as const,
+      recoverability: 'wait' as const,
+      planType: null,
+      overage: null,
+      action: null,
+      connectedService: null,
+    };
+    try {
+      await surfaceClaudeRateLimitRuntimeIssue({
+        client: { sessionId: 'sess_claude_rejected_windows', sessionTurnLifecycle: { failTurn: createClaudeFailTurnSpy() } },
+      } as any, {
+        ...window,
+        limitCategory: 'usage_limit',
+        providerLimitId: 'five_hour',
+        utilization: 100,
+        resetAtMs: 1_790_378_400_000,
+      }, '[claude-test]', {
+        // What the same event reported for every window, the rejected one included.
+        observedWindows: [
+          { ...window, providerLimitId: 'five_hour', utilization: 100, resetAtMs: 1_790_378_400_000 },
+          { ...window, providerLimitId: 'seven_day', utilization: 42, resetAtMs: 1_790_928_000_000 },
+        ],
+      });
+
+      // Reaching one limit must not drop the other window from the account's usage.
+      expect(mockNotifyDaemonConnectedServiceQuotaSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'sess_claude_rejected_windows',
+        snapshot: expect.objectContaining({
+          evidence: expect.objectContaining({ providerLimitId: 'five_hour' }),
+          meters: [
+            expect.objectContaining({ meterId: 'five_hour', utilizationPct: 100 }),
+            expect.objectContaining({ meterId: 'seven_day', utilizationPct: 42 }),
+          ],
+        }),
+      }));
+    } finally {
+      if (previousSelectionEnv === undefined) delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
+      else process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY] = previousSelectionEnv;
+    }
+  });
+
   it('threads source provider account identity into passive Claude quota evidence delivery', async () => {
     const previousSelectionEnv = installClaudeSelectionEnv();
     const failTurn = createClaudeFailTurnSpy();

@@ -153,11 +153,20 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
     const [isPinnedOpen, setIsPinnedOpen] = React.useState(false);
     const [isHovered, setIsHovered] = React.useState(false);
     const open = isPinnedOpen || isHovered;
-    const windowRings = props.viewModel.windowRings;
+    // One labeled ring per overall window; without window meters, one unlabeled ring.
+    const rings: ReadonlyArray<Readonly<{
+        window: ConnectedServiceQuotaGaugeRingWindow | null;
+        usedPct: number;
+        ringValueLabel: string;
+        tone: ConnectedServiceQuotaGaugeViewModel['tone'];
+    }>> = props.viewModel.windowRings.length > 0
+        ? props.viewModel.windowRings
+        : [{ window: null, usedPct: props.viewModel.usedPct, ringValueLabel: props.viewModel.ringValueLabel, tone: props.viewModel.tone }];
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
-        value: windowRings.length > 0
-            ? windowRings.map((ring) => `${windowLabel(ring.window)} ${t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` })}`).join(', ')
-            : props.viewModel.badgeLabel,
+        value: rings.map((ring) => {
+            const used = t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` });
+            return ring.window ? `${windowLabel(ring.window)} ${used}` : used;
+        }).join(', '),
     });
     const title = props.viewModel.providerDisplayName
         ? t('agentInput.providerUsage.titleForProvider', { provider: props.viewModel.providerDisplayName })
@@ -187,36 +196,31 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                     ];
                 }}
             >
-                {windowRings.length > 0 ? windowRings.map((ring) => (
-                    <View key={ring.window} style={styles.windowRing}>
-                        <Text
-                            testID={`agent-input-provider-usage-window-label:${ring.window}`}
-                            style={styles.windowLabel}
-                            numberOfLines={1}
-                        >
-                            {windowLabel(ring.window)}
-                        </Text>
-                        <TokenUsageRing
-                            used={ring.usedPct}
-                            limit={100}
-                            label={accessibilityLabel}
-                            value={ring.ringValueLabel}
-                            tone={mapQuotaToneToTokenTone(ring.tone)}
-                            ringTestID={`agent-input-provider-usage-ring:${ring.window}`}
-                            valueTestID={`agent-input-provider-usage-value:${ring.window}`}
-                        />
-                    </View>
-                )) : (
-                    <TokenUsageRing
-                        used={props.viewModel.usedPct}
-                        limit={100}
-                        label={accessibilityLabel}
-                        value={props.viewModel.ringValueLabel}
-                        tone={mapQuotaToneToTokenTone(props.viewModel.tone)}
-                        ringTestID="agent-input-provider-usage-ring"
-                        valueTestID="agent-input-provider-usage-value"
-                    />
-                )}
+                {rings.map((ring) => {
+                    const testIdSuffix = ring.window ? `:${ring.window}` : '';
+                    return (
+                        <View key={ring.window ?? 'overall'} style={styles.windowRing}>
+                            {ring.window ? (
+                                <Text
+                                    testID={`agent-input-provider-usage-window-label:${ring.window}`}
+                                    style={styles.windowLabel}
+                                    numberOfLines={1}
+                                >
+                                    {windowLabel(ring.window)}
+                                </Text>
+                            ) : null}
+                            <TokenUsageRing
+                                used={ring.usedPct}
+                                limit={100}
+                                label={accessibilityLabel}
+                                value={ring.ringValueLabel}
+                                tone={mapQuotaToneToTokenTone(ring.tone)}
+                                ringTestID={`agent-input-provider-usage-ring${testIdSuffix}`}
+                                valueTestID={`agent-input-provider-usage-value${testIdSuffix}`}
+                            />
+                        </View>
+                    );
+                })}
             </Pressable>
             </View>
 

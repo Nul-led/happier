@@ -68,8 +68,8 @@ export type ProviderAccountUsageInBandSnapshotOptions = Readonly<{
   source?: ConnectedServiceUsageSourceV1;
   sources?: readonly ConnectedServiceUsageSourceV1[];
   /**
-   * Called once when a write this call queued lands on the server. Not called when nothing was
-   * queued (`already_persisted`) or when the queued write fails or is dropped before it runs.
+   * Called once a write for this record lands on the server, including on a retry. Not called
+   * when nothing was queued (`already_persisted`) or when the queued write is dropped unrun.
    */
   onPersisted?: () => void;
 }>;
@@ -246,25 +246,20 @@ export function createProviderAccountUsagePersistenceScheduler(params: Readonly<
     stateByPersistenceKey.set(_key, payload.materialState);
   }
 
-  // Confirmation callbacks of queued writes, released when the key's next write settles.
+  // Confirmation callbacks of queued writes. Any write that lands for a key proves its record
+  // exists, so it releases every callback waiting on that key. A failed write is retried (or kept
+  // for a later flush), so its callbacks stay pending; they are dropped only with the payload.
   const persistedCallbacksByKey = new Map<string, Array<() => void>>();
-  function settlePersistedCallbacks(key: string, persisted: boolean): void {
+  function releasePersistedCallbacks(key: string): void {
     const callbacks = persistedCallbacksByKey.get(key);
-    if (!callbacks) return;
     persistedCallbacksByKey.delete(key);
-    if (!persisted) return;
-    for (const callback of callbacks) callback();
+    for (const callback of callbacks ?? []) callback();
   }
 
   const scheduler = createConnectedServiceQuotaPersistenceScheduler<string, ProviderAccountUsagePersistencePayload>({
     run: async (key, payload) => {
-      try {
-        await persistPayload(key, payload);
-      } catch (error) {
-        settlePersistedCallbacks(key, false);
-        throw error;
-      }
-      settlePersistedCallbacks(key, true);
+      await persistPayload(key, payload);
+      releasePersistedCallbacks(key);
     },
     maxConcurrent: 2,
     minKeyIntervalMs: 0,
@@ -272,9 +267,11 @@ export function createProviderAccountUsagePersistenceScheduler(params: Readonly<
     maxKeyAgeMs: 60 * 60_000,
     maxPendingPayloadAgeMs: 10 * 60_000,
     now: params.now,
-    // A pending write dropped before it ran (expired or evicted) will never confirm.
     onEvent: (event) => {
-      if (event.type === 'suppressed') settlePersistedCallbacks(event.key, false);
+      // The pending write was discarded (expired or evicted) and will never run.
+      if (event.type === 'suppressed' && (event.reason === 'pending_payload_stale' || event.reason === 'max_keys')) {
+        persistedCallbacksByKey.delete(event.key);
+      }
     },
   });
 
