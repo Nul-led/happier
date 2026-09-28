@@ -566,6 +566,7 @@ describe('runCodex CodexACP resume behavior', () => {
     delete process.env[HAPPIER_DAEMON_INITIAL_GOAL_ENV_KEY];
     delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
     delete process.env.HAPPIER_CODEX_APP_SERVER_STARTUP_RPC_TIMEOUT_MS;
+    delete process.env.HAPPIER_CODEX_APP_SERVER_TRANSPORT;
     const experiments = await import('@/backends/codex/experiments');
     (experiments.isExperimentalCodexAcpEnabled as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
     const { resolveCodexStartingMode } = await import('./utils/resolveCodexStartingMode');
@@ -1357,6 +1358,33 @@ describe('runCodex CodexACP resume behavior', () => {
     expect(writeCodexSharedControlEndpointSpy).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
       endpoint: 'unix:///tmp/happier-codex-test/private/app-server.sock',
+    }));
+  });
+
+  it('reuses the existing Codex daemon transport without creating or publishing a Happier-owned server', async () => {
+    process.env.HAPPIER_CODEX_APP_SERVER_TRANSPORT = 'daemonProxy';
+    resolveCodexSharedControlSupportSpy.mockResolvedValueOnce({ ok: true as const });
+    resolveRunnerMcpServersSpy.mockResolvedValueOnce({
+      happierMcpServer: { url: 'http://127.0.0.1:0', stop: vi.fn() },
+      mcpServers: {},
+    });
+    sessionInputConsumerWaitForNextInputImpl = async () => {
+      throw new Error('stop-after-existing-daemon-start');
+    };
+
+    const { runCodex } = await import('./runCodex');
+    await runCodex({
+      credentials: { token: 'test' } as Credentials,
+      startedBy: 'daemon',
+      startingMode: 'remote',
+      codexBackendMode: 'appServer',
+    } as any).catch(() => undefined);
+
+    expect(resolveCodexSharedControlSupportSpy).not.toHaveBeenCalled();
+    expect(createCodexSharedAppServerSpy).not.toHaveBeenCalled();
+    expect(writeCodexSharedControlEndpointSpy).not.toHaveBeenCalled();
+    expect(createCodexAppServerRuntimeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      createClient: expect.any(Function),
     }));
   });
 

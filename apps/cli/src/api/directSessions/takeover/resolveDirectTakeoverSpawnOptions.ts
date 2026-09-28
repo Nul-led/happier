@@ -41,12 +41,16 @@ async function resolveTrackedConnectedServiceRuntimeSnapshot(
 export async function resolveDirectTakeoverSpawnOptions(params: Readonly<{
   linked: LoadedLinkedDirectSession;
   sessionId: string;
+  transcriptStorage?: 'direct' | 'persisted';
   terminal?: SpawnSessionOptions['terminal'];
 }>): Promise<SpawnSessionOptions | null> {
   const providerOps = await getDirectSessionProviderOps(params.linked.providerId);
   // A resume-only source (ACP session/list) owns no provider process to take over.
   if (!providerOps.resolveTakeoverSpawnOptions) return null;
-  const spawnOptions = await providerOps.resolveTakeoverSpawnOptions(params);
+  const spawnOptions = await providerOps.resolveTakeoverSpawnOptions({
+    ...params,
+    transcriptStorage: params.transcriptStorage ?? 'direct',
+  });
   if (!spawnOptions) return null;
   const snapshot = mergeConnectedServiceRuntimeSnapshots(
     readConnectedServiceRuntimeSnapshot(params.linked.metadata),
