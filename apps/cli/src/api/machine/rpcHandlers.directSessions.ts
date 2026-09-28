@@ -497,6 +497,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
           const takeoverOptions = await resolveDirectTakeoverSpawnOptions({
             linked: linked.session,
             sessionId: parsed.data.sessionId,
+            transcriptStorage: 'persisted',
           });
           canTakeOverPersist = takeoverOptions !== null;
         }
@@ -649,6 +650,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
     const spawnOptions = await resolveDirectTakeoverSpawnOptions({
       linked: validatedLinkedSession,
       sessionId: parsed.data.sessionId,
+      transcriptStorage: 'direct',
       terminal: parsed.data.terminal,
     });
     if (!spawnOptions) {
@@ -721,6 +723,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
     const directSpawnOptions = await resolveDirectTakeoverSpawnOptions({
       linked: validatedLinkedSession,
       sessionId: parsed.data.sessionId,
+      transcriptStorage: 'persisted',
       terminal: parsed.data.terminal,
     });
     if (!directSpawnOptions) {

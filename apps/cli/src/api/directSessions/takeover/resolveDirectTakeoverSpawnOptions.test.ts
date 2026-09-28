@@ -164,6 +164,66 @@ describe('resolveDirectTakeoverSpawnOptions', () => {
     });
   });
 
+  it('adopts the existing Codex app-server daemon when it already owns the requested direct thread', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-direct-takeover-codex-daemon-'));
+    const codexHome = join(root, '.codex');
+    const projectDir = join(root, 'project');
+    await mkdir(codexHome, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    const fakeAppServer = await writeFakeCodexAppServerThreadListScript({
+      dir: root,
+      loadedThreadIds: ['daemon-thread-1'],
+    });
+    vi.stubEnv('CODEX_HOME', codexHome);
+    vi.stubEnv('HAPPIER_CODEX_APP_SERVER_BIN', fakeAppServer);
+
+    const spawnOptions = await resolveDirectTakeoverSpawnOptions({
+      linked: createLinkedCodexSessionFixture({
+        remoteSessionId: 'daemon-thread-1',
+        sessionPath: projectDir,
+        source: { kind: 'codexHome', home: 'user' },
+        codexBackendMode: 'appServer',
+      }),
+      sessionId: 'sess_happy_direct_codex_daemon',
+      transcriptStorage: 'direct',
+    });
+
+    expect(spawnOptions).toMatchObject({
+      codexBackendMode: 'appServer',
+      transcriptStorage: 'direct',
+      environmentVariables: {
+        CODEX_HOME: codexHome,
+        CODEX_SQLITE_HOME: TEST_CODEX_SQLITE_HOME,
+        HAPPIER_CODEX_APP_SERVER_TRANSPORT: 'daemonProxy',
+      },
+    });
+  });
+
+  it('does not adopt a live Codex daemon for persisted transcript takeover', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-persisted-takeover-codex-daemon-'));
+    const codexHome = join(root, '.codex');
+    await mkdir(codexHome, { recursive: true });
+    const fakeAppServer = await writeFakeCodexAppServerThreadListScript({
+      dir: root,
+      loadedThreadIds: ['daemon-thread-2'],
+    });
+    vi.stubEnv('CODEX_HOME', codexHome);
+    vi.stubEnv('HAPPIER_CODEX_APP_SERVER_BIN', fakeAppServer);
+
+    const spawnOptions = await resolveDirectTakeoverSpawnOptions({
+      linked: createLinkedCodexSessionFixture({
+        remoteSessionId: 'daemon-thread-2',
+        sessionPath: '/tmp/persisted-codex-daemon-project',
+        source: { kind: 'codexHome', home: 'user' },
+        codexBackendMode: 'appServer',
+      }),
+      sessionId: 'sess_happy_persisted_codex_daemon',
+      transcriptStorage: 'persisted',
+    });
+
+    expect(spawnOptions?.environmentVariables).not.toHaveProperty('HAPPIER_CODEX_APP_SERVER_TRANSPORT');
+  });
+
   it('refuses ambiguous connected-service Codex takeovers when the source does not identify an exact profile/home', async () => {
     const firstHome = '/tmp/happier-test-active-server/daemon/connected-services/homes/openai-codex/profile-a/codex/codex-home';
     const secondHome = '/tmp/happier-test-active-server/daemon/connected-services/homes/openai-codex/profile-b/codex/codex-home';

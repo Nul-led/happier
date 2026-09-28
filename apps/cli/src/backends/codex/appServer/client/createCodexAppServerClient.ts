@@ -371,7 +371,10 @@ export async function createCodexAppServerClient(params: Readonly<{
     configOverrides?: ReadonlyArray<string>;
     disableUserMcpServers?: boolean;
     initializeRequestOptions?: CodexAppServerRequestOptions;
-    transport?: Readonly<{ kind: 'stdio' }> | Readonly<{ kind: 'unixWebSocket'; socketPath: string }>;
+    transport?:
+        | Readonly<{ kind: 'stdio' }>
+        | Readonly<{ kind: 'daemonProxy' }>
+        | Readonly<{ kind: 'unixWebSocket'; socketPath: string }>;
 }>): Promise<DisposableCodexAppServerClient> {
     const sourceProcessEnv = params.processEnv ?? process.env;
     const rpcLogger = createRpcLogger(sourceProcessEnv);
@@ -408,7 +411,9 @@ export async function createCodexAppServerClient(params: Readonly<{
         });
     } else {
         const baseInvocation = await resolveCodexCliInvocation({
-            args: ['app-server', '--listen', 'stdio://'],
+            args: transport.kind === 'daemonProxy'
+                ? ['app-server', 'proxy']
+                : ['app-server', '--listen', 'stdio://'],
             cwd: params.cwd,
             processEnv,
             overrideEnvVarKeys: ['HAPPIER_CODEX_APP_SERVER_BIN', 'HAPPIER_CODEX_TUI_BIN', 'HAPPY_CODEX_TUI_BIN'],
