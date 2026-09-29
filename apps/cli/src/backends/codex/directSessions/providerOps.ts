@@ -1,5 +1,10 @@
 import { configuration } from '@/configuration';
-import { buildCodexSpawnRuntimeAffinityCompatFields } from '@happier-dev/agents';
+import { AGENTS_CORE, buildCodexSpawnRuntimeAffinityCompatFields } from '@happier-dev/agents';
+import {
+  ConnectedServiceIdSchema,
+  type ConnectedServiceBindingsV1,
+  type DirectSessionsSource,
+} from '@happier-dev/protocol';
 
 import { createPollingDirectSessionFollowLease } from '@/api/directSessions/backgroundFollow/createPollingDirectSessionFollowLease';
 import {
@@ -19,6 +24,46 @@ import {
   CODEX_APP_SERVER_TRANSPORT_ENV_KEY,
   isCodexThreadLoadedInAppServerDaemon,
 } from '../appServer/daemon/codexAppServerDaemonTransport';
+
+function resolveCodexTakeoverSourceAuth(params: Readonly<{
+  source: DirectSessionsSource;
+  adoptExistingDaemon: boolean;
+}>): ConnectedServiceBindingsV1 | null {
+  if (params.source.kind === 'codexHome' && params.source.home === 'connectedService') {
+    const parsedServiceId = ConnectedServiceIdSchema.safeParse(params.source.connectedServiceId);
+    if (!parsedServiceId.success) return null;
+    const binding = params.source.connectedServiceGroupId
+      ? {
+        source: 'connected' as const,
+        selection: 'group' as const,
+        groupId: params.source.connectedServiceGroupId,
+        ...(params.source.connectedServiceProfileId
+          ? { profileId: params.source.connectedServiceProfileId }
+          : {}),
+      }
+      : params.source.connectedServiceProfileId
+        ? {
+          source: 'connected' as const,
+          selection: 'profile' as const,
+          profileId: params.source.connectedServiceProfileId,
+        }
+        : null;
+    return binding
+      ? { v: 1, bindingsByServiceId: { [parsedServiceId.data]: binding } }
+      : null;
+  }
+
+  if (!params.adoptExistingDaemon) return null;
+  return {
+    v: 1,
+    bindingsByServiceId: Object.fromEntries(
+      (AGENTS_CORE.codex.connectedServices?.supportedServiceIds ?? []).map((serviceId) => [
+        serviceId,
+        { source: 'native' as const },
+      ]),
+    ),
+  };
+}
 
 export const codexDirectSessionProviderOps: DirectSessionProviderOps = {
   listCandidates: async ({ source, cursor, limit, searchTerm, searchMode }) => {
@@ -102,6 +147,10 @@ export const codexDirectSessionProviderOps: DirectSessionProviderOps = {
         processEnv: runtimeEnv,
         threadId: linked.remoteSessionId,
       });
+    const sourceAuth = resolveCodexTakeoverSourceAuth({
+      source: homeEntries[0]?.source ?? linked.source,
+      adoptExistingDaemon,
+    });
     return {
       directory,
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
@@ -109,6 +158,7 @@ export const codexDirectSessionProviderOps: DirectSessionProviderOps = {
       resume: linked.remoteSessionId,
       approvedNewDirectoryCreation: true,
       transcriptStorage,
+      ...(sourceAuth ? { connectedServices: sourceAuth } : {}),
       ...(adoptExistingDaemon ? { codexBackendMode: 'appServer' as const } : {}),
       ...buildCodexSpawnRuntimeAffinityCompatFields(
         !adoptExistingDaemon && linked.codexBackendMode ? { backendMode: linked.codexBackendMode } : null,
