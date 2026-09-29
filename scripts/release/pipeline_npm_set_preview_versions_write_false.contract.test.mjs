@@ -68,7 +68,7 @@ test('set-preview-versions supports --write=false (compute-only, no filesystem c
   assert.equal(readJson(dir, 'packages/relay-server/package.json').version, '3.4.5');
 });
 
-test('set-preview-versions can preflight an explicitly selected version already published on npm', () => {
+test('set-preview-versions can publish npm after the exact GitHub binary version already exists', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'happier-preview-versions-retry-'));
   writeJson(dir, 'apps/cli/package.json', { name: '@happier-dev/cli', version: '1.2.3' });
 
@@ -88,8 +88,8 @@ test('set-preview-versions can preflight an explicitly selected version already 
       env: {
         ...process.env,
         HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
-          github: {},
-          npm: { '@happier-dev/cli': ['1.2.3-preview.1'] },
+          github: { cli: ['1.2.3-preview.1'] },
+          npm: {},
         }),
       },
       encoding: 'utf8',
