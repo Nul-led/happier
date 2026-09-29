@@ -1,5 +1,39 @@
 # Changelog
 
+## Release 2026-09-29.2 - 2026-09-29
+
+<!-- happier-release-note-projections:v1
+{
+  "expo": {
+    "message": "Happier 0.2.14 brings experimental Devin, Antigravity (Agy), FX, and Factory Droid sessions to refreshed preview and stable builds, and improves Codex takeover, relay installation, setup, updates, and session recovery."
+  },
+  "appStore": {
+    "whatsNew": "Happier 0.2.14 brings experimental Devin, Antigravity (Agy), FX, and Factory Droid sessions to refreshed preview and stable builds, and improves Codex takeover, relay installation, setup, updates, and session recovery."
+  },
+  "playStore": {
+    "whatsNew": "Happier 0.2.14 brings experimental Devin, Antigravity (Agy), FX, and Factory Droid sessions to refreshed preview and stable builds, and improves Codex takeover, relay installation, setup, updates, and session recovery."
+  }
+}
+-->
+
+Happier 0.2.14 carries the 0.2.13 improvements into refreshed preview and stable builds, while fixing Codex session takeover, self-hosted relay installation, and the Agent directory.
+
+### Devin, Antigravity (Agy), FX, and Factory Droid
+
+Experimental sessions for these four Agents are included in the refreshed builds. Devin supports follow-ups and resumable work; Agy uses its ACP server; FX and Droid use their locally installed CLIs and advertise their supported models and modes. Provider installation and sign-in still happen on the computer running the Agent.
+
+### Sessions, setup, and updates
+
+The 0.2.13 guided computer setup, clearer update states, session reminders, account-pool controls, and redacted diagnostics remain included. This patch also keeps live Codex App Server ownership intact during takeover and settles the session when its proxy exits.
+
+### CLI and website fixes
+
+Self-hosted relay installation now accepts the `current` payload symlink created by Happier’s installer. Invalid tar links are rejected without leaving a partial extracted payload or an unhandled gzip error. The website now lists all shipped Agent integrations and aligns its Kimi, Cursor, and other capability claims with the shipped manifests.
+
+### Compatibility
+
+This patch introduces no new wire format or database migration. The compatibility notes for the 0.2.13 features, including session reminders and local draft migration, still apply.
+
 ## Release 2026-09-29.1 - 2026-09-29
 
 <!-- happier-release-note-projections:v1
