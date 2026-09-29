@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync } from 'node:fs';
+import { existsSync, lstatSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -311,7 +311,7 @@ function resolveLocalServerPayloadOverrideFromBinaryPath(serverBinaryPath: strin
   const payloadRoot = basename(binaryDir) === 'bin'
     ? dirname(binaryDir)
     : binaryDir;
-  if (!existsSync(payloadRoot) || !lstatSync(payloadRoot).isDirectory()) {
+  if (!existsSync(payloadRoot) || !statSync(payloadRoot).isDirectory()) {
     throw new Error(`relay payload root not found: ${payloadRoot}`);
   }
   return {
