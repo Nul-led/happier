@@ -1898,10 +1898,16 @@ export async function runCodex(opts: {
             configOverrides: codexAppServerConfigOverrides,
             ...(useCodexAppServerDaemonProxy
                 ? {
-                    createClient: async () => await createCodexAppServerDaemonProxyClient({
-                        cwd: directory,
-                        processEnv: codexAppServerProcessEnv,
-                    }),
+                    createClient: async () => {
+                        const daemonProxyClient = await createCodexAppServerDaemonProxyClient({
+                            cwd: directory,
+                            processEnv: codexAppServerProcessEnv,
+                        });
+                        daemonProxyClient.onExit(() => {
+                            terminationHandlers.requestTermination({ kind: 'exit', code: 0 });
+                        });
+                        return daemonProxyClient;
+                    },
                 }
                 : codexSharedAppServer
                     ? { createClient: codexSharedAppServer.createClient }

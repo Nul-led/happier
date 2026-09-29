@@ -416,6 +416,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
         CLAUDE_CONFIG_DIR: '/tmp/claude-config',
         CODEX_HOME: '/tmp/codex-home',
         CODEX_SQLITE_HOME: '/tmp/codex-sqlite-home',
+        HAPPIER_CODEX_APP_SERVER_TRANSPORT: 'daemonProxy',
         OPENAI_API_KEY: 'test-key',
         ANTHROPIC_AUTH_TOKEN: 'test-token',
       },
@@ -478,6 +479,7 @@ describe('sessionRunnerRespawnDescriptor', () => {
       },
       approvedNewDirectoryCreation: true,
     });
+    expect(restored.environmentVariables).not.toHaveProperty('HAPPIER_CODEX_APP_SERVER_TRANSPORT');
   });
 
   it('builds tracked respawn environment variables from expanded env plus safe child runtime locators only', () => {

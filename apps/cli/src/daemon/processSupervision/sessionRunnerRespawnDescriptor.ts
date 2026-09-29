@@ -2,6 +2,7 @@ import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers
 import { resolveCanonicalCodexBackendMode } from '@/rpc/handlers/codexBackendMode';
 import type { TerminalMode, TerminalSpawnOptions } from '@/terminal/runtime/terminalConfig';
 import { HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY } from '@/agent/runtime/sessionConnectedServiceMaterializationIdentityEnv';
+import { CODEX_APP_SERVER_TRANSPORT_ENV_KEY } from '@/backends/codex/appServer/daemon/codexAppServerDaemonTransport';
 import {
   AgentRuntimeDescriptorV1Schema,
   BackendTargetRefSchema,
@@ -21,6 +22,9 @@ const SAFE_RESPAWN_ENVIRONMENT_VARIABLE_KEYS = [
   'CODEX_SQLITE_HOME',
   HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY,
 ] as const;
+const NON_RESPAWN_ENVIRONMENT_VARIABLE_KEYS = new Set<string>([
+  CODEX_APP_SERVER_TRANSPORT_ENV_KEY,
+]);
 const MAX_SEALED_RESPAWN_ENVIRONMENT_CIPHERTEXT_CHARS = 65_536;
 
 export type RespawnDescriptorEncryptionMaterial =
@@ -63,6 +67,7 @@ function pickPersistedEnvironmentVariables(value: unknown): Record<string, strin
   const persisted = Object.fromEntries(
     Object.entries(value as Record<string, unknown>).flatMap(([key, raw]) => {
       if (typeof key !== 'string' || typeof raw !== 'string') return [];
+      if (NON_RESPAWN_ENVIRONMENT_VARIABLE_KEYS.has(key)) return [];
       return [[key, raw]];
     }),
   );
@@ -104,7 +109,7 @@ function openRespawnEnvironmentVariables(params: Readonly<{
   if (!parsed.success) {
     throw new Error('Failed to decrypt respawn environment variables');
   }
-  return parsed.data;
+  return pickPersistedEnvironmentVariables(parsed.data) ?? {};
 }
 
 function pickSafeRespawnEnvironmentVariables(value: unknown): Record<string, string> | undefined {
