@@ -497,6 +497,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
           const takeoverOptions = await resolveDirectTakeoverSpawnOptions({
             linked: linked.session,
             sessionId: parsed.data.sessionId,
+            credentials,
             transcriptStorage: 'persisted',
           });
           canTakeOverPersist = takeoverOptions !== null;
@@ -650,6 +651,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
     const spawnOptions = await resolveDirectTakeoverSpawnOptions({
       linked: validatedLinkedSession,
       sessionId: parsed.data.sessionId,
+      credentials,
       transcriptStorage: 'direct',
       terminal: parsed.data.terminal,
     });
@@ -723,6 +725,7 @@ export function registerMachineDirectSessionsRpcHandlers(params: Readonly<{
     const directSpawnOptions = await resolveDirectTakeoverSpawnOptions({
       linked: validatedLinkedSession,
       sessionId: parsed.data.sessionId,
+      credentials,
       transcriptStorage: 'persisted',
       terminal: parsed.data.terminal,
     });
