@@ -31,8 +31,6 @@ COPY bin/ /opt/happier-npm-e2e/bin/
 
 STOPSIGNAL SIGRTMIN+3
 
-VOLUME ["/sys/fs/cgroup"]
-
 EXPOSE 22
 
 CMD ["bash", "/opt/happier-npm-e2e/bin/remote-host-systemd-entrypoint.sh"]

@@ -191,6 +191,16 @@ test('release-assets-e2e remote host install shims make repeated CLI installs id
   }
 });
 
+test('systemd test hosts use Docker-private cgroup mounts, not the read-only host root', () => {
+  const dockerfile = fs.readFileSync(join(here, 'Dockerfile.remote-host-systemd'), 'utf8');
+  assert.doesNotMatch(dockerfile, /^VOLUME\s+\["\/sys\/fs\/cgroup"\]/m);
+  for (const filename of ['compose.remote.yml', 'compose.desktop-setup.yml']) {
+    const compose = fs.readFileSync(join(here, filename), 'utf8');
+    assert.doesNotMatch(compose, /- \/sys\/fs\/cgroup:\/sys\/fs\/cgroup/);
+    assert.match(compose, /privileged: true/);
+  }
+});
+
 test('npm-e2e-smoke dockerhub postgres smoke waits for postgres readiness', () => {
   const content = fs.readFileSync(runScript, 'utf8');
   assert.match(content, /waiting for dockerhub postgres/i);
