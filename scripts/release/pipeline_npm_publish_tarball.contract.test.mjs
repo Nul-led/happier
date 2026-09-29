@@ -47,7 +47,7 @@ const mode = process.env.NPM_STUB_MODE;
 const integrity = process.env.NPM_STUB_INTEGRITY;
 const packageVersion = '1.2.3';
 if (args[0] === 'view' && args[2] === 'dist.integrity') {
-  if ((mode === 'absent' || mode === 'ambiguous') && state.integrityQueries === 0) {
+  if ((mode === 'absent' || mode === 'ambiguous' || mode === 'publish-delayed-tag') && state.integrityQueries === 0) {
     state.integrityQueries = 1;
     writeState();
     process.stderr.write('npm ERR! code E404\\n');
@@ -61,6 +61,10 @@ if (args[0] === 'view' && args[2] === 'dist.integrity') {
 if (args[0] === 'view' && args[2] === 'dist-tags') {
   state.distTagQueries = (state.distTagQueries ?? 0) + 1;
   writeState();
+  if (mode === 'publish-delayed-tag' && state.distTagQueries === 1) {
+    process.stdout.write(JSON.stringify(state.previousDistTags ?? {}) + '\\n');
+    process.exit(0);
+  }
   if (mode === 'stale-tag' && state.distTagAdds > 0 && state.distTagQueries === 2) {
     process.stdout.write(JSON.stringify(state.previousDistTags ?? {}) + '\\n');
     process.exit(0);
@@ -71,9 +75,17 @@ if (args[0] === 'view' && args[2] === 'dist-tags') {
 if (args[0] === 'publish') {
   state.publishCalls = (state.publishCalls ?? 0) + 1;
   writeState();
+  if (mode === 'publish-delayed-tag') {
+    state.remoteIntegrity = integrity;
+    state.previousDistTags = state.distTags ?? {};
+    state.distTags = { ...state.previousDistTags, [args[args.indexOf('--tag') + 1]]: packageVersion };
+    writeState();
+    process.stdout.write('published\\n');
+    process.exit(0);
+  }
   if (mode === 'ambiguous') {
     state.remoteIntegrity = integrity;
-    state.distTags = {};
+    state.distTags = { ...(state.distTags ?? {}), [args[args.indexOf('--tag') + 1]]: packageVersion };
     writeState();
     process.stderr.write('npm ERR! network timeout after upload\\n');
     process.exit(1);
@@ -99,7 +111,7 @@ process.exit(2);
   return binDir;
 }
 
-function runNpmPublication(tmpDir, mode, initialState) {
+function runNpmPublication(tmpDir, mode, initialState, { npmToken = false } = {}) {
   const { tarballPath, integrity } = createTarball(tmpDir);
   const statePath = path.join(tmpDir, 'state.json');
   const callsPath = path.join(tmpDir, 'npm-calls.jsonl');
@@ -113,6 +125,7 @@ function runNpmPublication(tmpDir, mode, initialState) {
     NPM_STUB_CALLS: callsPath,
     NPM_STUB_INTEGRITY: integrity,
     GITHUB_ACTIONS: 'false',
+    NPM_TOKEN: npmToken ? 'npm-token-for-test' : '',
   };
   let error;
   try {
@@ -234,7 +247,7 @@ test('pipeline npm publish skips an exact version, repairs its dist-tag, and ver
     remoteIntegrity: undefined,
     distTags: { next: '1.2.2' },
     integrityQueries: 0,
-  });
+  }, { npmToken: true });
   assert.equal(result.error, undefined);
   assert.equal(result.state.publishCalls ?? 0, 0, 'exact integrity must skip npm publish');
   assert.equal(result.state.distTagAdds, 1, 'wrong dist-tag must be repaired');
@@ -249,7 +262,7 @@ test('pipeline npm publish tolerates a stale read after an already-applied dist-
     remoteIntegrity: undefined,
     distTags: { next: '1.2.2' },
     integrityQueries: 0,
-  });
+  }, { npmToken: true });
   assert.equal(result.error, undefined);
   assert.equal(result.state.publishCalls ?? 0, 0, 'exact integrity must skip npm publish');
   assert.equal(result.state.distTagAdds, 1, 'the dist-tag mutation must not be repeated');
@@ -257,6 +270,31 @@ test('pipeline npm publish tolerates a stale read after an already-applied dist-
   assert.equal(result.state.distTags.next, '1.2.3');
   const distTagReads = result.calls.filter((args) => args[0] === 'view' && args[2] === 'dist-tags');
   assert.equal(distTagReads.every((args) => args.includes('--prefer-online')), true, 'every verification read must bypass stale npm cache data');
+});
+
+test('pipeline npm publish waits for its own dist-tag to become readable without a second mutation', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-npm-publish-delayed-tag-'));
+  const result = runNpmPublication(tmpDir, 'publish-delayed-tag', {
+    distTags: { next: '1.2.2' },
+    integrityQueries: 0,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.state.publishCalls, 1);
+  assert.equal(result.state.distTagAdds ?? 0, 0, 'trusted publish must not require a second dist-tag mutation');
+  assert.equal(result.state.distTagQueries, 2, 'a stale first registry read should be retried');
+  assert.equal(result.state.distTags.next, '1.2.3');
+});
+
+test('pipeline npm publish refuses an unrepairable existing dist-tag mismatch without mutating it', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-npm-publish-no-repair-'));
+  const result = runNpmPublication(tmpDir, 'exact', {
+    distTags: { next: '1.2.2' },
+    integrityQueries: 0,
+  });
+  assert.notEqual(result.error, undefined);
+  assert.equal(result.state.publishCalls ?? 0, 0);
+  assert.equal(result.state.distTagAdds ?? 0, 0);
+  assert.match(String(result.error?.stderr), /without a token for a separate dist-tag repair/);
 });
 
 test('pipeline npm publish fails closed when the existing version has different integrity', () => {
@@ -280,6 +318,6 @@ test('pipeline npm publish recovers an ambiguous publish by re-querying exact in
   assert.equal(result.error, undefined);
   assert.equal(result.state.publishCalls, 1);
   assert.equal(result.state.integrityQueries, 2, 'ambiguous publish must trigger an integrity re-query');
-  assert.equal(result.state.distTagAdds, 1, 'recovered publication must repair its dist-tag');
+  assert.equal(result.state.distTagAdds ?? 0, 0, 'recovered publication already wrote its dist-tag');
   assert.ok(result.calls.some((args) => args[0] === 'publish'));
 });

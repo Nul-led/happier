@@ -200,7 +200,7 @@ function sleepSync(milliseconds) {
 }
 
 /**
- * @param {{ npmVersion: string; env: Record<string, string>; packageName: string; version: string; distTag: string }} opts
+ * @param {{ npmVersion: string; env: Record<string, string>; packageName: string; version: string; distTag: string; publishedNow: boolean; canRepair: boolean }} opts
  */
 function ensureDistTag(opts) {
   const current = queryDistTags(opts);
@@ -209,11 +209,27 @@ function ensureDistTag(opts) {
     return;
   }
 
+  // A successful npm publish already requested this tag. Its first registry read can lag behind
+  // the write, and trusted-publishing credentials cannot perform a separate dist-tag mutation.
+  const verificationDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
+  if (opts.publishedNow) {
+    for (const delayMs of verificationDelaysMs) {
+      console.log(`[pipeline] npm dist-tag read is stale; retrying verification in ${delayMs}ms`);
+      sleepSync(delayMs);
+      if (queryDistTags(opts)[opts.distTag] === opts.version) {
+        console.log(`[pipeline] npm dist-tag verified: ${opts.distTag} -> ${opts.version}`);
+        return;
+      }
+    }
+  }
+
+  if (!opts.canRepair) {
+    throw new Error(`npm dist-tag ${opts.distTag} does not point to ${opts.version}; publish used trusted credentials without a token for a separate dist-tag repair`);
+  }
   console.log(`[pipeline] repairing npm dist-tag: ${opts.distTag} -> ${opts.version}`);
   runNpm(opts.npmVersion, ['dist-tag', 'add', `${opts.packageName}@${opts.version}`, opts.distTag], {
     env: opts.env,
   });
-  const verificationDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
   for (let attempt = 0; attempt <= verificationDelaysMs.length; attempt += 1) {
     const verified = queryDistTags(opts);
     if (verified[opts.distTag] === opts.version) {
@@ -362,6 +378,7 @@ function main() {
     env: publishEnv,
     packageSpec,
   });
+  let publishedNow = false;
 
   if (existingIntegrity) {
     if (existingIntegrity !== metadata.integrity) {
@@ -373,6 +390,7 @@ function main() {
   } else {
     try {
       runNpm(npmVersion, publishArgs, { env: publishEnv });
+      publishedNow = true;
     } catch (publishError) {
       console.warn('[pipeline] npm publish outcome ambiguous; re-querying published integrity');
       let recoveredIntegrity;
@@ -387,6 +405,7 @@ function main() {
       }
       if (recoveredIntegrity !== metadata.integrity) throw publishError;
       console.log(`[pipeline] recovered npm publication with matching integrity: ${packageSpec}`);
+      publishedNow = true;
     }
   }
 
@@ -396,6 +415,8 @@ function main() {
     packageName: metadata.name,
     version: metadata.version,
     distTag,
+    publishedNow,
+    canRepair: npmToken !== '',
   });
 }
 
