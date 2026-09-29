@@ -1214,9 +1214,11 @@ jobs:
       candidate_ui_web_version: ${{ needs.publish_ui_web.outputs.version }}
       verify_stack_release: ${{ needs.publish_hstack_binaries.result == 'success' }}
       validation_profile: ${{ needs.plan.outputs.validation_profile }}
-      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' }}
-      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' }}
-      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' }}
+      # An earlier attempt may already have advanced the target branch, erasing its risk diff.
+      # Recheck applicable upgrade suites on resume; the registry still checks candidate inputs.
+      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' || inputs.resume_run_id != '' }}
+      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' || inputs.resume_run_id != '' }}
+      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' || inputs.resume_run_id != '' }}
       include_validation_suites: ${{ inputs.include_validation_suites }}
       waive_validation_suites: ${{ inputs.waive_validation_suites }}
 
