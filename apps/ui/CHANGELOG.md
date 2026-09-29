@@ -1,5 +1,67 @@
 # Changelog
 
+## Release 2026-09-29.1 - 2026-09-29
+
+<!-- happier-release-note-projections:v1
+{
+  "expo": {
+    "message": "Happier 0.2.13 adds experimental Devin, Antigravity, FX, and Factory Droid sessions, guided computer setup, clearer updates, session reminders, stronger recovery, account-pool controls, and redacted diagnostics export."
+  },
+  "appStore": {
+    "whatsNew": "Happier 0.2.13 adds experimental Devin, Antigravity, FX, and Factory Droid sessions, guided computer setup, clearer updates, session reminders, stronger recovery, account-pool controls, and redacted diagnostics export."
+  },
+  "playStore": {
+    "whatsNew": "Happier 0.2.13 adds experimental Devin, Antigravity, FX, and Factory Droid sessions, guided computer setup, clearer updates, session reminders, stronger recovery, account-pool controls, and redacted diagnostics export."
+  }
+}
+-->
+
+Happier 0.2.13 introduces experimental Devin, Antigravity (Agy), FX, and Factory Droid sessions. It also makes computer setup and updates easier to follow, adds session reminders, and strengthens recovery when connections, daemons, or provider sessions are interrupted.
+
+### New experimental Agents: Devin, Antigravity, FX, and Factory Droid
+
+- **Devin CLI:** Start and resume sessions, send follow-ups, cancel work, and run Happier execution runs. Model, reasoning-effort, and speed choices appear when Devin advertises them; Happier does not guess unsupported choices.
+- **Antigravity (Agy):** Start and resume sessions through its ACP server, change advertised models, and run execution runs. On supported platforms, Happier acquires the pinned ACP server. Its ACP login is separate from login to the interactive `agy` CLI.
+- **FX:** Use a locally installed `fx` CLI for new and resumed sessions, execution runs, and provider-advertised models and modes. Where FX reports saved sessions, the new-session flow can list them for *resume*; listing does not imply live terminal takeover.
+- **Factory Droid:** Use a locally installed Droid CLI for new and resumed sessions, execution runs, MCP tools, and the model, reasoning, and autonomy choices Droid advertises.
+- Provider installation and authentication still happen on the computer running the Agent. Unsupported platforms or missing provider capabilities fail visibly rather than being presented as available.
+
+### OpenCode, Codex, Claude, and session control
+
+- OpenCode can negotiate its V1 or V2 server API. An Auto/Stable/V2 preference lets users select the intended installation without treating an executable’s name as proof of its API version.
+- Codex local terminal control and Happier’s daemon can share the same App Server session. Asynchronous Codex questions can be answered after the session resumes.
+- Claude queued follow-ups and in-flight steering use provider evidence to settle delivery, improving continuity through reconnects and native queue transitions.
+- Agent model and mode selections increasingly come from the running provider’s advertised capabilities rather than a static list.
+
+### Guided setup and actionable updates
+
+- Desktop’s Home setup flow shows what this computer needs, the current setup stage, download progress, and a focused recovery action when its CLI is missing or too old.
+- The Updates surface distinguishes available, running, completed, failed, unchecked, and offline states for the app and connected computers. It does not call an uncontacted computer “up to date.”
+- CLI and first-party runtime acquisition support progress and cancellation. Managed CLI replacement more carefully preserves daemon/service ownership and restarts the service that actually belongs to the installation.
+- Guided CLI onboarding improves executable discovery, relay selection, and explicit replacement of existing pairing credentials.
+
+### Sessions, reminders, drafts, and review
+
+- Set a session aside until a reminder time; it can return to the attention inbox without losing its previous standing.
+- Browser session drafts and pending sends use durable local storage and recover more reliably across reloads, reconnects, and interrupted migration.
+- Transcript catch-up better preserves reading position and message continuity when direct and relay sources change or a connection briefly drops. Collapsing a transcript row releases its old height instead of leaving a gap.
+- Rollback actions are tied to turns the active Agent reports as eligible, rather than offering a control for an unsupported turn.
+- Desktop sessions gain a compact action rail for Git, review, terminal, and running-Agent activity.
+
+### Connected Services, privacy, and diagnostics
+
+- Account pools can select which provider-reported quota allowances govern usage and recovery, while retaining account and subscription context in the display.
+- Account settings can require end-to-end encryption; a session that does not satisfy that requirement is not silently accepted as plaintext.
+- The app and CLI can export a redacted diagnostics bundle for a bug report, including a local fallback when report submission is unavailable.
+
+### Downloads and documentation
+
+- The website adds a localized download hub, and the docs include setup and capability guidance for the newly supported Agents.
+
+### Compatibility and self-hosting
+
+The server adds nullable session-reminder fields. New optional client/server features are negotiated rather than assumed. After upgrading the web app, reload older open tabs that hold local drafts; concurrent editing from an unupgraded tab during draft migration is not supported. If a self-hosted operator enables the new automatic account-pool policy for plan-incompatible accounts, rolling that database back to an older server requires explicit policy reconciliation.
+
 ## Release 2026-09-07.1 - 2026-09-07
 
 <!-- happier-release-note-projections:v1
