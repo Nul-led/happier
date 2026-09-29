@@ -24,14 +24,17 @@ export function daemonProcessMatchesCurrentScope(
   if (home && currentHome && home !== currentHome) return false;
 
   const lifecycle = normalizeScopeValue(env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID);
-  const currentLifecycle = normalizeScopeValue(process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID);
+  // A standalone daemon has no explicit lifecycle env, but its children receive the
+  // resolved active-server id as their lifecycle identity from the spawn owner.
+  const currentLifecycle = normalizeScopeValue(process.env.HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID)
+    || normalizeScopeValue(configuration.activeServerId);
   if (lifecycle) {
     // The explicit lifecycle identity survives endpoint/profile changes.
     return Boolean(currentLifecycle) && lifecycle === currentLifecycle;
   }
   // Released runners may predate explicit lifecycle scope; retain their recorded relay identity.
   const active = normalizeScopeValue(env.HAPPIER_ACTIVE_SERVER_ID);
-  const currentActive = currentLifecycle || configuration.activeServerId;
+  const currentActive = currentLifecycle;
   if (required && (!active || !currentActive)) return false;
   if (active && currentActive && active !== currentActive) return false;
   const server = normalizeServerUrl(env.HAPPIER_SERVER_URL);
