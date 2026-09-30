@@ -232,6 +232,7 @@ describe('focused computer room query', () => {
             { data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: false } } },
         ]);
         const inRoom = vi.fn(() => ({ fetchSockets }));
+        // Boundary fixture: this query uses only the account-room socket-fetch API of Socket.IO.
         eventRouter.setIo({ in: inRoom } as any);
         expect(await eventRouter.hasFocusedComputerUi('account')).toBe(false);
         expect(inRoom).toHaveBeenCalledWith('user-scoped:account');
