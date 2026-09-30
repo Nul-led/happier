@@ -88,6 +88,14 @@ function createLayoutAnimationBuilderMock(presetName: string) {
     return make({ presetName });
 }
 
+/**
+ * A frame callback as the mock sees it. Node tests never tick frames, so what a test CAN observe is
+ * whether a component left its per-frame work running: `useFrameCallback` handles land here.
+ */
+export type ReanimatedFrameCallbackMock = { isActive: boolean; setActive: (active: boolean) => void; callbackId: number };
+
+export const reanimatedFrameCallbacks = new Set<ReanimatedFrameCallbackMock>();
+
 export function createReanimatedModuleMock() {
     const Animated = {
         View: 'Animated.View',
@@ -117,6 +125,21 @@ export function createReanimatedModuleMock() {
             ref.current.value = value;
         }
         return ref.current;
+    };
+    const useFrameCallback = (_callback: (info: { timestamp: number }) => void, autostart = true): ReanimatedFrameCallbackMock => {
+        const ref = React.useRef<ReanimatedFrameCallbackMock | null>(null);
+        if (!ref.current) {
+            const handle: ReanimatedFrameCallbackMock = {
+                isActive: autostart,
+                setActive: (active) => { handle.isActive = active; },
+                callbackId: reanimatedFrameCallbacks.size + 1,
+            };
+            reanimatedFrameCallbacks.add(handle);
+            ref.current = handle;
+        }
+        const handle = ref.current;
+        React.useEffect(() => () => { reanimatedFrameCallbacks.delete(handle); }, [handle]);
+        return handle;
     };
     const runOnJS = <TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult) => fn;
     const runOnUI = <TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult) => fn;
@@ -220,6 +243,7 @@ export function createReanimatedModuleMock() {
         },
         useAnimatedStyle: <T,>(factory: () => T): T => factory(),
         useDerivedValue,
+        useFrameCallback,
         useSharedValue,
         withDelay: <T,>(_delayMs: number, animation: T): T => animation,
         withRepeat: <T,>(value: T): T => value,
