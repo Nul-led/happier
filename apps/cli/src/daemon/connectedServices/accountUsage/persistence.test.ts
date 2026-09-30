@@ -103,6 +103,43 @@ function createCredentials(): Credentials {
 }
 
 describe('provider account usage persistence', () => {
+  it('releases confirmation custody when a terminal paused payload is actually evicted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_500);
+    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
+    let writesSucceed = false;
+    const scheduler = createProviderAccountUsagePersistenceScheduler({
+      api: {
+        getAccountEncryptionMode: async () => 'plain',
+        registerProviderAccountUsageSnapshotPlain: async () => {
+          if (!writesSucceed) throw new Error('temporary outage');
+        },
+      },
+      now: () => Date.now(),
+      fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const evictedConfirmation = vi.fn();
+    const currentConfirmation = vi.fn();
+    try {
+      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted: evictedConfirmation });
+      await vi.runAllTimersAsync();
+      // Fully pause each distinct key before adding the next: this pressure
+      // evicts paused custody rather than merely discarding a queued write.
+      for (let index = 0; index < 500; index += 1) {
+        await scheduler.recordInBandSnapshot(createSnapshot(createKey(`pressure_${index}`)));
+        await vi.runAllTimersAsync();
+      }
+      writesSucceed = true;
+      await scheduler.recordInBandSnapshot({ ...createSnapshot(), planLabel: 'Max' }, { onPersisted: currentConfirmation });
+      await vi.runAllTimersAsync();
+      expect(evictedConfirmation).not.toHaveBeenCalled();
+      expect(currentConfirmation).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('omits subscription but preserves usage when the server subscription decision is absent', async () => {
     const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
     const base = createSnapshot();

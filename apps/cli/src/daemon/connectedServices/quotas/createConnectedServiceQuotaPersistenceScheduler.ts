@@ -84,7 +84,7 @@ export function createConnectedServiceQuotaPersistenceScheduler<
       let oldestKey: TKey | null = null;
       let oldestTouchedAtMs = Number.POSITIVE_INFINITY;
       for (const [key, paused] of pausedByKey) {
-        if (key === protectedKey) continue;
+        if (key === protectedKey || scheduler.hasPendingOrRunningWork(key)) continue;
         if (paused.lastTouchedAtMs < oldestTouchedAtMs) {
           oldestTouchedAtMs = paused.lastTouchedAtMs;
           oldestKey = key;
@@ -147,6 +147,14 @@ export function createConnectedServiceQuotaPersistenceScheduler<
         throw error;
       }
     },
+    onEvent: (event) => {
+      if (event.type === 'suppressed' && (event.reason === 'max_keys' || event.reason === 'pending_payload_stale')) {
+        // Only the keyed owner knows when queued/retrying custody was actually discarded.
+        pausedByKey.delete(event.key);
+        forceFlushKeys.delete(event.key);
+      }
+      options.onEvent?.(event);
+    },
     shouldRetry,
   });
 
@@ -205,6 +213,7 @@ export function createConnectedServiceQuotaPersistenceScheduler<
       scheduler.dispose();
     },
     notifyConnectivityChanged: () => scheduler.notifyConnectivityChanged(),
+    hasPendingOrRunningWork: (key) => scheduler.hasPendingOrRunningWork(key),
     getCounters: (): KeyedLatestWorkCounters => {
       const counters = scheduler.getCounters();
       return { ...counters, suppressed: counters.suppressed + pausedSuppressedCount };

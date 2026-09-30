@@ -203,7 +203,9 @@ export async function recordProviderAccountUsageSnapshotForSession(input: Readon
         onPersisted: publishRecordId,
       },
     ) as ProviderAccountUsagePersistenceResult;
-    persisted = result.status === 'persisted' || result.status === 'already_persisted';
+    // Future rejection leaves local intake accepted but does not prove a first server record exists.
+    persisted = result.status === 'persisted'
+      || (result.status === 'already_persisted' && result.reason !== 'future');
   }
 
   if (persisted) publishRecordId();

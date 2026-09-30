@@ -118,6 +118,33 @@ function createConnectedServiceGroupSnapshot(
 }
 
 describe('recordProviderAccountUsageSnapshotForSession', () => {
+  it('does not publish a first future observation that the real persistence owner has never written', async () => {
+    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
+    const { createProviderAccountUsageStore } = await import('./store');
+    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
+    const write = vi.fn(async () => {});
+    const publishRecordId = vi.fn(async () => {});
+    const store = createProviderAccountUsageStore();
+    const persistence = createProviderAccountUsagePersistenceScheduler({
+      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
+      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const future = { ...createSnapshot(), fetchedAtMs: 100_000, observedAtMs: 100_000 };
+    try {
+      const result = await recordProviderAccountUsageSnapshotForSession({
+        getChildren: () => [{ happySessionId: 's1' }], sessionId: 's1', snapshot: future,
+        store, persistence, publishRecordId,
+      });
+      await Promise.resolve();
+      expect(write).not.toHaveBeenCalled();
+      // Local accepted observation semantics stay unchanged; a rejected write
+      // cannot prove the global record exists for session metadata.
+      expect(store.resolveRecordId(future.recordId)).toMatchObject({ fetchedAtMs: 100_000 });
+      expect(publishRecordId).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: false });
+    } finally { persistence.dispose(); }
+  });
+
   it('records latest state, forwards explicit source context, queues persistence, and waits for confirmed persistence before metadata refs', async () => {
     const module = await loadRecordModule();
     expect(module).not.toBeNull();

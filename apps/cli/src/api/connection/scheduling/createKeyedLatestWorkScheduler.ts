@@ -29,6 +29,8 @@ export type KeyedLatestWorkScheduler<TKey extends string, TPayload> = {
   cancelKey: (key: TKey) => void;
   dispose: () => void;
   notifyConnectivityChanged: () => void;
+  /** Whether this owner retains pending/retrying or in-flight work for the key. */
+  hasPendingOrRunningWork: (key: TKey) => boolean;
   getCounters: () => KeyedLatestWorkCounters;
   getStats: () => KeyedLatestWorkStats;
 };
@@ -432,6 +434,10 @@ export function createKeyedLatestWorkScheduler<TKey extends string, TPayload>(
       for (const key of entries.keys()) {
         scheduleKey(key, { force: false });
       }
+    },
+    hasPendingOrRunningWork: (key) => {
+      const entry = entries.get(key);
+      return Boolean(entry?.pending || entry?.inFlight);
     },
     getCounters: () => ({ ...counters }),
     getStats: () => {
