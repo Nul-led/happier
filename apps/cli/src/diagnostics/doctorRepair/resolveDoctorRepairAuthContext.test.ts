@@ -15,6 +15,39 @@ const scope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPP
 afterEach(() => { scope.restore(); reloadConfiguration(); });
 
 describe('doctor repair auth profile scope', () => {
+
+  it.each(['runtime', 'target'] as const)('uses the confirmed account for opaque credentials in the %s profile', async (profileId) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: 'account-b' }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing server address');
+    const localUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      await withTempDir('doctor-opaque-confirmed-account-', async (home) => {
+        scope.patch({ HAPPIER_HOME_DIR: home, HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined, HAPPIER_LOCAL_SERVER_URL: undefined, HAPPIER_PUBLIC_SERVER_URL: undefined });
+        reloadConfiguration();
+        await updateSettings((current) => ({ ...current, activeServerId: 'runtime', servers: {
+          runtime: { id: 'runtime', name: 'Runtime', serverUrl: 'https://runtime.example.test', localServerUrl: localUrl, webappUrl: 'https://runtime.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+          target: { id: 'target', name: 'Target', serverUrl: 'https://target.example.test', localServerUrl: localUrl, webappUrl: 'https://target.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+        }, lastTokenSubByServerId: { [profileId]: 'account-a' }, machineIdByServerId: { [profileId]: 'machine-a' }, machineIdByServerIdByAccountId: { [profileId]: { 'account-a': 'machine-a' } } }));
+        reloadConfiguration();
+        await mkdir(join(home, 'servers', profileId), { recursive: true });
+        await writeFile(join(home, 'servers', profileId, 'access.key'), JSON.stringify({ token: 'opaque-stored-token', secret: Buffer.alloc(32).toString('base64') }));
+        const settingsBefore = await readSettings();
+        const context = await resolveDoctorRepairAuthContext({ targetServerId: profileId });
+        expect(context.authSignals.find((signal) => signal.serverId === profileId)).toMatchObject({ hasCredentials: true, isExpired: false, reachability: 'verified', machineRegistered: false });
+        expect(classifyAuth({ hasAnyServerProfile: context.hasAnyServerProfile, signals: context.authSignals })).toMatchObject([{ kind: 'machine_not_registered_for_profile', serverId: profileId }]);
+        expect(await readSettings()).toEqual(settingsBefore);
+        await updateSettings((current) => ({ ...current, machineIdByServerIdByAccountId: { [profileId]: { 'account-a': 'machine-a', 'account-b': 'machine-b' } } }));
+        const restored = await resolveDoctorRepairAuthContext({ targetServerId: profileId });
+        expect(restored.authSignals.find((signal) => signal.serverId === profileId)?.machineRegistered).toBe(true);
+        expect(classifyAuth({ hasAnyServerProfile: restored.hasAnyServerProfile, signals: restored.authSignals })).toEqual([]);
+      });
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  });
   it('inspects an explicitly requested inactive profile store and API without changing runtime selection', async () => {
     const requests: string[] = [];
     const server = createServer((req, res) => {

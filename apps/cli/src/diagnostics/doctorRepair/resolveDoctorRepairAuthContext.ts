@@ -73,12 +73,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
   // don't see a misleading "signed in" when we couldn't verify.
   const activeToken = String(credentials?.token ?? '').trim();
   const subject = decodeJwtPayload(activeToken)?.sub;
-  const accountId = typeof subject === 'string' ? subject.trim() : '';
-  const inspectedMachineId = activeProfile && accountId && settings
-    ? selectMachineIdentityInSettings(settings, { serverId: activeProfile.id, accountId,
-      ...(activeProfile.id === runtimeServerId ? { legacyMachineId: settings.machineId } : {}),
-    }).machineId
-    : activeProfile?.id === runtimeServerId ? settings?.machineId : activeProfile ? machineIdByServerId[activeProfile.id] : null;
+  let accountId = typeof subject === 'string' ? subject.trim() : '';
   let activeExpired = false;
   let activeReachability: 'verified' | 'unreachable' | 'not-probed' = 'not-probed';
   if (activeProfile && activeToken) {
@@ -88,11 +83,20 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
         : normalizeServerHttpBaseUrl(resolveServerProfileApiUrl(activeProfile)),
       token: activeToken,
     });
-    activeExpired = result === 'expired';
-    // 'ok' and 'expired' are both definitive answers from the server.
+    activeExpired = result.state === 'invalid';
+    // Valid and rejected credentials are both definitive answers from the server.
     // 'unknown' means no definitive auth result, including an unexpected response.
-    activeReachability = result === 'unknown' ? 'unreachable' : 'verified';
+    activeReachability = result.state === 'unknown' ? 'unreachable' : 'verified';
+    if (result.state === 'valid' && typeof result.accountId === 'string' && result.accountId.trim()) {
+      accountId = result.accountId.trim();
+    }
   }
+
+  const inspectedMachineId = activeProfile && accountId && settings
+    ? selectMachineIdentityInSettings(settings, { serverId: activeProfile.id, accountId,
+      ...(activeProfile.id === runtimeServerId ? { legacyMachineId: settings.machineId } : {}),
+    }).machineId
+    : activeProfile?.id === runtimeServerId ? settings?.machineId : activeProfile ? machineIdByServerId[activeProfile.id] : null;
 
   const signals: AuthSignalsForProfile[] = profiles.map((profile) => {
     // Unrequested profiles expose only historical metadata; endpoint aliases
