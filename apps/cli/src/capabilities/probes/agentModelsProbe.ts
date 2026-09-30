@@ -18,7 +18,7 @@ import { resolveAgentProbeVariant } from './resolveAgentProbeVariant';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { normalizeContextWindowTokens } from '@/backends/modelCapabilities/contextWindowTokens';
-import { isAcpModelScopedConfigOption } from '@/agent/acp/runtime/sessionModelsState';
+import { applyObservedAcpModelOptions, isAcpModelScopedConfigOption } from '@/agent/acp/runtime/sessionModelsState';
 
 type ProbedAgentModelOptionValue = string | number | boolean | null;
 
@@ -404,21 +404,7 @@ function attachObservedModelOptions(
     .filter(isAcpModelScopedConfigOption)
     .map(normalizeProbeModelOption)
     .filter((option): option is ProbedAgentModelOption => option !== null);
-  if (observedOptions.length === 0) return models;
-
-  // Session config options describe the current model. They are not evidence of the
-  // controls supported by other models, or by the synthetic Default choice.
-  return models.map((model) => {
-    if (model.id === 'default' || model.id !== observedModelId) return model;
-    const observedIds = new Set(observedOptions.map((option) => option.id));
-    return {
-      ...model,
-      modelOptions: [
-        ...(model.modelOptions ?? []).filter((option) => !observedIds.has(option.id)),
-        ...observedOptions,
-      ],
-    };
-  });
+  return applyObservedAcpModelOptions(models, observedModelId, observedOptions);
 }
 
 export async function probeModelsFromAcpBackend(params: {

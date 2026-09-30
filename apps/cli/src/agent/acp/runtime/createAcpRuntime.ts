@@ -49,6 +49,7 @@ import {
   PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC,
 } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 import {
+  applyObservedAcpModelOptions,
   collectAcpModelScopedConfigOptions,
   normalizeConfigOptionsArray,
   publishAcpSessionModelsState,
@@ -1679,15 +1680,14 @@ export function createAcpRuntime(params: {
                   : (typeof currentValue === 'number' && Number.isFinite(currentValue) ? String(currentValue) : (typeof currentValue === 'boolean' ? (currentValue ? 'true' : 'false') : ''));
               if (!currentModelId) return null;
 
-              const availableModels = modelOpt.options
+              const availableModels = applyObservedAcpModelOptions(modelOpt.options
                 .filter((opt) => opt.value !== undefined && typeof opt.name === 'string')
                 .map((opt) => ({
                   id: String(opt.value),
                   name: String(opt.name),
                   ...(typeof opt.description === 'string' ? { description: String(opt.description) } : {}),
-                  ...(modelScopedOptions.length > 0 ? { modelOptions: modelScopedOptions } : {}),
                 }))
-                .filter((m) => m.id && m.name);
+                .filter((m) => m.id && m.name), currentModelId, modelScopedOptions);
               if (modelOpt.options.length > 0 && availableModels.length === 0) return null;
 
               return { currentModelId, availableModels };

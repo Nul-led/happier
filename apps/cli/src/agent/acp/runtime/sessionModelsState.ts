@@ -58,6 +58,27 @@ export function isAcpModelScopedConfigOption(option: Readonly<{
     || name === 'context';
 }
 
+/** Current-session options are authoritative only for the observed model. */
+export function applyObservedAcpModelOptions<
+  TOption extends Readonly<{ id: string }>,
+  TModel extends Readonly<{ id: string; modelOptions?: ReadonlyArray<TOption> }>,
+>(models: ReadonlyArray<TModel>, currentModelId: unknown, observedOptions: ReadonlyArray<TOption>): TModel[] {
+  if (observedOptions.length === 0) return [...models];
+  const observedById = new Map(observedOptions.map((option) => [option.id, option]));
+  return models.map((model) => {
+    if (model.id === 'default' || model.id !== currentModelId) return model;
+    const declared = model.modelOptions ?? [];
+    const declaredIds = new Set(declared.map((option) => option.id));
+    return {
+      ...model,
+      modelOptions: [
+        ...declared.map((option) => observedById.get(option.id) ?? option),
+        ...observedOptions.filter((option) => !declaredIds.has(option.id)),
+      ],
+    };
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>

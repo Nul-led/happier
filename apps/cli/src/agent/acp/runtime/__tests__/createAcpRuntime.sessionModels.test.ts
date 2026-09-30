@@ -142,7 +142,7 @@ describe('createAcpRuntime (session models)', () => {
     });
   });
 
-  it('attaches ACP model_config options to models derived from config options', async () => {
+  it('attaches ACP model_config options only to the observed model derived from config options', async () => {
     const backend = createFakeAcpRuntimeBackend();
     const { session, getMetadata } = createSessionClientWithMetadata({
       initialMetadata: createTestMetadata(),
@@ -228,19 +228,6 @@ describe('createAcpRuntime (session models)', () => {
       {
         id: 'gpt-5.5',
         name: 'GPT-5.5',
-        modelOptions: [
-          {
-            id: 'fast',
-            name: 'Fast',
-            category: 'model_config',
-            type: 'select',
-            currentValue: 'true',
-            options: [
-              { value: 'false', name: 'Off' },
-              { value: 'true', name: 'Fast' },
-            ],
-          },
-        ],
       },
     ]);
   });
