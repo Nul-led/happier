@@ -66,7 +66,15 @@ type PendingSwitch = {
     admissionTail: Promise<void>;
 };
 
+type TurnBoundaryWaiter = Readonly<{
+    resolve: () => void;
+    reject: (error: unknown) => void;
+}>;
+
 type SessionTurnState = {
+    closedReason: 'session_terminated' | 'daemon_shutdown' | null;
+    boundaryEpoch: number;
+    boundaryWaiters: Set<TurnBoundaryWaiter>;
     inFlight: boolean;
     lastEvent: ConnectedServiceTurnLifecycleEvent | null;
     hasProviderActivityThisTurn: boolean;
@@ -151,6 +159,7 @@ function createDeferredPromise(): Readonly<{
 }
 
 export type ConnectedServiceSwitchDeferralQueue = Readonly<{
+    captureTurnBoundary: (sessionId: string) => Readonly<{ wait: () => Promise<void> }>;
     requestSwitch: (input: ConnectedServiceSwitchRequest) => Promise<void>;
     recordTurnLifecycleEvent: (input: Readonly<{
         sessionId: string;
@@ -179,6 +188,9 @@ export function createConnectedServiceSwitchDeferralQueue(
         const existing = turnStateBySessionId.get(sessionId);
         if (existing) return existing;
         const created: SessionTurnState = {
+            closedReason: null,
+            boundaryEpoch: 0,
+            boundaryWaiters: new Set(),
             inFlight: false,
             lastEvent: null,
             hasProviderActivityThisTurn: false,
@@ -186,6 +198,43 @@ export function createConnectedServiceSwitchDeferralQueue(
         };
         turnStateBySessionId.set(sessionId, created);
         return created;
+    };
+
+    const captureTurnBoundary = (sessionId: string): Readonly<{ wait: () => Promise<void> }> => {
+        const state = readTurnState(sessionId);
+        const boundaryEpoch = state.boundaryEpoch;
+        return { wait: () => {
+            if (state.closedReason) {
+                return Promise.reject(new ConnectedServiceSwitchDeferralConflictError({
+                    code: state.closedReason,
+                    message: `Connected-service auth wait cancelled: ${state.closedReason}`,
+                }));
+            }
+            // A completion delivered while the provider refusal was in flight already
+            // supplies the safe boundary, unless a newer turn has since started.
+            if (state.boundaryEpoch > boundaryEpoch && !state.inFlight) return Promise.resolve();
+            return new Promise<void>((resolve, reject) => {
+                const settle = (error?: unknown): void => {
+                    clearTimeout(timer);
+                    state.boundaryWaiters.delete(waiter);
+                    if (error) reject(error); else resolve();
+                };
+                const waiter: TurnBoundaryWaiter = { resolve: () => settle(), reject: (error) => settle(error) };
+                const timer = setTimeout(() => waiter.reject(new ConnectedServiceSwitchDeferralConflictError({
+                    code: 'switch_execution_timeout',
+                    message: 'Connected-service auth still awaits a safe provider turn boundary',
+                })), timeoutMs);
+                state.boundaryWaiters.add(waiter);
+            });
+        } };
+    };
+
+    const rejectBoundaryWaiters = (state: SessionTurnState | undefined, reason: 'session_terminated' | 'daemon_shutdown'): void => {
+        if (!state) return;
+        state.closedReason = reason;
+        for (const waiter of state.boundaryWaiters) {
+            waiter.reject(new ConnectedServiceSwitchDeferralConflictError({ code: reason, message: `Connected-service auth wait cancelled: ${reason}` }));
+        }
     };
 
     const clearPendingTimer = (pending: PendingSwitch): void => {
@@ -448,6 +497,8 @@ export function createConnectedServiceSwitchDeferralQueue(
             return;
         }
         state.inFlight = false;
+        state.boundaryEpoch += 1;
+        for (const waiter of state.boundaryWaiters) waiter.resolve();
         const pending = pendingBySessionId.get(sessionId);
         if (!pending) return;
         if (input.event === 'assistant_message_end') {
@@ -488,15 +539,21 @@ export function createConnectedServiceSwitchDeferralQueue(
     ): Promise<void> => {
         const normalizedSessionId = String(sessionId ?? '').trim();
         if (!normalizedSessionId) return;
+        const state = turnStateBySessionId.get(normalizedSessionId);
+        rejectBoundaryWaiters(state, 'session_terminated');
         if (reason === 'session_restarting') {
             // The runner is going away BECAUSE this switch restarted it. The old process's turn is
             // over, but the fact that a forced boundary interrupted a LIVE turn is the evidence the
             // continuation replay plan consumes AFTER the exit — dropping it here silently loses the
             // user's turn. Close the turn, keep the interruption witness until the next turn starts.
-            const state = turnStateBySessionId.get(normalizedSessionId);
             if (state) {
-                state.inFlight = false;
-                state.hasProviderActivityThisTurn = false;
+                turnStateBySessionId.set(normalizedSessionId, {
+                    ...state,
+                    closedReason: null,
+                    boundaryWaiters: new Set(),
+                    inFlight: false,
+                    hasProviderActivityThisTurn: false,
+                });
             }
         } else {
             turnStateBySessionId.delete(normalizedSessionId);
@@ -512,11 +569,13 @@ export function createConnectedServiceSwitchDeferralQueue(
 
     const cancelAll = async (reason: 'daemon_shutdown'): Promise<void> => {
         const pendingEntries = [...pendingBySessionId.values()];
+        for (const state of turnStateBySessionId.values()) rejectBoundaryWaiters(state, reason);
         turnStateBySessionId.clear();
         await Promise.all(pendingEntries.map(async (pending) => await rejectPending(pending, reason)));
     };
 
     return {
+        captureTurnBoundary,
         requestSwitch,
         recordTurnLifecycleEvent,
         isTurnInFlight,

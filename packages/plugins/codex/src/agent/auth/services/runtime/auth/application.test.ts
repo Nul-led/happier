@@ -7,6 +7,22 @@ import {
 } from './application.js';
 
 describe('Codex connected-service runtime auth application', () => {
+    it('rolls back a selection if native work starts before provider login', async () => {
+        const candidate = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+            oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: 'id', scope: null, tokenType: null, providerAccountId: 'workspace-work', providerEmail: null } });
+        let busy = false;
+        let selection = 'original';
+        const client = { request: vi.fn() };
+        const result = await applyCodexConnectedServiceAuthGeneration({ client, candidate, forcedWorkspaceId: null,
+            canApplyAuth: () => !busy,
+            refreshSelection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+            updateRefreshSelection: async () => { selection = 'work'; busy = true; return () => { selection = 'original'; }; },
+        });
+        expect(result).toEqual({ applied: false, reason: 'turn_in_flight' });
+        expect(client.request).not.toHaveBeenCalled();
+        expect(selection).toBe('original');
+    });
+
     it('applies direct live auth through account/login/start without transport invalidation', async () => {
         const candidate = buildConnectedServiceCredentialRecord({
             now: 1000,

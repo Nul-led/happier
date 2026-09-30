@@ -4,6 +4,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { projectConnectedServiceRuntimeAuthTargetInput } from './projectRuntimeAuthTargetInput';
 
 describe('projectConnectedServiceRuntimeAuthTargetInput', () => {
+  it('refuses a superseded generation before invoking its live runtime writer', async () => {
+    const credential = buildConnectedServiceCredentialRecord({ now: 1, serviceId: 'openai-codex', profileId: 'team', kind: 'oauth',
+      oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: null, scope: null, tokenType: null, providerAccountId: 'team', providerEmail: null } });
+    const writer = vi.fn(async () => ({ ok: true }));
+    const request = projectConnectedServiceRuntimeAuthTargetInput({ agentId: 'codex',
+      materializedSelection: { serviceId: 'happier.agent.codex/openai-codex', credential, applyConnectedServiceAuthGeneration: writer }, fallbackSelection: {},
+      validateCurrentBeforeMutation: async () => ({ current: false, reason: 'credential_revision_superseded' }),
+    });
+    await expect(request.applySelectedAuthGeneration?.()).resolves.toMatchObject({ ok: false, errorCode: 'credential_revision_superseded' });
+    expect(writer).not.toHaveBeenCalled();
+  });
+
   it('keeps host custody private and projects only exact named runtime operations', async () => {
     const credential = buildConnectedServiceCredentialRecord({
       now: 1,

@@ -1,9 +1,53 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ConnectedServiceProviderRuntimeAuthAdapter } from '../runtimeAuth/types';
+import { createConnectedServiceSwitchDeferralQueue } from './connectedServiceSwitchDeferralQueue';
 import { createSessionConnectedServiceAuthHotApply } from './sessionConnectedServiceAuthHotApply';
 
 describe('createSessionConnectedServiceAuthHotApply', () => {
+  it('releases concurrent auth callers at the same canonical boundary', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    let providerBusy = true;
+    const hotApply = vi.fn(async () => providerBusy
+      ? { applied: false, reason: 'turn_in_flight' }
+      : { applied: true });
+    const adapter = { hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter;
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => adapter, turnDeferralQueue: queue });
+    const input = {
+      tracked: { startedBy: 'daemon' as const, happySessionId: 'sess_1', pid: 123,
+        spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const } } },
+      normalizedBindings: { v: 1 as const, bindingsByServiceId: {
+        'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
+      } },
+    };
+    const first = apply(input);
+    const second = apply(input);
+    await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(2));
+    providerBusy = false;
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    expect(hotApply).toHaveBeenCalledTimes(4);
+    expect(queue.isTurnInFlight('sess_1')).toBe(false);
+  });
+
+  it('retries immediately when completion arrives before a delayed busy reply', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    let release!: (result: { applied: boolean; reason: string }) => void;
+    const hotApply = vi.fn().mockImplementationOnce(() => new Promise(resolve => { release = resolve; })).mockResolvedValue({ applied: true });
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => ({ hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter), turnDeferralQueue: queue });
+    const pending = apply({
+      tracked: { startedBy: 'daemon', happySessionId: 'sess_1', pid: 123, spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' } } },
+      normalizedBindings: { v: 1, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' } } },
+    });
+    await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(1));
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    release({ applied: false, reason: 'turn_in_flight' });
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(hotApply).toHaveBeenCalledTimes(2);
+    expect(queue.isTurnInFlight('sess_1')).toBe(false);
+  });
+
   it('infers the provider from webhook metadata when startup-drained tracked sessions have no spawn options', async () => {
     const hotApply = vi.fn(async () => ({ applied: true }));
     const adapter = {

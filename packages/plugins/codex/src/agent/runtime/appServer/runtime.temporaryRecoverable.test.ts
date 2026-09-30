@@ -3731,7 +3731,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     }
   });
 
-  it('hot-applies a connected-service identity change during an in-flight turn without interrupting it', async () => {
+  it('refuses active-turn auth mutation and applies it after the turn completes', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-plugin-live-auth-busy-'));
     try {
       await mkdir(codexHome, { recursive: true });
@@ -3757,7 +3757,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         ({ method }) => method === 'account/login/start',
       ).length;
 
-      await expect(runtime.runtimeAuth.apply({
+      const applyRequest = {
         serviceId: 'openai-codex',
         reason: 'same_provider_account_exhausted',
         requireDirectLiveHotApply: true,
@@ -3770,19 +3770,23 @@ describe('Codex app-server temporary recoverable turn failures', () => {
             profileId: 'backup',
           },
         },
-      })).resolves.toMatchObject({
-        ok: true,
-        activeAccountId: 'acct_target',
+      } as const;
+      await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'turn_in_flight',
       });
 
       expect(clientState.requests.filter(
         ({ method }) => method === 'account/login/start',
-      )).toHaveLength(loginCountBeforeIdentityChange + 1);
+      )).toHaveLength(loginCountBeforeIdentityChange);
       clientState.resolveDeferredTurnStart('turn-busy');
       await send;
       const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
       emitNotification('turn/completed', completedTurn('turn-busy'));
       await completion;
+      await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+      expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCountBeforeIdentityChange + 1);
+      await runtime.dispose();
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }

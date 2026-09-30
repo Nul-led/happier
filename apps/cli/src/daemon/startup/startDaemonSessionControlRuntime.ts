@@ -5169,6 +5169,7 @@ export async function startDaemonSessionControlRuntime(
                 return result;
             },
             hotApply: createSessionConnectedServiceAuthHotApply({
+                turnDeferralQueue: connectedServiceTurnDeferralQueue,
                 validateGroupMutationCurrentness: validateConnectedServiceGroupMutationCurrentness,
             }),
             registerHotApplyTargets: registerHotApplyRuntimeTarget,
@@ -12621,6 +12622,7 @@ export async function startDaemonSessionControlRuntime(
                     return result;
                 },
                 hotApply: createSessionConnectedServiceAuthHotApply({
+                    turnDeferralQueue: connectedServiceTurnDeferralQueue,
                     validateGroupMutationCurrentness: validateConnectedServiceGroupMutationCurrentness,
                 }),
                 registerHotApplyTargets: registerHotApplyRuntimeTarget,

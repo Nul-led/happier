@@ -18,6 +18,8 @@ import type {
   AcceptedConnectedServiceAccountVerification,
   AcceptedConnectedServiceAccountVerificationByServiceId,
 } from '../accountTransitions/acceptedConnectedServiceAccountVerification';
+import type { ConnectedServiceSwitchDeferralQueue } from './connectedServiceSwitchDeferralQueue';
+
 import { projectConnectedServiceRuntimeAuthTargetInput } from '../runtimeAuth/projectRuntimeAuthTargetInput';
 
 type HotApplyResult =
@@ -158,6 +160,7 @@ function readHotApplyFailureErrorCode(
 }
 
 export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
+  turnDeferralQueue?: ConnectedServiceSwitchDeferralQueue;
   resolveRuntimeAuthAdapter?: (agentId: CatalogAgentId) => Promise<ConnectedServiceProviderRuntimeAuthAdapter | null>;
   validateGroupMutationCurrentness?: (input: Readonly<{
     serviceId: ConnectedAccountServiceKey;
@@ -234,7 +237,15 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
         },
         ...(validateCurrentBeforeMutation ? { validateCurrentBeforeMutation } : {}),
       });
-      const result = await adapter.hotApply(request);
+      const sessionId = input.tracked.happySessionId;
+      const queue = deps?.turnDeferralQueue;
+      let boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
+      let result = await adapter.hotApply(request);
+      while (result.reason === 'turn_in_flight' && boundary && queue && sessionId) {
+        await boundary.wait();
+        boundary = queue.captureTurnBoundary(sessionId);
+        result = await adapter.hotApply(request);
+      }
       if (!resultApplied(result)) {
         const errorCode = readHotApplyFailureErrorCode(result);
         serviceResultsByServiceId[serviceId] = { status: 'failed', errorCode };

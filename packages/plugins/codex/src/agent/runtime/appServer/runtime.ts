@@ -2131,12 +2131,6 @@ export function createCodexAppServerRuntime(
     return clientPromise;
   };
 
-  const waitForConnectedServiceAuthApply = async (): Promise<void> => {
-    while (connectedServiceAuthApplyCount > 0) {
-      await connectedServiceAuthApplyTail;
-    }
-  };
-
   const runConnectedServiceAuthApply = async <T>(apply: () => Promise<T>): Promise<T> => {
     const previousApply = connectedServiceAuthApplyTail;
     let release!: () => void;
@@ -2323,12 +2317,18 @@ export function createCodexAppServerRuntime(
     options?: CodexAppServerSendOptions,
   ): Promise<void> => {
     const prompt = input.text;
-    await waitForConnectedServiceAuthApply();
+    while (connectedServiceAuthApplyCount > 0) {
+      await connectedServiceAuthApplyTail;
+    }
     const activeThreadId = await ensureThreadId();
-    await waitForConnectedServiceAuthApply();
+    while (connectedServiceAuthApplyCount > 0) {
+      await connectedServiceAuthApplyTail;
+    }
     if (pendingTurn) throw new Error('Codex app-server already has a turn in flight');
     const appServerClient = await ensureClient();
-    await waitForConnectedServiceAuthApply();
+    while (connectedServiceAuthApplyCount > 0) {
+      await connectedServiceAuthApplyTail;
+    }
     if (pendingTurn) throw new Error('Codex app-server already has a turn in flight');
     const pendingProviderPrompt = trackPendingProviderPrompt(prompt, options);
     turnSeq += 1;
@@ -2914,8 +2914,12 @@ export function createCodexAppServerRuntime(
       };
     }
     const appServerClient = await ensureClient();
+    if (pendingTurn !== null || turnCompletionSettling) {
+      return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
+    }
     const applied = await applyCodexConnectedServiceAuthGeneration({
       client: appServerClient,
+      canApplyAuth: () => pendingTurn === null && !turnCompletionSettling,
       candidate: request.credential,
       forcedWorkspaceId: request.forcedWorkspaceId,
       forcedLoginMethod: request.forcedLoginMethod,
@@ -3032,10 +3036,8 @@ export function createCodexAppServerRuntime(
       },
       runtime: {
         safeToProbe: true,
-        // Codex owns an in-process account/login/start hot-auth boundary. Keep
-        // turn state visible, but never reinterpret it as a restart/defer gate.
-        safeToApply: true,
-        inProviderTurn: pendingTurn !== null,
+        safeToApply: pendingTurn === null && !turnCompletionSettling && connectedServiceAuthApplyCount === 0,
+        inProviderTurn: pendingTurn !== null || turnCompletionSettling,
         profileId: identity.profileId,
         ...(identity.groupId ? { groupId: identity.groupId } : {}),
         ...(identity.generation === null ? {} : { generation: identity.generation }),

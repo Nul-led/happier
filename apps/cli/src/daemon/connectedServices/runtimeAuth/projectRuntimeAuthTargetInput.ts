@@ -111,24 +111,30 @@ export function projectConnectedServiceRuntimeAuthTargetInput(input: Readonly<{
   const applySelectedAuthGeneration = typeof applyAuthGenerationSource === 'function'
     && credential.success
     && selectedServiceId
-    ? async () => await applyAuthGenerationSource({
-        serviceId: selectedServiceId,
-        ...(applyReason ? { reason: applyReason } : {}),
-        ...(selection.requireDirectLiveHotApply ? { requireDirectLiveHotApply: true } : {}),
-        expected: {
-          ...(selection.activeProfileId ?? selection.profileId
-            ? { profileId: selection.activeProfileId ?? selection.profileId }
-            : {}),
-          ...(selection.groupId ? { groupId: selection.groupId } : {}),
-          ...(selection.generation === undefined ? {} : { generation: selection.generation }),
-          ...(selection.credentialRevision ? { credentialRevision: selection.credentialRevision } : {}),
-        },
-        authGeneration: {
-          credential: credential.data,
-          ...(selection.credentialRevision ? { credentialRevision: selection.credentialRevision } : {}),
-          selection,
-        },
-      })
+    ? async () => {
+        const currentness = await input.validateCurrentBeforeMutation?.();
+        if (currentness?.current === false) {
+          return { ok: false, errorCode: 'credential_revision_superseded', error: 'credential_revision_superseded' };
+        }
+        return await applyAuthGenerationSource({
+          serviceId: selectedServiceId,
+          ...(applyReason ? { reason: applyReason } : {}),
+          ...(selection.requireDirectLiveHotApply ? { requireDirectLiveHotApply: true } : {}),
+          expected: {
+            ...(selection.activeProfileId ?? selection.profileId
+              ? { profileId: selection.activeProfileId ?? selection.profileId }
+              : {}),
+            ...(selection.groupId ? { groupId: selection.groupId } : {}),
+            ...(selection.generation === undefined ? {} : { generation: selection.generation }),
+            ...(selection.credentialRevision ? { credentialRevision: selection.credentialRevision } : {}),
+          },
+          authGeneration: {
+            credential: credential.data,
+            ...(selection.credentialRevision ? { credentialRevision: selection.credentialRevision } : {}),
+            selection,
+          },
+        });
+      }
     : undefined;
   const client = readRecord(sourceSelection.client);
   const requestProviderSource = client?.request;

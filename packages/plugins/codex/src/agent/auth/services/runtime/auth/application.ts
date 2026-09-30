@@ -32,6 +32,7 @@ export type CodexHotApplyEligibility =
     }>;
 
 export type CodexDirectLiveAuthApplyFailureReason =
+  | 'turn_in_flight'
   | 'auth_family_mismatch'
   | 'credential_family_mismatch'
   | 'workspace_incompatible'
@@ -143,6 +144,7 @@ function classifyCodexLoginStartError(error: unknown): CodexDirectLiveAuthApplyR
 
 export async function applyCodexConnectedServiceAuthGeneration(params: Readonly<{
   client: CodexLoginStartClient;
+  canApplyAuth?: () => boolean;
   candidate: OauthCredentialRecord | TokenCredentialRecord;
   forcedWorkspaceId: string | null;
   forcedLoginMethod?: string | null;
@@ -167,6 +169,8 @@ export async function applyCodexConnectedServiceAuthGeneration(params: Readonly<
     return { applied: false, reason: 'refresh_bridge_selection_update_failed' };
   }
 
+  if (params.canApplyAuth?.() === false) return { applied: false, reason: 'turn_in_flight' };
+
   let rollbackRefreshSelection: CodexConnectedServiceRefreshSelectionRollback | null = null;
   if (params.refreshSelection) {
     try {
@@ -175,6 +179,18 @@ export async function applyCodexConnectedServiceAuthGeneration(params: Readonly<
     } catch {
       return { applied: false, reason: 'refresh_bridge_selection_update_failed' };
     }
+  }
+
+  if (params.canApplyAuth?.() === false) {
+    if (params.refreshSelection) {
+      if (!rollbackRefreshSelection) return { applied: false, reason: 'refresh_bridge_selection_update_failed' };
+      try {
+        await rollbackRefreshSelection();
+      } catch {
+        return { applied: false, reason: 'refresh_bridge_selection_update_failed' };
+      }
+    }
+    return { applied: false, reason: 'turn_in_flight' };
   }
 
   const record = requireConnectedServiceOauthCredentialRecord(params.candidate);
