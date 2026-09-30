@@ -356,6 +356,16 @@ export type AgentConnectedAccountStateSharingDescriptorTransformV1 = Readonly<{
   kind: 'rewrite_toml';
   spec: Readonly<{
     setStringValues: Readonly<Record<string, string>>;
+    /**
+     * Retain entries from a profile-owned TOML table during rematerialization.
+     * Matching keys begin with the promoted path of a declared config entry,
+     * followed by the Agent's native key suffix. Staged paths never become keys.
+     */
+    preserveTableEntries?: readonly Readonly<{
+      tablePath: readonly string[];
+      keyPrefixEntry: string;
+      keyPrefixSuffix: string;
+    }>[];
   }>;
 }>;
 

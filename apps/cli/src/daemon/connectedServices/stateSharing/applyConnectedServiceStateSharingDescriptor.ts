@@ -1,6 +1,8 @@
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 
+import { parse, stringify, TomlError, type TomlTable, type TomlValue } from 'smol-toml';
+
 import type { ConnectedServiceStateSharingDescriptor, ConnectedServiceStateSharingDescriptorEntry } from '@/agent/catalog/types';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialization/materializer';
 import type {
@@ -47,6 +49,8 @@ export type ApplyConnectedServiceStateSharingDescriptorInput = Readonly<{
   effectiveStateMode: ConnectedServiceStateSharingMode;
   cwd: string;
   existingManifest?: ConnectedServiceStateSharingManifestV1;
+  /** Stable promoted home whose own preferences survive staged replacement. */
+  previousMaterializedRoot?: string | null;
   configEntryNames?: readonly string[];
   stateEntryNames?: readonly string[];
   resolveStateSourceRoot?: (entryName: string) => string;
@@ -232,7 +236,7 @@ async function copyEntryWithOptionalTransform(params: Readonly<{
   }
   const content = await readFile(params.sourcePath, 'utf8');
   await mkdir(dirname(params.destinationPath), { recursive: true });
-  await writeFile(params.destinationPath, params.transform(content), 'utf8');
+  await writeFile(params.destinationPath, params.transform(content), { encoding: 'utf8', mode: 0o600 });
 }
 
 async function preflightStateLink(params: Readonly<{
@@ -347,56 +351,91 @@ function isConnectedServiceSharedStateLinkUnavailableError(error: unknown): erro
   return code === 'state_symlink_unavailable';
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function applyRewriteTomlSetStringValues(
-  content: string,
-  setStringValues: Readonly<Record<string, string>>,
-): string {
-  let resultLines = content.split(/\r?\n/);
-  for (const [key, value] of Object.entries(setStringValues)) {
-    if (!key.trim()) continue;
-    const assignment = `${key} = ${JSON.stringify(value)}`;
-    const keyPattern = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-    let replaced = false;
-    const nextLines: string[] = [];
-    for (const line of resultLines) {
-      if (keyPattern.test(line)) {
-        if (!replaced) {
-          nextLines.push(assignment);
-          replaced = true;
-        }
-        continue;
-      }
-      nextLines.push(line);
-    }
-    if (!replaced) {
-      const firstTableIndex = nextLines.findIndex((line) => /^\s*\[/.test(line));
-      if (firstTableIndex === -1) {
-        nextLines.push(assignment);
-      } else {
-        nextLines.splice(firstTableIndex, 0, assignment);
-      }
-    }
-    resultLines = nextLines;
+function parseConnectedServiceTomlConfig(content: string, configPath: string): TomlTable {
+  try {
+    return parse(content, { integersAsBigInt: 'asNeeded' });
+  } catch (error) {
+    if (!(error instanceof TomlError)) throw error;
+    // Parser messages and codeblocks contain nearby config values. Retain only
+    // safe classification and location metadata when reporting the file error.
+    throw new Error(`Invalid TOML in ${configPath} (line ${error.line}, column ${error.column})`, {
+      cause: { name: 'TomlError', line: error.line, column: error.column },
+    });
   }
-  return resultLines.join('\n');
 }
 
-function buildDescriptorCopyTransformByEntry(
-  descriptor: ConnectedServiceStateSharingDescriptor,
-): Readonly<Record<string, (content: string) => string>> {
+function asTomlTable(value: TomlValue | undefined): TomlTable | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as TomlTable : null;
+}
+
+function tableAt(config: TomlTable, path: readonly string[]): TomlTable | null {
+  let table: TomlTable | null = config;
+  for (const segment of path) table = table && Object.hasOwn(table, segment) ? asTomlTable(table[segment]) : null;
+  return table;
+}
+
+function mergeTableEntries(config: TomlTable, path: readonly string[], entries: TomlTable): void {
+  let table = config;
+  for (const segment of path) {
+    const child = (Object.hasOwn(table, segment) ? asTomlTable(table[segment]) : null) ?? (Object.create(null) as TomlTable);
+    Object.defineProperty(table, segment, { value: child, writable: true, enumerable: true, configurable: true });
+    table = child;
+  }
+  Object.assign(table, entries);
+}
+
+async function buildDescriptorCopyTransformByEntry(input: ApplyConnectedServiceStateSharingDescriptorInput): Promise<Readonly<{
+  transforms: Readonly<Record<string, (content: string) => string>>;
+  fallbackContentByEntry: Readonly<Record<string, string>>;
+}>> {
   const transforms: Record<string, (content: string) => string> = {};
-  for (const transform of descriptor.transforms ?? []) {
-    if (transform.kind === 'rewrite_toml') {
-      transforms[transform.entry] = (content) => applyRewriteTomlSetStringValues(content, transform.spec.setStringValues);
-      continue;
+  const fallbackContentByEntry: Record<string, string> = {};
+  const effectiveRoot = resolve(input.previousMaterializedRoot ?? input.target.targetMaterializedRoot);
+  for (const transform of input.descriptor.transforms ?? []) {
+    if (transform.kind !== 'rewrite_toml') throw new Error(`Unsupported connected-service descriptor transform kind: ${transform.kind}`);
+    const retained: Array<Readonly<{ path: readonly string[]; entries: TomlTable }>> = [];
+    if (input.configMode !== 'isolated' && transform.spec.preserveTableEntries?.length) {
+      const previousPath = resolve(effectiveRoot, transform.entry);
+      if (!isPathWithin(previousPath, effectiveRoot)) throw new Error('Profile config entry must stay within its materialized home');
+      let previous: TomlTable | null = null;
+      try {
+        // A symlink does not establish profile-owned preferences.
+        if ((await lstat(previousPath)).isFile()) {
+          const content = await readFile(previousPath, 'utf8');
+          previous = parseConnectedServiceTomlConfig(content, previousPath);
+          // Native config remains authoritative when present. If absent, the
+          // existing regular profile config owns its other active settings too.
+          fallbackContentByEntry[transform.entry] = content;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (previous) {
+        for (const rule of transform.spec.preserveTableEntries) {
+          const entryPath = resolve(effectiveRoot, rule.keyPrefixEntry);
+          if (!isPathWithin(entryPath, effectiveRoot)
+            || !input.descriptor.config.entries.some((entry) => entry.path === rule.keyPrefixEntry)) {
+            throw new Error('Profile preference keys must refer to a declared config entry');
+          }
+          const prefix = `${entryPath}${rule.keyPrefixSuffix}`;
+          const entries = Object.fromEntries(Object.entries(tableAt(previous, rule.tablePath) ?? {})
+            .filter(([key]) => key.startsWith(prefix)));
+          if (Object.keys(entries).length) {
+            retained.push({ path: rule.tablePath, entries });
+          }
+        }
+      }
     }
-    throw new Error(`Unsupported connected-service descriptor transform kind: ${transform.kind}`);
+    transforms[transform.entry] = (content) => {
+      const config = parseConnectedServiceTomlConfig(content, resolve(input.nativeSourceContext.sourceRoot, transform.entry));
+      for (const [key, value] of Object.entries(transform.spec.setStringValues)) {
+        if (key.trim()) config[key] = value;
+      }
+      for (const retainedTable of retained) mergeTableEntries(config, retainedTable.path, retainedTable.entries);
+      return stringify(config);
+    };
   }
-  return transforms;
+  return { transforms, fallbackContentByEntry };
 }
 
 function dedupeManifestEntries(entries: readonly string[]): string[] {
@@ -445,7 +484,7 @@ export async function applyConnectedServiceStateSharingDescriptor(
   const sourceRoot = resolve(input.nativeSourceContext.sourceRoot);
   const envOverrides: Record<string, string> = {};
   const diagnostics: ConnectedServicesMaterializationDiagnostic[] = [];
-  const descriptorCopyTransformByEntry = buildDescriptorCopyTransformByEntry(input.descriptor);
+  const { transforms: descriptorCopyTransformByEntry, fallbackContentByEntry } = await buildDescriptorCopyTransformByEntry(input);
   const previousManifest = input.existingManifest;
   const configEntryNames = input.configEntryNames ?? input.descriptor.config.entries.map((entry) => entry.path);
   const stateEntryNames = input.stateEntryNames ?? input.descriptor.state.entries.map((entry) => entry.path);
@@ -486,7 +525,15 @@ export async function applyConnectedServiceStateSharingDescriptor(
         continue;
       }
       const sourceStat = await tryStatConnectedServiceHomeEntry(sourcePath);
-      if (!sourceStat) continue;
+      if (!sourceStat) {
+        const fallbackContent = fallbackContentByEntry[entryName];
+        if (fallbackContent === undefined) continue;
+        await prepareManagedConnectedServiceHomeDestination(destinationPath);
+        await mkdir(dirname(destinationPath), { recursive: true });
+        await writeFile(destinationPath, descriptorCopyTransformByEntry[entryName](fallbackContent), { encoding: 'utf8', mode: 0o600 });
+        configEntries.push(entryName);
+        continue;
+      }
       await prepareManagedConnectedServiceHomeDestination(destinationPath);
       if (entryMode === 'copied') {
         await copyEntryWithOptionalTransform({
