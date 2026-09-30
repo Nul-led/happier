@@ -532,6 +532,15 @@ export async function surfaceClaudeRateLimitRuntimeIssue(
         selection,
     });
     if (!classification) return;
+    const observedLimitedWindow = options?.observedWindows?.find((window) => (
+        resolveClaudeQuotaProviderLimitId(window) === resolveClaudeQuotaProviderLimitId(enrichedDetails)
+    ));
+    // Rejection owns failure/recovery; the same event's window owns its measured usage.
+    const limitedWindow = {
+        ...enrichedDetails,
+        utilization: enrichedDetails.utilization ?? observedLimitedWindow?.utilization ?? null,
+        resetAtMs: enrichedDetails.resetAtMs ?? observedLimitedWindow?.resetAtMs ?? null,
+    };
     // RD-QUO-2: in-band rate-limit evidence is the freshest usage signal for the real quota
     // subject. Record it for BOTH the native identity and the selected member (mirroring Codex)
     // so the canonical quota row does not lag behind the background fetcher for group sessions.
@@ -545,7 +554,7 @@ export async function surfaceClaudeRateLimitRuntimeIssue(
             snapshot: buildClaudeRuntimeQuotaSnapshot({
                 // The surfaced limit leads; the event's other windows stay in the account's usage.
                 windows: [
-                    enrichedDetails,
+                    limitedWindow,
                     ...(options?.observedWindows ?? []).filter((window) => (
                         resolveClaudeQuotaProviderLimitId(window) !== resolveClaudeQuotaProviderLimitId(enrichedDetails)
                     )),

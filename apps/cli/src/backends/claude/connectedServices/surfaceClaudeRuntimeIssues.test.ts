@@ -290,7 +290,7 @@ describe('surfaceClaudeRuntimeIssues runtime-auth projection', () => {
         ...window,
         limitCategory: 'usage_limit',
         providerLimitId: 'five_hour',
-        utilization: 100,
+        utilization: null,
         resetAtMs: 1_790_378_400_000,
       }, '[claude-test]', {
         // What the same event reported for every window, the rejected one included.
