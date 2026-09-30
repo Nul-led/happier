@@ -3,7 +3,7 @@ import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { configuration, reloadConfiguration } from '@/configuration';
-import { readCredentials, writeCredentialsDataKey } from '@/persistence';
+import { readCredentials, updateSettings, writeCredentialsDataKey } from '@/persistence';
 import { deriveServerIdFromUrl } from '@/server/serverId';
 import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -285,10 +285,15 @@ describe('server profiles', () => {
 
       const machineKey = new Uint8Array(32).fill(8);
       await writeCredentialsDataKey({
-        token: 'token_super_secret',
+        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
         publicKey: deriveBoxPublicKeyFromSeed(machineKey),
         machineKey,
       });
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [configuration.activeServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [configuration.activeServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [configuration.activeServerId]: { 'account-a': 'original-machine' } },
+      }));
       expect(await readCredentials()).not.toBeNull();
       const envDerivedServerId = configuration.activeServerId;
       expect(envDerivedServerId).toBe(deriveServerIdFromUrl('http://127.0.0.1:3005'));
@@ -333,10 +338,15 @@ describe('server profiles', () => {
 
       const machineKey = new Uint8Array(32).fill(8);
       await writeCredentialsDataKey({
-        token: 'token_super_secret',
+        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
         publicKey: deriveBoxPublicKeyFromSeed(machineKey),
         machineKey,
       });
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [configuration.activeServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [configuration.activeServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [configuration.activeServerId]: { 'account-a': 'original-machine' } },
+      }));
       expect(await readCredentials()).not.toBeNull();
 
       const newEnvDerivedServerId = configuration.activeServerId;
@@ -348,6 +358,11 @@ describe('server profiles', () => {
       expect(existsSync(newKeyPath)).toBe(true);
       mkdirSync(join(homeDir, 'servers', legacyEnvDerivedServerId), { recursive: true, mode: 0o700 });
       renameSync(newKeyPath, legacyKeyPath);
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [legacyEnvDerivedServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [legacyEnvDerivedServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [legacyEnvDerivedServerId]: { 'account-a': 'original-machine' } },
+      }));
       expect(existsSync(newKeyPath)).toBe(false);
       expect(existsSync(legacyKeyPath)).toBe(true);
 
@@ -408,10 +423,15 @@ describe('server profiles', () => {
 
       const machineKey = new Uint8Array(32).fill(8);
       await writeCredentialsDataKey({
-        token: 'token_super_secret',
+        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
         publicKey: deriveBoxPublicKeyFromSeed(machineKey),
         machineKey,
       });
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [configuration.activeServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [configuration.activeServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [configuration.activeServerId]: { 'account-a': 'original-machine' } },
+      }));
       expect(await readCredentials()).not.toBeNull();
       const envDerivedServerId = configuration.activeServerId;
       expect(existsSync(join(homeDir, 'servers', envDerivedServerId, 'access.key'))).toBe(true);
@@ -452,10 +472,15 @@ describe('server profiles', () => {
 
       const machineKey = new Uint8Array(32).fill(8);
       await writeCredentialsDataKey({
-        token: 'token_super_secret',
+        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
         publicKey: deriveBoxPublicKeyFromSeed(machineKey),
         machineKey,
       });
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [configuration.activeServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [configuration.activeServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [configuration.activeServerId]: { 'account-a': 'original-machine' } },
+      }));
       const envDerivedServerId = configuration.activeServerId;
       expect(existsSync(join(homeDir, 'servers', envDerivedServerId, 'access.key'))).toBe(true);
 
@@ -506,10 +531,15 @@ describe('server profiles', () => {
 
       const machineKey = new Uint8Array(32).fill(8);
       await writeCredentialsDataKey({
-        token: 'token_super_secret',
+        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
         publicKey: deriveBoxPublicKeyFromSeed(machineKey),
         machineKey,
       });
+      await updateSettings((current) => ({ ...current,
+        lastTokenSubByServerId: { ...current.lastTokenSubByServerId, [configuration.activeServerId]: 'account-a' },
+        machineIdByServerId: { ...current.machineIdByServerId, [configuration.activeServerId]: 'original-machine' },
+        machineIdByServerIdByAccountId: { ...current.machineIdByServerIdByAccountId, [configuration.activeServerId]: { 'account-a': 'original-machine' } },
+      }));
       const envDerivedServerId = configuration.activeServerId;
       expect(existsSync(join(homeDir, 'servers', envDerivedServerId, 'access.key'))).toBe(true);
 

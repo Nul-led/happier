@@ -3,8 +3,8 @@ import { deriveServerIdFromName, deriveServerIdFromUrl, sanitizeServerIdForFiles
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
-import { constants, existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/providers';
 
@@ -61,21 +61,19 @@ async function maybeAdoptDerivedServerProfileState(params: Readonly<{
     // key can resume a previous adoption whose settings write failed; failures propagate.
     await updateSettings(async (current) => {
       if (hasServerScopedState(current, params.targetServerId)) return current;
+      const recordedAccount = current.lastTokenSubByServerId?.[candidateId]?.trim();
+      if (!accountId || recordedAccount !== accountId) return current;
       if (existsSync(targetKeyPath)) {
         if (await readFile(targetKeyPath, 'utf8') !== sourceBytes) return current;
       } else {
         try {
           await mkdir(targetDir, { recursive: true, mode: 0o700 });
-          await copyFile(sourceKeyPath, targetKeyPath, constants.COPYFILE_EXCL);
-          await chmod(targetKeyPath, 0o600).catch(() => {});
+          // Publish the already validated bytes; the source file may be re-paired concurrently.
+          await writeFile(targetKeyPath, sourceBytes, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
         } catch {
           return current;
         }
-        // The source may have been re-paired while the filesystem copy was pending.
-        if (await readFile(targetKeyPath, 'utf8') !== sourceBytes) return current;
       }
-      const recordedAccount = current.lastTokenSubByServerId?.[candidateId]?.trim();
-      if (!accountId || recordedAccount !== accountId) return current;
       return copyMissingServerScopedState(current, candidateId, params.targetServerId);
     });
     return;

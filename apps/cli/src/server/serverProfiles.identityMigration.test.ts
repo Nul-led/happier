@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
@@ -10,12 +10,12 @@ import { addServerProfile, useServerProfile } from './serverProfiles';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, writeFile: vi.fn(actual.writeFile) };
+  return { ...actual, readFile: vi.fn(actual.readFile), writeFile: vi.fn(actual.writeFile) };
 });
 
 const token = `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`;
 const scope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL', 'HAPPIER_ACTIVE_SERVER_ID', 'HAPPIER_LOCAL_SERVER_URL', 'HAPPIER_PUBLIC_SERVER_URL']);
-afterEach(() => { vi.mocked(writeFile).mockRestore(); scope.restore(); reloadConfiguration(); });
+afterEach(() => { vi.mocked(readFile).mockRestore(); vi.mocked(writeFile).mockRestore(); scope.restore(); reloadConfiguration(); });
 
 async function seed(home: string, invalidSource = false): Promise<string> {
   scope.patch({ HAPPIER_HOME_DIR: home, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_WEBAPP_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_PUBLIC_SERVER_URL: undefined, HAPPIER_LOCAL_SERVER_URL: undefined });
@@ -115,13 +115,42 @@ describe('derived profile credential and machine-state adoption', () => {
     });
   });
 
-  it('does not reuse a machine from a different recorded token subject', async () => {
+  it.each(['different-account', undefined])('does not publish a credential without its matching recorded token subject (%s)', async (recordedSubject) => {
     await withTempDir('profile-identity-subject-', async (home) => {
       const sourceId = await seed(home);
-      await updateSettings((s) => ({ ...s, lastTokenSubByServerId: { [sourceId]: 'different-account' } }));
+      await updateSettings((s) => ({ ...s, lastTokenSubByServerId: recordedSubject ? { [sourceId]: recordedSubject } : {} }));
       await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: true });
       reloadConfiguration();
       expect((await readSettings()).machineIdByServerId?.target).toBeUndefined();
+      expect(await readCredentials()).toBeNull();
+    });
+  });
+
+
+  it('publishes the validated credential snapshot when the source is re-paired concurrently', async () => {
+    await withTempDir('profile-identity-source-race-', async (home) => {
+      const sourceId = await seed(home);
+      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: false });
+      const sourcePath = join(home, 'servers', sourceId, 'access.key');
+      const targetPath = join(home, 'servers', 'target', 'access.key');
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const validatedBytes = await actual.readFile(sourcePath, 'utf8');
+      let rePaired = false;
+      vi.mocked(readFile).mockImplementation(async (...args: Parameters<typeof readFile>) => {
+        const result = await actual.readFile(...args);
+        if (!rePaired && String(args[0]) === sourcePath) {
+          rePaired = true;
+          await actual.writeFile(sourcePath, JSON.stringify({ token: 'concurrently-repaired-account', secret: Buffer.alloc(32).toString('base64') }));
+        }
+        return result;
+      });
+      await useServerProfile('target');
+      reloadConfiguration();
+      expect(rePaired).toBe(true);
+      expect(await actual.readFile(targetPath, 'utf8')).toBe(validatedBytes);
+      expect((await readCredentials())?.token).toBe(token);
+      expect((await readSettings()).machineId).toBe('original-machine');
+      if (process.platform !== 'win32') expect((await stat(targetPath)).mode & 0o777).toBe(0o600);
     });
   });
 
