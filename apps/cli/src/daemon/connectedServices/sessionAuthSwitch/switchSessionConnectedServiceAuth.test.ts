@@ -1,3 +1,5 @@
+import { ConnectedServiceSwitchDeferralConflictError } from './connectedServiceSwitchDeferralQueue';
+import { summarizeConnectedServiceSwitchApplyError } from './diagnostics/summarizeConnectedServiceSwitchApplyError';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CONNECTED_SERVICE_UX_DIAGNOSTIC_CODES,
@@ -316,6 +318,17 @@ function multiServiceBindings(input: Readonly<{
         profileId: input.claudeSubscriptionProfileId,
       },
     },
+  };
+}
+
+function qualifyPartialResultFixtureBindings(input: ConnectedServiceBindingsV1): ConnectedServiceBindingsV1 {
+  return {
+    v: 1,
+    bindingsByServiceId: Object.fromEntries(Object.entries(input.bindingsByServiceId).map(([legacyServiceId, binding]) => {
+      const service = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId(legacyServiceId);
+      if (!service) throw new Error('test_qualified_service_mapping_missing');
+      return [`${service.pluginId}/${service.localId}`, binding];
+    })),
   };
 }
 
@@ -2237,7 +2250,10 @@ describe('switchSessionConnectedServiceAuth', () => {
   });
 
   it('keeps the applied epoch and reports pending reconciliation when post-hot-apply registration fails', async () => {
+    const anthropicService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('anthropic')!;
+    const anthropicServiceId = `${anthropicService.pluginId}/${anthropicService.localId}`;
     const tracked = trackedSession();
+    tracked.spawnOptions!.connectedServices = qualifyPartialResultFixtureBindings(bindings('old-profile'));
     const runtimeAuthSelection = {
       targetMaterializedRoot: '/tmp/materialized/csm_atomic',
       targetMaterializedEnv: {
@@ -2248,7 +2264,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     const registerHotApplyTargets = vi.fn(async (input: unknown) => {
       expect(input).toEqual(expect.objectContaining({
         tracked,
-        runtimeAuthSelectionsByServiceId: new Map([['anthropic', runtimeAuthSelection]]),
+        runtimeAuthSelectionsByServiceId: new Map([[anthropicServiceId, runtimeAuthSelection]]),
       }));
       throw new Error('runtime target registration rejected');
     });
@@ -2274,7 +2290,7 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        bindings: bindings('new-profile'),
+        bindings: qualifyPartialResultFixtureBindings(bindings('new-profile')),
       },
     })).resolves.toMatchObject({
       ok: false,
@@ -2289,10 +2305,10 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
 
     expect(persistSessionBindings).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      normalizedBindings: bindings('new-profile'),
+      normalizedBindings: qualifyPartialResultFixtureBindings(bindings('new-profile')),
     }));
     expect(persistSessionBindings).toHaveBeenCalledTimes(1);
-    expect(tracked.spawnOptions?.connectedServices).toEqual(bindings('new-profile'));
+    expect(tracked.spawnOptions?.connectedServices).toEqual(qualifyPartialResultFixtureBindings(bindings('new-profile')));
   });
 
    it('does not hot-apply live runtime auth when metadata persistence fails', async () => {
@@ -4258,15 +4274,20 @@ describe('switchSessionConnectedServiceAuth', () => {
     }));
   });
 
-  it('returns per-service hot-apply results when multi-service apply partially succeeds', async () => {
+  it.each(['switch_execution_timeout', 'session_terminated', 'daemon_shutdown'] as const)('returns per-service hot-apply results when multi-service apply partially succeeds (%s)', async (code) => {
+    const anthropicService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('anthropic')!;
+    const anthropicServiceId = `${anthropicService.pluginId}/${anthropicService.localId}`;
+    const subscriptionService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('claude-subscription')!;
+    const subscriptionServiceId = `${subscriptionService.pluginId}/${subscriptionService.localId}`;
+    const underlyingError = summarizeConnectedServiceSwitchApplyError(new ConnectedServiceSwitchDeferralConflictError({ code, message: 'boundary wait failed' }));
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
-        connectedServices: multiServiceBindings({
+        connectedServices: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'old-anthropic',
           claudeSubscriptionProfileId: 'old-claude-subscription',
-        }),
+        })),
       },
     });
     const persistSessionBindings = vi.fn(async () => {});
@@ -4293,10 +4314,11 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_failed',
-        serviceId: 'claude-subscription',
+        underlyingError,
+        serviceId: subscriptionServiceId,
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          [anthropicServiceId]: { status: 'applied' },
+          [subscriptionServiceId]: { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4304,10 +4326,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        bindings: multiServiceBindings({
+        bindings: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'new-anthropic',
           claudeSubscriptionProfileId: 'new-claude-subscription',
-        }),
+        })),
       },
     })).resolves.toMatchObject({
       ok: false,
@@ -4315,16 +4337,17 @@ describe('switchSessionConnectedServiceAuth', () => {
       // API for it, so this is not a rollback-safe failure. It settles as the partial state the
       // session-scope Retry/Revert surface already reconciles.
       errorCode: 'partial_applied_pending_reconciliation',
-      serviceId: 'claude-subscription',
+      serviceId: subscriptionServiceId,
       diagnostics: {
         failurePhase: 'reconciliation',
+        underlyingError: expect.stringContaining(`(code=${code})`),
         application: {
           status: 'partial_applied_pending_reconciliation',
           phase: 'hot_apply',
         },
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          [anthropicServiceId]: { status: 'applied' },
+          [subscriptionServiceId]: { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       },
     });
@@ -4336,28 +4359,78 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(persistSessionBindings).toHaveBeenCalledTimes(1);
     expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'sess_1',
-      normalizedBindings: multiServiceBindings({
+      normalizedBindings: qualifyPartialResultFixtureBindings(multiServiceBindings({
         anthropicProfileId: 'new-anthropic',
         claudeSubscriptionProfileId: 'new-claude-subscription',
-      }),
+      })),
     }));
-    expect(tracked.spawnOptions?.connectedServices).toEqual(multiServiceBindings({
+    expect(tracked.spawnOptions?.connectedServices).toEqual(qualifyPartialResultFixtureBindings(multiServiceBindings({
       anthropicProfileId: 'new-anthropic',
       claudeSubscriptionProfileId: 'new-claude-subscription',
+    })));
+  });
+
+  it.each(['switch_execution_timeout', 'session_terminated', 'daemon_shutdown'] as const)('preserves boundary diagnostics for partial unchanged rematerialization (%s)', async (code) => {
+    const previousBindings = qualifyPartialResultFixtureBindings(bindings('old-profile'));
+    const anthropicServiceId = Object.keys(previousBindings.bindingsByServiceId)[0]!;
+    const tracked = trackedSession();
+    tracked.spawnOptions!.connectedServices = previousBindings;
+    const underlyingError = summarizeConnectedServiceSwitchApplyError(new ConnectedServiceSwitchDeferralConflictError({ code, message: 'boundary wait failed' }));
+    const hotApply = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: 'hot_apply_failed' as const,
+      underlyingError,
+      serviceId: anthropicServiceId,
+      serviceResultsByServiceId: { [anthropicServiceId]: { status: 'applied' as const } },
     }));
+    const registerHotApplyTargets = vi.fn();
+    await expect(switchSessionConnectedServiceAuth({
+      core: createCore(),
+      postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
+      getChildren: () => [tracked],
+      api: {
+        listConnectedServiceProfiles: async () => ({ serviceId: 'anthropic', profiles: [{ profileId: 'old-profile', status: 'connected' }] }),
+        getConnectedServiceAuthGroup: async () => null,
+      },
+      materializeRuntimeAuthSelection: async () => ({ kind: 'materialized' }),
+      resolveContinuity: async () => ({ mode: 'hot_apply' }),
+      restartSession: vi.fn(),
+      persistSessionBindings: vi.fn(),
+      hotApply,
+      registerHotApplyTargets,
+      emitSessionEvent: vi.fn(),
+      request: { sessionId: 'sess_1', agentId: 'claude', bindings: previousBindings, rematerializeServiceId: anthropicServiceId },
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'partial_applied_pending_reconciliation',
+      serviceId: anthropicServiceId,
+      diagnostics: {
+        failurePhase: 'reconciliation',
+        underlyingError: expect.stringContaining(`(code=${code})`),
+        application: { status: 'partial_applied_pending_reconciliation', phase: 'hot_apply' },
+        serviceResultsByServiceId: { [anthropicServiceId]: { status: 'applied' } },
+      },
+    });
+    expect(hotApply).toHaveBeenCalledOnce();
+    expect(registerHotApplyTargets).not.toHaveBeenCalled();
+    expect(tracked.spawnOptions?.connectedServices).toEqual(previousBindings);
   });
 
   it('marks the partial-apply attempt event as partially applied instead of a clean failure', async () => {
     // The session badge and the transcript entry describe the same settled outcome; leaving
     // `partialState: null` here would tell the transcript the attempt left nothing behind.
+    const anthropicService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('anthropic')!;
+    const anthropicServiceId = `${anthropicService.pluginId}/${anthropicService.localId}`;
+    const subscriptionService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('claude-subscription')!;
+    const subscriptionServiceId = `${subscriptionService.pluginId}/${subscriptionService.localId}`;
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
-        connectedServices: multiServiceBindings({
+        connectedServices: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'old-anthropic',
           claudeSubscriptionProfileId: 'old-claude-subscription',
-        }),
+        })),
       },
     });
     const emitSessionEvent = vi.fn();
@@ -4384,10 +4457,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_failed',
-        serviceId: 'claude-subscription',
+        serviceId: subscriptionServiceId,
         serviceResultsByServiceId: {
-          anthropic: { status: 'applied' },
-          'claude-subscription': { status: 'failed', errorCode: 'hot_apply_failed' },
+          [anthropicServiceId]: { status: 'applied' },
+          [subscriptionServiceId]: { status: 'failed', errorCode: 'hot_apply_failed' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4395,10 +4468,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        bindings: multiServiceBindings({
+        bindings: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'new-anthropic',
           claudeSubscriptionProfileId: 'new-claude-subscription',
-        }),
+        })),
       },
     })).resolves.toMatchObject({ ok: false, errorCode: 'partial_applied_pending_reconciliation' });
 
@@ -4413,14 +4486,18 @@ describe('switchSessionConnectedServiceAuth', () => {
     // Guards the post-effect rule against over-reach: with NO applied service the operation really
     // is rollback-safe, so the previous bindings must be restored and the typed hot-apply failure
     // must survive.
+    const anthropicService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('anthropic')!;
+    const anthropicServiceId = `${anthropicService.pluginId}/${anthropicService.localId}`;
+    const subscriptionService = resolveFirstPartyQualifiedConnectedAccountServiceForLegacyServiceId('claude-subscription')!;
+    const subscriptionServiceId = `${subscriptionService.pluginId}/${subscriptionService.localId}`;
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
         backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
-        connectedServices: multiServiceBindings({
+        connectedServices: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'old-anthropic',
           claudeSubscriptionProfileId: 'old-claude-subscription',
-        }),
+        })),
       },
     });
     const persistSessionBindings = vi.fn(async () => {});
@@ -4447,10 +4524,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'credential_revision_superseded',
-        serviceId: 'anthropic',
+        serviceId: anthropicServiceId,
         serviceResultsByServiceId: {
-          anthropic: { status: 'failed', errorCode: 'credential_revision_superseded' },
-          'claude-subscription': { status: 'not_attempted' },
+          [anthropicServiceId]: { status: 'failed', errorCode: 'credential_revision_superseded' },
+          [subscriptionServiceId]: { status: 'not_attempted' },
         },
       }),
       registerHotApplyTargets: vi.fn(),
@@ -4458,10 +4535,10 @@ describe('switchSessionConnectedServiceAuth', () => {
       request: {
         sessionId: 'sess_1',
         agentId: 'claude',
-        bindings: multiServiceBindings({
+        bindings: qualifyPartialResultFixtureBindings(multiServiceBindings({
           anthropicProfileId: 'new-anthropic',
           claudeSubscriptionProfileId: 'new-claude-subscription',
-        }),
+        })),
       },
     })).resolves.toMatchObject({
       ok: false,
@@ -4470,15 +4547,15 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     expect(persistSessionBindings).toHaveBeenNthCalledWith(2, expect.objectContaining({
       sessionId: 'sess_1',
-      normalizedBindings: multiServiceBindings({
+      normalizedBindings: qualifyPartialResultFixtureBindings(multiServiceBindings({
         anthropicProfileId: 'old-anthropic',
         claudeSubscriptionProfileId: 'old-claude-subscription',
-      }),
+      })),
     }));
-    expect(tracked.spawnOptions?.connectedServices).toEqual(multiServiceBindings({
+    expect(tracked.spawnOptions?.connectedServices).toEqual(qualifyPartialResultFixtureBindings(multiServiceBindings({
       anthropicProfileId: 'old-anthropic',
       claudeSubscriptionProfileId: 'old-claude-subscription',
-    }));
+    })));
   });
 
   it('keeps an applied switch applied when the final switch event cannot be admitted', async () => {

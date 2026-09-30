@@ -427,11 +427,13 @@ function partialAppliedPendingReconciliation(input: Readonly<{
   // Present only when a rollback was ATTEMPTED and failed. A partial apply that is deliberately
   // left un-rolled-back carries no rollback diagnostic, because none was tried.
   rollback?: SessionConnectedServiceAuthSwitchRollbackDiagnostic;
+  underlyingError?: string;
   serviceId?: string;
   serviceResultsByServiceId?: Readonly<Record<string, SessionConnectedServiceAuthSwitchServiceResult>>;
 }>): SessionConnectedServiceAuthSwitchFailure {
   return failureResult('partial_applied_pending_reconciliation', {
     failurePhase: 'reconciliation',
+    underlyingError: input.underlyingError,
     application: applicationFailure(input.reason, input.phase, 'partial_applied_pending_reconciliation'),
     ...(input.rollback ? { rollback: input.rollback } : {}),
     ...(input.serviceId ? { serviceId: input.serviceId } : {}),
@@ -1955,6 +1957,7 @@ async function rematerializeUnchangedConnectedServiceBinding(input: Readonly<{
           return partialAppliedPendingReconciliation({
             reason: input.reason,
             phase: 'hot_apply',
+            underlyingError: hotApplyResult.underlyingError,
             ...(hotApplyResult.serviceId ? { serviceId: hotApplyResult.serviceId } : {}),
             ...(hotApplyResult.serviceResultsByServiceId
               ? { serviceResultsByServiceId: hotApplyResult.serviceResultsByServiceId }
@@ -2483,6 +2486,7 @@ async function applyConnectedServiceAuthGenerationToTrackedSessionWithGroupConve
             return partialAppliedPendingReconciliation({
               reason: switchReason,
               phase: 'hot_apply',
+              underlyingError: hotApplyResult.underlyingError,
               ...(hotApplyResult.serviceId ? { serviceId: hotApplyResult.serviceId } : {}),
               ...(hotApplyResult.serviceResultsByServiceId
                 ? { serviceResultsByServiceId: hotApplyResult.serviceResultsByServiceId }
