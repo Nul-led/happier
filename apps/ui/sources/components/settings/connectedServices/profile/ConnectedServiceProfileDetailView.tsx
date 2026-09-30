@@ -117,6 +117,7 @@ const ConnectionSection = React.memo(function ConnectionSection(props: Readonly<
       <DropdownMenu
         open={extraMetersOpen} onOpenChange={setExtraMetersOpen}
         closeOnSelect={false} search={false} rowKind="item"
+        itemRowProps={{ rightElementOutsidePressable: true }}
         itemTrigger={{
           title: t('connectedServices.profile.composerExtraMetersTitle'),
           subtitle: t('connectedServices.profile.composerExtraMetersSubtitle'),

@@ -34,6 +34,7 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
     maxConsecutiveFailures?: number;
     shouldRetry?: (error: unknown) => boolean;
     shouldPauseAfterFailure?: (error: unknown) => boolean;
+    onEvent?: Parameters<typeof createConnectedServiceQuotaPersistenceScheduler<string, TestPayload>>[0]['onEvent'];
   }>) {
     return createConnectedServiceQuotaPersistenceScheduler<string, TestPayload>({
       run: input.run,
@@ -52,6 +53,7 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
       }),
       shouldRetry: input.shouldRetry ?? (() => true),
       shouldPauseAfterFailure: input.shouldPauseAfterFailure,
+      onEvent: input.onEvent,
     });
   }
 
@@ -200,10 +202,12 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
   it('bounds paused same-fingerprint payload retention by maxKeys', async () => {
     vi.useFakeTimers();
     let nowMs = 0;
+    const onEvent = vi.fn();
     const scheduler = createScheduler({
       now: () => nowMs,
       maxKeys: 3,
       maxConsecutiveFailures: 1,
+      onEvent,
       run: async () => {
         throw new Error('retryable');
       },
@@ -216,5 +220,10 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
     }
 
     expect(scheduler.getStats().retainedKeyCount).toBeLessThanOrEqual(3);
+    // Dependents keep confirmation callbacks with the canonical payload. Every
+    // discarded paused payload must announce the same eviction as queued work.
+    expect(onEvent.mock.calls.map(([event]) => event).filter((event) => event.type === 'suppressed' && event.reason === 'max_keys'))
+      .toEqual(Array.from({ length: 7 }, (_unused, index) => ({ type: 'suppressed', key: `profile-${index}`, reason: 'max_keys' })));
+    scheduler.dispose();
   });
 });

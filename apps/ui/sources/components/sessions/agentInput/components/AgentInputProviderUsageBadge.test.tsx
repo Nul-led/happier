@@ -82,6 +82,20 @@ describe('AgentInputProviderUsageBadge', () => {
         expect(label).not.toContain('left');
     });
 
+    it('announces each real ring only by its own meter and used percent while the button retains the aggregate', async () => {
+        const vm = { ...viewModel(), usageRings: [
+            { window: 'weekly' as const, meterId: 'weekly', label: 'Weekly', usedPct: 82, ringValueLabel: '82', tone: 'warning' as const },
+            { window: 'session' as const, meterId: 'five_hour', label: '5-hour', usedPct: 20, ringValueLabel: '20', tone: 'neutral' as const },
+        ] };
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
+        const imageLabels = screen.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'image')
+            .map((node) => node.props.accessibilityLabel);
+        expect(imageLabels).toEqual(['Weekly 82% used', '5-hour 20% used']);
+        const aggregate = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
+        expect(aggregate).toContain('Weekly 82% used');
+        expect(aggregate).toContain('5-hour 20% used');
+    });
+
     it('keeps subscription details live while the usage popover remains open', async () => {
         const firstViewModel = {
             ...viewModel(),

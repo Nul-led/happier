@@ -272,9 +272,22 @@ describe('ConnectedServiceProfileDetailView', () => {
     });
     await screen.pressByTestIdAsync('connected-service-composer-extra-meters');
     await act(flushAsyncHandlers);
-    const choice = findByTestId(screen.tree, 'connected-service-composer-meter:five_hour');
+    // Flush the real Switch's Deferred host mount, rather than replacing this
+    // interaction owner with a test double.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const choice = screen.findAll((node) => typeof node.type === 'string' && node.props.testID === 'connected-service-composer-meter:five_hour')[0];
     expect(choice).toBeTruthy();
-    await act(async () => choice?.props.onValueChange(true));
+    await act(async () => {
+      choice?.props.onValueChange(true);
+      // RN Web's checkbox click bubbles through its rendered ancestors. Drive
+      // only host press handlers, keeping the real dropdown/Item/Switch owners.
+      for (let ancestor = choice?.parent; ancestor; ancestor = ancestor.parent) {
+        if (typeof ancestor.type === 'string' && typeof ancestor.props.onPress === 'function') {
+          ancestor.props.onPress({ target: choice, currentTarget: ancestor });
+        }
+      }
+    });
+    expect(applySettingsSpy).toHaveBeenCalledOnce();
     expect(applySettingsSpy).toHaveBeenCalledWith({ connectedServicesSessionUsageMeterIdsByKey: {
       'openai-codex/work': ['absent', 'five_hour'], 'anthropic/other': ['weekly'],
     } });

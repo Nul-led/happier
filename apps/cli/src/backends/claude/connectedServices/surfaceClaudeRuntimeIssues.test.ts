@@ -270,7 +270,7 @@ describe('surfaceClaudeRuntimeIssues runtime-auth projection', () => {
     }
   });
 
-  it('keeps the other windows of a rejected event in its quota snapshot, led by the rejected window', async () => {
+  it.each([null, 95])('keeps measured rejected and other windows even with top-level usage %s', async (utilization) => {
     const previousSelectionEnv = process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
     delete process.env[HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY];
     const window = {
@@ -290,7 +290,7 @@ describe('surfaceClaudeRuntimeIssues runtime-auth projection', () => {
         ...window,
         limitCategory: 'usage_limit',
         providerLimitId: 'five_hour',
-        utilization: null,
+        utilization,
         resetAtMs: 1_790_378_400_000,
       }, '[claude-test]', {
         // What the same event reported for every window, the rejected one included.

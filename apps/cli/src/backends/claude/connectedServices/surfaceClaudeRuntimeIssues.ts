@@ -538,7 +538,7 @@ export async function surfaceClaudeRateLimitRuntimeIssue(
     // Rejection owns failure/recovery; the same event's window owns its measured usage.
     const limitedWindow = {
         ...enrichedDetails,
-        utilization: enrichedDetails.utilization ?? observedLimitedWindow?.utilization ?? null,
+        utilization: observedLimitedWindow?.utilization ?? enrichedDetails.utilization ?? null,
         resetAtMs: enrichedDetails.resetAtMs ?? observedLimitedWindow?.resetAtMs ?? null,
     };
     // RD-QUO-2: in-band rate-limit evidence is the freshest usage signal for the real quota

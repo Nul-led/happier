@@ -93,6 +93,7 @@ export function createConnectedServiceQuotaPersistenceScheduler<
       if (!oldestKey) return;
       pausedByKey.delete(oldestKey);
       forceFlushKeys.delete(oldestKey);
+      emitSuppressed(oldestKey, 'max_keys');
     }
   }
 

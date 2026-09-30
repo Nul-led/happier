@@ -202,7 +202,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                             <TokenUsageRing
                                 used={ring.usedPct}
                                 limit={100}
-                                label={accessibilityLabel}
+                                label={`${ring.label} ${t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` })}`}
                                 value={ring.ringValueLabel}
                                 tone={mapQuotaToneToTokenTone(ring.tone)}
                                 ringTestID={`agent-input-provider-usage-ring${testIdSuffix}`}
