@@ -335,6 +335,8 @@ function isCodexAppServerReviewStartUnavailableError(error: unknown): boolean {
 }
 
 type PendingTurn = Readonly<{
+    // Activity and acknowledgement copy this owner while retaining the same cancellation intent.
+    cancellationIntent: { requested: boolean };
     threadId: string;
     turnId: string | null;
     providerPrompt: CodexAppServerPendingProviderPrompt | null;
@@ -1189,6 +1191,7 @@ function createPendingTurn(
         rejectTurn = reject;
     });
     return {
+        cancellationIntent: { requested: false },
         threadId,
         turnId: null,
         providerPrompt: options.providerPrompt ?? null,
@@ -4405,7 +4408,6 @@ export function createCodexAppServerRuntime(params: Readonly<{
             emitAllPendingProviderPromptsAsUndeliverable();
         }
         const activeClientPromise = clientPromise;
-        clientPromise = null;
         if (!activeClientPromise) {
             await finishPendingTurn(options?.pendingTurnError
                 ? {
@@ -4416,18 +4418,21 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 : undefined);
             return;
         }
-        try {
-            const client = await activeClientPromise;
-            await client.dispose(options?.pendingTurnError
-                ? { pendingRequestError: options.pendingTurnError }
-                : undefined);
-        } finally {
-            await finishPendingTurn({
-                ...(options?.pendingTurnError ? { error: options.pendingTurnError } : {}),
-                emitUndeliverablePrompt: options?.emitUndeliverablePrompts,
-                flushReason: 'abort',
-            });
+        const client = await activeClientPromise;
+        // Concurrent cancellation paths must await the same physical teardown.
+        // Clearing this owner early would let a second disposal settle native
+        // work while the first disposal is still waiting for the child to exit.
+        await client.dispose(options?.pendingTurnError
+            ? { pendingRequestError: options.pendingTurnError }
+            : undefined);
+        if (clientPromise === activeClientPromise) {
+            clientPromise = null;
         }
+        await finishPendingTurn({
+            ...(options?.pendingTurnError ? { error: options.pendingTurnError } : {}),
+            emitUndeliverablePrompt: options?.emitUndeliverablePrompts,
+            flushReason: 'abort',
+        });
     };
 
     const resumeThread = async (
@@ -5021,6 +5026,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 setThinking(false);
                 return;
             }
+            activeTurn.cancellationIntent.requested = true;
             emitAllPendingProviderPromptsAsUndeliverable();
             markActiveTurnNonSteerable();
             const client = await ensureClient();
@@ -5391,6 +5397,16 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     return;
                 } catch (error) {
                     const failure = error instanceof Error ? error : new Error(String(error));
+                    if (activeTurn.cancellationIntent.requested) {
+                        // A rejected start can already have admitted native work. Retain this
+                        // cancelled owner until the established client teardown observes exit.
+                        // Exact terminal proof may already have retired it; never finish or
+                        // dispose a successor on behalf of this old request.
+                        if (pendingTurn?.promise === activeTurn.promise) {
+                            await disposeClient({ pendingTurnError: failure });
+                        }
+                        throw failure;
+                    }
                     const failedTurnHadMeaningfulActivity = activeTurnHasMeaningfulContextWindowRecoveryActivity;
                     await finishPendingTurn({
                         error: failure,

@@ -36,6 +36,7 @@ import {
 import { setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
 import { logger } from '@/ui/logger';
+import * as processTermination from '@/agent/runtime/process/killProcessTree';
 
 import {
     createCodexAppServerRuntime as createCodexAppServerRuntimeProduction,
@@ -549,6 +550,25 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            continue;',
         '        }',
         '        const text = Array.isArray(msg.params?.input) ? String(msg.params.input[0]?.text ?? "unknown") : "unknown";',
+        '        if (text === "cancelled-start-rejection-after-terminal") {',
+        '            await writeFile(requestLogPath + ".native-pid", String(process.pid));',
+        '            setTimeout(() => {',
+        '                process.stdout.write(JSON.stringify({ method: "turn/started", params: { threadId: msg.params?.threadId ?? null, turn: { id: "turn-cancelled-before-rejection" } } }) + "\\n");',
+        '            }, 50);',
+        '            const responseGate = setInterval(async () => {',
+        '                if (!(await readFile(requestLogPath + ".release-start-rejection", "utf8").catch(() => ""))) return;',
+        '                clearInterval(responseGate);',
+        '                process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32603, message: "late admitted start rejection" } }) + "\\n");',
+        '            }, 10);',
+        '            continue;',
+        '        }',
+        '        if (text === "cancel-before-admitted-start-rejection") {',
+        '            await writeFile(requestLogPath + ".native-pid", String(process.pid));',
+        '            setTimeout(() => {',
+        '                process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32603, message: "failed to submit turn input after admitted settings persistence failure" } }) + "\\n");',
+        '            }, 150);',
+        '            continue;',
+        '        }',
         '        const matchingTurnStartCount = (await readFile(requestLogPath, "utf8").catch(() => "")).split("\\n").filter((line) => { try { const entry = JSON.parse(line); return entry.method === "turn/start" && Array.isArray(entry.params?.input) && String(entry.params.input[0]?.text ?? "") === text; } catch { return false; } }).length;',
         '        const turnId = matchingTurnStartCount > 1 ? `turn-${text}-${matchingTurnStartCount}` : `turn-${text}`;',
         '        const completionDelayMs = text === "connected-service-invalidation-active-turn" && matchingTurnStartCount === 1 ? 120000 : text === "overlap-start" ? 180 : text === "steer-delay-over-one-second" ? 200 : text === "cancel-me" ? 50 : 15;',
@@ -12412,6 +12432,103 @@ describe('createCodexAppServerRuntime', () => {
         const afterBoundary = await readRequestLog(requestLogPath);
         expect(afterBoundary.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
         expect(afterBoundary.filter(entry => entry.method === 'initialize')).toHaveLength(1);
+    });
+
+    it('retains cancellation custody after an admitted start rejection until physical native client exit', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-cancel-start-rejection-');
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            initialConnectedServiceRuntimeIdentity: { serviceId: 'openai-codex', activeAccountId: 'acct_original', accountLabel: null, profileId: 'original', credentialFingerprint: 'sha256:original', source: 'spawn_selection' },
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any,
+        });
+        await runtime.startOrLoad({});
+        const promptOutcome = runtime.sendPrompt('cancel-before-admitted-start-rejection').catch((error) => error);
+        await waitForCondition(async () => Boolean(await readFile(requestLogPath + '.native-pid', 'utf8').catch(() => '')), {
+            timeoutMs: 1_000, intervalMs: 10, label: 'start request reaches native child before cancellation',
+        });
+        const nativePid = Number(await readFile(requestLogPath + '.native-pid', 'utf8'));
+        await runtime.cancel();
+        expect(await promptOutcome).toBeInstanceOf(Error);
+        const nativeIsAlive = (): boolean => {
+            try { process.kill(nativePid, 0); return true; } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+                throw error;
+            }
+        };
+        expect(nativeIsAlive()).toBe(false);
+        expect(runtime.isTurnInFlight()).toBe(false);
+        const log = await readRequestLog(requestLogPath);
+        expect(log.filter(({ method }) => method === 'turn/interrupt')).toHaveLength(0);
+        expect(log.filter(({ method }) => method === 'account/login/start')).toHaveLength(0);
+        await runtime.sendPrompt('prompt after cancelled-client physical teardown');
+        const resumedLog = await readRequestLog(requestLogPath);
+        expect(resumedLog.filter(({ method }) => method === 'initialize')).toHaveLength(2);
+        expect(resumedLog.filter(({ method }) => method === 'thread/resume')).toHaveLength(1);
+    });
+
+    it('retains cancelled start custody when its no-ID fallback overlaps pending physical client teardown', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-cancel-teardown-overlap-', { rpcTimeoutMs: 250 });
+        const runtime = createCodexAppServerRuntime({ directory: root, onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any });
+        await runtime.startOrLoad({});
+        const realKillProcessTree = processTermination.killProcessTree;
+        let releaseTermination!: () => void;
+        const physicalTermination = new Promise<void>((resolve) => { releaseTermination = resolve; });
+        const kill = vi.spyOn(processTermination, 'killProcessTree').mockImplementation(async (child, options) => {
+            await physicalTermination;
+            await realKillProcessTree(child, options);
+        });
+        const prompt = runtime.sendPrompt('cancel-before-admitted-start-rejection').catch(() => undefined);
+        let cancellation: Promise<void> | null = null;
+        try {
+            await waitForCondition(async () => Boolean(await readFile(requestLogPath + '.native-pid', 'utf8').catch(() => '')), {
+                timeoutMs: 1_000, intervalMs: 10, label: 'start reaches native child before cancellation',
+            });
+            cancellation = runtime.cancel();
+            await waitForCondition(() => kill.mock.calls.length === 1, {
+                timeoutMs: 1_000, intervalMs: 10, label: 'start rejection begins physical native teardown',
+            });
+            // Beyond the configured existing no-ID cancellation deadline, the same
+            // physical disposal is still held; a no-client shortcut cannot settle it.
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            expect(runtime.isTurnInFlight()).toBe(true);
+            const nativePid = Number(await readFile(requestLogPath + '.native-pid', 'utf8'));
+            expect(() => process.kill(nativePid, 0)).not.toThrow();
+        } finally {
+            releaseTermination();
+            await Promise.allSettled([prompt, ...(cancellation ? [cancellation] : [])]);
+            kill.mockRestore();
+        }
+        expect(runtime.isTurnInFlight()).toBe(false);
+    });
+
+    it('preserves successor ownership when a cancelled start rejects after exact terminal cleanup', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-cancelled-start-successor-', {
+            omitTurnCompletedForPrompt: 'held-successor-after-cancelled-rejection',
+        });
+        const runtime = createCodexAppServerRuntime({ directory: root, onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any });
+        await runtime.startOrLoad({});
+        const originalOutcome = runtime.sendPrompt('cancelled-start-rejection-after-terminal').catch((error) => error);
+        await waitForCondition(async () => Boolean(await readFile(requestLogPath + '.native-pid', 'utf8').catch(() => '')), {
+            timeoutMs: 1_000, intervalMs: 10, label: 'original start is pending before cancellation',
+        });
+        await waitForCondition(() => runtime.canSteerPrompt(), {
+            timeoutMs: 1_000, intervalMs: 10, label: 'provider ID has bound a copied pending owner before cancel',
+        });
+        await runtime.cancel();
+        const successor = runtime.sendPrompt('held-successor-after-cancelled-rejection').catch(() => undefined);
+        await waitForCondition(async () => (await readRequestLog(requestLogPath)).filter(({ method }) => method === 'turn/start').length === 2, {
+            timeoutMs: 1_000, intervalMs: 10, label: 'successor owns native work before old rejection',
+        });
+        await writeFile(requestLogPath + '.release-start-rejection', 'release');
+        expect(await originalOutcome).toBeInstanceOf(Error);
+        expect(runtime.hasActiveProviderTurn()).toBe(true);
+        const nativePid = Number(await readFile(requestLogPath + '.native-pid', 'utf8'));
+        expect(() => process.kill(nativePid, 0)).not.toThrow();
+        await runtime.cancel();
+        await successor;
     });
 
     it('refuses a group credential superseded while queued behind another runtime auth apply', async () => {
