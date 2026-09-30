@@ -2,6 +2,7 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { lightTheme } from '@/theme';
 import type { Settings } from '@/sync/domains/settings/settings';
@@ -40,7 +41,10 @@ const AgentIconMock = 'AgentIcon' as unknown as React.ComponentType<{
 let platformOs: 'ios' | 'android' | 'web' = 'web';
 let isTabletDevice = false;
 
-vi.mock('react-native-reanimated', () => ({}));
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
 
 vi.mock('react-native-gesture-handler', () => ({
     Swipeable: 'Swipeable',
@@ -722,8 +726,14 @@ describe('SessionItem activity time', () => {
         expect(flattenStyle(spinner?.props.style)).toMatchObject({
             width: 12,
             height: 12,
-            borderColor: lightTheme.colors.text.tertiary,
         });
+        // The row owns which color its spinner gets; how the spinner draws it depends on the
+        // user's loading indicator style.
+        const spinnerColors = screen
+            .findAllByTestId('session-row-attention-indicator-spinner-sess_compact_active-trailing')
+            .map((node) => node.props?.color)
+            .filter((color) => color != null);
+        expect(spinnerColors).toContain(lightTheme.colors.text.tertiary);
         expect(screen.findAllByType('StatusDot')).toHaveLength(0);
         expect(screen.getTextContent()).not.toContain('working on it');
         expect(screen.getTextContent()).not.toContain('1m');
@@ -760,7 +770,7 @@ describe('SessionItem activity time', () => {
 
         expect(screen.findByTestId('session-row-attention-indicator-sess_compact_active_dot')).toBeNull();
         expect(screen.findByTestId('session-list-attention-indicator-sess_compact_active_dot-trailing-working')).toBeTruthy();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(ActivitySpinner)).toHaveLength(0);
         const dots = screen.findAllByType('StatusDot');
         expect(dots).toHaveLength(1);
         expect(dots[0]?.props.isPulsing).toBe(true);
@@ -1173,7 +1183,7 @@ describe('SessionItem activity time', () => {
         );
 
         expect(screen.findByTestId('session-list-attention-indicator-sess_status_pill_dot-secondary-working')).toBeTruthy();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(ActivitySpinner)).toHaveLength(0);
         const statusDots = screen.findAllByType('StatusDot');
         expect(statusDots).toHaveLength(1);
         expect(statusDots[0]?.props.isPulsing).toBe(true);

@@ -20,6 +20,7 @@ export const useAnimatedReaction = mock.useAnimatedReaction;
 export const useAnimatedRef = mock.useAnimatedRef;
 export const useAnimatedStyle = mock.useAnimatedStyle;
 export const useDerivedValue = mock.useDerivedValue;
+export const useFrameCallback = mock.useFrameCallback;
 export const useSharedValue = mock.useSharedValue;
 export const makeMutable = mock.makeMutable;
 export const withDelay = mock.withDelay;
