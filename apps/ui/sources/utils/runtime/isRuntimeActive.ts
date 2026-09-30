@@ -1,4 +1,6 @@
 import { AppState, Platform } from 'react-native';
+import { readHostWindowFocus } from './readHostWindowFocus';
+import { isWebMobileHost } from '@/utils/platform/webMobileHeuristics';
 import { isTauriDesktop } from '@/utils/platform/tauri';
 
 export function isRuntimeActive(): boolean {
@@ -49,7 +51,7 @@ function readDocument(): (Document & {
 /**
  * Notifies when the runtime's active/inactive state may have changed: the app
  * moved between foreground and background, or (on web) the document was hidden
- * or shown.
+ * or shown, or the host window gained/lost focus.
  *
  * This is the single owner of "what counts as a lifecycle transition" that
  * `isRuntimeActive` reads. Every gated worker subscribes here instead of
@@ -70,6 +72,16 @@ export function subscribeToRuntimeActiveChange(listener: () => void): () => void
         });
     }
 
+    const hostWindow = (globalThis as unknown as { window?: Window }).window;
+    if (typeof hostWindow?.addEventListener === 'function') {
+        hostWindow.addEventListener('focus', listener);
+        hostWindow.addEventListener('blur', listener);
+        detach.push(() => {
+            hostWindow.removeEventListener('focus', listener);
+            hostWindow.removeEventListener('blur', listener);
+        });
+    }
+
     try {
         const subscription = AppState.addEventListener?.('change', listener);
         if (subscription && typeof subscription.remove === 'function') {
@@ -83,6 +95,15 @@ export function subscribeToRuntimeActiveChange(listener: () => void): () => void
         for (const stop of detach.splice(0)) {
             stop();
         }
+    };
+}
+
+/** Only an explicit focused computer window can mute another device's push. */
+export function readComputerUiFocusState(): Readonly<{ computer: boolean; focused: boolean }> {
+    const computer = Platform.OS === 'web' && (isTauriDesktop() || !isWebMobileHost());
+    return {
+        computer,
+        focused: computer && readHostWindowFocus() === true,
     };
 }
 

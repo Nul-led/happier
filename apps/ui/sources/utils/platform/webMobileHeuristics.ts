@@ -45,6 +45,11 @@ function isTouchOrCoarsePointer(nav: NavigatorLike | null): boolean {
     return typeof nav?.maxTouchPoints === 'number' && nav.maxTouchPoints > 0;
 }
 
+/** Browser hardware classification, independent of responsive viewport width. */
+export function isWebMobileHost(): boolean {
+    return isMobileUserAgent(readNavigator()) || isCoarsePrimaryPointerEnvironment();
+}
+
 /**
  * True when the host's PRIMARY pointer cannot hover (phone/tablet touch).
  *

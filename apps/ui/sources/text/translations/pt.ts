@@ -3689,6 +3689,8 @@ export const pt: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenciar o telefone ao usar o computador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia alertas Pronto e pedidos enquanto o Happier está em foco no desktop ou na web. Os alertas voltam quando sai da janela.",
     badges: {
       title: 'Badges neste dispositivo',
       footer: 'Escolha quais atividades contribuem para o badge do ícone do app neste dispositivo.',

@@ -3301,6 +3301,8 @@ export const fr: TranslationStructure = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Couper les alertes du téléphone sur ordinateur",
+        mutePhoneWhenComputerFocusedSubtitle: "Couper les notifications Prêt et demandes quand Happier a le focus sur ordinateur ou sur le web. Elles reprennent dès que vous quittez la fenêtre.",
         badges: {
             title: 'Badges',
             footer: 'Contrôle les compteurs de badges et les indicateurs desktop.',

@@ -3597,6 +3597,8 @@ export const pl: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Wycisz telefon, gdy używasz komputera",
+        mutePhoneWhenComputerFocusedSubtitle: "Wycisz powiadomienia Gotowe i prośby, gdy Happier ma fokus na komputerze lub w przeglądarce. Powiadomienia wracają po opuszczeniu okna.",
     badges: {
       title: 'Odznaki na tym urządzeniu',
       footer: 'Wybierz, które działania mają wpływać na odznakę ikony aplikacji na tym urządzeniu.',

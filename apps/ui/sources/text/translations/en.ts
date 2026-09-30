@@ -3302,6 +3302,8 @@ export const en = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Mute phone while a computer is focused",
+        mutePhoneWhenComputerFocusedSubtitle: "Mute Ready and request push alerts while Happier is focused on desktop or web. Alerts resume when you leave.",
         badges: {
             title: 'Badges',
             footer: 'Controls badge counts and desktop indicators.',

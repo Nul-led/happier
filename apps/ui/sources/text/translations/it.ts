@@ -3910,6 +3910,8 @@ export const it: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenzia il telefono quando il computer è attivo",
+        mutePhoneWhenComputerFocusedSubtitle: "Silenzia gli avvisi Pronto e richieste quando Happier è in primo piano su desktop o web. Riprendono quando lasci la finestra.",
     badges: {
       title: "Badge su questo dispositivo",
       footer:

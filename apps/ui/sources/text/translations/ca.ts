@@ -3378,6 +3378,8 @@ export const ca: TranslationStructure = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silencia el telèfon mentre fas servir l’ordinador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia els avisos A punt i sol·licituds mentre Happier té el focus a l’escriptori o al web. Es reprenen quan surts de la finestra.",
         badges: {
             title: 'Insígnies en aquest dispositiu',
             footer: 'Tria quina activitat contribueix a la insígnia de la icona de l’app en aquest dispositiu.',

@@ -384,3 +384,19 @@ describe('PushNotificationClient.sendToAllDevicesAsync', () => {
     );
   });
 });
+
+
+describe('focused computer push token query', () => {
+  it('asks freshly for suppression and resumes on the next delivery after blur', async () => {
+    sendPushNotificationsAsyncSpy.mockClear();
+    vi.mocked(axios.get).mockReset();
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { tokens: [], suppressedByFocusedComputer: true } });
+    const client = new PushNotificationClient('t', 'https://api.example.test');
+    await client.sendToAllDevicesAsync('Ready', 'Done', { sessionId: 's' }, { suppressIfComputerFocused: true });
+    expect(vi.mocked(axios.get).mock.calls[0][0]).toBe('https://api.example.test/v1/push-tokens?suppressIfComputerFocused=1');
+    expect(sendPushNotificationsAsyncSpy).not.toHaveBeenCalled();
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { tokens: [{ id: '1', token: 'ExponentPushToken[a]' }] } }).mockResolvedValueOnce({ data: { badgeCount: 0 } });
+    await client.sendToAllDevicesAsync('Ready', 'Done', { sessionId: 's' }, { suppressIfComputerFocused: true });
+    expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
+  });
+});

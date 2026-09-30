@@ -102,3 +102,43 @@ describe('isRuntimeActive', () => {
         expect(tick).toHaveBeenCalledTimes(2);
     });
 });
+
+
+describe('computer focus lifecycle', () => {
+    afterEach(() => { vi.unstubAllGlobals(); });
+    it('republishes browser window focus and blur through the canonical lifecycle owner', async () => {
+        const doc = new EventTarget();
+        const win = new EventTarget();
+        vi.stubGlobal('document', doc);
+        vi.stubGlobal('window', win);
+        const { subscribeToRuntimeActiveChange } = await import('./isRuntimeActive');
+        const listener = vi.fn();
+        const stop = subscribeToRuntimeActiveChange(listener);
+        win.dispatchEvent(new Event('focus'));
+        win.dispatchEvent(new Event('blur'));
+        expect(listener).toHaveBeenCalledTimes(2);
+        stop();
+        win.dispatchEvent(new Event('focus'));
+        expect(listener).toHaveBeenCalledTimes(2);
+    });
+});
+
+
+describe('focused computer facts', () => {
+    afterEach(() => { vi.unstubAllGlobals(); });
+    it('requires explicit physical focus and excludes mobile/native hosts', async () => {
+        runtimeState.platformOs = 'web';
+        runtimeState.isTauriDesktop = false;
+        vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+        vi.stubGlobal('document', {});
+        const { readComputerUiFocusState } = await import('./isRuntimeActive');
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
+        vi.stubGlobal('document', { hasFocus: () => true });
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: true });
+        vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)' });
+        expect(readComputerUiFocusState()).toEqual({ computer: false, focused: false });
+        runtimeState.platformOs = 'ios';
+        expect(readComputerUiFocusState()).toEqual({ computer: false, focused: false });
+        runtimeState.platformOs = 'web';
+    });
+});

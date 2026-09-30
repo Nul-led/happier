@@ -3859,6 +3859,8 @@ localTailscale: {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "コンピューター操作中はスマートフォンの通知をミュート",
+        mutePhoneWhenComputerFocusedSubtitle: "デスクトップや Web の Happier にフォーカスがある間、完了とリクエストのプッシュ通知をミュートします。ウィンドウを離れると再開します。",
     badges: {
       title: "このデバイスのバッジ",
       footer: "このデバイスのアプリアイコンバッジにどのアクティビティを反映するかを選択します。",

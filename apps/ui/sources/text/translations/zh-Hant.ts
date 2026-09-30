@@ -3243,6 +3243,8 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
 		    },
 
 		    settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "電腦視窗取得焦點時靜音手機通知",
+        mutePhoneWhenComputerFocusedSubtitle: "桌面或網頁版 Happier 取得焦點時，不傳送就緒和請求推播通知。離開視窗後恢復通知。",
 		        badges: {
 		            title: '此裝置的徽章',
 		            footer: '選擇哪些活動會影響此裝置的 App 圖示徽章。',
