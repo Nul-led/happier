@@ -3143,6 +3143,8 @@ export const es: TranslationStructure = {
       reconnectSubtitle: "Reautenticar este perfil",
       replaceTokenSubtitle: "Reemplazar credenciales de este perfil",
       connectionGroupTitle: "Conexión",
+      composerExtraMetersTitle: 'Indicadores adicionales',
+      composerExtraMetersSubtitle: 'Elige ventanas de uso para mostrar junto al indicador principal.',
       connectedVia: "Conectado mediante",
       connectedViaToken: "Token de acceso",
       connectedViaOauth: "OAuth",
@@ -8268,6 +8270,8 @@ settingsSession: {
           "Muestra la cuota restante del proveedor junto al compositor cuando esté disponible.",
         visibilityHiddenSubtitle: "Oculta la cuota del proveedor en el compositor.",
         windowTitle: "Ventana del indicador",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Etiqueta los indicadores de contexto y del proveedor.',
         windowMostConstrainedTitle: "Más limitada",
         windowMostConstrainedSubtitle:
           "Muestra la ventana de cuota fiable con menos cuota restante.",

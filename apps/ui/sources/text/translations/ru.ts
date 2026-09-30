@@ -3102,6 +3102,8 @@ export const ru: TranslationStructure = {
       reconnectSubtitle: "Повторно авторизовать этот профиль",
       replaceTokenSubtitle: "Заменить учётные данные этого профиля",
       connectionGroupTitle: "Подключение",
+      composerExtraMetersTitle: 'Дополнительные индикаторы',
+      composerExtraMetersSubtitle: 'Выберите периоды использования для отображения рядом с основным индикатором.',
       connectedVia: "Подключено через",
       connectedViaToken: "Токен доступа",
       connectedViaOauth: "OAuth",
@@ -8246,6 +8248,8 @@ settingsSession: {
           "Показывать оставшуюся квоту провайдера рядом с полем ввода, когда она доступна.",
         visibilityHiddenSubtitle: "Скрыть квоту провайдера рядом с полем ввода.",
         windowTitle: "Окно индикатора",
+        labelsTitle: 'Показывать подписи использования',
+        labelsSubtitle: 'Подписывать индикаторы контекста и провайдера.',
         windowMostConstrainedTitle: "Самое ограниченное",
         windowMostConstrainedSubtitle:
           "Показывать надёжное окно квоты с наименьшим остатком.",

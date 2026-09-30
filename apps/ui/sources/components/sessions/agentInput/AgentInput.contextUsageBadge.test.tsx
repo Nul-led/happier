@@ -10,7 +10,7 @@ import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const storageSettings: Settings = {
+const storageSettings: { -readonly [K in keyof Settings]: Settings[K] } = {
     ...settingsDefaults,
     profiles: [],
     agentInputEnterToSend: true,
@@ -332,12 +332,14 @@ describe('AgentInput (context usage badge)', () => {
 
     beforeEach(() => {
         captured.last = null;
+        storageSettings.sessionUsageGaugeLabels = false;
         windowDimensionsState.width = 800;
         windowDimensionsState.height = 600;
     });
 
-    it('renders the context badge from provider-reported context usage', async () => {
+    it.each([false, true])('renders provider-reported context and honors the global label preference (%s)', async (showLabels) => {
         captured.last = null;
+        storageSettings.sessionUsageGaugeLabels = showLabels;
         const { AgentInput } = await import('./AgentInput');
 
         const screen = await renderScreen(
@@ -368,6 +370,7 @@ describe('AgentInput (context usage badge)', () => {
         expect(screen.findByTestId('agent-input-context-usage-ring')).toBeTruthy();
         expect(screen.findByTestId('agent-input-context-usage-value')?.props.children).toBe('19');
         expect(String(badge?.props.accessibilityLabel ?? '')).toContain('38.7k/200k');
+        expect(Boolean(screen.findByTestId('agent-input-context-usage-label'))).toBe(showLabels);
 
         act(() => screen.tree.unmount());
     });
@@ -520,7 +523,7 @@ describe('AgentInput (context usage badge)', () => {
                 status: 'ok',
                 details: {},
             },
-            windowRings: [],
+            usageRings: [],
             allMeterRows: [
                 {
                     meterId: 'weekly',
@@ -621,7 +624,7 @@ describe('AgentInput (context usage badge)', () => {
                 status: 'ok',
                 details: {},
             },
-            windowRings: [],
+            usageRings: [],
             allMeterRows: [
                 {
                     meterId: 'weekly',

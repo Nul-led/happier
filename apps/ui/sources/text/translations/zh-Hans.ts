@@ -3063,6 +3063,8 @@ export const zhHans: TranslationStructure = {
       reconnectSubtitle: "重新认证此配置",
       replaceTokenSubtitle: "替换此配置的凭据",
       connectionGroupTitle: "连接",
+      composerExtraMetersTitle: '额外用量仪表',
+      composerExtraMetersSubtitle: '选择在主仪表旁显示的用量周期。',
       connectedVia: "连接方式",
       connectedViaToken: "访问令牌",
       connectedViaOauth: "OAuth",
@@ -8027,6 +8029,8 @@ settingsSession: {
         "可用时在输入框旁显示提供方剩余配额。",
       visibilityHiddenSubtitle: "在输入框旁隐藏提供方配额。",
       windowTitle: "仪表窗口",
+      labelsTitle: '显示用量标签',
+      labelsSubtitle: '为上下文和提供商用量仪表显示标签。',
       windowMostConstrainedTitle: "最受限制",
       windowMostConstrainedSubtitle:
         "显示可靠配额窗口中剩余最少的窗口。",

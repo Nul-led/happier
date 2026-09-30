@@ -3266,6 +3266,8 @@ export const pt: TranslationStructure = {
       reconnectSubtitle: "Reautenticar este perfil",
       replaceTokenSubtitle: "Substituir credenciais deste perfil",
       connectionGroupTitle: "Conexão",
+      composerExtraMetersTitle: 'Indicadores adicionais',
+      composerExtraMetersSubtitle: 'Escolha as janelas de uso a mostrar junto ao indicador principal.',
       connectedVia: "Conectado via",
       connectedViaToken: "Token de acesso",
       connectedViaOauth: "OAuth",
@@ -8380,6 +8382,8 @@ settingsSession: {
           "Mostra a cota restante do provedor ao lado do compositor quando disponível.",
         visibilityHiddenSubtitle: "Oculta a cota do provedor no compositor.",
         windowTitle: "Janela do medidor",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Identificar os indicadores de contexto e do provedor.',
         windowMostConstrainedTitle: "Mais limitada",
         windowMostConstrainedSubtitle:
           "Mostra a janela de cota confiável com menos cota restante.",

@@ -3486,6 +3486,8 @@ export const it: TranslationStructure = {
       reconnectSubtitle: "Ri-autentica questo profilo",
       replaceTokenSubtitle: "Sostituisci le credenziali per questo profilo",
       connectionGroupTitle: "Connessione",
+      composerExtraMetersTitle: 'Indicatori aggiuntivi',
+      composerExtraMetersSubtitle: 'Scegli le finestre di utilizzo da mostrare accanto all’indicatore principale.',
       connectedVia: "Connesso tramite",
       connectedViaToken: "Token di accesso",
       connectedViaOauth: "OAuth",
@@ -8590,6 +8592,8 @@ settingsSession: {
           "Mostra la quota restante del provider accanto al compositore quando disponibile.",
         visibilityHiddenSubtitle: "Nascondi la quota del provider dal compositore.",
         windowTitle: "Finestra dell'indicatore",
+        labelsTitle: 'Mostra le etichette di utilizzo',
+        labelsSubtitle: 'Etichetta gli indicatori di contesto e del provider.',
         windowMostConstrainedTitle: "Più vincolata",
         windowMostConstrainedSubtitle:
           "Mostra la finestra di quota affidabile con meno quota restante.",

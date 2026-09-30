@@ -80,6 +80,11 @@ export const ACCOUNT_CONNECTED_SERVICES_SETTING_DEFINITIONS = defineSettingDefin
             serializeCurrent: objectKeyCount,
         },
     },
+    connectedServicesSessionUsageMeterIdsByKey: {
+        schema: z.record(z.string(), z.array(z.string())).default({}), default: {},
+        description: 'Additional composer quota meters per connected service profile, keyed by serviceId/profileId',
+        storageScope: 'account',
+    },
     connectedServicesQuotaPinnedMeterIdsByKey: {
         schema: z.record(z.string(), z.array(z.string())).default({}),
         default: {},

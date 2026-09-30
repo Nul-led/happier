@@ -9,7 +9,6 @@ import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type {
     ConnectedServiceQuotaGaugeViewModel,
-    ConnectedServiceQuotaGaugeRingWindow,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 
 import { AgentInputContentPopover } from './AgentInputContentPopover';
@@ -22,6 +21,7 @@ type WebHoverablePressableState = Readonly<{
 type AgentInputProviderUsageBadgeProps = Readonly<{
     viewModel: ConnectedServiceQuotaGaugeViewModel;
     marginLeft?: number;
+    showLabels?: boolean;
     onRecoveryCreditPress?: () => void;
     recoveryCreditActionPending?: boolean;
 }>;
@@ -55,8 +55,8 @@ function areProviderUsageMeterRowsEqual(
 }
 
 function areProviderUsageWindowRingsEqual(
-    left: ConnectedServiceQuotaGaugeViewModel['windowRings'],
-    right: ConnectedServiceQuotaGaugeViewModel['windowRings'],
+    left: ConnectedServiceQuotaGaugeViewModel['usageRings'],
+    right: ConnectedServiceQuotaGaugeViewModel['usageRings'],
 ): boolean {
     if (left === right) return true;
     if (left.length !== right.length) return false;
@@ -64,6 +64,7 @@ function areProviderUsageWindowRingsEqual(
         const other = right[index];
         return !!other
             && ring.window === other.window
+            && ring.label === other.label
             && ring.meterId === other.meterId
             && ring.usedPct === other.usedPct
             && ring.ringValueLabel === other.ringValueLabel
@@ -114,14 +115,15 @@ function areProviderUsageViewModelsEqual(
         && left.isStale === right.isStale
         && areProviderUsageRecoveryCreditsEqual(left.recoveryCreditSummary, right.recoveryCreditSummary)
         && areProviderUsageMeterRowsEqual(left.allMeterRows, right.allMeterRows)
-        && areProviderUsageWindowRingsEqual(left.windowRings, right.windowRings);
+        && areProviderUsageWindowRingsEqual(left.usageRings, right.usageRings);
 }
 
 function areProviderUsageBadgePropsEqual(
     left: AgentInputProviderUsageBadgeProps,
     right: AgentInputProviderUsageBadgeProps,
 ): boolean {
-    return left.marginLeft === right.marginLeft
+    return left.showLabels === right.showLabels
+        && left.marginLeft === right.marginLeft
         && left.onRecoveryCreditPress === right.onRecoveryCreditPress
         && left.recoveryCreditActionPending === right.recoveryCreditActionPending
         && areProviderUsageViewModelsEqual(left.viewModel, right.viewModel);
@@ -139,12 +141,6 @@ function mapGaugeToneToMeterTone(tone: ConnectedServiceQuotaGaugeViewModel['tone
     return 'success';
 }
 
-function windowLabel(window: ConnectedServiceQuotaGaugeRingWindow): string {
-    return window === 'session'
-        ? t('agentInput.providerUsage.windowSession')
-        : t('agentInput.providerUsage.windowWeekly');
-}
-
 export const AgentInputProviderUsageBadge = React.memo(function AgentInputProviderUsageBadge(
     props: AgentInputProviderUsageBadgeProps,
 ) {
@@ -153,20 +149,14 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
     const [isPinnedOpen, setIsPinnedOpen] = React.useState(false);
     const [isHovered, setIsHovered] = React.useState(false);
     const open = isPinnedOpen || isHovered;
-    // One labeled ring per overall window; without window meters, one unlabeled ring.
-    const rings: ReadonlyArray<Readonly<{
-        window: ConnectedServiceQuotaGaugeRingWindow | null;
-        usedPct: number;
-        ringValueLabel: string;
-        tone: ConnectedServiceQuotaGaugeViewModel['tone'];
-    }>> = props.viewModel.windowRings.length > 0
-        ? props.viewModel.windowRings
-        : [{ window: null, usedPct: props.viewModel.usedPct, ringValueLabel: props.viewModel.ringValueLabel, tone: props.viewModel.tone }];
+    const rings = props.viewModel.usageRings.length > 0
+        ? props.viewModel.usageRings
+        : [{ meterId: props.viewModel.effectiveMeter.meterId, label: props.viewModel.effectiveMeter.label,
+            usedPct: props.viewModel.usedPct, ringValueLabel: props.viewModel.ringValueLabel, tone: props.viewModel.tone }];
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
-        value: rings.map((ring) => {
-            const used = t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` });
-            return ring.window ? `${windowLabel(ring.window)} ${used}` : used;
-        }).join(', '),
+        value: rings.map((ring) => `${ring.label} ${t('agentInput.providerUsage.usedPercent', {
+            percent: `${ring.ringValueLabel}%`,
+        })}`).join(', '),
     });
     const title = props.viewModel.providerDisplayName
         ? t('agentInput.providerUsage.titleForProvider', { provider: props.viewModel.providerDisplayName })
@@ -196,17 +186,17 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                     ];
                 }}
             >
-                {rings.map((ring) => {
-                    const testIdSuffix = ring.window ? `:${ring.window}` : '';
+                {rings.map((ring, index) => {
+                    const testIdSuffix = index === 0 ? '' : `:${ring.meterId}`;
                     return (
-                        <View key={ring.window ?? 'overall'} style={styles.windowRing}>
-                            {ring.window ? (
+                        <View key={ring.meterId} style={styles.windowRing}>
+                            {props.showLabels === true ? (
                                 <Text
-                                    testID={`agent-input-provider-usage-window-label:${ring.window}`}
+                                    testID={`agent-input-provider-usage-meter-label${testIdSuffix}`}
                                     style={styles.windowLabel}
                                     numberOfLines={1}
                                 >
-                                    {windowLabel(ring.window)}
+                                    {ring.label}
                                 </Text>
                             ) : null}
                             <TokenUsageRing
@@ -379,9 +369,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 4,
     },
     windowLabel: {
-        fontSize: 11,
+        ...Typography.pillLabel(),
         color: theme.colors.text.secondary,
-        ...Typography.default(),
     },
     popoverContent: {
         paddingHorizontal: 18,

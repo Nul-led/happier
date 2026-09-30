@@ -1333,6 +1333,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const agentInputHistoryScope = useSetting('agentInputHistoryScope');
     const agentInputActionBarLayout = useSetting('agentInputActionBarLayout');
     const agentInputChipDensity = useSetting('agentInputChipDensity');
+    const showUsageGaugeLabels = useSetting('sessionUsageGaugeLabels') === true;
     const sessionPermissionModeApplyTiming = useSetting('sessionPermissionModeApplyTiming');
     const isGlassComposer = isGlassComposerSurface({ setting: useSetting('composerSurfaceStyle') });
 
@@ -3343,10 +3344,11 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                 return (
                                     <>
                                         {showContextGauge && contextUsageState ? (
-                                            <AgentInputContextUsageBadge state={contextUsageState} />
+                                            <AgentInputContextUsageBadge showLabels={showUsageGaugeLabels} state={contextUsageState} />
                                         ) : null}
                                         {showProviderGauge && props.providerUsageGauge ? (
                                             <AgentInputProviderUsageBadge
+                                                showLabels={showUsageGaugeLabels}
                                                 viewModel={props.providerUsageGauge}
                                                 marginLeft={showContextGauge ? 8 : 0}
                                                 onRecoveryCreditPress={props.onProviderUsageRecoveryCreditPress}

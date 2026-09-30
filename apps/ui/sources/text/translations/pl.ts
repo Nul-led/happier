@@ -3173,6 +3173,8 @@ export const pl: TranslationStructure = {
       reconnectSubtitle: "Ponownie uwierzytelnij ten profil",
       replaceTokenSubtitle: "Zastąp poświadczenia dla tego profilu",
       connectionGroupTitle: "Połączenie",
+      composerExtraMetersTitle: 'Dodatkowe wskaźniki',
+      composerExtraMetersSubtitle: 'Wybierz okresy użycia wyświetlane obok głównego wskaźnika.',
       connectedVia: "Połączono przez",
       connectedViaToken: "Token dostępu",
       connectedViaOauth: "OAuth",
@@ -8262,6 +8264,8 @@ settingsSession: {
           "Pokazuj pozostały limit dostawcy obok pola wpisywania, gdy jest dostępny.",
         visibilityHiddenSubtitle: "Ukryj limit dostawcy przy polu wpisywania.",
         windowTitle: "Okno wskaźnika",
+        labelsTitle: 'Pokaż etykiety użycia',
+        labelsSubtitle: 'Podpisz wskaźniki kontekstu i dostawcy.',
         windowMostConstrainedTitle: "Najbardziej ograniczone",
         windowMostConstrainedSubtitle:
           "Pokazuj wiarygodne okno limitu z najmniejszym pozostałym limitem.",

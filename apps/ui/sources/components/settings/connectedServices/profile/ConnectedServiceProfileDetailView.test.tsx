@@ -1,7 +1,7 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen, withPopoverWebGlobals } from '@/dev/testkit';
 import { connectedServicesModuleState, installConnectedServicesCommonModuleMocks } from '../connectedServicesTestHelpers';
 import type { UseConnectedServiceQuotaSnapshotResult } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshot';
 
@@ -249,8 +249,36 @@ describe('ConnectedServiceProfileDetailView', () => {
     const screen = await renderScreen(<ConnectedServiceProfileDetailView />);
 
     expect(findByTestId(screen.tree, 'connected-service-profile-account')).toBeTruthy();
+    expect(findByTestId(screen.tree, 'connected-service-composer-extra-meters')).toBeTruthy();
     // The shared quota hook is mounted for the connected account.
     expect(quotaHookState.callSpy).toHaveBeenCalled();
+  });
+
+  it('selects real extra meters without changing account pins or discarding temporarily absent selections', async () => {
+    await withPopoverWebGlobals(async () => {
+    quotaHookState.value = buildQuotaResult({ snapshot: {
+      ...buildQuotaResult().snapshot!,
+      meters: [{ meterId: 'five_hour', label: '5-hour', used: null, limit: null, unit: 'unknown', utilizationPct: 20,
+        resetsAt: null, status: 'ok', details: {} }],
+    } });
+    settingsState.current = { ...settingsState.current,
+      connectedServicesSessionUsageMeterIdsByKey: { 'openai-codex/work': ['absent'], 'anthropic/other': ['weekly'] },
+      connectedServicesQuotaPinnedMeterIdsByKey: { 'openai-codex/work': ['weekly'] },
+    };
+    const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
+    const screen = await renderScreen(<ConnectedServiceProfileDetailView />, {
+      // Native host measurement is the platform boundary; keep the real dropdown and popover.
+      createNodeMock: () => ({ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(0, 0, 400, 48) }),
+    });
+    await screen.pressByTestIdAsync('connected-service-composer-extra-meters');
+    await act(flushAsyncHandlers);
+    const choice = findByTestId(screen.tree, 'connected-service-composer-meter:five_hour');
+    expect(choice).toBeTruthy();
+    await act(async () => choice?.props.onValueChange(true));
+    expect(applySettingsSpy).toHaveBeenCalledWith({ connectedServicesSessionUsageMeterIdsByKey: {
+      'openai-codex/work': ['absent', 'five_hour'], 'anthropic/other': ['weekly'],
+    } });
+    });
   });
 
   it('renders the shared AccountBlock for retryable refresh-failure profiles', async () => {

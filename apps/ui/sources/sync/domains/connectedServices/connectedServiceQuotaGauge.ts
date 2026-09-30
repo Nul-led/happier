@@ -31,10 +31,11 @@ export type ConnectedServiceQuotaGaugeTone = 'neutral' | 'warning' | 'critical';
 
 export type ConnectedServiceQuotaGaugeWindow = 'session' | 'daily' | 'weekly';
 
-export type ConnectedServiceQuotaGaugeRingWindow = Exclude<ConnectedServiceQuotaGaugeWindow, 'daily'>;
+export type ConnectedServiceQuotaGaugeRingWindow = ConnectedServiceQuotaGaugeWindow;
 
 export type ConnectedServiceQuotaGaugeWindowRing = Readonly<{
-    window: ConnectedServiceQuotaGaugeRingWindow;
+    window: ConnectedServiceQuotaGaugeRingWindow | null;
+    label: string;
     meterId: string;
     usedPct: number;
     ringValueLabel: string;
@@ -99,8 +100,8 @@ export type ConnectedServiceQuotaGaugeViewModel = Readonly<{
     recoveryCreditSummary: ConnectedServiceQuotaRecoveryCreditSummary | null;
     effectiveMeter: ConnectedServiceQuotaMeterV1;
     allMeterRows: readonly ConnectedServiceQuotaGaugeMeterRow[];
-    /** The overall 5-hour (session) and weekly windows, when the snapshot has them. */
-    windowRings: readonly ConnectedServiceQuotaGaugeWindowRing[];
+    /** Selected main meter, followed by explicitly selected reported extras. */
+    usageRings: readonly ConnectedServiceQuotaGaugeWindowRing[];
 }>;
 
 export type ConnectedServiceQuotaGaugeSourceKind =
@@ -198,39 +199,6 @@ function meterMatchesWindowMode(
         return resolveConnectedServiceQuotaMeterWindow(meter) === windowMode;
     }
     return meterNameTokens(meter).has(windowMode) || meter.meterId.toLowerCase() === windowMode;
-}
-
-const WINDOW_RING_ORDER: readonly ConnectedServiceQuotaGaugeRingWindow[] = ['session', 'weekly'];
-
-/**
- * Each ring shows the window's overall meter, not a per-model one (`seven_day` over
- * `seven_day_opus`): model-scoped meters carry a `modelId` or a longer id than the base window.
- */
-function buildWindowRings(
-    rows: readonly ConnectedServiceQuotaGaugeMeterRow[],
-    meters: readonly ConnectedServiceQuotaMeterV1[],
-): ConnectedServiceQuotaGaugeWindowRing[] {
-    const rowsByMeterId = new Map(rows.map((row) => [row.meterId, row]));
-    const idLength = (meter: ConnectedServiceQuotaMeterV1) => meter.meterId.split(/[^a-zA-Z0-9]+/).filter(Boolean).length;
-    const byWindow = new Map<ConnectedServiceQuotaGaugeWindow, ConnectedServiceQuotaMeterV1>();
-    for (const meter of meters) {
-        const window = resolveConnectedServiceQuotaMeterWindow(meter);
-        if (!window || meter.modelId || !rowsByMeterId.has(meter.meterId)) continue;
-        const current = byWindow.get(window);
-        if (!current || idLength(meter) < idLength(current)) byWindow.set(window, meter);
-    }
-    return WINDOW_RING_ORDER.flatMap((window) => {
-        const meter = byWindow.get(window);
-        const row = meter ? rowsByMeterId.get(meter.meterId) : undefined;
-        return row ? [{
-            window,
-            meterId: row.meterId,
-            usedPct: row.usedPct,
-            // Used, like the context ring beside it; the fill and tone already follow the same meter.
-            ringValueLabel: String(Math.round(row.usedPct)),
-            tone: row.tone,
-        }] : [];
-    });
 }
 
 export function isConnectedServiceQuotaMeterPercentRankable(meter: ConnectedServiceQuotaMeterV1): boolean {
@@ -371,6 +339,7 @@ function buildMeterRow(
 export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     snapshot: ConnectedServiceQuotaSnapshotV1 | null;
     windowMode: ConnectedServiceQuotaGaugeWindowMode;
+    additionalMeterIds?: readonly string[];
     nowMs: number;
     formatter: ConnectedServiceQuotaGaugeLabelFormatter;
     providerDisplayName?: string | null;
@@ -461,7 +430,17 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         recoveryCreditSummary: summarizeConnectedServiceQuotaRecoveryCredits(params.snapshot.recoveryCredits, params.nowMs),
         effectiveMeter,
         allMeterRows,
-        windowRings: buildWindowRings(allMeterRows, candidates),
+        usageRings: [...new Set([effectiveMeter.meterId, ...(params.additionalMeterIds ?? [])])].flatMap((meterId) => {
+            // Extra meters are selected explicitly, so they need not share the main
+            // comparison family. Keep the same reliability/category gate as the selector.
+            const meter = params.snapshot?.meters.find((candidate) => candidate.meterId === meterId
+                && isConnectedServiceQuotaMeterPercentRankable(candidate));
+            const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
+            return row && meter ? [{
+                meterId, label: row.label, window: resolveConnectedServiceQuotaMeterWindow(meter),
+                usedPct: row.usedPct, ringValueLabel: String(Math.round(row.usedPct)), tone: row.tone,
+            }] : [];
+        }),
     };
 }
 

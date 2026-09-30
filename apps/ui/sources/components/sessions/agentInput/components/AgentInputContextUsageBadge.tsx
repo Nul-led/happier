@@ -22,13 +22,15 @@ type WebHoverablePressableState = Readonly<{
 type AgentInputContextUsageBadgeProps = Readonly<{
     state: ContextUsageState;
     marginLeft?: number;
+    showLabels?: boolean;
 }>;
 
 function areContextUsageBadgePropsEqual(
     left: AgentInputContextUsageBadgeProps,
     right: AgentInputContextUsageBadgeProps,
 ): boolean {
-    return left.marginLeft === right.marginLeft
+    return left.showLabels === right.showLabels
+        && left.marginLeft === right.marginLeft
         && left.state.severity === right.state.severity
         && left.state.usedTokens === right.state.usedTokens
         && left.state.contextWindowTokens === right.state.contextWindowTokens
@@ -92,9 +94,9 @@ export const AgentInputContextUsageBadge = React.memo(function AgentInputContext
                     ];
                 }}
             >
-                <Text style={styles.label} numberOfLines={1}>
+                {props.showLabels === true ? <Text testID="agent-input-context-usage-label" style={styles.label} numberOfLines={1}>
                     {t('agentInput.context.badgeLabel')}
-                </Text>
+                </Text> : null}
                 <TokenUsageRing
                     used={props.state.usedTokens}
                     limit={props.state.contextWindowTokens}
@@ -145,9 +147,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
     },
     label: {
-        fontSize: 11,
+        ...Typography.pillLabel(),
         color: theme.colors.text.secondary,
-        ...Typography.default(),
     },
     badgePressed: {
         opacity: 0.9,

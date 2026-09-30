@@ -6,6 +6,8 @@ import { useUnistyles } from 'react-native-unistyles';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { isConnectedServiceQuotaMeterPercentRankable } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { Switch } from '@/components/ui/forms/Switch';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { StatusPill } from '@/components/ui/status/StatusPill';
@@ -86,15 +88,44 @@ const ConnectionSection = React.memo(function ConnectionSection(props: Readonly<
   providerEmail?: string | null;
   connectedVia: string;
   testID: string;
+  additionalMeterIds: readonly string[];
+  onAdditionalMeterIdsChange: (ids: string[]) => void;
 }>) {
   const { snapshot } = useConnectedServiceQuotaSnapshot({
     serviceId: props.serviceId,
     profileId: props.profileId,
   });
   const lastRefreshed = formatLastRefreshed(snapshot?.fetchedAt ?? null);
+  const [extraMetersOpen, setExtraMetersOpen] = React.useState(false);
+  const toggleMeter = (meterId: string) => props.onAdditionalMeterIdsChange(
+    props.additionalMeterIds.includes(meterId)
+      ? props.additionalMeterIds.filter((id) => id !== meterId)
+      : [...props.additionalMeterIds, meterId],
+  );
+  // Details are demanded by the open picker; selection survives temporary absent meters.
+  const meterOptions = extraMetersOpen ? (snapshot?.meters ?? [])
+    .filter(isConnectedServiceQuotaMeterPercentRankable)
+    .map((meter) => ({
+      id: meter.meterId, title: meter.label,
+      rightElement: <Switch testID={`connected-service-composer-meter:${meter.meterId}`} compact accessibilityLabel={meter.label}
+        value={props.additionalMeterIds.includes(meter.meterId)}
+        onValueChange={() => toggleMeter(meter.meterId)} />,
+    })) : [];
 
   return (
     <ItemGroup title={t('connectedServices.profile.connectionGroupTitle')}>
+      <DropdownMenu
+        open={extraMetersOpen} onOpenChange={setExtraMetersOpen}
+        closeOnSelect={false} search={false} rowKind="item"
+        itemTrigger={{
+          title: t('connectedServices.profile.composerExtraMetersTitle'),
+          subtitle: t('connectedServices.profile.composerExtraMetersSubtitle'),
+          showSelectedDetail: false, showSelectedSubtitle: false,
+          itemProps: { testID: 'connected-service-composer-extra-meters',
+            disabled: !(snapshot?.meters.some(isConnectedServiceQuotaMeterPercentRankable)) },
+        }}
+        items={meterOptions} onSelect={toggleMeter}
+      />
       <Item
         title={t('connectedServices.profile.profileId')}
         subtitle={props.profileId}
@@ -376,6 +407,14 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
     onReconnect: handleReconnect,
   });
 
+  const composerExtraMetersKey = connectedServiceProfileKey({ serviceId, profileId });
+  const additionalComposerMeterIds = settings.connectedServicesSessionUsageMeterIdsByKey?.[composerExtraMetersKey] ?? [];
+  const onAdditionalComposerMeterIdsChange = React.useCallback((ids: string[]) => {
+    applySettings({ connectedServicesSessionUsageMeterIdsByKey: {
+      ...settings.connectedServicesSessionUsageMeterIdsByKey, [composerExtraMetersKey]: ids,
+    } });
+  }, [applySettings, composerExtraMetersKey, settings.connectedServicesSessionUsageMeterIdsByKey]);
+
   return (
     <ItemList>
       {isUsable ? (
@@ -496,6 +535,8 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
           connectedVia={kind === 'token'
             ? t('connectedServices.profile.connectedViaToken')
             : t('connectedServices.profile.connectedViaOauth')}
+          additionalMeterIds={additionalComposerMeterIds}
+          onAdditionalMeterIdsChange={onAdditionalComposerMeterIdsChange}
           testID="connected-service-profile"
         />
       ) : kind === 'oauth' && status === 'needs_reauth' ? (

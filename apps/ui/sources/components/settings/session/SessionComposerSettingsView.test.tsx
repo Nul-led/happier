@@ -1,15 +1,19 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { act } from 'react-test-renderer';
+import { installSessionSettingsCommonModuleMocks } from './sessionSettingsViewTestHelpers';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
 
 const setNewSessionDraftEntryMode = vi.fn();
 const setSessionInactiveResumePolicy = vi.fn();
+const setSessionUsageGaugeLabels = vi.fn();
 
-vi.mock('@/sync/domains/state/storage', async () => {
+installSessionSettingsCommonModuleMocks({ storage: async () => {
     const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleStub({
         useSettingMutable: (name: string) => {
+            if (name === 'sessionUsageGaugeLabels') return [false, setSessionUsageGaugeLabels];
             if (name === 'newSessionDraftEntryMode') {
                 return ['resumePrevious', setNewSessionDraftEntryMode];
             }
@@ -34,56 +38,48 @@ vi.mock('@/sync/domains/state/storage', async () => {
             return [defaults[name], vi.fn()];
         },
     });
+} });
+
+// Icon rendering is a native boundary; settings rows, menus and switches remain real.
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
 });
 
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children, ...props }: { children?: React.ReactNode }) => React.createElement('ItemGroup', props, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
-    DropdownMenu: (props: Record<string, unknown>) => React.createElement('DropdownMenu', props),
-}));
-
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: (props: Record<string, unknown>) => React.createElement('Switch', props),
-}));
-
-vi.mock('@/components/ui/icons/Icon', () => ({
-    Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
-}));
-
 describe('SessionComposerSettingsView', () => {
+    it('exposes the shared usage label preference in ordinary composer settings', async () => {
+        const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
+        const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
+        const toggle = screen.findByTestId('settings-session-usage-gauge-labels-toggle');
+        expect(toggle).toBeTruthy();
+        expect(toggle?.props.value).toBe(false);
+        await act(async () => toggle?.props.onValueChange(true));
+        expect(setSessionUsageGaugeLabels).toHaveBeenCalledWith(true);
+    });
+
     it('shows explicit resume and fresh ordinary-entry choices and persists the selection', async () => {
         const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
 
-        expect(screen.findRow('settings-new-session-draft-entry-resume')?.props.rightElement).toBeTruthy();
-        expect(screen.findRowByTitle('Resume previous draft')).toBeTruthy();
-        expect(screen.findRowByTitle('Always start fresh')).toBeTruthy();
+        expect(screen.findRow('settings-new-session-draft-entry-resume')).toBeTruthy();
+        expect(screen.findRowByTitle('settingsSession.newSessionDraftEntry.resumeTitle')).toBeTruthy();
+        expect(screen.findRowByTitle('settingsSession.newSessionDraftEntry.freshTitle')).toBeTruthy();
 
-        screen.pressRowByTitle('Always start fresh');
+        screen.pressRowByTitle('settingsSession.newSessionDraftEntry.freshTitle');
         expect(setNewSessionDraftEntryMode).toHaveBeenCalledWith('alwaysFresh');
     });
 
     it('renders the inactive-session resume policy dropdown and persists changes', async () => {
         const { SessionComposerSettingsView } = await import('./SessionComposerSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionComposerSettingsView));
-        const menu = screen.findAllByType('DropdownMenu').find((candidate) => (
-            candidate.props.itemTrigger?.title === 'Automatic resume after sending'
-        ));
+        const menu = screen.findAll((candidate) => (
+            candidate.props.itemTrigger?.title === 'settingsSession.messageSending.inactiveResumePolicyTitle'
+        ))[0];
 
         expect(menu?.props).toMatchObject({
             selectedId: 'online_only',
             itemTrigger: {
-                title: 'Automatic resume after sending',
+                title: 'settingsSession.messageSending.inactiveResumePolicyTitle',
             },
         });
         expect(menu?.props.items.map((item: { id: string }) => item.id)).toEqual([

@@ -7,18 +7,11 @@ import { renderScreen } from '@/dev/testkit';
 
 import { AgentInputProviderUsageBadge } from './AgentInputProviderUsageBadge';
 
-const tokenUsageRingRenderSpy = vi.hoisted(() => vi.fn());
-
-vi.mock('@/components/sessions/usage', async () => {
-    const ReactActual = await vi.importActual<typeof import('react')>('react');
-    const ReactNative = await vi.importActual<typeof import('react-native')>('react-native');
-    return {
-        TokenUsageRing: (props: { value?: string; valueTestID?: string }) => {
-            tokenUsageRingRenderSpy(props);
-            return ReactActual.createElement(ReactNative.Text, { testID: props.valueTestID }, props.value);
-        },
-    };
-});
+// SVG is a native rendering boundary; the usage and capacity rings remain real.
+vi.mock('react-native-svg', () => ({
+    Svg: (props: Record<string, unknown> & { children?: React.ReactNode }) => React.createElement('Svg', props, props.children),
+    Circle: (props: Record<string, unknown>) => React.createElement('Circle', props),
+}));
 
 function viewModel(): ConnectedServiceQuotaGaugeViewModel {
     return {
@@ -65,33 +58,26 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
             resetLabel: '2h',
             tone: 'warning',
         }],
-        windowRings: [],
+        usageRings: [],
     };
 }
 
 describe('AgentInputProviderUsageBadge', () => {
-    it('labels one ring per usage window', async () => {
-        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={{
-            ...viewModel(),
-            windowRings: [
-                { window: 'session', meterId: 'five_hour', usedPct: 10, ringValueLabel: '10', tone: 'neutral' },
-                { window: 'weekly', meterId: 'seven_day', usedPct: 82, ringValueLabel: '82', tone: 'warning' },
-            ],
-        }} />);
-
-        expect(screen.findByTestId('agent-input-provider-usage-value:session')?.props.children).toBe('10');
-        expect(screen.findByTestId('agent-input-provider-usage-value:weekly')?.props.children).toBe('82');
-        expect(screen.findByTestId('agent-input-provider-usage-window-label:session')?.props.children).toBe('5h');
-        expect(screen.findByTestId('agent-input-provider-usage-window-label:weekly')?.props.children).toBe('Week');
-        expect(screen.findByTestId('agent-input-provider-usage-value')).toBeNull();
+    it('keeps meter labels off by default and honors explicit label intent', async () => {
+        const vm = { ...viewModel(), usageRings: [
+            { window: 'session' as const, meterId: 'five_hour', label: '5-hour', usedPct: 10, ringValueLabel: '10', tone: 'neutral' as const },
+        ] };
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
+        expect(screen.findByTestId('agent-input-provider-usage-meter-label')).toBeNull();
+        await screen.update(<AgentInputProviderUsageBadge viewModel={vm} showLabels />);
+        expect(screen.findByTestId('agent-input-provider-usage-meter-label')).toBeTruthy();
     });
 
     it('announces the single ring without window meters as the used percent it shows', async () => {
-        tokenUsageRingRenderSpy.mockClear();
         const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={viewModel()} />);
 
         expect(screen.findByTestId('agent-input-provider-usage-value')?.props.children).toBe('82');
-        const { label } = tokenUsageRingRenderSpy.mock.calls.at(-1)![0] as { label: string };
+        const label = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
         expect(label).toContain('82% used');
         expect(label).not.toContain('left');
     });
@@ -145,18 +131,18 @@ describe('AgentInputProviderUsageBadge', () => {
         expect(flattenStyle(screen.findByTestId('agent-input-provider-usage-meter:weekly')?.props.style).marginTop).toBe(12);
     });
 
-    it('does not rerender the ring when parent rerenders with the same gauge display data', async () => {
-        tokenUsageRingRenderSpy.mockClear();
+    it('keeps the real ring progress stable when parent supplies unchanged gauge display data', async () => {
         const firstViewModel = viewModel();
         const screen = await renderScreen(
             <AgentInputProviderUsageBadge viewModel={firstViewModel} />,
         );
 
+        const progressBefore = screen.findByTestId('agent-input-provider-usage-ring')?.findAll((node) => String(node.type) === 'Circle' && typeof node.props.strokeDashoffset === 'number')[0]?.props.strokeDashoffset;
+        expect(progressBefore).toBeTypeOf('number');
         await screen.update(
             <AgentInputProviderUsageBadge viewModel={{ ...firstViewModel }} />,
         );
-
-        expect(tokenUsageRingRenderSpy).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('agent-input-provider-usage-ring')?.findAll((node) => String(node.type) === 'Circle' && typeof node.props.strokeDashoffset === 'number')[0]?.props.strokeDashoffset).toBe(progressBefore);
         act(() => screen.tree.unmount());
     });
 

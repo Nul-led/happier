@@ -3443,6 +3443,8 @@ localTailscale: {
       reconnectSubtitle: "このプロファイルを再認証します",
       replaceTokenSubtitle: "このプロファイルの認証情報を置き換えます",
       connectionGroupTitle: "接続",
+      composerExtraMetersTitle: '追加の使用量ゲージ',
+      composerExtraMetersSubtitle: 'メインゲージの横に表示する使用量の期間を選択します。',
       connectedVia: "接続方法",
       connectedViaToken: "アクセストークン",
       connectedViaOauth: "OAuth",
@@ -8508,6 +8510,8 @@ settingsSession: {
           "利用可能な場合、入力欄の横にプロバイダーの残りクォータを表示します。",
         visibilityHiddenSubtitle: "入力欄のプロバイダークォータを非表示にします。",
         windowTitle: "ゲージの期間",
+        labelsTitle: '使用量ラベルを表示',
+        labelsSubtitle: 'コンテキストとプロバイダーの使用量にラベルを表示します。',
         windowMostConstrainedTitle: "最も制約が強い",
         windowMostConstrainedSubtitle:
           "信頼できるクォータ期間のうち残りが最も少ないものを表示します。",
