@@ -5,6 +5,40 @@ import { createConnectedServiceSwitchDeferralQueue } from './connectedServiceSwi
 import { createSessionConnectedServiceAuthHotApply } from './sessionConnectedServiceAuthHotApply';
 
 describe('createSessionConnectedServiceAuthHotApply', () => {
+  it.each(['timeout', 'session_terminated', 'daemon_shutdown'] as const)('preserves earlier service effects when boundary waiting fails on %s', async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+      const hotApply = vi.fn().mockResolvedValueOnce({ applied: true }).mockResolvedValue({ applied: false, reason: 'turn_in_flight' });
+      const apply = createSessionConnectedServiceAuthHotApply({
+        resolveRuntimeAuthAdapter: async () => ({ hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter),
+        turnDeferralQueue: queue,
+      });
+      const outcome = apply({
+        tracked: { startedBy: 'daemon', happySessionId: 'sess_1', pid: 123, spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const } } },
+        normalizedBindings: { v: 1, bindingsByServiceId: {
+          'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'first' },
+          'happier.provider.openai/openai': { source: 'connected', selection: 'profile', profileId: 'second' },
+          'happier.provider.anthropic/anthropic': { source: 'connected', selection: 'profile', profileId: 'third' },
+        } },
+      }).catch(error => ({ escaped: error }));
+      await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(2));
+      if (reason === 'timeout') await vi.advanceTimersByTimeAsync(1000);
+      else if (reason === 'daemon_shutdown') await queue.cancelAll(reason);
+      else await queue.cancelSession('sess_1', reason);
+      await expect(outcome).resolves.toMatchObject({
+        ok: false, errorCode: 'hot_apply_failed', serviceId: 'happier.provider.openai/openai',
+        serviceResultsByServiceId: {
+          'happier.agent.codex/openai-codex': { status: 'applied' },
+          'happier.provider.openai/openai': { status: 'failed', errorCode: 'hot_apply_failed' },
+          'happier.provider.anthropic/anthropic': { status: 'not_attempted' },
+        },
+      });
+      expect(hotApply).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('releases concurrent auth callers at the same canonical boundary', async () => {
     const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
     let providerBusy = true;

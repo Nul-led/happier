@@ -896,6 +896,9 @@ export function createCodexAppServerRuntime(
   const preAckCancelledTurns = new Set<PendingTurn>();
   let activeTurnHadMeaningfulActivity = false;
   let turnCompletionSettling = false;
+  const hasProviderWorkInFlight = (): boolean => (
+    pendingTurn !== null || turnCompletionSettling || preAckCancelledTurns.size > 0
+  );
   let pendingTurnCompletionTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduledPendingTurnCompletion: Readonly<{
     status: 'completed' | 'interrupted';
@@ -2914,12 +2917,12 @@ export function createCodexAppServerRuntime(
       };
     }
     const appServerClient = await ensureClient();
-    if (pendingTurn !== null || turnCompletionSettling) {
+    if (hasProviderWorkInFlight()) {
       return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
     }
     const applied = await applyCodexConnectedServiceAuthGeneration({
       client: appServerClient,
-      canApplyAuth: () => pendingTurn === null && !turnCompletionSettling,
+      canApplyAuth: () => !hasProviderWorkInFlight(),
       candidate: request.credential,
       forcedWorkspaceId: request.forcedWorkspaceId,
       forcedLoginMethod: request.forcedLoginMethod,
@@ -3036,8 +3039,8 @@ export function createCodexAppServerRuntime(
       },
       runtime: {
         safeToProbe: true,
-        safeToApply: pendingTurn === null && !turnCompletionSettling && connectedServiceAuthApplyCount === 0,
-        inProviderTurn: pendingTurn !== null || turnCompletionSettling,
+        safeToApply: !hasProviderWorkInFlight() && connectedServiceAuthApplyCount === 0,
+        inProviderTurn: hasProviderWorkInFlight(),
         profileId: identity.profileId,
         ...(identity.groupId ? { groupId: identity.groupId } : {}),
         ...(identity.generation === null ? {} : { generation: identity.generation }),

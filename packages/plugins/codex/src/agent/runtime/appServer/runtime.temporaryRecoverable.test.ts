@@ -4242,6 +4242,69 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     ))).toHaveLength(1);
   });
 
+  it('excludes cancelled pre-ack provider work from auth until late-start cleanup', async () => {
+    clientState.deferTurnStartForPrompt('cancel before provider id');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const loginCount = clientState.requests.filter(({ method }) => method === 'account/login/start').length;
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+
+    const send = runtime.send(
+      { v: 1, text: 'cancel before provider id' },
+      { userMessageSeq: 12 },
+    );
+    await waitForRequestCount('turn/start', 1);
+
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount);
+
+    emitNotification('turn/started', {
+      threadId: 'thread-1',
+      turn: { id: 'turn-cancelled-late', status: 'inProgress', items: [] },
+    });
+    expect(runtime.isTurnInFlight()).toBe(false);
+
+    clientState.rejectNextInterruptAsAlreadyCompleted();
+    clientState.resolveDeferredTurnStart('turn-cancelled-late');
+    await send.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    emitNotification('item/started', {
+      threadId: 'thread-1',
+      turnId: 'turn-cancelled-late',
+      item: { id: 'late-item', type: 'commandExecution' },
+    });
+
+    expect(clientState.requests.filter((request) => (
+      request.method === 'turn/interrupt'
+      && JSON.stringify(request.params) === JSON.stringify({
+        threadId: 'thread-1',
+        turnId: 'turn-cancelled-late',
+      })
+    ))).toHaveLength(2);
+    expect(clientState.requests).toContainEqual({
+      method: 'turn/interrupt',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-cancelled-late',
+      },
+    });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount + 1);
+    expect(runtime.canSteerPrompt()).toBe(false);
+    expect(events.filter((event) => event.kind === 'turn-start')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => (
+      event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled'
+    ))).toHaveLength(1);
+  });
+
   it('reconciles cancellation with a provider completion already in the local settling window', async () => {
     const runtime = createRuntime({
       processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '1000' },
