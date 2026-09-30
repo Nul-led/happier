@@ -47,6 +47,26 @@ describe('setup welcome handoff', () => {
     expect(output.trimEnd().endsWith('Use ↑/↓ to move, Enter to select, or type a letter')).toBe(true);
   });
 
+  it('breaks a word too long for the column beside the planet instead of letting the terminal wrap it', () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '1');
+    vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '');
+    const machineName = `build-agent-${'x'.repeat(70)}-end`;
+    const output = renderSetupChoice({
+      machineName,
+      subtitle: 'Connect your devices.',
+      question: 'Where does your relay live?',
+      choices: [{ key: 'c', label: 'Happier Cloud', isDefault: true }],
+      columns: 92,
+      rows: 24,
+      isTTY: true,
+    });
+    // Redraws count rows; a row the terminal wraps on its own would break them.
+    for (const line of output.split('\n')) expect([...line].length).toBeLessThanOrEqual(92);
+    expect(output).toMatch(/[⠀-⣿ ]{24} {3}Computer: build-agent-x+$/mu);
+    expect(output).toMatch(/x+-end$/mu);
+  });
+
   it('uses compact complete text without the planet on narrow terminals', () => {
     vi.stubEnv('TERM', 'xterm-256color');
     vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '');

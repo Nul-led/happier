@@ -137,7 +137,20 @@ function wrapSetupText(value: string, width: number, indent = ''): string[] {
   if (words.length === 0) return [indent];
   const lines: string[] = [];
   let line = '';
-  for (const word of words) {
+  for (let word of words) {
+    // A word wider than the column (a long computer name) is broken here: left to the terminal,
+    // it would wrap onto a row the redraw does not count.
+    while (word.length > available) {
+      const room = line ? available - line.length - 1 : available;
+      if (room <= 0) {
+        lines.push(`${indent}${line}`);
+        line = '';
+        continue;
+      }
+      lines.push(`${indent}${line ? `${line} ` : ''}${word.slice(0, room)}`);
+      line = '';
+      word = word.slice(room);
+    }
     if (line && line.length + 1 + word.length > available) {
       lines.push(`${indent}${line}`);
       line = word;
