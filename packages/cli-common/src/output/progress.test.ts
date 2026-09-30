@@ -81,6 +81,61 @@ describe('createStepPrinter', () => {
     });
   });
 
+  it('reports how long a step took even when it completes under a longer label', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    withTerminal(80, () => {
+      const printer = createStepPrinter({ enabled: true });
+      printer.start('Codex');
+      vi.advanceTimersByTime(1200);
+      printer.stop('✓', 'Codex (already installed)');
+      const done = String(writeSpy.mock.calls.at(-1)?.[0]).replace(/\x1b\[[0-9;]*m/gu, '');
+      expect(done).toMatch(/^✓ Codex \(already installed\) {2}1\.2s\n$/u);
+    });
+  });
+
+  it('runs a piece of work as one step: ✓ with its outcome, x when it throws', async () => {
+    writeSpy.mockImplementation(() => true);
+    const printer = createStepPrinter({ enabled: true });
+    await expect(printer.run('Installing Codex', async () => 'npm', (via) => `Installed Codex via ${via}`)).resolves.toBe('npm');
+    const failure = new Error('offline');
+    await expect(printer.run('Installing Gemini', async () => { throw failure; })).rejects.toBe(failure);
+    const output = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+    expect(output).toContain('- [..] Installing Codex\n- [✓] Installed Codex via npm\n');
+    expect(output).toContain('- [..] Installing Gemini\n- [x] Installing Gemini\n');
+
+    writeSpy.mockClear();
+    await expect(createStepPrinter({ enabled: false }).run('Hidden', async () => 1)).resolves.toBe(1);
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it('redraws a settled, breathing planet at a calm cadence and never repeats an identical frame', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    withTerminal(80, () => {
+      const printer = createStepPrinter({ appearance: 'planet' });
+      printer.start('Waiting for authentication');
+      vi.advanceTimersByTime(1000);
+      const whileTurning = writeSpy.mock.calls.length;
+      vi.advanceTimersByTime(9000);
+      const settled = writeSpy.mock.calls.length;
+      vi.advanceTimersByTime(4000);
+      const redrawsWhileBreathing = writeSpy.mock.calls.length - settled;
+      // Smooth while it turns (about 15 fps)...
+      expect(whileTurning).toBeGreaterThan(10);
+      // ...then at most one redraw per 200ms: a slow breath needs no more.
+      expect(redrawsWhileBreathing).toBeLessThanOrEqual(4000 / 200);
+      expect(redrawsWhileBreathing).toBeGreaterThan(0);
+      const frames = writeSpy.mock.calls.slice(settled).map((call) => String(call[0])).filter((frame) => frame.includes('\r\x1b[2K'));
+      frames.forEach((frame, index) => { if (index > 0) expect(frame).not.toBe(frames[index - 1]); });
+      printer.pause();
+    });
+  });
+
   it('keeps an ASCII spinner on consoles without Braille glyphs', () => {
     vi.useFakeTimers();
     writeSpy.mockImplementation(() => true);

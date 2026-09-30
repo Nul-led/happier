@@ -28,7 +28,7 @@ export async function promptMultipleChoice<TId extends string>(
     promptInputFn?: typeof promptInput;
     animate?: boolean;
     renderMessage?: (elapsedSeconds: number, selectedId?: TId) => string;
-    intervalMs?: number;
+    intervalMs?: number | ((elapsedSeconds: number) => number);
   }>,
 ): Promise<TId> {
   const readAnswer = config.promptInputFn ?? promptInput;

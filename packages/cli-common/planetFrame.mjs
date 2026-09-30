@@ -21,11 +21,18 @@ const MAX_COLUMNS = 40;
 
 /** One full, calm breath. */
 export const PLANET_BREATH_SECONDS = 9.6;
-/** Redraw cadence for callers that animate the planet. */
+/** Redraw cadence while the planet rises and turns. */
 export const PLANET_FRAME_INTERVAL_MS = 66;
+/** Redraw cadence once it only breathes: a slow breath needs no more. */
+export const PLANET_BREATH_FRAME_INTERVAL_MS = 200;
 const INTRO_SECONDS = 1.9;
 const SPIN_SPEED = 0.55;
 const SPIN_REST_SECONDS = 6;
+
+/** How long an animating caller should wait before its next frame, `seconds` after the planet appeared. */
+export function planetFrameIntervalMs(seconds) {
+  return seconds < SPIN_REST_SECONDS ? PLANET_FRAME_INTERVAL_MS : PLANET_BREATH_FRAME_INTERVAL_MS;
+}
 /** A pose at rest, half-way through a breath: used for static renderings. */
 const SETTLED_SECONDS = PLANET_BREATH_SECONDS * 0.75;
 /** How far a dimmed planet recedes towards the terminal background. */

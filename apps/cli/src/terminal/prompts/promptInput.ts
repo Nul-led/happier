@@ -10,7 +10,8 @@ import { createInterface } from 'node:readline';
 
 export type PromptAnimation = Readonly<{
   animate?: boolean;
-  intervalMs?: number;
+  /** Milliseconds between redraws, or a function of elapsed seconds for a cadence that changes over time. */
+  intervalMs?: number | ((elapsedSeconds: number) => number);
   render: (elapsedSeconds: number) => string;
   onMove?: (delta: -1 | 1) => void;
   onToggle?: () => void;
@@ -113,7 +114,7 @@ export async function promptInput(prompt: string, options: PromptOptions = {}): 
   // and current input without competing terminal writes.
   if (options.animation && process.stdin.isTTY && process.stdout.isTTY) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     let onKeypress: ((value: string, key: Readonly<{ name?: string }>) => void) | null = null;
     try {
       return await new Promise<string>((resolve, reject) => {
@@ -124,7 +125,7 @@ export async function promptInput(prompt: string, options: PromptOptions = {}): 
         const finish = (settle: () => void): void => {
           if (settled) return;
           settled = true;
-          if (timer) clearInterval(timer);
+          if (timer) clearTimeout(timer);
           timer = null;
           rl.removeListener('SIGINT', onAbort);
           rl.removeListener('close', onClose);
@@ -151,7 +152,7 @@ export async function promptInput(prompt: string, options: PromptOptions = {}): 
             && !(typeof initialRows === 'number' && cursor.rows >= initialRows - 1);
         };
         const stopRedraw = (): void => {
-            if (timer) clearInterval(timer);
+            if (timer) clearTimeout(timer);
             timer = null;
             redrawEnabled = false;
         };
@@ -185,7 +186,18 @@ export async function promptInput(prompt: string, options: PromptOptions = {}): 
         };
         process.stdin.on('keypress', onKeypress);
         if (options.animation!.animate !== false) {
-          timer = setInterval(redraw, Math.max(40, options.animation!.intervalMs ?? 120));
+          const nextDelay = (): number => {
+            const interval = options.animation!.intervalMs;
+            const value = typeof interval === 'function' ? interval((Date.now() - startedAt) / 1000) : interval;
+            return Math.max(40, value ?? 120);
+          };
+          const tick = (): void => {
+            redraw();
+            if (timer === null) return;
+            timer = setTimeout(tick, nextDelay());
+            timer.unref?.();
+          };
+          timer = setTimeout(tick, nextDelay());
           timer.unref?.();
         }
         try {
@@ -198,7 +210,7 @@ export async function promptInput(prompt: string, options: PromptOptions = {}): 
         }
       });
     } finally {
-      if (timer) clearInterval(timer);
+      if (timer) clearTimeout(timer);
       rl.close();
     }
   }

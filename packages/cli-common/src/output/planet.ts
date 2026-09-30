@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
-import { PLANET_FRAME_INTERVAL_MS, createPlanetFrame, planetRowsForColumns, type PlanetTheme } from '../../planetFrame.mjs';
+import { PLANET_FRAME_INTERVAL_MS, createPlanetFrame, planetFrameIntervalMs, planetRowsForColumns, type PlanetTheme } from '../../planetFrame.mjs';
 
 export function isTerminalAnimationDisabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.HAPPIER_NO_ANIMATION ?? '').trim().toLowerCase());
@@ -121,10 +121,13 @@ export type SetupChoicePrompt = Readonly<{
   message: string;
   animate?: boolean;
   renderMessage?: (elapsedSeconds: number, selectedId?: string) => string;
-  intervalMs?: number;
+  /** Redraw cadence at a given moment: smooth while the planet turns, calm once it only breathes. */
+  intervalMs?: (elapsedSeconds: number) => number;
 }>;
 
 const SETUP_PLANET_WIDTH = 24;
+/** How long the planet takes to step back once the user starts choosing. */
+const STEP_BACK_SECONDS = 0.4;
 const SETUP_PLANET_GAP = 3;
 const SETUP_MIN_RIGHT_WIDTH = 42;
 
@@ -216,7 +219,7 @@ export function renderSetupChoice(options: SetupChoiceRenderOptions): string {
     intro: showBrand,
     dim: options.interactedAtSeconds === undefined || options.seconds === undefined
       ? 0
-      : easeInOut((options.seconds - options.interactedAtSeconds) / 0.4),
+      : easeInOut((options.seconds - options.interactedAtSeconds) / STEP_BACK_SECONDS),
     color: !process.env.NO_COLOR,
   });
   const lines: string[] = [];
@@ -247,7 +250,10 @@ export function createSetupChoicePrompt(options: SetupChoiceRenderOptions): Setu
     // A static prompt shows the settled planet; an animated one starts at its first frame.
     message: canAnimate ? renderSetupChoice({ ...options, seconds: 0 }) : message,
     animate: canAnimate,
-    intervalMs: PLANET_FRAME_INTERVAL_MS,
+    // The step back is a short fade and needs smooth frames; otherwise follow the planet's own cadence.
+    intervalMs: (elapsedSeconds) => interactedAtSeconds !== undefined && elapsedSeconds - interactedAtSeconds < STEP_BACK_SECONDS
+      ? PLANET_FRAME_INTERVAL_MS
+      : planetFrameIntervalMs(elapsedSeconds),
     renderMessage: (elapsedSeconds, selectedId) => {
       if (interactedAtSeconds === undefined && selectedId !== undefined && selectedId !== initialId) {
         interactedAtSeconds = elapsedSeconds;

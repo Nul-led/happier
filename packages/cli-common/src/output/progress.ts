@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import chalk from 'chalk';
-import { PLANET_FRAME_INTERVAL_MS } from '../../planetFrame.mjs';
+import { planetFrameIntervalMs } from '../../planetFrame.mjs';
 import { isTerminalAnimationDisabled, renderPlanet, shimmerText, supportsBrailleArt } from './planet.js';
 
 type ChalkLike = typeof chalk;
@@ -35,17 +35,26 @@ function colorResult(chalkLike: ChalkLike, result: string): string {
   return normalized;
 }
 
+export type StepPrinter = Readonly<{
+  start: (label: string) => void;
+  stop: (result: string, label: string) => void;
+  info: (line: string) => void;
+  pause: () => void;
+  run: <T>(label: string, work: () => Promise<T>, doneLabel?: (value: T) => string) => Promise<T>;
+}>;
+
 export function createStepPrinter({ enabled = true, chalkLike = chalk, appearance = 'compact' }: Readonly<{
   enabled?: boolean;
   chalkLike?: ChalkLike;
   appearance?: 'compact' | 'planet';
-}> = {}) {
+}> = {}): StepPrinter {
   if (!enabled) {
     return {
       start: () => {},
       stop: () => {},
       info: () => {},
       pause: () => {},
+      run: (_label, work) => work(),
     };
   }
 
@@ -54,7 +63,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
   const color = tty && !process.env.NO_COLOR;
   const colors = chalkLike;
   const frames = spinnerFrames();
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let currentLine = '';
   let drawnRows = 0;
   let initialColumns = 0;
@@ -104,6 +113,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
       // the redrawn region so it can wrap without invalidating cursor geometry.
       const beside = PLANET_COLUMNS + PLANET_GAP + 2 + label.length <= initialColumns;
       if (!beside) write(`${label}\n`);
+      let lastFrame = '';
       const draw = () => {
         if (resized()) {
           // Once resized, let the terminal keep its reflowed scrollback. Do
@@ -113,7 +123,6 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
           drawnRows = 0;
           return;
         }
-        if (drawnRows > 0) write(`\x1b[${drawnRows}A`);
         const seconds = (Date.now() - activeSince) / 1000;
         // A waiting indicator, not a welcome: the planet is simply there, breathing.
         const rows = renderPlanet({ columns: PLANET_COLUMNS, seconds, intro: false, chalkLike: colors, color });
@@ -122,11 +131,23 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
           const planetRow = rows[middle] ?? '';
           rows[middle] = `${planetRow}${' '.repeat(Math.max(0, PLANET_COLUMNS - stripVTControlCharacters(planetRow).length) + PLANET_GAP)}${activity(label, seconds)}`;
         }
-        write(rows.map((row) => `\r\x1b[2K${row}\n`).join(''));
+        const frame = rows.map((row) => `\r\x1b[2K${row}\n`).join('');
+        // A slow breath often leaves the picture unchanged between ticks: write nothing then.
+        if (frame === lastFrame && drawnRows === rows.length) return;
+        // One write per frame: the cursor move and the rows land together.
+        write(`${drawnRows > 0 ? `\x1b[${drawnRows}A` : ''}${frame}`);
+        lastFrame = frame;
         drawnRows = rows.length;
       };
+      // Smooth while the planet turns, calm once it only breathes.
+      const tick = () => {
+        draw();
+        if (timer === null) return;
+        timer = setTimeout(tick, planetFrameIntervalMs((Date.now() - activeSince) / 1000));
+        timer.unref?.();
+      };
       draw();
-      timer = setInterval(draw, PLANET_FRAME_INTERVAL_MS);
+      timer = setTimeout(tick, planetFrameIntervalMs(0));
       timer.unref?.();
       return;
     }
@@ -153,7 +174,8 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
 
   const stop = (result: string, label: string) => {
     pause();
-    const elapsed = activeLabel === label ? (Date.now() - activeSince) / 1000 : null;
+    // stop() completes the active step, whatever label it finishes with ("… (already installed)").
+    const elapsed = activeLabel !== null ? (Date.now() - activeSince) / 1000 : null;
     activeLabel = null;
     if (!animate) {
       write(`- [${color ? colorResult(colors, result) : result}] ${label}\n`);
@@ -168,7 +190,20 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
     write(`${line}\n`);
   };
 
-  return { start, stop, info, pause };
+  // One step around one piece of work: ✓ (optionally with a label naming the outcome), or x and rethrow.
+  const run = async <T>(label: string, work: () => Promise<T>, doneLabel?: (value: T) => string): Promise<T> => {
+    start(label);
+    try {
+      const value = await work();
+      stop('✓', doneLabel ? doneLabel(value) : label);
+      return value;
+    } catch (error) {
+      stop('x', label);
+      throw error;
+    }
+  };
+
+  return { start, stop, info, pause, run };
 }
 
 export async function runCommandLogged({

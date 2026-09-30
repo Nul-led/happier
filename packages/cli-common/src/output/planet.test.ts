@@ -189,6 +189,24 @@ describe('setup planet', () => {
     }
   });
 
+  it('redraws smoothly while it steps back, then returns to a calm breath', () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const prompt = createSetupChoicePrompt(choiceOptions);
+      const calm = prompt.intervalMs!(8);
+      prompt.renderMessage!(8, 'first');
+      prompt.renderMessage!(8.05, 'second');
+      // The step back is a short fade: it needs the fast cadence to read as one.
+      expect(prompt.intervalMs!(8.2)).toBeLessThan(calm / 2);
+      expect(prompt.intervalMs!(9)).toBe(calm);
+    } finally {
+      chalk.level = level;
+    }
+  });
+
   it('leaves the art out where the console has no Braille glyphs', () => {
     expect(supportsBrailleArt({}, 'linux')).toBe(true);
     expect(supportsBrailleArt({}, 'darwin')).toBe(true);

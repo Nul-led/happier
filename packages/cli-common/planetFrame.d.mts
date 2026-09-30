@@ -10,8 +10,13 @@ export type PlanetFrame = readonly (readonly (PlanetCell | null)[])[];
 
 /** One full, calm breath, in seconds. */
 export const PLANET_BREATH_SECONDS: number;
-/** Redraw cadence for callers that animate the planet. */
+/** Redraw cadence while the planet rises and turns. */
 export const PLANET_FRAME_INTERVAL_MS: number;
+/** Redraw cadence once it only breathes. */
+export const PLANET_BREATH_FRAME_INTERVAL_MS: number;
+
+/** How long an animating caller should wait before its next frame, `seconds` after the planet appeared. */
+export function planetFrameIntervalMs(seconds: number): number;
 
 export function planetRowsForColumns(columns?: number): number;
 

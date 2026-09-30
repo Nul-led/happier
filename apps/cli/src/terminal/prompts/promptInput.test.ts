@@ -40,6 +40,51 @@ describe('promptInput animated cancellation', () => {
     });
 });
 
+describe('promptInput animated cadence', () => {
+    it('redraws at the cadence the animation asks for at each moment', async () => {
+        vi.useFakeTimers();
+        const previousStdin = process.stdin.isTTY;
+        const previousStdout = process.stdout.isTTY;
+        process.stdin.isTTY = true;
+        process.stdout.isTTY = true;
+        let answer: ((value: string) => void) | null = null;
+        const rl = Object.assign(new EventEmitter(), {
+            question: vi.fn((_prompt: string, resolve: (value: string) => void) => { answer = resolve; }),
+            close: vi.fn(),
+            getCursorPos: vi.fn(() => ({ rows: 0, cols: 0 })),
+            setPrompt: vi.fn(),
+            prompt: vi.fn(),
+            write: vi.fn(),
+        });
+        createInterfaceMock.mockReturnValue(rl);
+        try {
+            const result = promptInput('Choose: ', {
+                animation: {
+                    // Fast while the picture moves a lot, calm once it only breathes.
+                    intervalMs: (elapsedSeconds) => (elapsedSeconds < 1 ? 50 : 250),
+                    render: (seconds) => `frame ${seconds}`,
+                },
+            });
+            await vi.advanceTimersByTimeAsync(1000);
+            const fast = rl.setPrompt.mock.calls.length;
+            await vi.advanceTimersByTimeAsync(1000);
+            const calm = rl.setPrompt.mock.calls.length - fast;
+            expect(fast).toBeGreaterThanOrEqual(15);
+            expect(calm).toBeLessThanOrEqual(5);
+            expect(calm).toBeGreaterThan(0);
+            answer!('a');
+            await expect(result).resolves.toBe('a');
+            const afterAnswer = rl.setPrompt.mock.calls.length;
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(rl.setPrompt.mock.calls).toHaveLength(afterAnswer);
+        } finally {
+            vi.useRealTimers();
+            process.stdin.isTTY = previousStdin;
+            process.stdout.isTTY = previousStdout;
+        }
+    });
+});
+
 describe('resolveInteractiveTerminal', () => {
     it('is interactive when stdin and stdout are both TTYs', () => {
         const hasControllingTty = vi.fn(() => false);
