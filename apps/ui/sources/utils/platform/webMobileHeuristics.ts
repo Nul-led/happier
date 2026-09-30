@@ -47,7 +47,14 @@ function isTouchOrCoarsePointer(nav: NavigatorLike | null): boolean {
 
 /** Browser hardware classification, independent of responsive viewport width. */
 export function isWebMobileHost(): boolean {
-    return isMobileUserAgent(readNavigator()) || isCoarsePrimaryPointerEnvironment();
+    const nav = readNavigator();
+    if (isMobileUserAgent(nav)) return true;
+    const ua = typeof nav?.userAgent === 'string' ? nav.userAgent : '';
+    // iPadOS can advertise a Mac user agent, including when a trackpad can hover.
+    if (/Macintosh/i.test(ua) && typeof nav?.maxTouchPoints === 'number' && nav.maxTouchPoints > 1) return true;
+    // Pointer capability alone cannot turn a touchscreen computer into a phone/tablet.
+    if (/Windows NT|X11|Macintosh|CrOS|Linux (?:x86_64|i[3-6]86|aarch64)/i.test(ua)) return false;
+    return isCoarsePrimaryPointerEnvironment();
 }
 
 /**

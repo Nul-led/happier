@@ -3302,7 +3302,7 @@ export const de: TranslationStructure = {
 
     settingsNotifications: {
         mutePhoneWhenComputerFocusedTitle: "Handy stummschalten, wenn ein Computer fokussiert ist",
-        mutePhoneWhenComputerFocusedSubtitle: "Ready- und Anfrage-Pushs stummschalten, solange Happier auf Desktop oder im Web fokussiert ist. Danach werden sie wieder zugestellt.",
+        mutePhoneWhenComputerFocusedSubtitle: "Ready- und Anfrage-Pushs stummschalten, solange ein Happier-Fenster auf einem Computer fokussiert ist. Sie werden wieder zugestellt, wenn kein Computer-Fenster fokussiert ist.",
         badges: {
             title: 'Badges',
             footer: 'Steuert Badge-Zahlen und Desktop-Anzeigen.',

@@ -82,6 +82,7 @@ describe("pushRoutes (clientServerUrl) (integration)", () => {
         const token = await auth.createToken(account.id);
         await db.accountPushToken.create({ data: { accountId: account.id, token: "ExponentPushToken[focus]" } });
         const socket = { connected: true, data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: true } } };
+        // Boundary fixture: the event-router focus query reads only connected/data, not the full Socket.IO Socket.
         const connection = { connectionType: 'user-scoped' as const, userId: account.id, socket: socket as any };
         eventRouter.addConnection(account.id, connection);
         const get = async (query = '') => (await app.inject({ method: 'GET', url: `/v1/push-tokens${query}`, headers: { authorization: `Bearer ${token}` } })).json();
