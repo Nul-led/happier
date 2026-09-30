@@ -1,6 +1,8 @@
 import { lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
+import { parse } from 'smol-toml';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCodexHomePair, exists, loadSyncCodexConnectedServiceHome, mockAllSymlinksFail, mockSymlinkFailureForTempLink, settings, waitFor } from './syncCodexConnectedServiceHome.testUtils';
@@ -468,7 +470,7 @@ describe('syncCodexConnectedServiceHome', () => {
       await sync();
 
       const config = await readFile(join(destinationCodexHome, 'config.toml'), 'utf8');
-      expect(config).toContain(trustSection);
+      expect(parse(config)).toMatchObject({ hooks: { state: { [trustedHook]: { trusted_hash: 'a'.repeat(64) } } } });
       expect(config.match(/trusted_hash/g)).toHaveLength(1);
       if (sourceConfigExists) expect(config).toContain('model = "source"');
       const manifest = JSON.parse(await readFile(join(destinationCodexHome, '.happier-state-sharing.json'), 'utf8')) as { configEntries: string[] };
@@ -478,25 +480,39 @@ describe('syncCodexConnectedServiceHome', () => {
     }
   });
 
-  it('carries native hook trust from the promoted home into a staged replacement', async () => {
+  it.each(['linked', 'copied'] as const)('preserves native hook trust and disabled state in a staged %s config', async (configMode) => {
     const { root, sourceCodexHome, destinationCodexHome } = await createCodexHomePair();
     try {
       const syncCodexConnectedServiceHome = await loadSyncCodexConnectedServiceHome();
       const previousCodexHome = join(root, 'promoted', 'codex-home');
       await mkdir(previousCodexHome, { recursive: true });
-      const trustSection = `[hooks.state.${JSON.stringify(`${join(previousCodexHome, 'hooks.json')}:stop:0:0`)}]\ntrusted_hash = "sha256:${'a'.repeat(64)}"\n`;
-      await writeFile(join(previousCodexHome, 'config.toml'), `[hooks.state]\n\n${trustSection}`);
-
+      const hookId = `${join(previousCodexHome, 'hooks.json')}:stop:0:0`;
+      const disabledOnlyId = `${join(previousCodexHome, 'hooks.json')}:session_start:0:0`;
+      const unrelatedId = `${join(sourceCodexHome, 'hooks.json')}:stop:0:0`;
+      const hash = `sha256:${'a'.repeat(64)}`;
+      await writeFile(join(sourceCodexHome, 'config.toml'), 'model = "source"\n');
+      await writeFile(join(previousCodexHome, 'config.toml'), [
+        `[hooks.state.'${hookId}'] # native user preferences`,
+        `trusted_hash = '${hash}' # reviewed hook`,
+        'enabled = false',
+        `[hooks.state.'${disabledOnlyId}']`,
+        'enabled = false',
+        `[hooks.state.'${unrelatedId}']`,
+        `trusted_hash = '${hash}'`,
+        '',
+      ].join('\n'));
       await syncCodexConnectedServiceHome({
-        destinationCodexHome,
-        previousCodexHome,
-        accountSettings: settings('linked', 'isolated'),
+        destinationCodexHome, previousCodexHome,
+        accountSettings: settings(configMode, 'isolated'),
         processEnv: { CODEX_HOME: sourceCodexHome },
       });
-
-      const stagedConfig = await readFile(join(destinationCodexHome, 'config.toml'), 'utf8');
-      expect(stagedConfig).toContain(trustSection);
-      expect(stagedConfig.match(/trusted_hash/g)).toHaveLength(1);
+      const config = parse(await readFile(join(destinationCodexHome, 'config.toml'), 'utf8'));
+      expect(config).toMatchObject({
+        model: 'source', cli_auth_credentials_store: 'file',
+        hooks: { state: { [hookId]: { trusted_hash: hash, enabled: false }, [disabledOnlyId]: { enabled: false } } },
+      });
+      expect((config.hooks as { state: Record<string, unknown> }).state[unrelatedId]).toBeUndefined();
+      expect((await lstat(join(destinationCodexHome, 'config.toml'))).mode & 0o777).toBe(0o600);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

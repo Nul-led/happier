@@ -1,6 +1,8 @@
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 
+import { parse, stringify } from 'smol-toml';
+
 import type { ConnectedServiceStateSharingDescriptor, ConnectedServiceStateSharingDescriptorEntry } from '@/backends/types';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialize/providerMaterializerTypes';
 import type {
@@ -208,7 +210,7 @@ async function copyEntryWithOptionalTransform(params: Readonly<{
   }
   const content = await readFile(params.sourcePath, 'utf8');
   await mkdir(dirname(params.destinationPath), { recursive: true });
-  await writeFile(params.destinationPath, params.transform(content), 'utf8');
+  await writeFile(params.destinationPath, params.transform(content), { encoding: 'utf8', mode: 0o600 });
 }
 
 async function preflightStateLink(params: Readonly<{
@@ -329,42 +331,15 @@ function isConnectedServiceSharedStateLinkUnavailableError(error: unknown): erro
   return code === 'state_symlink_unavailable';
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function applyRewriteTomlSetStringValues(
   content: string,
   setStringValues: Readonly<Record<string, string>>,
 ): string {
-  let resultLines = content.split(/\r?\n/);
+  const config = parse(content, { integersAsBigInt: 'asNeeded' });
   for (const [key, value] of Object.entries(setStringValues)) {
-    if (!key.trim()) continue;
-    const assignment = `${key} = ${JSON.stringify(value)}`;
-    const keyPattern = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-    let replaced = false;
-    const nextLines: string[] = [];
-    for (const line of resultLines) {
-      if (keyPattern.test(line)) {
-        if (!replaced) {
-          nextLines.push(assignment);
-          replaced = true;
-        }
-        continue;
-      }
-      nextLines.push(line);
-    }
-    if (!replaced) {
-      const firstTableIndex = nextLines.findIndex((line) => /^\s*\[/.test(line));
-      if (firstTableIndex === -1) {
-        nextLines.push(assignment);
-      } else {
-        nextLines.splice(firstTableIndex, 0, assignment);
-      }
-    }
-    resultLines = nextLines;
+    if (key.trim()) config[key] = value;
   }
-  return resultLines.join('\n');
+  return stringify(config);
 }
 
 function buildDescriptorCopyTransformByEntry(
@@ -468,13 +443,24 @@ export async function applyConnectedServiceStateSharingDescriptor(
         continue;
       }
       const sourceStat = await tryStatConnectedServiceHomeEntry(sourcePath);
-      if (!sourceStat) continue;
+      const descriptorTransform = descriptorCopyTransformByEntry[entryName];
+      const profileTransform = input.copyTransformByEntry?.[entryName];
+      const transform = profileTransform
+        ? (content: string) => profileTransform(descriptorTransform ? descriptorTransform(content) : content)
+        : descriptorTransform;
+      if (!sourceStat) {
+        if (!profileTransform) continue;
+        await prepareManagedConnectedServiceHomeDestination(destinationPath);
+        await writeFile(destinationPath, transform!(''), { encoding: 'utf8', mode: 0o600 });
+        configEntries.push(entryName);
+        continue;
+      }
       await prepareManagedConnectedServiceHomeDestination(destinationPath);
       if (entryMode === 'copied') {
         await copyEntryWithOptionalTransform({
           sourcePath,
           destinationPath,
-          transform: input.copyTransformByEntry?.[entryName] ?? descriptorCopyTransformByEntry[entryName],
+          transform,
         });
       } else {
         try {
@@ -483,7 +469,7 @@ export async function applyConnectedServiceStateSharingDescriptor(
           await copyEntryWithOptionalTransform({
             sourcePath,
             destinationPath,
-            transform: input.copyTransformByEntry?.[entryName] ?? descriptorCopyTransformByEntry[entryName],
+            transform,
           });
         }
       }

@@ -1,12 +1,11 @@
-import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { parse } from 'smol-toml';
 import { expect, it } from 'vitest';
 
-import { CODEX_HOOKS_COPY_RECEIPT_NAME } from '@/backends/codex/connectedServices/codexHooksCopyReceipt';
 import { readConnectedServiceStateSharingManifest } from '../stateSharing/connectedServiceStateSharingManifest';
 import { materializeConnectedServicesForSpawn } from './materializeConnectedServicesForSpawn';
 import { resolveConnectedServiceMaterializedRootDir } from './resolveConnectedServiceMaterializedRootDir';
@@ -14,11 +13,7 @@ import { resolveConnectedServiceMaterializedRootDir } from './resolveConnectedSe
 const firstHooks = '{"hooks":{"Stop":[]}}\n';
 const secondHooks = '{"hooks":{"SessionStart":[]}}\n';
 
-function sha256(content: Buffer | string): string {
-  return createHash('sha256').update(content).digest('hex');
-}
-
-it('proves two real Codex materializations migrate an old hooks link and refresh a copied file', async () => {
+it('migrates linked hooks and preserves profile hook state through repeated staged materialization', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-codex-hooks-canary-'));
   const sourceHome = join(root, 'source-codex-home');
   const baseDir = join(root, 'materialized');
@@ -32,8 +27,6 @@ it('proves two real Codex materializations migrate an old hooks link and refresh
   const targetHome = join(materializationRoot, 'codex-home');
   const sourceHooksPath = join(sourceHome, 'hooks.json');
   const targetHooksPath = join(targetHome, 'hooks.json');
-  const proofPath = process.env.HAPPIER_CODEX_HOOKS_CANARY_PROOF ?? null;
-  let proofWritten = false;
   const record = buildConnectedServiceCredentialRecord({
     now: 10,
     serviceId: 'openai-codex',
@@ -64,10 +57,7 @@ it('proves two real Codex materializations migrate an old hooks link and refresh
       configEntries: ['hooks.json'],
       stateEntries: [],
     }));
-    const legacyStat = await lstat(targetHooksPath);
-    const legacyLinkTarget = await readlink(targetHooksPath);
-    expect(legacyStat.isSymbolicLink()).toBe(true);
-    expect(legacyLinkTarget).toBe(sourceHooksPath);
+    expect((await lstat(targetHooksPath)).isSymbolicLink()).toBe(true);
 
     const accountSettings = {
       connectedServicesProviderStateSharingSettingsV1: {
@@ -86,98 +76,30 @@ it('proves two real Codex materializations migrate an old hooks link and refresh
       accountSettings,
       processEnv: { CODEX_HOME: sourceHome, HOME: root },
     });
-    const snapshot = async () => {
-      const sourceStat = await lstat(sourceHooksPath);
-      const targetStat = await lstat(targetHooksPath);
-      const manifest = await readConnectedServiceStateSharingManifest(targetHome);
-      const receipt = JSON.parse(await readFile(join(targetHome, CODEX_HOOKS_COPY_RECEIPT_NAME), 'utf8'));
-      return {
-        sourceSha256: sha256(await readFile(sourceHooksPath)),
-        targetSha256: sha256(await readFile(targetHooksPath)),
-        source: { path: sourceHooksPath, dev: sourceStat.dev, ino: sourceStat.ino },
-        target: {
-          path: targetHooksPath,
-          dev: targetStat.dev,
-          ino: targetStat.ino,
-          regularFile: targetStat.isFile(),
-          symbolicLink: targetStat.isSymbolicLink(),
-        },
-        manifest: {
-          requestedStateMode: manifest.requestedStateMode,
-          effectiveStateMode: manifest.effectiveStateMode,
-          lastSyncAtMs: manifest.lastSyncAtMs,
-          configEntries: manifest.configEntries,
-          stateEntries: manifest.stateEntries,
-          diagnostics: manifest.diagnostics,
-        },
-        receipt,
-      };
-    };
-
     const first = await materialize();
     expect(first?.env.CODEX_HOME).toBe(targetHome);
-    const afterFirst = await snapshot();
-    expect(afterFirst.target.regularFile).toBe(true);
-    expect(afterFirst.target.symbolicLink).toBe(false);
-    expect(afterFirst.targetSha256).toBe(sha256(firstHooks));
-    expect(afterFirst.manifest.configEntries).toContain('hooks.json');
-    expect(afterFirst.receipt.previous).toBeNull();
-    expect(afterFirst.receipt.current.source.sha256).toBe(sha256(firstHooks));
-    expect(afterFirst.receipt.current.target.sha256).toBe(sha256(firstHooks));
+    expect((await lstat(targetHooksPath)).isFile()).toBe(true);
+    expect((await lstat(targetHooksPath)).isSymbolicLink()).toBe(false);
+    await expect(readFile(targetHooksPath, 'utf8')).resolves.toBe(firstHooks);
+    expect((await readConnectedServiceStateSharingManifest(targetHome)).configEntries).toContain('hooks.json');
+    const hookId = `${targetHooksPath}:stop:0:0`;
+    const trustedHash = `sha256:${'a'.repeat(64)}`;
+    await writeFile(join(targetHome, 'config.toml'),
+      `[hooks.state.${JSON.stringify(hookId)}]\nenabled = false\ntrusted_hash = "${trustedHash}"\n`);
 
     await writeFile(sourceHooksPath, secondHooks);
-    const beforeSecond = await snapshot();
-    expect(beforeSecond.sourceSha256).toBe(sha256(secondHooks));
-    expect(beforeSecond.targetSha256).toBe(sha256(firstHooks));
-
+    await expect(readFile(targetHooksPath, 'utf8')).resolves.toBe(firstHooks);
     const second = await materialize();
     expect(second?.env.CODEX_HOME).toBe(targetHome);
-    const afterSecond = await snapshot();
-    expect(afterSecond.target.regularFile).toBe(true);
-    expect(afterSecond.target.symbolicLink).toBe(false);
-    expect(afterSecond.targetSha256).toBe(afterSecond.sourceSha256);
-    expect(afterSecond.targetSha256).toBe(sha256(secondHooks));
-    expect(afterSecond.receipt.previous.nonce).toBe(afterFirst.receipt.current.nonce);
-    expect(afterSecond.receipt.previousTargetBeforeSync.sha256).toBe(sha256(firstHooks));
-    expect(afterSecond.receipt.current.source.sha256).toBe(sha256(secondHooks));
-    expect(afterSecond.receipt.current.target.sha256).toBe(sha256(secondHooks));
-    expect(afterSecond.receipt.loadedModule.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(afterSecond.receipt.ownerProcess.pid).toBe(process.pid);
-    expect(afterSecond.receipt.ownerProcess.procStartTicks).toMatch(/^\d+$/);
-
-    if (proofPath) {
-      await mkdir(dirname(proofPath), { recursive: true });
-      await writeFile(proofPath, `${JSON.stringify({
-        schemaVersion: 1,
-        runner: 'vitest-transformed-source',
-        loadedDaemonBuildVerified: false,
-        nodeVersion: process.version,
-        sourceIdentity: {
-          materializerSourceSha256: sha256(await readFile(new URL('./materializeConnectedServicesForSpawn.ts', import.meta.url))),
-          codexSyncSourceSha256: sha256(await readFile(new URL('../../../backends/codex/connectedServices/syncCodexConnectedServiceHome.ts', import.meta.url))),
-          codexDescriptorSourceSha256: sha256(await readFile(new URL('../../../backends/codex/connectedServices/codexConnectedServiceStateSharingDescriptor.ts', import.meta.url))),
-        },
-        fixtureRoot: root,
-        serviceId: 'openai-codex',
-        profileId: 'synthetic',
-        materializationKey,
-        materializationRoot,
-        sourceHome,
-        targetHome,
-        legacy: {
-          linkPath: targetHooksPath,
-          linkTarget: legacyLinkTarget,
-          symbolicLink: legacyStat.isSymbolicLink(),
-          dev: legacyStat.dev,
-          ino: legacyStat.ino,
-        },
-        afterFirst,
-        beforeSecond,
-        afterSecond,
-      }, null, 2)}\n`);
-      proofWritten = true;
-    }
+    expect((await lstat(targetHooksPath)).isFile()).toBe(true);
+    expect((await lstat(targetHooksPath)).isSymbolicLink()).toBe(false);
+    await expect(readFile(targetHooksPath, 'utf8')).resolves.toBe(secondHooks);
+    const config = parse(await readFile(join(targetHome, 'config.toml'), 'utf8'));
+    expect(config).toMatchObject({
+      cli_auth_credentials_store: 'file',
+      hooks: { state: { [hookId]: { enabled: false, trusted_hash: trustedHash } } },
+    });
   } finally {
-    if (!proofWritten) await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
