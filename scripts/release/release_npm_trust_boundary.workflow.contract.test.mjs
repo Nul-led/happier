@@ -33,8 +33,13 @@ test('npm candidate packing is permission-minimized and secret-free', async () =
   assert.equal(workflow.permissions?.contents, 'read');
   assert.deepEqual(candidate.permissions, { contents: 'read' });
   assert.equal(candidate.environment, undefined);
+  const candidateWithoutTestIsolation = structuredClone(candidate);
+  const contractTests = candidateWithoutTestIsolation.steps.find((step) => step.name === 'Run release contract tests');
+  assert.deepEqual(contractTests?.env, { NODE_AUTH_TOKEN: '', NPM_TOKEN: '' });
+  delete contractTests.env.NODE_AUTH_TOKEN;
+  delete contractTests.env.NPM_TOKEN;
   assert.doesNotMatch(
-    JSON.stringify(candidate),
+    JSON.stringify(candidateWithoutTestIsolation),
     /secrets\.|create-github-app-token|MINISIGN_|NODE_AUTH_TOKEN|NPM_TOKEN|id-token/,
   );
 

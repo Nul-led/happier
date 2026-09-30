@@ -309,6 +309,9 @@ jobs:
           args: --frozen-lockfile --ignore-engines
 
       - name: Run release contract tests
+        env:
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
         run: yarn -s test:release:contracts
 
       - name: Verify installer assets are synced
