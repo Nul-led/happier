@@ -724,11 +724,11 @@ async function cmdSetup({ rootDir, argv }) {
 	  if (!profile && interactive) {
 	    profile = await withRl(async (rl) => {
 	      return await promptSelect(rl, {
-	        title: bold(`✨ ${cyan('hstack')} setup ✨\n\nWhat is your goal?`),
+	        title: `${banner('hstack setup')}\n\n${bold('What is your goal?')}`,
 	        options: [
-	          { label: `${cyan('Self-host')}: use Happier on this machine`, value: 'selfhost' },
-	          { label: `${cyan('Development')}: worktrees + stacks + contributor workflows`, value: 'dev' },
-            { label: `${cyan('Local repo')}: use an existing Happier checkout`, value: 'local-repo' },
+	          { label: `${bold('Self-host')}: use Happier on this machine`, value: 'selfhost' },
+	          { label: `${bold('Development')}: worktrees + stacks + contributor workflows`, value: 'dev' },
+            { label: `${bold('Local repo')}: use an existing Happier checkout`, value: 'local-repo' },
 	        ],
 	        defaultIndex: 0,
 	      });

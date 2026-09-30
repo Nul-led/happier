@@ -16,6 +16,7 @@ import { inferPrStackBaseName } from './utils/stack/pr_stack_name.mjs';
 import { sanitizeStackName } from './utils/stack/names.mjs';
 import { listReviewPrSandboxes, reviewPrSandboxPrefixPath, writeReviewPrSandboxMeta } from './utils/sandbox/review_pr_sandbox.mjs';
 import { bold, cyan, dim } from './utils/ui/ansi.mjs';
+import { banner } from './utils/ui/layout.mjs';
 import { expandHome } from './utils/paths/canonical_home.mjs';
 import { fastForwardBranchToRemote } from './utils/git/fast_forward_to_remote.mjs';
 import { resolveDefaultRemoteBranch } from './utils/git/default_branch.mjs';
@@ -281,7 +282,7 @@ async function main() {
     const intro = [
       '',
       '',
-      bold(`✨ ${cyan('hstack')} review-pr ✨`),
+      banner('hstack review-pr'),
       '',
       'It will help you review a PR for Happier in a completely isolated environment.',
       dim('Uses the light server flavor by default (no Redis, no Postgres, no Docker).'),

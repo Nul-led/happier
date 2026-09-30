@@ -8,6 +8,7 @@ import { stripVTControlCharacters } from 'node:util';
 import chalk from 'chalk';
 import { planetFrameIntervalMs } from '../../planetFrame.mjs';
 import { isTerminalAnimationDisabled, renderPlanet, shimmerText, supportsBrailleArt } from './planet.js';
+import { ACCENT_HEX } from './presentation.js';
 
 type ChalkLike = typeof chalk;
 
@@ -77,7 +78,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
   const activity = (label: string, seconds: number) => {
     const frame = frames[Math.floor((seconds * 1000) / SPINNER_INTERVAL_MS) % frames.length] ?? frames[0]!;
     if (!color || colors.level <= 0) return `${frame} ${label}`;
-    return `${colors.hex('#d6a24a')(frame)} ${shimmerText(label, (seconds % SHIMMER_SECONDS) / SHIMMER_SECONDS, colors)}`;
+    return `${colors.hex(ACCENT_HEX)(frame)} ${shimmerText(label, (seconds % SHIMMER_SECONDS) / SHIMMER_SECONDS, colors)}`;
   };
 
   // Called before yielding the terminal to another message/prompt/child.
