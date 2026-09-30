@@ -14,6 +14,9 @@
  * reason to make someone sign in again.
  */
 
+import { configuration } from '@/configuration';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { selectMachineIdentityInSettings } from './machineIdentitySettings';
 import { readCredentials, readSettings, type Credentials } from '@/persistence';
 
 import { validateStoredAuthTokenAgainstActiveServer } from './validateStoredAuthTokenAgainstActiveServer';
@@ -62,6 +65,11 @@ export async function resolveActiveServerAuthReadiness(): Promise<ActiveServerAu
   }
 
   const validation = await validateStoredAuthTokenAgainstActiveServer(credentials.token);
+  const subject = decodeJwtPayload(credentials.token)?.sub;
+  const accountId = validation.state === 'valid' ? validation.accountId : typeof subject === 'string' ? subject.trim() : '';
+  const selectedMachineId = accountId
+    ? selectMachineIdentityInSettings(settings, { serverId: configuration.activeServerId, accountId, legacyMachineId: settings.machineId }).machineId ?? null
+    : machineId;
   const credentialState: ActiveServerCredentialState = validation.state === 'invalid'
     ? 'rejected'
     : validation.state;
@@ -71,8 +79,8 @@ export async function resolveActiveServerAuthReadiness(): Promise<ActiveServerAu
     authenticated: credentialState === 'valid',
     credentialState,
     unusableReason: credentialState === 'rejected' ? 'credentials-rejected' : null,
-    machineId,
-    machineRegistered: machineId !== null,
+    machineId: selectedMachineId,
+    machineRegistered: selectedMachineId !== null,
     validatedAccountId: validation.state === 'valid' ? validation.accountId : null,
     validatedAccountLabel: validation.state === 'valid' ? validation.accountLabel : null,
   };

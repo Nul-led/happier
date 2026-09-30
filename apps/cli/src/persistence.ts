@@ -4,6 +4,8 @@
  * Handles settings and private key storage in ~/.happier/ or local .happier/
  */
 
+import { selectMachineIdentityInSettings } from '@/auth/machineIdentitySettings';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat, chmod, readdir } from 'node:fs/promises'
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
@@ -662,11 +664,17 @@ export type Credentials = {
   }
 }
 
-export async function readCredentials(): Promise<Credentials | null> {
-  const primaryPath = configuration.privateKeyFile;
+export type CredentialReadScope = Readonly<{ serverId?: string }>;
+
+export async function readCredentials(scope: CredentialReadScope = {}): Promise<Credentials | null> {
+  const serverId = scope.serverId === undefined ? configuration.activeServerId : scope.serverId.trim();
+  if (!isServerIdFilesystemSafe(serverId)) return null;
+  const primaryPath = scope.serverId === undefined
+    ? configuration.privateKeyFile
+    : join(configuration.happyHomeDir, 'servers', serverId, 'access.key');
   const legacyPath = configuration.legacyPrivateKeyFile;
   const canUseLegacy =
-    configuration.activeServerId === 'cloud' &&
+    serverId === 'cloud' &&
     existsSync(legacyPath) &&
     !existsSync(primaryPath);
 
@@ -699,36 +707,34 @@ export async function readCredentials(): Promise<Credentials | null> {
   return null
 }
 
-export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
-  await ensureHappyHomeDirExists();
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
-    secret: encodeBase64(credentials.secret),
-    token: credentials.token
-  }, null, 2), { mode: 0o600 });
-  await bestEffortChmod(configuration.privateKeyFile, 0o600)
-
-  // Migrate legacy single-server credential file (cloud server only).
-  if (configuration.activeServerId === 'cloud' && configuration.legacyPrivateKeyFile !== configuration.privateKeyFile) {
-    if (existsSync(configuration.legacyPrivateKeyFile)) {
-      await unlink(configuration.legacyPrivateKeyFile).catch(() => {});
+async function writeStoredCredentialFile(credentials: z.infer<typeof credentialsSchema>): Promise<void> {
+  const serverId = configuration.activeServerId;
+  const keyPath = configuration.privateKeyFile;
+  const legacyPath = configuration.legacyPrivateKeyFile;
+  const subject = decodeJwtPayload(credentials.token)?.sub;
+  const accountId = typeof subject === 'string' ? subject.trim() : '';
+  await updateSettings(async (current) => {
+    const selected = accountId
+      ? selectMachineIdentityInSettings(current, { serverId, accountId, legacyMachineId: current.machineId })
+      : current;
+    await writeFile(keyPath, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+    await bestEffortChmod(keyPath, 0o600);
+    if (serverId === 'cloud' && legacyPath !== keyPath && existsSync(legacyPath)) {
+      await unlink(legacyPath).catch(() => {});
     }
-  }
+    return selected;
+  });
+}
+
+export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
+  await writeStoredCredentialFile({ secret: encodeBase64(credentials.secret), token: credentials.token });
 }
 
 export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
-  await ensureHappyHomeDirExists();
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
+  await writeStoredCredentialFile({
     encryption: { publicKey: encodeBase64(credentials.publicKey), machineKey: encodeBase64(credentials.machineKey) },
-    token: credentials.token
-  }, null, 2), { mode: 0o600 });
-  await bestEffortChmod(configuration.privateKeyFile, 0o600)
-
-  // Migrate legacy single-server credential file (cloud server only).
-  if (configuration.activeServerId === 'cloud' && configuration.legacyPrivateKeyFile !== configuration.privateKeyFile) {
-    if (existsSync(configuration.legacyPrivateKeyFile)) {
-      await unlink(configuration.legacyPrivateKeyFile).catch(() => {});
-    }
-  }
+    token: credentials.token,
+  });
 }
 
 export async function clearCredentials(): Promise<void> {

@@ -1,19 +1,22 @@
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { selectMachineIdentityInSettings } from '@/auth/machineIdentitySettings';
+import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { resolveServerProfileApiUrl } from '@/server/serverProfileApiUrl';
+import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { configuration } from '@/configuration';
 import { readCredentials, readSettings } from '@/persistence';
 import type { AuthSignalsForProfile } from './classifyAuth';
 import { checkAuthLive } from './authLiveCheck';
 
 /**
- * Assemble auth signals for every configured server profile + the active
- * server URL, reading from persisted settings. A `machineId` present in
- * `machineIdByServerId` is treated as "machine registered" for that profile.
+ * Assemble auth signals from the requested profile's credential store, or the
+ * runtime profile for an unscoped report. Known accounts select only their
+ * matching machine identity; other profiles expose historical metadata.
  *
  * Live-check policy: when a non-empty token exists we make a single
- * `GET /v1/account/profile` call for the *active* profile only, with a 3s
+ * `GET /v1/account/profile` call for the inspected profile only, with a 3s
  * timeout. A 401/403 flips `isExpired` to true; anything else leaves it
  * false so the `auth_expired_for_active_profile` finding doesn't false-fire
- * offline. Non-active profiles don't get a live check — their `isExpired`
+ * offline. Unrequested profiles don't get a live check — their `isExpired`
  * remains unknown (false) here; expiry on those is surfaced lazily when
  * the user actually switches to them.
  */
@@ -39,7 +42,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
 }>> {
   const [settings, credentials] = await Promise.all([
     readSettings().catch(() => null),
-    readCredentials().catch(() => null),
+    readCredentials(params.targetServerId === null ? {} : { serverId: params.targetServerId }).catch(() => null),
   ]);
   const servers = settings?.servers ?? {};
   const runtimeServerId = configuration.activeServerId;
@@ -63,33 +66,42 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
     : activeProfile !== null;
   const activeServerUrl = activeProfile?.id === runtimeServerId ? configuration.serverUrl : activeProfile?.serverUrl ?? null;
 
-  // Credentials belong to the runtime-selected profile, not the saved default.
-  // Probe only that store against its effective API endpoint.
+  // Inspect only the requested store, or the runtime store for an unscoped report.
+  // Other profiles remain historical metadata; credentials never cross scopes.
   // Reachability tells the renderer whether we actually
   // confirmed the auth state — critical when the relay is down, so users
   // don't see a misleading "signed in" when we couldn't verify.
   const activeToken = String(credentials?.token ?? '').trim();
+  const subject = decodeJwtPayload(activeToken)?.sub;
+  const accountId = typeof subject === 'string' ? subject.trim() : '';
+  const inspectedMachineId = activeProfile && accountId && settings
+    ? selectMachineIdentityInSettings(settings, { serverId: activeProfile.id, accountId,
+      ...(activeProfile.id === runtimeServerId ? { legacyMachineId: settings.machineId } : {}),
+    }).machineId
+    : activeProfile?.id === runtimeServerId ? settings?.machineId : activeProfile ? machineIdByServerId[activeProfile.id] : null;
   let activeExpired = false;
   let activeReachability: 'verified' | 'unreachable' | 'not-probed' = 'not-probed';
-  if (activeProfile && activeProfile.id === runtimeServerId && activeToken) {
+  if (activeProfile && activeToken) {
     const result = await checkAuthLive({
-      serverUrl: resolveServerHttpBaseUrl(),
+      serverUrl: activeProfile.id === runtimeServerId
+        ? resolveServerHttpBaseUrl()
+        : normalizeServerHttpBaseUrl(resolveServerProfileApiUrl(activeProfile)),
       token: activeToken,
     });
     activeExpired = result === 'expired';
     // 'ok' and 'expired' are both definitive answers from the server.
-    // 'unknown' means the server didn't respond — don't claim verified.
+    // 'unknown' means no definitive auth result, including an unexpected response.
     activeReachability = result === 'unknown' ? 'unreachable' : 'verified';
   }
 
   const signals: AuthSignalsForProfile[] = profiles.map((profile) => {
-    // Other profiles expose only historical metadata; never attribute the runtime
-    // credential to another profile just because it shares an endpoint.
+    // Unrequested profiles expose only historical metadata; endpoint aliases
+    // do not share credentials.
     const lastSub = String(lastTokenSubByServerId[profile.id] ?? '').trim();
-    const machineId = String(profile.id === runtimeServerId ? settings?.machineId ?? '' : machineIdByServerId[profile.id] ?? '').trim();
     const isActive = profile.id === effectiveActiveServerId;
+    const machineId = String(isActive ? inspectedMachineId ?? '' : machineIdByServerId[profile.id] ?? '').trim();
     const isRuntimeProfile = profile.id === runtimeServerId;
-    const hasCredentials = isRuntimeProfile ? activeToken.length > 0 : lastSub.length > 0;
+    const hasCredentials = isActive ? activeToken.length > 0 : lastSub.length > 0;
     return {
       serverId: profile.id,
       serverName: profile.name || profile.id,
@@ -97,7 +109,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
       hasCredentials,
       isExpired: isActive ? activeExpired : false,
       machineRegistered: machineId.length > 0,
-      credentialEvidence: isRuntimeProfile ? 'active-store' : 'historical-record',
+      credentialEvidence: isActive ? 'inspected-store' : 'historical-record',
       isActive,
       reachability: isActive ? activeReachability : 'not-probed',
     };
