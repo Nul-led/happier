@@ -134,6 +134,8 @@ export type CommandArgumentPolicy = Readonly<{
   valueFlags?: readonly string[];
   inlineValueFlags?: readonly string[];
   opaqueValueFlags?: readonly string[];
+  /** Parent-owned options that cannot be consumed as separate opaque values. */
+  valueCollisionFlags?: readonly string[];
   allowMissingValueFlags?: readonly string[];
   maxPositionals?: number;
 }>;
@@ -147,7 +149,7 @@ export function assertCommandArguments(argv: readonly string[], policy: CommandA
   const valueFlags = new Set(policy.valueFlags ?? []);
   const inlineValueFlags = new Set(policy.inlineValueFlags ?? policy.valueFlags ?? []);
   const opaqueValueFlags = new Set(policy.opaqueValueFlags ?? []);
-  const knownFlags = [...booleanFlags, ...valueFlags, '--help', '-h'];
+  const knownFlags = [...booleanFlags, ...valueFlags, ...(policy.valueCollisionFlags ?? []), '--help', '-h'];
   const allowMissingValueFlags = new Set(policy.allowMissingValueFlags ?? []);
   let positionalOnly = false;
   let positionalCount = 0;

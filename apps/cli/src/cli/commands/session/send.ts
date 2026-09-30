@@ -9,7 +9,7 @@ import { safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
-import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
+import { STRUCTURED_OUTPUT_FLAGS, wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue, readRawFlagValue, readFlagValueUnlessFlagToken } from '@/cli/commands/shared/argvFlags';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
@@ -61,6 +61,7 @@ export async function cmdSessionSend(
     booleanFlags: ['--wait', '--json'],
     valueFlags: ['--message', '--prompt', '--permission-mode', '--model', '--provider-connection', '--local-id', '--timeout', '--machine-id'],
     opaqueValueFlags: ['--local-id'],
+    valueCollisionFlags: STRUCTURED_OUTPUT_FLAGS,
     maxPositionals: 2,
   });
   const json = wantsJson(argv);

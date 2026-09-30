@@ -29,15 +29,27 @@ describe('happier session send (action executor)', () => {
     } finally { output.restore(); }
   });
 
-  it.each(['--wait', '--timeout', '--json', '--model', '--model=x', '--permission-mode', '--local-id', '--', '--help', '-h'])(
+  it.each(['--wait', '--timeout', '--json', '--jsonl', '--model', '--model=x', '--permission-mode', '--local-id', '--', '--help', '-h'])(
     'rejects %s as a missing separate local id before authentication', async (nextFlag) => {
-      const readCredentialsFn = vi.fn(async () => null);
+      const readCredentialsFn = vi.fn(async () => { throw new Error('Authentication reached before argument validation'); });
       const { cmdSessionSend } = await import('./send');
       await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', nextFlag], { readCredentialsFn }))
         .rejects.toMatchObject({ code: 'invalid_arguments' });
       expect(readCredentialsFn).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects a dispatcher output flag as a missing local id before authentication', async () => {
+    const readCredentialsFn = vi.fn(async () => { throw new Error('Authentication reached before argument validation'); });
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', '--jsonl'], { readCredentialsFn });
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally { output.restore(); }
+  });
 
   it.each(['', '  ', 'agent-transition:claim-1'])('rejects invalid caller local id %j before credentials', async (localId) => {
     const readCredentialsFn = vi.fn(async () => null);
@@ -448,12 +460,12 @@ describe('happier session send (action executor)', () => {
     expect(text.text()).toContain(' local-42 ');
   });
 
-  it.each(['local-42', " local'42 ", 'line\n42'])(
+  it.each(['local-42', " local'42 ", 'line\n42', '--jsonl'])(
     'gives shell-neutral retry identity %j and labels the Bash example',
     async (localId) => {
       execute.mockResolvedValueOnce({ ok: true, result: { ok: false, code: 'timeout' } });
       const { handleSessionCommand } = await import('./handleSessionCommand');
-      const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', localId], {
+      const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello', `--local-id=${localId}`], {
         readCredentialsFn: async () => ({
           token: 'token_test',
           encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -467,7 +479,7 @@ describe('happier session send (action executor)', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32').each([' local-42 ', " local'42 $(printf expanded) ", '--json', '--'])(
+  it.skipIf(process.platform === 'win32').each([' local-42 ', " local'42 $(printf expanded) ", '--json', '--jsonl', '--'])(
     'preserves opaque local id %j when copying the retry argument into a shell',
     async (localId) => {
       execute.mockResolvedValueOnce({ ok: true, result: { ok: false, code: 'timeout' } });

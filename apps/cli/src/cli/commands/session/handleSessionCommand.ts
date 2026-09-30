@@ -1,7 +1,7 @@
 import { readStoredCredentials, type StoredCredentials } from '@/persistence';
 import { hasFlag } from '@/cli/commands/shared/argvFlags';
 
-import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
+import { wantsJson, wantsStructuredOutput, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import {
   SESSION_NESTED_SUBCOMMAND_HELP_LINES,
@@ -103,7 +103,7 @@ export async function handleSessionCommand(
   }>,
 ): Promise<void> {
   const json = wantsJson(argv);
-  const structuredOutput = json || hasFlag(argv, '--jsonl');
+  const structuredOutput = wantsStructuredOutput(argv);
   const kind = inferSessionKind(argv);
   const subcommand = String(argv[0] ?? '').trim();
   const hasHelpFlag = hasFlag(argv, '--help') || hasFlag(argv, '-h');

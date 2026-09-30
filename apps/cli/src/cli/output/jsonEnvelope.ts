@@ -4,8 +4,14 @@ export type SessionControlJsonEnvelope =
   | Readonly<{ v: 1; ok: true; kind: string; data: unknown }>
   | Readonly<{ v: 1; ok: false; kind: string; error: unknown }>;
 
+export const STRUCTURED_OUTPUT_FLAGS = ['--json', '--jsonl'] as const;
+
 export function wantsJson(argv: readonly string[]): boolean {
-  return hasFlag(argv, '--json');
+  return hasFlag(argv, STRUCTURED_OUTPUT_FLAGS[0]);
+}
+
+export function wantsStructuredOutput(argv: readonly string[]): boolean {
+  return STRUCTURED_OUTPUT_FLAGS.some((flag) => hasFlag(argv, flag));
 }
 
 async function writeLineAndWaitForStdout(line: string): Promise<void> {
