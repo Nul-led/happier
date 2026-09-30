@@ -357,8 +357,10 @@ function wrapNativeCodexAppServerClient(
             requestHandlerDisposables.clear();
             notificationHandlers.clear();
             notificationSubscription.dispose();
-            exitListeners.clear();
+            // The process supervisor may fail to prove termination. Keep the physical-exit
+            // observers alive through that attempt so runtime custody cannot be lost.
             await handle.dispose();
+            exitListeners.clear();
         },
     };
 }

@@ -36,6 +36,7 @@ function createCapturingExec(
     featureListResult: PluginProcessResult | Error = processResult(
         'realtime_conversation                under development  false\n',
     ),
+    handleOverrides: Partial<PluginProtocolClientHandle<'jsonRpc'>> = {},
 ): Readonly<{
     exec: ExecService;
     specs: PluginProtocolClientSpec[];
@@ -79,6 +80,7 @@ function createCapturingExec(
         },
         wait: () => wait,
         dispose: async () => undefined,
+        ...handleOverrides,
     };
     return {
         specs,
@@ -109,6 +111,28 @@ function createCapturingExec(
 }
 
 describe('createCodexAppServerClient', () => {
+    it.each(['held', 'failed'] as const)('keeps native exit observers through %s physical disposal', async (outcome) => {
+        let releaseDispose!: () => void;
+        const disposal = new Promise<void>((resolve) => { releaseDispose = resolve; });
+        const capture = createCapturingExec({}, undefined, {
+            dispose: async () => {
+                if (outcome === 'failed') throw new Error('Native termination not proven');
+                await disposal;
+            },
+        });
+        const client = await createCodexNativeAppServerClient({ exec: capture.exec, processEnv: {} });
+        const onExit = vi.fn();
+        client.onExit(onExit);
+        const disposing = client.dispose().catch((error) => error);
+        await Promise.resolve();
+        if (outcome === 'failed') expect(await disposing).toBeInstanceOf(Error);
+        expect(onExit).not.toHaveBeenCalled();
+        capture.emitExit(processResult('', { exitCode: 0, requestedBy: { kind: 'dispose', reason: 'caller' } }));
+        await vi.waitFor(() => expect(onExit).toHaveBeenCalledExactlyOnceWith({ exitCode: 0, signal: null }));
+        releaseDispose();
+        await disposing;
+    });
+
     it('resolves the declared Codex system tool before every native app-server launch path', async () => {
         const capture = createCapturingExec();
         const resolvedExecutable = Object.freeze({

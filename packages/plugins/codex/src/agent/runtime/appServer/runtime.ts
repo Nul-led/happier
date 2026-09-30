@@ -2344,6 +2344,24 @@ export function createCodexAppServerRuntime(
     settlementTimeoutMs: readCodexAppServerRealtimeStartTimeoutMs(readRuntimeProcessEnv()),
   });
 
+  const disposeUncorrelatedCancelledTurnClient = async (
+    activeTurn: PendingTurn,
+    appServerClient: DisposableCodexAppServerClient,
+  ): Promise<void> => {
+    if (!preAckCancelledTurns.has(activeTurn)) return;
+    try {
+      // Without a correlated provider ID, only physical client termination can
+      // retire the cancelled work. Its existing exit observer owns cleanup and
+      // settles any successor on this same client without disposing the host.
+      await appServerClient.dispose();
+    } catch (error: unknown) {
+      // Failed termination is not terminal proof; keep custody for actual exit.
+      params.host.logger.debug('Codex app-server cancelled start client termination was not proven', {
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+    }
+  };
+
   const startTurnPromptAttempt = async (
     input: CodexAppServerInput,
     options?: CodexAppServerSendOptions,
@@ -2447,6 +2465,8 @@ export function createCodexAppServerRuntime(
               errorName: error instanceof Error ? error.name : typeof error,
             });
           });
+        } else {
+          await disposeUncorrelatedCancelledTurnClient(activeTurn, appServerClient);
         }
         // An interrupt acknowledgement or failure is not physical terminal proof.
         return;
@@ -2462,8 +2482,13 @@ export function createCodexAppServerRuntime(
       replayDeferredTerminalNotification(activeTurn);
       clearPendingProviderPrompt(pendingProviderPrompt);
     } catch (error) {
-      preAckCancelledTurns.delete(activeTurn);
       const failure = error instanceof Error ? error : new Error(String(error));
+      if (activeTurn.interruptWhenProviderTurnIdArrives) {
+        // Even an application error can follow native admission. The cancelled
+        // owner's rejection must not release custody or fail a live successor.
+        await disposeUncorrelatedCancelledTurnClient(activeTurn, appServerClient);
+        throw failure;
+      }
       const deferBackendError = shouldDeferTemporaryRecoverableFailure(failure);
       failPendingTurn(failure, {
         deferBackendError,

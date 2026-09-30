@@ -32,6 +32,7 @@ const clientState = vi.hoisted(() => {
   let delayedTurnStart: {
     promise: Promise<unknown>;
     resolve: (value: unknown) => void;
+    reject: (error: unknown) => void;
   } | null = null;
   let deferNextSteer = false;
   let delayedSteer: {
@@ -64,12 +65,15 @@ const clientState = vi.hoisted(() => {
   const createDeferred = (): {
     promise: Promise<unknown>;
     resolve: (value: unknown) => void;
+    reject: (error: unknown) => void;
   } => {
     let resolve!: (value: unknown) => void;
-    const promise = new Promise<unknown>((resolvePromise) => {
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<unknown>((resolvePromise, rejectPromise) => {
       resolve = resolvePromise;
+      reject = rejectPromise;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
   };
 
   const readPromptText = (params: unknown): string | null => {
@@ -140,6 +144,18 @@ const clientState = vi.hoisted(() => {
     },
     deferTurnStartForPrompt(prompt: string) {
       delayedTurnStartPrompt = prompt;
+    },
+    rejectDeferredTurnStart(error: Error) {
+      if (!delayedTurnStart) throw new Error('No deferred turn/start request is pending');
+      delayedTurnStart.reject(error);
+      delayedTurnStart = null;
+      delayedTurnStartPrompt = null;
+    },
+    resolveDeferredTurnStartResult(response: unknown) {
+      if (!delayedTurnStart) throw new Error('No deferred turn/start request is pending');
+      delayedTurnStart.resolve(response);
+      delayedTurnStart = null;
+      delayedTurnStartPrompt = null;
     },
     resolveDeferredTurnStart(turnId: string) {
       if (!delayedTurnStart) throw new Error('No deferred turn/start request is pending');
@@ -454,6 +470,7 @@ function createRuntime(overrides: Readonly<{
   processEnv?: Readonly<Record<string, string | undefined>>;
   initialModelId?: string;
   initialProviderBinding?: typeof providerBindingMaterialization.engineConfig;
+  disposeHost?: () => Promise<void>;
   publishGeneratedMedia?: (candidate: import('./media/generatedMedia.js').CodexGeneratedMediaCandidate) => Promise<void>;
 }> = {}) {
   const fixture = createCodexTestContextFixture({
@@ -465,6 +482,7 @@ function createRuntime(overrides: Readonly<{
   const codexHome = overrides.processEnv?.CODEX_HOME;
   return createCodexAppServerRuntime({
     host: {
+      ...(overrides.disposeHost ? { dispose: overrides.disposeHost } : {}),
       baseProcessEnv: ctx.env.list(),
       ...(codexHome ? {
         nativeHome: {
@@ -4330,6 +4348,128 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
     expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+  });
+
+  it.each(['held', 'failed'] as const)('disposes only the native client for a cancelled start without provider ID and preserves %s teardown custody', async (outcome) => {
+    clientState.deferTurnStartForPrompt('cancel malformed acknowledgement');
+    const disposeHost = vi.fn(async () => undefined);
+    const runtime = asConnectedServiceAuthRuntime(createRuntime({ disposeHost }));
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const nativeClient = await vi.mocked(createCodexAppServerClient).mock.results.at(-1)!.value;
+    let releaseDispose!: () => void;
+    const disposal = new Promise<void>((resolve) => { releaseDispose = resolve; });
+    vi.mocked(nativeClient.dispose).mockImplementation(async () => {
+      if (outcome === 'failed') throw new Error('Native termination not proven');
+      await disposal;
+    });
+    const send = runtime.send({ v: 1, text: 'cancel malformed acknowledgement' }).catch(() => undefined);
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    clientState.resolveDeferredTurnStartResult({});
+    await vi.waitFor(() => expect(nativeClient.dispose).toHaveBeenCalledOnce());
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+    expect(disposeHost).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(0);
+    emitNotification('turn/completed', completedTurn('unrelated-native-turn'));
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    clientState.emitExit({ exitCode: 0, signal: null, stdout: '', stderr: '' });
+    releaseDispose();
+    await send;
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    expect(disposeHost).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
+  });
+
+  it.each(['transport timeout', 'application internal error'] as const)('preserves cancelled provider custody after an ambiguous start %s until captured-client termination', async (outcome) => {
+    clientState.deferTurnStartForPrompt('cancel before ambiguous start rejection');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const loginCount = clientState.requests.filter(({ method }) => method === 'account/login/start').length;
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const nativeClient = await vi.mocked(createCodexAppServerClient).mock.results.at(-1)!.value;
+    let releaseDispose!: () => void;
+    const disposal = new Promise<void>((resolve) => { releaseDispose = resolve; });
+    vi.mocked(nativeClient.dispose).mockImplementation(async () => { await disposal; });
+    const send = runtime.send({ v: 1, text: 'cancel before ambiguous start rejection' }).catch(() => undefined);
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    emitNotification('turn/started', { threadId: 'thread-1', turn: { id: 'possibly-admitted-native-turn', status: 'inProgress', items: [] } });
+    const failure = outcome === 'transport timeout'
+      ? new Error('turn/start response timed out')
+      : Object.assign(createCodexAppServerRpcError({ method: 'turn/start', code: -32603, message: 'failed to submit turn input after settings persistence failure' }), { name: 'JsonRpcApplicationError' });
+    clientState.rejectDeferredTurnStart(failure);
+    await vi.waitFor(() => expect(nativeClient.dispose).toHaveBeenCalledOnce());
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+    expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount);
+    emitNotification('turn/completed', completedTurn('unrelated-turn'));
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    clientState.emitExit({ exitCode: 0, signal: null, stdout: '', stderr: '' });
+    releaseDispose();
+    await send;
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
+  });
+
+  it('settles successor work through the existing native exit lifecycle after a malformed cancelled start', async () => {
+    clientState.deferTurnStartForPrompt('cancel malformed with successor');
+    const disposeHost = vi.fn(async () => undefined);
+    const runtime = createRuntime({ disposeHost });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const cancelledSend = runtime.send({ v: 1, text: 'cancel malformed with successor' }).catch(() => undefined);
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    await runtime.send({ v: 1, text: 'successor uses same native client' });
+    const successorCompletion = waitForCodexAppServerRuntimeTurnCompletion(runtime).catch((error) => error);
+    const nativeClient = await vi.mocked(createCodexAppServerClient).mock.results.at(-1)!.value;
+    vi.mocked(nativeClient.dispose).mockImplementation(async () => {
+      clientState.emitExit({ exitCode: 0, signal: null, stdout: '', stderr: '' });
+    });
+    clientState.resolveDeferredTurnStartResult({});
+    await vi.waitFor(() => expect(nativeClient.dispose).toHaveBeenCalledOnce());
+    await cancelledSend;
+    expect(await successorCompletion).toBeInstanceOf(Error);
+    expect(runtime.isTurnInFlight()).toBe(false);
+    expect(disposeHost).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-failed')).toHaveLength(1);
+  });
+
+  it('preserves a live successor when ambiguous cancelled-start client teardown fails', async () => {
+    clientState.deferTurnStartForPrompt('cancel rejected start with successor');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const cancelledSend = runtime.send({ v: 1, text: 'cancel rejected start with successor' }).catch(() => undefined);
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    await runtime.send({ v: 1, text: 'live successor before failed cleanup' });
+    const successorCompletion = waitForCodexAppServerRuntimeTurnCompletion(runtime).catch((error) => error);
+    const nativeClient = await vi.mocked(createCodexAppServerClient).mock.results.at(-1)!.value;
+    vi.mocked(nativeClient.dispose).mockRejectedValue(new Error('Native termination not proven'));
+    clientState.rejectDeferredTurnStart(new Error('turn/start response lost after admission'));
+    await cancelledSend;
+    expect(runtime.isTurnInFlight()).toBe(true);
+    expect(events.filter((event) => event.kind === 'turn-failed' || event.kind === 'session-ended')).toHaveLength(0);
+    expect(nativeClient.dispose).toHaveBeenCalledOnce();
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+    clientState.emitExit({ exitCode: 0, signal: null, stdout: '', stderr: '' });
+    expect(await successorCompletion).toBeInstanceOf(Error);
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-failed')).toHaveLength(1);
   });
 
   it('excludes cancelled pre-ack provider work from auth until late-start cleanup', async () => {
