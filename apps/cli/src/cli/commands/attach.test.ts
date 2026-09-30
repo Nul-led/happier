@@ -62,7 +62,7 @@ describe('happier attach', () => {
       runTmuxAttachFn: vi.fn(async () => 0),
     })).rejects.toThrow('process.exit(1)');
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.anything(), 'Session belongs to another machine and cannot be attached from this computer.');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Session belongs to another machine and cannot be attached from this computer.'));
     errorSpy.mockRestore();
   });
 
@@ -764,7 +764,7 @@ describe('happier attach', () => {
       runWindowsConsoleAttachFn: vi.fn(async () => 0),
     })).rejects.toThrow('process.exit(1)');
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.anything(), 'This Windows session was started hidden and cannot be attached later.');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('This Windows session was started hidden and cannot be attached later.'));
     errorSpy.mockRestore();
   });
 });

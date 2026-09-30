@@ -175,10 +175,12 @@ describe('happier daemon start output', () => {
 
       const stdout = await runDaemonStartAndCapture(0);
 
-      expect(stdout).toContain('Daemon started successfully');
-      expect(stdout).toContain('Relay URL: http://localhost:4321');
-      expect(stdout).toContain('Relay profile: env_test');
-      expect(stdout).toContain('Account: account-123');
+      // Starting is a timed step; the details follow as one aligned list.
+      expect(stdout).toContain('- [..] Starting daemon');
+      expect(stdout).toContain('- [✓] Started daemon');
+      expect(stdout).toMatch(/Relay URL: +http:\/\/localhost:4321/u);
+      expect(stdout).toMatch(/Relay profile: +env_test/u);
+      expect(stdout).toMatch(/Account: +account-123/u);
     } finally {
       envScope.restore();
       await removeTempDir(tmp);

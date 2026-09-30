@@ -34,6 +34,7 @@ import {
 } from '@/server/serverUrlClassification';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp.js';
+import { ACCENT_HEX, cmd, definitionList, fail, neutral, ok, sectionTitle } from '@happier-dev/cli-common/output';
 
 export async function runServerSubcommand(subcommand: string, args: string[]): Promise<boolean> {
   switch (subcommand) {
@@ -174,18 +175,20 @@ async function cmdList(args: string[]): Promise<void> {
     return;
   }
   if (profiles.length === 0) {
-    console.log(chalk.gray('(no relay profiles configured)'));
+    console.log(neutral('No relay profiles configured'));
     return;
   }
 
   for (const p of profiles.sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))) {
-    const marker = p.id === active.id ? chalk.green('✓') : ' ';
-    console.log(`${marker} ${chalk.bold(p.name)} (${p.id})`);
-    console.log(`    ${chalk.gray('relay:')} ${p.serverUrl}`);
-    if (p.localServerUrl && p.localServerUrl !== p.serverUrl) {
-      console.log(`    ${chalk.gray('local:')} ${p.localServerUrl}`);
-    }
-    console.log(`    ${chalk.gray('webapp:')} ${p.webappUrl}`);
+    // The active profile is pointed at the way the setup chooser points at its selection.
+    const isActive = p.id === active.id;
+    const marker = isActive ? chalk.hex(ACCENT_HEX)('›') : ' ';
+    console.log(`${marker} ${chalk.bold(p.name)} ${chalk.gray(`(${p.id})${isActive ? ' · active' : ''}`)}`);
+    console.log(definitionList([
+      { label: 'Relay', value: p.serverUrl },
+      ...(p.localServerUrl && p.localServerUrl !== p.serverUrl ? [{ label: 'Local', value: p.localServerUrl }] : []),
+      { label: 'Web app', value: p.webappUrl },
+    ], { indent: '    ' }));
   }
 }
 
@@ -199,14 +202,14 @@ async function cmdCurrent(args: string[]): Promise<void> {
     });
     return;
   }
-  console.log(chalk.bold('Active relay profile'));
-  console.log(`${chalk.gray('name:')}   ${active.name}`);
-  console.log(`${chalk.gray('id:')}     ${active.id}`);
-  console.log(`${chalk.gray('relay:')}  ${active.serverUrl}`);
-  if (active.localServerUrl && active.localServerUrl !== active.serverUrl) {
-    console.log(`${chalk.gray('local:')} ${active.localServerUrl}`);
-  }
-  console.log(`${chalk.gray('webapp:')} ${active.webappUrl}`);
+  console.log(sectionTitle('Active relay profile'));
+  console.log(definitionList([
+    { label: 'Name', value: active.name },
+    { label: 'ID', value: active.id },
+    { label: 'Relay', value: active.serverUrl },
+    ...(active.localServerUrl && active.localServerUrl !== active.serverUrl ? [{ label: 'Local', value: active.localServerUrl }] : []),
+    { label: 'Web app', value: active.webappUrl },
+  ]));
 }
 
 async function cmdAdd(args: string[]): Promise<void> {
@@ -356,7 +359,7 @@ async function cmdAdd(args: string[]): Promise<void> {
   }
 
   if (shouldUse) reloadConfiguration();
-  console.log(chalk.green(`✓ Saved relay profile: ${created.name} (${created.id})`));
+  console.log(ok(`Saved relay profile: ${created.name} (${created.id})`));
   const prefix = `happier --server ${created.id}`;
   if (shouldUse) {
     console.log(chalk.gray(`  Active relay is now: ${created.serverUrl}`));
@@ -367,9 +370,11 @@ async function cmdAdd(args: string[]): Promise<void> {
 
   if (!interactive || shouldUse) {
     console.log('');
-    console.log(chalk.bold('Next steps (optional)'));
-    console.log(chalk.gray(`  Start daemon: ${prefix} daemon start`));
-    console.log(chalk.gray(`  Enable automatic startup: ${prefix} service install`));
+    console.log(sectionTitle('Next steps (optional)'));
+    console.log(definitionList([
+      { label: 'Start daemon', value: cmd(`${prefix} daemon start`) },
+      { label: 'Enable automatic startup', value: cmd(`${prefix} service install`) },
+    ], { indent: '  ' }));
   }
 
   if (installService) {
@@ -396,7 +401,7 @@ async function cmdUse(args: string[]): Promise<void> {
     await printJsonEnvelope({ ok: true, kind: 'server_use', data: { active: summarizeProfile(active) } });
     return;
   }
-  console.log(chalk.green(`✓ Active relay: ${active.name} (${active.id})`));
+  console.log(ok(`Active relay: ${active.name} (${active.id})`));
   console.log(chalk.gray(`  ${active.serverUrl}`));
 
   await runServerSelectionBackgroundServiceFollowUp({
@@ -420,7 +425,7 @@ async function cmdRemove(args: string[]): Promise<void> {
     });
     return;
   }
-  console.log(chalk.green(`✓ Removed relay profile: ${out.removed.name} (${out.removed.id})`));
+  console.log(ok(`Removed relay profile: ${out.removed.name} (${out.removed.id})`));
   console.log(chalk.gray(`  Active relay: ${out.active.name} (${out.active.id})`));
 }
 
@@ -442,13 +447,15 @@ async function cmdTest(args: string[]): Promise<void> {
     return;
   }
   if (!result.ok) {
-    console.error(chalk.red(`✗ Relay test failed: ${profile.serverUrl}`));
+    console.error(fail(`Relay test failed: ${profile.serverUrl}`));
     for (const line of relayProbeFailureDetailLines(result)) console.error(chalk.gray(line));
     process.exit(1);
   }
-  console.log(chalk.green(`✓ Relay reachable: ${profile.serverUrl}`));
-  console.log(chalk.gray(`  url: ${result.url}`));
-  if (result.version) console.log(chalk.gray(`  version: ${result.version}`));
+  console.log(ok(`Relay reachable: ${profile.serverUrl}`));
+  console.log(definitionList([
+    { label: 'URL', value: result.url },
+    ...(result.version ? [{ label: 'Version', value: result.version }] : []),
+  ], { indent: '  ' }));
 }
 
 async function cmdSet(args: string[]): Promise<void> {
@@ -532,7 +539,7 @@ async function cmdSet(args: string[]): Promise<void> {
     await printJsonEnvelope({ ok: true, kind: 'server_set', data: { active: summarizeProfile(created) } });
     return;
   }
-  console.log(chalk.green(`✓ Active relay: ${created.name} (${created.id})`));
+  console.log(ok(`Active relay: ${created.name} (${created.id})`));
   console.log(chalk.gray(`  ${created.serverUrl}`));
 
   await runServerSelectionBackgroundServiceFollowUp({

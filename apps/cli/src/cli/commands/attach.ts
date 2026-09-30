@@ -35,6 +35,7 @@ import { hostname } from 'node:os';
 import { buildAttachSelectionModel, formatAttachIneligibilityFooter } from './attachInteractiveSelection';
 
 import type { CommandContext } from '@/cli/commandRegistry';
+import { cmd, fail, neutral } from '@happier-dev/cli-common/output';
 
 type AttachCommandDeps = Readonly<{
   readCredentialsFn?: () => Promise<Credentials | null>;
@@ -99,12 +100,12 @@ async function defaultRunWindowsTerminalAttach(params: {
   terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
 }): Promise<number> {
   if (process.platform !== 'win32') {
-    console.error(chalk.red('Error:'), 'Windows Terminal attach is only available on Windows.');
+    console.error(fail('Windows Terminal attach is only available on Windows.'));
     return 1;
   }
   const windowId = params.terminal.windows?.windowId;
   if (typeof windowId !== 'string' || windowId.trim().length === 0) {
-    console.error(chalk.red('Error:'), 'Session does not include a Windows Terminal window id.');
+    console.error(fail('Session does not include a Windows Terminal window id.'));
     return 1;
   }
   return await focusWindowsTerminalWindow({ windowId });
@@ -114,19 +115,19 @@ async function defaultRunWindowsConsoleAttach(params: {
   terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
 }): Promise<number> {
   if (process.platform !== 'win32') {
-    console.error(chalk.red('Error:'), 'Windows console attach is only available on Windows.');
+    console.error(fail('Windows console attach is only available on Windows.'));
     return 1;
   }
   const pid = params.terminal.windows?.pid;
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
-    console.error(chalk.red('Error:'), 'Session does not include a Windows console process id.');
+    console.error(fail('Session does not include a Windows console process id.'));
     return 1;
   }
   return await focusWindowsConsoleWindow({ pid });
 }
 
 function printMissingAttachInfo(sessionId: string): void {
-  console.error(chalk.red('Error:'), `No local attachment info found for session ${sessionId}.`);
+  console.error(fail(`No local attachment info found for session ${sessionId}.`));
   console.error(chalk.gray('This usually means the session was not started with an attachable terminal host, or it was started on another machine.'));
 }
 
@@ -235,7 +236,7 @@ export async function handleAttachCommand(
 
   if (isInteractive) {
     if (!canUseInkSelectorFn()) {
-      console.error(chalk.red('Error:'), 'Interactive attach is not available (raw TTY mode not supported).');
+      console.error(fail('Interactive attach is not available (raw TTY mode not supported).'));
       console.log('');
       console.log('Hint: run `happier session list --active` and then `happier attach <session-id>`.');
       process.exit(1);
@@ -243,7 +244,7 @@ export async function handleAttachCommand(
 
     credentialsForInteractive = await (deps.readCredentialsFn ?? readCredentials)();
     if (!credentialsForInteractive) {
-      console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+      console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
       process.exit(1);
     }
 
@@ -278,7 +279,7 @@ export async function handleAttachCommand(
       footerHint,
     });
     if (selected.type === 'cancelled') {
-      console.log(chalk.blue('Attach cancelled'));
+      console.log(neutral('Attach cancelled'));
       return;
     }
     if (selected.type === 'none') {
@@ -293,7 +294,7 @@ export async function handleAttachCommand(
   }
 
   if (!sessionIdOrPrefix) {
-    console.error(chalk.red('Error:'), 'Missing session ID.');
+    console.error(fail('Missing session ID.'));
     console.log('');
     console.log('Usage: happier attach <sessionId>');
     process.exit(1);
@@ -340,7 +341,7 @@ export async function handleAttachCommand(
         tmuxAvailable,
         agentAttachStrategy,
       });
-      console.error(chalk.red('Error:'), explanation.fullReason);
+      console.error(fail(explanation.fullReason));
       if (explanation.nextStepHint) {
         console.error(chalk.gray(explanation.nextStepHint));
       }
@@ -422,7 +423,7 @@ export async function handleAttachCommand(
   } else if (terminal.mode === 'windows_console') {
     exitCode = await runWindowsConsoleAttachFn({ sessionId: resolvedSessionId, terminal });
   } else {
-    console.error(chalk.red('Error:'), 'Session was not started in tmux.');
+    console.error(fail('Session was not started in tmux.'));
     process.exit(1);
   }
   if (exitCode !== 0) process.exit(exitCode);
@@ -432,7 +433,7 @@ export async function handleAttachCliCommand(context: CommandContext): Promise<v
   try {
     await handleAttachCommand(context.args.slice(1));
   } catch (error) {
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

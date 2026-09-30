@@ -22,6 +22,7 @@ import { ensureWindowsUtf8CodePage } from '@/utils/platform/windows/ensureWindow
 import { installConsoleWriteErrorGuards, shouldInstallConsoleWriteErrorGuards } from '@/utils/writeConsoleBestEffort';
 import { logger } from '@/ui/logger';
 import { applyStackSessionPriority } from '@/utils/process/applyStackSessionPriority';
+import { fail } from '@happier-dev/cli-common/output';
 
 async function main() {
   applyStackSessionPriority();
@@ -62,7 +63,7 @@ async function main() {
 if (process.env.HAPPIER_CLI_DIST_INTEGRITY_PROBE !== '1') {
   void main().catch((error) => {
     logger.fatal(error);
-    console.error('Error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

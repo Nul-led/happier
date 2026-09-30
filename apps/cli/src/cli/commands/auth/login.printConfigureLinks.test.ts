@@ -188,7 +188,7 @@ describe('happier auth login', () => {
       const { handleAuthLogin } = await import('./login');
       await handleAuthLogin([]);
       const output = consoleSpy.mock.calls.flat().map(String).join('\n');
-      expect(output.match(/Authentication successful/gu) ?? []).toHaveLength(1);
+      expect(output.match(/✓ Signed in$/gmu) ?? []).toHaveLength(1);
     } finally {
       consoleSpy.mockRestore();
     }

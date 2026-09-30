@@ -36,6 +36,7 @@ import {
 } from '@/cli/connectedServices/resolveDirectConnectedServiceEnvironment';
 import { resolveDirectCliConnectedServiceBindings } from '@/cli/connectedServices/resolveDirectCliConnectedServiceBindings';
 import { HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY } from '@/agent/runtime/sessionConnectedServicesBindingsEnv';
+import { fail } from '@happier-dev/cli-common/output';
 
 type CommonBackendRunOptions = ParsedSessionStartArgs & {
   credentials: Credentials;
@@ -329,7 +330,7 @@ ${chalk.bold.cyan(`${agentId} CLI Options (from \`${providerHelpCommand}\`):`)}
     }
   } catch (error) {
     logger.fatal(error);
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

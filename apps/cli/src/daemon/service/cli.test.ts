@@ -822,8 +822,16 @@ describe('runDaemonServiceCliCommand', () => {
       installedPath = paths.installedPath;
       mkdirSync(dirname(installedPath), { recursive: true });
 
-      await expect(runDaemonServiceCliCommand({ argv: ['install', '--yes'] })).resolves.toBeUndefined();
+      const stdout = captureStdout();
+      try {
+        await expect(runDaemonServiceCliCommand({ argv: ['install', '--yes'] })).resolves.toBeUndefined();
+      } finally {
+        stdout.restore();
+      }
       expect(restartObserved).toBe(true);
+      // The install (including the ownership wait) renders as one timed step.
+      expect(stdout.text()).toContain('- [..] Installing background service\n');
+      expect(stdout.text()).toContain('- [✓] Installed background service\n');
     });
   });
 
@@ -1397,6 +1405,58 @@ describe('runDaemonServiceCliCommand', () => {
       } finally {
         output.restore();
       }
+    });
+  });
+
+  it('renders background service start and stop as timed steps', async () => {
+    await withTempDir('happier-service-start-stop-steps-', async (homeDir) => {
+      const happierHomeDir = `${homeDir}/.happier`;
+      envScope.patch({
+        HAPPIER_HOME_DIR: happierHomeDir,
+        HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+        HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+        HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: happierHomeDir,
+        HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_TIMEOUT_MS: '120',
+        HAPPIER_DAEMON_SERVICE_OWNERSHIP_WAIT_POLL_MS: '10',
+        HAPPIER_DAEMON_SERVICE_OWNERSHIP_STABLE_MS: '20',
+      });
+      vi.resetModules();
+      doMockChildProcessSpawnSync((command, args = []) => (
+        command === 'systemctl' && args.includes('is-active')
+          ? { status: 0, stdout: Buffer.from('active'), stderr: Buffer.from('') }
+          : { status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') }
+      ));
+      vi.doMock('./commandExistsInPath', () => ({
+        commandExistsInPath: vi.fn(() => true),
+      }));
+
+      const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }, { clearDaemonStateForTests }] = await Promise.all([
+        loadCliModule(),
+        import('@/persistence'),
+      ]);
+      const runtime = resolveDaemonServiceCliRuntimeFromEnv({ targetMode: 'default-following' });
+      const paths = resolveDaemonServicePaths(runtime);
+      mkdirSync(dirname(paths.installedPath), { recursive: true });
+      writeValidInstalledDaemonServiceFile(paths.installedPath);
+      await clearDaemonStateForTests();
+
+      const startOutput = captureStdout();
+      try {
+        await runDaemonServiceCliCommand({ argv: ['start'] });
+      } finally {
+        startOutput.restore();
+      }
+      expect(startOutput.text()).toContain('- [..] Starting background service\n');
+      expect(startOutput.text()).toContain('- [✓] Started background service\n');
+
+      const stopOutput = captureStdout();
+      try {
+        await runDaemonServiceCliCommand({ argv: ['stop'] });
+      } finally {
+        stopOutput.restore();
+      }
+      expect(stopOutput.text()).toContain('- [..] Stopping background service\n');
+      expect(stopOutput.text()).toContain('- [✓] Stopped background service\n');
     });
   });
 

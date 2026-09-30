@@ -24,6 +24,7 @@ import {
 } from '@/cli/connectedServices/resolveDirectConnectedServiceEnvironment';
 
 import type { CommandContext, CommandHandler } from '@/cli/commandRegistry';
+import { fail, neutral, warn } from '@happier-dev/cli-common/output';
 
 type FetchSessionByIdFn = (params: { token: string; sessionId: string }) => Promise<RawSessionRecord | null>;
 type FetchSessionsPageFn = (params: { token: string; cursor?: string; limit?: number; activeOnly?: boolean; archivedOnly?: boolean }) => Promise<{
@@ -118,7 +119,7 @@ export async function handleResumeCommand(
 
   const credentials = await readCredentialsFn();
   if (!credentials) {
-    console.error(chalk.yellow('⚠️  Not authenticated with Happier'));
+    console.error(warn('Not authenticated with Happier'));
     console.error(chalk.gray('  Please run "happier auth login" first'));
     process.exit(1);
   }
@@ -131,7 +132,7 @@ export async function handleResumeCommand(
   let sessionIdOrPrefix = rawInput;
   if (isInteractive) {
     if (!canUseInkSelectorFn()) {
-      console.error(chalk.red('Error:'), 'Interactive resume is not available (raw TTY mode not supported).');
+      console.error(fail('Interactive resume is not available (raw TTY mode not supported).'));
       console.log('');
       console.log('Hint: run `happier session list --resumable` and then `happier resume <session-id>`.');
       process.exit(1);
@@ -143,7 +144,7 @@ export async function handleResumeCommand(
       fetchSessionsPageFn,
     });
     if (selected.type === 'cancelled') {
-      console.log(chalk.blue('Resume cancelled'));
+      console.log(neutral('Resume cancelled'));
       return;
     }
     if (selected.type === 'none') {
@@ -154,7 +155,7 @@ export async function handleResumeCommand(
   }
 
   if (!sessionIdOrPrefix) {
-    console.error(chalk.red('Error:'), 'Missing session ID.');
+    console.error(fail('Missing session ID.'));
     console.log('');
     console.log('Usage: happier resume <sessionId>');
     process.exit(1);
@@ -283,7 +284,7 @@ export async function handleResumeCliCommand(context: CommandContext): Promise<v
       rawArgv: context.rawArgv,
     });
   } catch (error) {
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

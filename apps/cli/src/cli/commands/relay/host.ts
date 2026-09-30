@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import chalk from 'chalk';
+import { createStepPrinter, definitionList, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
 
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { configuration, reloadConfiguration } from '@/configuration';
@@ -663,13 +664,15 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
       return;
     }
 
-    console.log(chalk.bold('Relay host status'));
-    console.log(chalk.gray(`  url: ${status.relayUrl ?? '(not installed)'}`));
-    console.log(chalk.gray(`  installed: ${status.installed ? 'yes' : 'no'}`));
-    if (status.version) console.log(chalk.gray(`  version: ${status.version}`));
-    console.log(chalk.gray(`  service: ${status.service.active ? 'running' : 'stopped'}`));
+    console.log(sectionTitle('Relay host'));
+    console.log(definitionList([
+      { label: 'URL', value: status.relayUrl ?? '(not installed)' },
+      { label: 'Installed', value: status.installed ? 'yes' : 'no' },
+      ...(status.version ? [{ label: 'Version', value: status.version }] : []),
+      { label: 'Service', value: status.service.active ? 'running' : 'stopped' },
+    ], { indent: '  ' }));
     for (const warning of status.warnings ?? []) {
-      console.log(chalk.yellow(`  warning: ${warning}`));
+      console.log(`  ${warn(warning)}`);
     }
     return;
   }
@@ -840,11 +843,11 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
     const payload: RelayHostInstallJson = await result;
 
     if (!json) {
-      console.log(chalk.green('✓ Relay host installed'));
+      console.log(ok('Relay host installed'));
       console.log(chalk.gray(`  ${payload.relayUrl}`));
       if (localRelayDataDir && !relayDataDirExistedBeforeInstall) {
         console.log('');
-        console.log(chalk.yellow('  This relay generated a master secret in'));
+        console.log(`  ${warn('This relay generated a master secret in')}`);
         console.log(chalk.gray(`    ${localRelayDataDir}`));
         console.log(chalk.gray('  It encrypts what the relay stores, is saved nowhere else, and cannot be'));
         console.log(chalk.gray("  regenerated. Keep it with your backup of the relay's database."));
@@ -861,7 +864,7 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
       const signupExposure = ssh ? null : describeRelayBindSignupExposure(mergedEnv?.HAPPIER_SERVER_HOST ?? null);
       if (signupExposure) {
         console.log('');
-        console.log(chalk.yellow(`  ${signupExposure.headline}`));
+        console.log(`  ${warn(signupExposure.headline)}`);
         for (const line of signupExposure.details) {
           console.log(chalk.gray(`  ${line}`));
         }
@@ -1005,7 +1008,15 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
           });
         })()
       : localEngine;
-    await engine.control({ ...taskParams, action: op });
+    // Past tense reflects what `launchctl list` / `systemctl status` will report once control() returns:
+    // uninstall deregisters and removes files; start/stop/restart are accepted by the service manager.
+    const presentTense: Record<string, string> = { uninstall: 'Uninstalling', start: 'Starting', stop: 'Stopping', restart: 'Restarting' };
+    const pastTense: Record<string, string> = { uninstall: 'Uninstalled', start: 'Started', stop: 'Stopped', restart: 'Restarted' };
+    await createStepPrinter({ enabled: !json }).run(
+      `${presentTense[op] ?? op} relay host`,
+      () => engine.control({ ...taskParams, action: op }),
+      () => `${pastTense[op] ?? `${op}ed`} relay host`,
+    );
 
     if (json) {
       await printJsonEnvelope({
@@ -1016,20 +1027,6 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
       return;
     }
 
-    // All ops finished synchronously at the service-manager level:
-    //  - uninstall: service deregistered + files removed before control() returns.
-    //  - start/stop/restart: launchctl/systemctl has accepted the request; the
-    //    bootstrap retry + kickstart path (in apply.ts) ensures the service
-    //    is in the domain and the program started before this line is reached.
-    // Past tense reflects what `launchctl list` / `systemctl status` will
-    // report immediately after.
-    const verbPastTense: Record<string, string> = {
-      uninstall: 'uninstalled',
-      start: 'started',
-      stop: 'stopped',
-      restart: 'restarted',
-    };
-    console.log(chalk.green(`✓ Relay host ${verbPastTense[op] ?? `${op}ed`}`));
     return;
   }
 
