@@ -249,7 +249,12 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
       let boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
       let result = await adapter.hotApply(applyInput);
       while (result.reason === 'turn_in_flight' && boundary && queue && sessionId) {
-        await boundary.wait();
+        try {
+          await boundary.wait();
+        } catch {
+          // Preserve prior service effects for partial-application reconciliation.
+          break;
+        }
         boundary = queue.captureTurnBoundary(sessionId);
         result = await adapter.hotApply(applyInput);
       }
