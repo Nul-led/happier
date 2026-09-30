@@ -52,7 +52,12 @@ if supports_color; then
   COLOR_DIM=$'\033[2m'
   COLOR_GREEN=$'\033[32m'
   COLOR_YELLOW=$'\033[33m'
-  COLOR_CYAN=$'\033[36m'
+  COLOR_RED=$'\033[31m'
+  if [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+    COLOR_GOLD=$'\033[38;2;214;162;74m'
+  else
+    COLOR_GOLD=$'\033[38;5;179m'
+  fi
   COLOR_ART_YELLOW=$'\033[93m'
   COLOR_ART_RED=$'\033[91m'
   COLOR_ART_MAGENTA=$'\033[95m'
@@ -64,7 +69,8 @@ else
   COLOR_DIM=""
   COLOR_GREEN=""
   COLOR_YELLOW=""
-  COLOR_CYAN=""
+  COLOR_RED=""
+  COLOR_GOLD=""
   COLOR_ART_YELLOW=""
   COLOR_ART_RED=""
   COLOR_ART_MAGENTA=""
@@ -77,7 +83,7 @@ say() {
 }
 
 info() {
-  say "${COLOR_CYAN}$*${COLOR_RESET}"
+  say "${COLOR_GOLD}•${COLOR_RESET} $*"
 }
 
 success() {
@@ -203,7 +209,7 @@ installer_phase() {
 }
 
 installer_step_pending_symbol() {
-  printf '%s' "${COLOR_CYAN}..${COLOR_RESET}"
+  printf '%s' '..'
 }
 
 installer_step_success_symbol() {
@@ -211,39 +217,57 @@ installer_step_success_symbol() {
 }
 
 installer_step_failure_symbol() {
-  printf '%s' "${COLOR_YELLOW}x${COLOR_RESET}"
+  printf '%s' "${COLOR_RED}x${COLOR_RESET}"
+}
+
+# Step rows match the CLI step printer (packages/cli-common/src/output/progress.ts):
+# a gold Braille spinner while the step runs, then "✓ label  1.2s" or a red "x label".
+# Without an animating terminal they stay plain "- [..]" / "- [✓]" lines.
+INSTALLER_SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+# Tenths of a second. bash < 5 (macOS /bin/bash) has no EPOCHREALTIME, so it counts whole seconds.
+installer_now_tenths() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local whole="${EPOCHREALTIME%[.,]*}"
+    local fraction="${EPOCHREALTIME#*[.,]}"
+    printf '%s' "$((whole * 10 + 10#${fraction:0:1}))"
+    return 0
+  fi
+  printf '%s' "$((SECONDS * 10))"
+}
+
+installer_step_elapsed() {
+  local tenths=$(($(installer_now_tenths) - $1))
+  printf '  %s%s.%ss%s' "${COLOR_DIM}" "$((tenths / 10))" "$((tenths % 10))" "${COLOR_RESET}"
+}
+
+# Animates a background step until it exits, then prints its outcome row and returns its status.
+installer_animate_step() {
+  local label="$1"
+  local step_pid="$2"
+  local started="$3"
+  local frame_index=0
+  while kill -0 "${step_pid}" 2>/dev/null; do
+    local frame="${INSTALLER_SPINNER_FRAMES[$((frame_index % ${#INSTALLER_SPINNER_FRAMES[@]}))]}"
+    printf '\r\033[2K%s %s' "${COLOR_GOLD}${frame}${COLOR_RESET}" "${label}" >&2
+    frame_index=$((frame_index + 1))
+    sleep 0.08
+  done
+
+  local status=0
+  wait "${step_pid}" || status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    printf '\r\033[2K%s %s%s\n' "$(installer_step_success_symbol)" "${label}" "$(installer_step_elapsed "${started}")" >&2
+  else
+    printf '\r\033[2K%s %s\n' "$(installer_step_failure_symbol)" "${label}" >&2
+  fi
+  return "${status}"
 }
 
 run_installer_step() {
   local label="$1"
   shift
 
-  if ! installer_should_animate; then
-    local tmp_output=""
-    if [[ -n "${TMP_DIR:-}" ]]; then
-      tmp_output="${TMP_DIR}/installer-step.$$.log"
-    else
-      tmp_output="$(mktemp)"
-    fi
-    say "- [..] ${label}"
-    if "$@" >"${tmp_output}" 2>&1; then
-      say "- [ok] ${label}"
-      if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_output}" ]]; then
-        cat "${tmp_output}"
-      fi
-      rm -f "${tmp_output}" >/dev/null 2>&1 || true
-      return 0
-    fi
-    say "- [x] ${label}"
-    if [[ -s "${tmp_output}" ]]; then
-      cat "${tmp_output}" >&2
-    fi
-    rm -f "${tmp_output}" >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  local spinner_frames=('|' '/' '-' '\')
-  local frame_index=0
   local tmp_output=""
   if [[ -n "${TMP_DIR:-}" ]]; then
     tmp_output="${TMP_DIR}/installer-step.$$.log"
@@ -251,32 +275,29 @@ run_installer_step() {
     tmp_output="$(mktemp)"
   fi
 
-  "$@" >"${tmp_output}" 2>&1 &
-  local step_pid=$!
-
-  while kill -0 "${step_pid}" 2>/dev/null; do
-    local frame="${spinner_frames[$((frame_index % ${#spinner_frames[@]}))]}"
-    printf '\r- [%s] %s' "${COLOR_CYAN}${frame}${COLOR_RESET}" "${label}" >&2
-    frame_index=$((frame_index + 1))
-    sleep 0.12
-  done
-
   local status=0
-  if wait "${step_pid}"; then
-    status=0
+  if installer_should_animate; then
+    local started
+    started="$(installer_now_tenths)"
+    "$@" >"${tmp_output}" 2>&1 &
+    installer_animate_step "${label}" "$!" "${started}" || status=$?
   else
-    status=$?
+    say "- [$(installer_step_pending_symbol)] ${label}"
+    "$@" >"${tmp_output}" 2>&1 || status=$?
+    if [[ "${status}" -eq 0 ]]; then
+      say "- [$(installer_step_success_symbol)] ${label}"
+    else
+      say "- [$(installer_step_failure_symbol)] ${label}"
+    fi
   fi
+
   if [[ "${status}" -eq 0 ]]; then
-    printf '\r- [%s] %s\n' "$(installer_step_success_symbol)" "${label}" >&2
     if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_output}" ]]; then
       cat "${tmp_output}"
     fi
     rm -f "${tmp_output}" >/dev/null 2>&1 || true
     return 0
   fi
-
-  printf '\r- [%s] %s\n' "$(installer_step_failure_symbol)" "${label}" >&2
   if [[ -s "${tmp_output}" ]]; then
     cat "${tmp_output}" >&2
   fi
@@ -299,38 +320,23 @@ capture_installer_step_output() {
     tmp_error="$(mktemp)"
   fi
 
-  if ! installer_should_animate; then
-    say "- [..] ${label}"
-    if "$@" >"${tmp_output}" 2>"${tmp_error}"; then
-      say "- [ok] ${label}"
-      printf -v "${__resultvar}" '%s' "$(cat "${tmp_output}")"
-      if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_error}" ]]; then
-        cat "${tmp_error}" >&2
-      fi
-      rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
-      return 0
+  local status=0
+  if installer_should_animate; then
+    local started
+    started="$(installer_now_tenths)"
+    "$@" >"${tmp_output}" 2>"${tmp_error}" &
+    installer_animate_step "${label}" "$!" "${started}" || status=$?
+  else
+    say "- [$(installer_step_pending_symbol)] ${label}"
+    "$@" >"${tmp_output}" 2>"${tmp_error}" || status=$?
+    if [[ "${status}" -eq 0 ]]; then
+      say "- [$(installer_step_success_symbol)] ${label}"
+    else
+      say "- [$(installer_step_failure_symbol)] ${label}" >&2
     fi
-    say "- [x] ${label}" >&2
-    cat "${tmp_error}" >&2
-    rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
-    return 1
   fi
 
-  local spinner_frames=('|' '/' '-' '\')
-  local frame_index=0
-
-  "$@" >"${tmp_output}" 2>"${tmp_error}" &
-  local step_pid=$!
-
-  while kill -0 "${step_pid}" 2>/dev/null; do
-    local frame="${spinner_frames[$((frame_index % ${#spinner_frames[@]}))]}"
-    printf '\r- [%s] %s' "${COLOR_CYAN}${frame}${COLOR_RESET}" "${label}" >&2
-    frame_index=$((frame_index + 1))
-    sleep 0.12
-  done
-
-  if wait "${step_pid}"; then
-    printf '\r- [%s] %s\n' "$(installer_step_success_symbol)" "${label}" >&2
+  if [[ "${status}" -eq 0 ]]; then
     printf -v "${__resultvar}" '%s' "$(cat "${tmp_output}")"
     if [[ "${VERBOSE_MODE}" == "1" ]] && [[ -s "${tmp_error}" ]]; then
       cat "${tmp_error}" >&2
@@ -338,8 +344,6 @@ capture_installer_step_output() {
     rm -f "${tmp_output}" "${tmp_error}" >/dev/null 2>&1 || true
     return 0
   fi
-
-  printf '\r- [%s] %s\n' "$(installer_step_failure_symbol)" "${label}" >&2
   if [[ -s "${tmp_error}" ]]; then
     cat "${tmp_error}" >&2
   fi

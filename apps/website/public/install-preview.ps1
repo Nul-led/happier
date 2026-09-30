@@ -522,7 +522,7 @@ function Write-InstallerStage {
   )
 
   if ((Test-InstallerRichHeaderAvailable) -and -not $env:NO_COLOR) {
-    Write-Host ("[{0}]" -f $Name) -ForegroundColor Cyan
+    Write-Host ("[{0}]" -f $Name) -ForegroundColor White
     return
   }
   Write-Host ("[{0}]" -f $Name)
