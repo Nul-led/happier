@@ -120,12 +120,13 @@ test.describe('ui e2e: pets settings', () => {
     const previousViewport = page.viewportSize();
     await page.setViewportSize({ width: 1440, height: 900 });
     const petGrid = page.getByTestId('settings-pets-device-pet-grid');
+    await expect(petGrid.locator('[data-testid^="settings-pets-built-in-tile-"]')).toHaveCount(5);
     for (const width of [749.75, 754.75, 759.75]) {
       await petGrid.evaluate((element, width) => { element.style.width = `${width}px`; }, width);
       await expect.poll(async () => petGrid.evaluate((element) => {
         const tops = Array.from(element.querySelectorAll('[data-testid^="settings-pets-built-in-tile-"]'))
           .map((tile) => tile.getBoundingClientRect().top);
-        return Math.max(...tops) - Math.min(...tops);
+        return tops.length === 5 ? Math.max(...tops) - Math.min(...tops) : Number.POSITIVE_INFINITY;
       })).toBeLessThan(1);
     }
     await petGrid.evaluate((element) => { element.style.removeProperty('width'); });
