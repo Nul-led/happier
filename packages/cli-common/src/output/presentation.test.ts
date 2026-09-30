@@ -13,9 +13,12 @@ describe('createTerminalPresentation', () => {
     colorChalk.level = 3;
     const presentation = createTerminalPresentation(colorChalk);
 
-    const banner = presentation.banner('setup', { subtitle: 'Guided setup', prefix: '✨', suffix: '✨' });
-    expect(banner).toContain('\u001B[');
-    expect(stripAnsi(banner)).toBe('✨ setup ✨\nGuided setup');
+    // The brand title: bold gold (the step printer's accent), no decorative sparkles.
+    const banner = presentation.banner('setup', { subtitle: 'Guided setup' });
+    expect(banner).toContain('\u001B[1m');
+    expect(banner).toContain('\u001B[38;2;214;162;74m');
+    expect(banner).not.toContain('\u001B[36m');
+    expect(stripAnsi(banner)).toBe('setup\nGuided setup');
 
     expect(stripAnsi(presentation.sectionTitle('Plan'))).toBe('Plan');
     expect(stripAnsi(presentation.cmd('happier auth login'))).toBe('happier auth login');
@@ -39,8 +42,13 @@ describe('createTerminalPresentation', () => {
     expect(stripAnsi(presentation.warn('Needs attention'))).toBe('! Needs attention');
     expect(stripAnsi(presentation.fail('Failed'))).toBe('x Failed');
 
-    const errorFrame = presentation.errorFrame('Error:', ['First detail', 'Second detail']);
-    expect(stripAnsi(errorFrame)).toBe('Error:\n  First detail\n  Second detail');
+    // An error frame is a failed status line: the same red x as fail(), details below in gray.
+    const errorFrame = presentation.errorFrame("Couldn't install Codex:", ['First detail', 'Second detail']);
+    expect(stripAnsi(errorFrame)).toBe("x Couldn't install Codex\n  First detail\n  Second detail");
+    expect(errorFrame.split('\n')[0]).toBe(presentation.fail("Couldn't install Codex"));
+    // Informational dots use the brand accent, never cyan.
+    expect(presentation.info('Tip')).toContain('\u001B[38;2;214;162;74m');
+    expect(presentation.info('Tip')).not.toContain('\u001B[36m');
   });
 
   it('formats generic frames and checklists with stable structure', () => {
@@ -66,6 +74,10 @@ describe('createTerminalPresentation', () => {
         '  Denied by server',
       ].join('\n'),
     );
+    // Same glyphs and colours as the step printer's linear mode: an unstyled `..`, a green ✓, a red x.
+    expect(checklist).toContain('- [..] Connect to relay');
+    expect(checklist).toContain(`- [${colorChalk.green('✓')}] Install CLI`);
+    expect(checklist).toContain(`- [${colorChalk.red('x')}] Pair this computer`);
   });
 });
 

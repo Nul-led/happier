@@ -1,4 +1,5 @@
 export {
+  ACCENT_HEX,
   ansiEnabled,
   banner,
   blue,

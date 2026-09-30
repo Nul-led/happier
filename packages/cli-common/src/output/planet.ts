@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { PLANET_FRAME_INTERVAL_MS, createPlanetFrame, planetFrameIntervalMs, planetRowsForColumns, type PlanetTheme } from '@happier-dev/brand/planet';
+import { ACCENT_HEX } from './presentation.js';
 
 export function isTerminalAnimationDisabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.HAPPIER_NO_ANIMATION ?? '').trim().toLowerCase());
@@ -41,7 +42,7 @@ export function shimmerText(text: string, phase: number, colors: typeof chalk = 
   return chars.map((ch, index) => {
     const distance = Math.abs(index - position);
     if (distance <= 1.5) return colors.hex('#ffd98a')(ch);
-    if (distance <= 3.5) return colors.hex('#d6a24a')(ch);
+    if (distance <= 3.5) return colors.hex(ACCENT_HEX)(ch);
     return ch;
   }).join('');
 }
@@ -163,7 +164,7 @@ function wrapSetupText(value: string, width: number, indent = ''): string[] {
 }
 
 function renderSetupChoiceText(options: SetupChoiceRenderOptions, width: number, showBrand: boolean, color: boolean): string[] {
-  const gold = (value: string): string => color ? chalk.hex('#d6a24a')(value) : value;
+  const gold = (value: string): string => color ? chalk.hex(ACCENT_HEX)(value) : value;
   const title = (value: string): string => color ? chalk.bold(value) : value;
   const lines: string[] = [];
   if (options.showWelcome !== false) {
