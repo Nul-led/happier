@@ -134,7 +134,7 @@ Every retained compatibility path records:
 
 Remove the path when its support window has ended and evidence shows no supported reader, writer, or stored shape still requires it. Do not remove a released-data reader merely because current writers stopped producing that shape.
 
-### Native reminder picker on older mobile binaries (development)
+### Native reminder picker on older mobile binaries (0.2.15)
 
 The UI 0.2.12 source at `a357c65536ba89669422977d6f7daf9aa0d17e73`
 does not include `@react-native-community/datetimepicker`, but shares the manual

@@ -1,5 +1,32 @@
 # Changelog
 
+## Release 2026-09-30.1 - 2026-09-30
+
+<!-- happier-release-note-projections:v1
+{
+  "expo": {
+    "message": "Happier 0.2.15 keeps custom session reminders usable on older iOS and Android apps: manual date/time entry remains available when their native picker is missing. Apps with the picker retain native selection."
+  },
+  "appStore": {
+    "whatsNew": "Happier 0.2.15 keeps custom session reminders usable on older iOS and Android apps: manual date/time entry remains available when their native picker is missing. Apps with the picker retain native selection."
+  },
+  "playStore": {
+    "whatsNew": "Happier 0.2.15 keeps custom session reminders usable on older iOS and Android apps: manual date/time entry remains available when their native picker is missing. Apps with the picker retain native selection."
+  }
+}
+-->
+
+Happier 0.2.15 keeps custom session reminders usable on older mobile app installations after an OTA update.
+
+### Session reminders on older mobile apps
+
+- When an installed iOS or Android app lacks the native calendar/time picker, custom reminders retain manual date/time entry instead of attempting to load the unavailable picker.
+- Apps with the picker retain native selection. The web picker is unchanged.
+
+### Compatibility
+
+No new wire format or database migration is introduced. Server and server-runner move to 0.2.15 because they bundle the updated UI; CLI and Stack remain at 0.2.14. OTA updates do not add native modules, which still require a native app update.
+
 ## Release 2026-09-29.2 - 2026-09-29
 
 <!-- happier-release-note-projections:v1
