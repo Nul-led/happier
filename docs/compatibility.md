@@ -134,6 +134,25 @@ Every retained compatibility path records:
 
 Remove the path when its support window has ended and evidence shows no supported reader, writer, or stored shape still requires it. Do not remove a released-data reader merely because current writers stopped producing that shape.
 
+### Native reminder picker on older mobile binaries (development)
+
+The UI 0.2.12 source at `a357c65536ba89669422977d6f7daf9aa0d17e73`
+does not include `@react-native-community/datetimepicker`, but shares the manual
+`0.2.7-native` OTA runtime with later UI sources that include it. An OTA update
+cannot add that compiled native module to an already-installed app.
+
+The native `SessionReminderPicker` adapter therefore checks the installed
+capability before loading the SDK: the iOS native view, or all four Android
+modules eagerly required by SDK 8.4.4. The reminder modal consumes that same
+availability decision and omits unsupported picker buttons. Its existing manual
+date/time fields and submission rules remain available; equipped binaries retain
+their native picker. Web uses its existing JavaScript picker unchanged.
+
+This is an older-native/new-JavaScript compatibility path, not delivery of new
+native code through OTA. Remove the guard only when no supported binary eligible
+for these updates can lack the SDK. Native renderer fixes and app-link entitlement
+changes still require a native app build.
+
 ### ACP session-list browse source
 
 The released `cli-v0.2.12` and `cli-v0.2.12-preview.1` daemon at
