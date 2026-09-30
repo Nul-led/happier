@@ -301,6 +301,8 @@ builds, blank IDs and IDs beginning with `agent-transition:` are rejected before
 Copy the exact ID from the JSON result or the human error's `Local ID (JSON)` field. The error's
 `Bash` example is for Bash-compatible shells; Cmd and PowerShell need their own quoting.
 The v0.3 host Action also accepts caller IDs; plugin input keeps its host-derived identity.
+IDs can begin with `-`. If an ID equals an option name or `--`, use inline syntax to
+keep it unambiguous: `--local-id=--json` supplies the ID `--json`.
 
 For option-looking message text, put all options before the standalone `--`:
 

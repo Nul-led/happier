@@ -60,6 +60,7 @@ export async function cmdSessionSend(
     startIndex: 1,
     booleanFlags: ['--wait', '--json'],
     valueFlags: ['--message', '--prompt', '--permission-mode', '--model', '--provider-connection', '--local-id', '--timeout', '--machine-id'],
+    opaqueValueFlags: ['--local-id'],
     maxPositionals: 2,
   });
   const json = wantsJson(argv);
@@ -92,8 +93,8 @@ export async function cmdSessionSend(
   // same way `session create` retains its spawn attempt id: an ambiguous
   // failure must be able to name the exact identity to retry with, and an
   // identity minted out of reach downstream cannot be named.
-  // `assertSessionCommandArguments` already rejected a missing or flag-shaped
-  // value above.
+  // The argument owner rejects missing separate values, while inline syntax
+  // disambiguates opaque IDs that equal command options.
   const localIdRaw = readRawFlagValue(argv, '--local-id');
   const callerLocalId = readPendingLocalId(localIdRaw);
   if (localIdRaw !== null && (callerLocalId === null || isSessionAgentTransitionDividerLocalId(callerLocalId))) {
@@ -176,7 +177,7 @@ export async function cmdSessionSend(
     // The identity this send used is the only safe retry: resubmitting it
     // rejoins the same durable input instead of queueing a second message.
     throw new Error(
-      `${normalized.errorMessage ?? normalized.errorCode} Retry the same input with --local-id; preserve every ID byte.\nLocal ID (JSON): ${JSON.stringify(localId)}\nBash: --local-id ${safeBashSingleQuote(localId)}`,
+      `${normalized.errorMessage ?? normalized.errorCode} Retry the same input with --local-id; preserve every ID byte.\nLocal ID (JSON): ${JSON.stringify(localId)}\nBash: --local-id=${safeBashSingleQuote(localId)}`,
     );
   }
 

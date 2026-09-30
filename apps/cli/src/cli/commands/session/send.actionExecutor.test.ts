@@ -29,6 +29,16 @@ describe('happier session send (action executor)', () => {
     } finally { output.restore(); }
   });
 
+  it.each(['--wait', '--timeout', '--json', '--model', '--model=x', '--permission-mode', '--local-id', '--', '--help', '-h'])(
+    'rejects %s as a missing separate local id before authentication', async (nextFlag) => {
+      const readCredentialsFn = vi.fn(async () => null);
+      const { cmdSessionSend } = await import('./send');
+      await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', nextFlag], { readCredentialsFn }))
+        .rejects.toMatchObject({ code: 'invalid_arguments' });
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['', '  ', 'agent-transition:claim-1'])('rejects invalid caller local id %j before credentials', async (localId) => {
     const readCredentialsFn = vi.fn(async () => null);
     const { cmdSessionSend } = await import('./send');
@@ -453,26 +463,26 @@ describe('happier session send (action executor)', () => {
       const json = message.split('Local ID (JSON): ')[1]?.split('\n')[0];
       expect(json).toBeDefined();
       expect(JSON.parse(json!)).toBe(localId);
-      expect(message).toContain('\nBash: --local-id ');
+      expect(message).toContain('\nBash: --local-id=');
     },
   );
 
-  it.skipIf(process.platform === 'win32').each([' local-42 ', " local'42 $(printf expanded) "])(
+  it.skipIf(process.platform === 'win32').each([' local-42 ', " local'42 $(printf expanded) ", '--json', '--'])(
     'preserves opaque local id %j when copying the retry argument into a shell',
     async (localId) => {
       execute.mockResolvedValueOnce({ ok: true, result: { ok: false, code: 'timeout' } });
       const { handleSessionCommand } = await import('./handleSessionCommand');
-      const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', localId], {
+      const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello', `--local-id=${localId}`], {
         readCredentialsFn: async () => ({
           token: 'token_test',
           encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
         }),
       }).then(() => null, (error: unknown) => error);
       const message = String((thrown as Error | null)?.message);
-      const retryArgument = message.split('\nBash: --local-id ')[1];
+      const retryArgument = message.split('\nBash: ')[1];
       expect(retryArgument).toBeDefined();
       const parsed = execFileSync('bash', ['-c', `printf '%s\\0' ${retryArgument}`]);
-      expect(parsed).toEqual(Buffer.from(`${localId}\0`));
+      expect(parsed).toEqual(Buffer.from(`--local-id=${localId}\0`));
     },
   );
 
@@ -501,7 +511,7 @@ describe('happier session send (action executor)', () => {
     const humanInput = execute.mock.calls.at(-1)?.[1] as { localId?: unknown };
     expect(typeof humanInput.localId).toBe('string');
     expect(String((thrown as Error | null)?.message))
-      .toContain(`--local-id '${String(humanInput.localId)}'`);
+      .toContain(`--local-id='${String(humanInput.localId)}'`);
 
     // JSON path: the same identity is machine-readable on the failure envelope.
     execute.mockReset();

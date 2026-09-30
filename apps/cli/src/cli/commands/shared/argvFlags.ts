@@ -13,6 +13,10 @@ export function hasFlagValue(argv: readonly string[], flag: string): boolean {
   return findFlagIndex(argv, flag, true) >= 0;
 }
 
+export function isCommandOptionToken(value: string, optionFlags: readonly string[]): boolean {
+  return value === '--' || optionFlags.includes(value.split('=', 1)[0]);
+}
+
 export function readCommandPositionals(
   argv: readonly string[],
   options: Readonly<{
@@ -129,6 +133,7 @@ export type CommandArgumentPolicy = Readonly<{
   booleanFlags?: readonly string[];
   valueFlags?: readonly string[];
   inlineValueFlags?: readonly string[];
+  opaqueValueFlags?: readonly string[];
   allowMissingValueFlags?: readonly string[];
   maxPositionals?: number;
 }>;
@@ -141,6 +146,8 @@ export function assertCommandArguments(argv: readonly string[], policy: CommandA
   const booleanFlags = new Set(policy.booleanFlags ?? []);
   const valueFlags = new Set(policy.valueFlags ?? []);
   const inlineValueFlags = new Set(policy.inlineValueFlags ?? policy.valueFlags ?? []);
+  const opaqueValueFlags = new Set(policy.opaqueValueFlags ?? []);
+  const knownFlags = [...booleanFlags, ...valueFlags, '--help', '-h'];
   const allowMissingValueFlags = new Set(policy.allowMissingValueFlags ?? []);
   let positionalOnly = false;
   let positionalCount = 0;
@@ -168,7 +175,7 @@ export function assertCommandArguments(argv: readonly string[], policy: CommandA
       continue;
     }
     const value = argv[index + 1];
-    if (!value || value.startsWith('-')) {
+    if (!value || (opaqueValueFlags.has(flag) ? isCommandOptionToken(value, knownFlags) : value.startsWith('-'))) {
       if (allowMissingValueFlags.has(flag)) continue;
       throw invalidCommandArguments(policy.usage, `Option ${flag} requires a value.`);
     }
