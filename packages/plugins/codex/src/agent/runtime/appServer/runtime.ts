@@ -277,10 +277,10 @@ type PendingTurn = {
   sessionTurnId: string;
   agentTurnId: string | null;
   providerStartAcknowledged: boolean;
-  deferredTerminalNotification: Readonly<{
+  deferredTerminalNotifications: Map<string, Readonly<{
     method: 'turn/completed' | 'turn/interrupted';
     params: unknown;
-  }> | null;
+  }>>;
   providerPrompt: PendingProviderPrompt | null;
   startUserMessageSeq: number | null;
   userMessageSeqs: number[];
@@ -366,6 +366,7 @@ const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_TIMEOUT_MS = 1_000;
 const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_POLL_MS = 20;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_WINDOW_MS = 1_000;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS = 50;
+const MAX_DEFERRED_UNACKNOWLEDGED_TERMINAL_NOTIFICATIONS = 32;
 
 function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -807,7 +808,7 @@ function createPendingTurn(
     sessionTurnId,
     agentTurnId: null,
     providerStartAcknowledged: false,
-    deferredTerminalNotification: null,
+    deferredTerminalNotifications: new Map(),
     providerPrompt,
     startUserMessageSeq,
     userMessageSeqs,
@@ -1968,39 +1969,67 @@ export function createCodexAppServerRuntime(
     completePendingTurn('interrupted', notificationParams);
   };
 
-  const deferTerminalNotificationUntilTurnStartAcknowledged = (
+  const observePendingTurnTerminalNotification = (
     method: 'turn/completed' | 'turn/interrupted',
     notificationParams: unknown,
   ): boolean => {
-    const activeTurn = pendingTurn;
-    if (!activeTurn || activeTurn.agentTurnId || activeTurn.providerStartAcknowledged) return false;
+    const notificationThreadId = readThreadId(notificationParams);
     const terminalTurnId = readProviderEventTurnId(notificationParams, { allowTopLevelId: true })
       ?? readTurnId(notificationParams);
-    if (!terminalTurnId) return false;
-    activeTurn.deferredTerminalNotification = { method, params: notificationParams };
-    return true;
+    if (!notificationThreadId || !terminalTurnId) return false;
+    let handled = false;
+    const owners = pendingTurn ? [pendingTurn, ...preAckCancelledTurns] : [...preAckCancelledTurns];
+    for (const owner of owners) {
+      if (owner.threadId !== notificationThreadId) continue;
+      if (owner.agentTurnId && preAckCancelledTurns.has(owner)) {
+        if (owner.agentTurnId !== terminalTurnId) continue;
+        preAckCancelledTurns.delete(owner);
+        owner.deferredTerminalNotifications.clear();
+        terminatedProviderTurnIds.add(terminalTurnId);
+        handled = true;
+        continue;
+      }
+      if (owner.agentTurnId || owner.providerStartAcknowledged) continue;
+      // Keep the existing pre-start owner's proofs until its provider ID can correlate them.
+      owner.deferredTerminalNotifications.delete(terminalTurnId);
+      owner.deferredTerminalNotifications.set(terminalTurnId, { method, params: notificationParams });
+      while (owner.deferredTerminalNotifications.size > MAX_DEFERRED_UNACKNOWLEDGED_TERMINAL_NOTIFICATIONS) {
+        const oldestTurnId = owner.deferredTerminalNotifications.keys().next().value;
+        if (typeof oldestTurnId !== 'string') break;
+        owner.deferredTerminalNotifications.delete(oldestTurnId);
+      }
+      if (owner === pendingTurn) handled = true;
+    }
+    return handled;
   };
 
-  const replayDeferredTerminalNotification = (activeTurn: PendingTurn): void => {
-    const deferred = activeTurn.deferredTerminalNotification;
-    activeTurn.deferredTerminalNotification = null;
-    if (!deferred || pendingTurn !== activeTurn) return;
-    const terminalTurnId = readProviderEventTurnId(deferred.params, { allowTopLevelId: true })
-      ?? readTurnId(deferred.params);
-    if (terminalTurnId && activeTurn.agentTurnId && terminalTurnId !== activeTurn.agentTurnId) {
-      return;
+  const replayDeferredTerminalNotification = (activeTurn: PendingTurn): boolean => {
+    const agentTurnId = activeTurn.agentTurnId;
+    const deferred = agentTurnId
+      ? activeTurn.deferredTerminalNotifications.get(agentTurnId)
+      : undefined;
+    activeTurn.deferredTerminalNotifications.clear();
+    if (!agentTurnId || !deferred) return false;
+    if (preAckCancelledTurns.has(activeTurn)) {
+      preAckCancelledTurns.delete(activeTurn);
+      terminatedProviderTurnIds.add(agentTurnId);
+      return true;
     }
+    if (pendingTurn !== activeTurn) return false;
     if (deferred.method === 'turn/completed') {
       handleTurnCompletedNotification(deferred.params);
-      return;
+    } else {
+      handleTurnInterruptedNotification(deferred.params);
     }
-    handleTurnInterruptedNotification(deferred.params);
+    return true;
   };
 
   const attachClientHandlers = (nextClient: DisposableCodexAppServerClient): void => {
     nextClient.onExit((result) => {
       if (disposed || unexpectedExitPublished) return;
       unexpectedExitPublished = true;
+      // Physical process exit retires all cancelled work owned by this client.
+      preAckCancelledTurns.clear();
       const exitDescription = result.signal
         ? `signal ${result.signal}`
         : `exit code ${result.exitCode ?? 'unknown'}`;
@@ -2047,11 +2076,11 @@ export function createCodexAppServerRuntime(
       });
     });
     nextClient.registerNotificationHandler('turn/completed', (notificationParams) => {
-      if (deferTerminalNotificationUntilTurnStartAcknowledged('turn/completed', notificationParams)) return;
+      if (observePendingTurnTerminalNotification('turn/completed', notificationParams)) return;
       handleTurnCompletedNotification(notificationParams);
     });
     nextClient.registerNotificationHandler('turn/interrupted', (notificationParams) => {
-      if (deferTerminalNotificationUntilTurnStartAcknowledged('turn/interrupted', notificationParams)) return;
+      if (observePendingTurnTerminalNotification('turn/interrupted', notificationParams)) return;
       handleTurnInterruptedNotification(notificationParams);
     });
     nextClient.registerNotificationHandler('error', (notificationParams) => {
@@ -2407,7 +2436,8 @@ export function createCodexAppServerRuntime(
       activeTurn.providerStartAcknowledged = true;
       if (activeTurn.interruptWhenProviderTurnIdArrives) {
         if (agentTurnId) {
-          terminatedProviderTurnIds.add(agentTurnId);
+          activeTurn.agentTurnId = agentTurnId;
+          if (replayDeferredTerminalNotification(activeTurn)) return;
           await requestCodexTurnInterruptWithStartupRetry({
             client: appServerClient,
             threadId: activeTurn.threadId,
@@ -2418,7 +2448,7 @@ export function createCodexAppServerRuntime(
             });
           });
         }
-        preAckCancelledTurns.delete(activeTurn);
+        // An interrupt acknowledgement or failure is not physical terminal proof.
         return;
       }
       if (agentTurnId && activeTurn.agentTurnId !== agentTurnId) {

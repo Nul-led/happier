@@ -1928,6 +1928,22 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(runtime.isTurnInFlight()).toBe(false);
   });
 
+  it('retains the exact pending-start terminal proof through unrelated terminal replays', async () => {
+    clientState.deferTurnStartForPrompt('early terminal followed by replay');
+    const runtime = createRuntime();
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const send = runtime.send({ v: 1, text: 'early terminal followed by replay' });
+    await waitForRequestCount('turn/start', 1);
+    emitNotification('turn/completed', completedTurn('turn-valid-before-ack'));
+    emitNotification('turn/completed', completedTurn('unrelated-replay'));
+    clientState.resolveDeferredTurnStart('turn-valid-before-ack');
+    await send;
+    await vi.waitFor(() => expect(runtime.isTurnInFlight()).toBe(false), { timeout: 500 });
+    expect(events.filter((event) => event.kind === 'turn-complete')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled' || event.kind === 'turn-failed')).toHaveLength(0);
+  });
+
   it('does not let a terminal id claim a pending turn before turn start is acknowledged', async () => {
     const runtime = createRuntime({
       processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
@@ -4242,6 +4258,80 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     ))).toHaveLength(1);
   });
 
+  it.each(['acknowledged', 'failed'] as const)('keeps cancelled pre-ack auth exclusion until exact native terminal after an %s interrupt', async (interruptOutcome) => {
+    clientState.deferTurnStartForPrompt('cancel before terminal proof');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const loginCount = clientState.requests.filter(({ method }) => method === 'account/login/start').length;
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const send = runtime.send({ v: 1, text: 'cancel before terminal proof' });
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    if (interruptOutcome === 'failed') clientState.rejectNextInterruptWith(new Error('turn/interrupt response lost'));
+    clientState.resolveDeferredTurnStart('turn-cancelled-terminal-proof');
+    await send.catch(() => undefined);
+    await waitForRequestCount('turn/interrupt', 1);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+    expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount);
+    emitNotification('turn/completed', { threadId: 'other-thread', turn: { id: 'turn-cancelled-terminal-proof', status: 'completed', items: [] } });
+    emitNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'unrelated-turn', status: 'completed', items: [] } });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+
+    emitNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'turn-cancelled-terminal-proof', status: 'completed', items: [] } });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount + 1);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
+  });
+
+  it.each(['turn/completed', 'turn/interrupted'] as const)('correlates cancelled pre-ack %s proof through unrelated terminal replays before acknowledgement', async (method) => {
+    clientState.deferTurnStartForPrompt('cancel before early terminal proof');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const send = runtime.send({ v: 1, text: 'cancel before early terminal proof' });
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    emitNotification(method, { threadId: 'thread-1', turn: { id: 'turn-early-proof', status: 'interrupted', items: [] } });
+    emitNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'unrelated-replay', status: 'completed', items: [] } });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    clientState.resolveDeferredTurnStart('turn-early-proof');
+    await send.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    expect(clientState.requests.filter(({ method }) => method === 'turn/interrupt')).toHaveLength(0);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
+  });
+
+  it('retires cancelled pre-ack auth exclusion on physical app-server exit without duplicate cancellation', async () => {
+    clientState.deferTurnStartForPrompt('cancel before client exit');
+    const runtime = asConnectedServiceAuthRuntime(createRuntime());
+    const applyRequest = { serviceId: 'openai-codex', authGeneration: { credential: buildConnectedCodexCredential('target'), selection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'target' } } } as const;
+    await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
+    const events: CodexAppServerEvent[] = [];
+    runtime.events.subscribe((event) => events.push(event));
+    const send = runtime.send({ v: 1, text: 'cancel before client exit' });
+    await waitForRequestCount('turn/start', 1);
+    await expect(runtime.cancel()).resolves.toEqual({ status: 'cancelled' });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    clientState.emitExit({ exitCode: 17, signal: null, stdout: '', stderr: 'physical exit' });
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
+    clientState.resolveDeferredTurnStart('turn-after-exit');
+    await send.catch(() => undefined);
+    expect(events.filter((event) => event.kind === 'turn-cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'turn-complete' || event.kind === 'turn-failed')).toHaveLength(0);
+    expect(events.filter((event) => event.kind === 'session-ended')).toHaveLength(1);
+  });
+
   it('excludes cancelled pre-ack provider work from auth until late-start cleanup', async () => {
     clientState.deferTurnStartForPrompt('cancel before provider id');
     const runtime = asConnectedServiceAuthRuntime(createRuntime());
@@ -4294,6 +4384,9 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         turnId: 'turn-cancelled-late',
       },
     });
+    // Interrupt ACK alone does not prove provider work ended.
+    await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: false, inProviderTurn: true } });
+    emitNotification('turn/completed', completedTurn('turn-cancelled-late'));
     await expect(runtime.runtimeAuth.readIdentity({ serviceId: 'openai-codex' })).resolves.toMatchObject({ runtime: { safeToApply: true, inProviderTurn: false } });
     await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true });
     expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCount + 1);
