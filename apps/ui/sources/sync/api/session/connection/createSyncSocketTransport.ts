@@ -57,7 +57,7 @@ export function createSyncSocketTransport(params: Readonly<{
         // Do not buffer lifecycle events across disconnect: reconnect sends the current facts.
         if (socket.connected === true) socket.emit('ui-focus', readComputerUiFocusState());
     };
-    const stopUiFocus = subscribeToRuntimeActiveChange(publishUiFocus);
+    const stopUiFocus = subscribeToRuntimeActiveChange(publishUiFocus, { includeWindowFocus: true });
 
     socket.on('connect', () => {
         publishUiFocus();

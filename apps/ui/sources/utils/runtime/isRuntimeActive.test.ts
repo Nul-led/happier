@@ -113,7 +113,7 @@ describe('computer focus lifecycle', () => {
         vi.stubGlobal('window', win);
         const { subscribeToRuntimeActiveChange } = await import('./isRuntimeActive');
         const listener = vi.fn();
-        const stop = subscribeToRuntimeActiveChange(listener);
+        const stop = subscribeToRuntimeActiveChange(listener, { includeWindowFocus: true });
         win.dispatchEvent(new Event('focus'));
         win.dispatchEvent(new Event('blur'));
         expect(listener).toHaveBeenCalledTimes(2);
@@ -140,5 +140,32 @@ describe('focused computer facts', () => {
         runtimeState.platformOs = 'ios';
         expect(readComputerUiFocusState()).toEqual({ computer: false, focused: false });
         runtimeState.platformOs = 'web';
+    });
+});
+
+
+describe('active refresh subscription boundaries', () => {
+    afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+    it('does not catch up an overdue active refresh merely because a visible window loses focus', async () => {
+        vi.useFakeTimers();
+        const doc = new EventTarget();
+        Object.defineProperty(doc, 'visibilityState', { value: 'visible' });
+        const win = new EventTarget();
+        vi.stubGlobal('document', doc);
+        vi.stubGlobal('window', win);
+        const { isRuntimeActive, startRuntimeActiveGatedInterval } = await import('./isRuntimeActive');
+        const refresh = vi.fn();
+        const stop = startRuntimeActiveGatedInterval(refresh, 1_000);
+        try {
+            vi.setSystemTime(Date.now() + 2_000);
+            expect(isRuntimeActive()).toBe(true);
+            win.dispatchEvent(new Event('blur'));
+            win.dispatchEvent(new Event('focus'));
+            expect(isRuntimeActive()).toBe(true);
+            expect(refresh).not.toHaveBeenCalled();
+            doc.dispatchEvent(new Event('visibilitychange'));
+            expect(refresh).toHaveBeenCalledTimes(1);
+        } finally { stop(); }
     });
 });

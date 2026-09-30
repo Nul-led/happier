@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 type NavigatorLike = {
     maxTouchPoints?: number;
     userAgent?: string;
-    userAgentData?: { mobile?: boolean };
+    userAgentData?: { mobile?: boolean; platform?: string };
 };
 
 const WEB_QR_SCANNER_MAX_VIEWPORT_MIN_EDGE_PX = 500;
@@ -27,6 +27,8 @@ function matchMedia(query: string): boolean {
 function isMobileUserAgent(nav: NavigatorLike | null): boolean {
     if (!nav) return false;
     if (nav.userAgentData?.mobile === true) return true;
+    // A desktop user agent cannot override an explicit mobile-platform client hint.
+    if (nav.userAgentData?.platform === 'Android' || nav.userAgentData?.platform === 'iOS') return true;
     const ua = typeof nav.userAgent === 'string' ? nav.userAgent : '';
     return /mobi|android|iphone|ipod|ipad/i.test(ua);
 }

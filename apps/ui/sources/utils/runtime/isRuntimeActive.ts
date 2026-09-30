@@ -51,7 +51,7 @@ function readDocument(): (Document & {
 /**
  * Notifies when the runtime's active/inactive state may have changed: the app
  * moved between foreground and background, or (on web) the document was hidden
- * or shown, or the host window gained/lost focus.
+ * or shown. Focus publishers can opt into host window focus/blur signals.
  *
  * This is the single owner of "what counts as a lifecycle transition" that
  * `isRuntimeActive` reads. Every gated worker subscribes here instead of
@@ -61,7 +61,10 @@ function readDocument(): (Document & {
  * leave the state unchanged; a caller that needs edge semantics compares
  * `isRuntimeActive()` itself.
  */
-export function subscribeToRuntimeActiveChange(listener: () => void): () => void {
+export function subscribeToRuntimeActiveChange(
+    listener: () => void,
+    options?: Readonly<{ includeWindowFocus?: boolean }>,
+): () => void {
     const detach: Array<() => void> = [];
 
     const doc = readDocument();
@@ -73,7 +76,7 @@ export function subscribeToRuntimeActiveChange(listener: () => void): () => void
     }
 
     const hostWindow = (globalThis as unknown as { window?: Window }).window;
-    if (typeof hostWindow?.addEventListener === 'function') {
+    if (options?.includeWindowFocus === true && typeof hostWindow?.addEventListener === 'function') {
         hostWindow.addEventListener('focus', listener);
         hostWindow.addEventListener('blur', listener);
         detach.push(() => {

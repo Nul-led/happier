@@ -55,3 +55,30 @@ describe('isWebMobileHost', () => {
         expect(isWebMobileHost()).toBe(true);
     });
 });
+
+
+describe('explicit mobile platform identity', () => {
+    it.each(['Android', 'iOS'])('keeps a host reporting %s mobile platform excluded with a desktop UA', (platform) => {
+        vi.stubGlobal('navigator', {
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
+            userAgentData: { mobile: false, platform },
+            maxTouchPoints: 5,
+        });
+        vi.stubGlobal('window', {
+            matchMedia: (query: string) => ({ matches: query === '(pointer: fine)' || query === '(hover: hover)' }),
+        });
+        expect(isWebMobileHost()).toBe(true);
+    });
+
+    it.each(['Windows', 'Linux'])('preserves a touch computer reporting %s platform', (platform) => {
+        vi.stubGlobal('navigator', {
+            userAgent: platform === 'Windows' ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' : 'Mozilla/5.0 (X11; Linux x86_64)',
+            userAgentData: { mobile: false, platform },
+            maxTouchPoints: 5,
+        });
+        vi.stubGlobal('window', {
+            matchMedia: (query: string) => ({ matches: query === '(pointer: coarse)' || query === '(hover: none)' }),
+        });
+        expect(isWebMobileHost()).toBe(false);
+    });
+});
