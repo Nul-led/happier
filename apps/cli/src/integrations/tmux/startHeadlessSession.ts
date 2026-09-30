@@ -8,6 +8,7 @@ import {
 import { isTmuxAvailable, selectPreferredTmuxSessionName, TmuxUtilities } from '@/integrations/tmux';
 import { resolveHeadlessTmuxAgentLaunchConfig } from './resolveHeadlessTmuxAgentLaunchConfig';
 import { createTerminalAttachmentId } from '@/terminal/attachment/terminalAttachmentInfo';
+import { fail } from '@happier-dev/cli-common/output';
 
 function removeFlag(argv: string[], flag: string): string[] {
   return argv.filter((arg) => arg !== flag);
@@ -51,7 +52,7 @@ export async function startHappyHeadlessInTmux(
     if (options.output === 'silent') {
       throw new Error('tmux is not available on this machine.');
     }
-    console.error(chalk.red('Error:'), 'tmux is not available on this machine.');
+    console.error(fail('tmux is not available on this machine.'));
     process.exit(1);
   }
 
@@ -98,7 +99,7 @@ export async function startHappyHeadlessInTmux(
     if (options.output === 'silent') {
       throw new Error(`Failed to start in tmux: ${result.error ?? 'unknown error'}`);
     }
-    console.error(chalk.red('Error:'), `Failed to start in tmux: ${result.error ?? 'unknown error'}`);
+    console.error(fail(`Failed to start in tmux: ${result.error ?? 'unknown error'}`));
     process.exit(1);
   }
 

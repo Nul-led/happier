@@ -144,6 +144,8 @@ describe('handleDaemonCliCommand: daemon restart', () => {
         expect(spawnDetachedMock).toHaveBeenCalledTimes(1);
         expect(waitRunningMock).toHaveBeenCalledTimes(1);
         expect(exitSpy).toHaveBeenCalledWith(0);
+        expect(output.logs).toContain('- [..] Restarting daemon\n');
+        expect(output.logs).toContain('- [✓] Restarted daemon\n');
     });
 
     it('passes stopSessions when --kill-sessions is provided', async () => {

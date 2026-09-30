@@ -17,7 +17,7 @@ import {
   runManagedCliUpdate,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { FirstPartyComponentId } from '@happier-dev/cli-common/firstPartyRuntime';
-import { createStepPrinter } from '@happier-dev/cli-common/output';
+import { cmd, createStepPrinter, fail } from '@happier-dev/cli-common/output';
 import {
   compareVersions,
   readCachedCliUpdateState,
@@ -61,9 +61,9 @@ function usage(): string {
     `  happier self-update [--check] [--preview|--dev|--channel=<preview|dev>] [--to <versionOrTag>]`,
     '',
     `${chalk.bold('Channels:')}`,
-    `  stable  → npm dist-tag ${chalk.cyan('latest')}`,
-    `  preview → npm dist-tag ${chalk.cyan('next')}`,
-    `  dev     → npm dist-tag ${chalk.cyan('next')} (${chalk.gray('dev rolling binaries')})`,
+    `  stable  → npm dist-tag ${cmd('latest')}`,
+    `  preview → npm dist-tag ${cmd('next')}`,
+    `  dev     → npm dist-tag ${cmd('next')} (${chalk.gray('dev rolling binaries')})`,
     '',
     `${chalk.bold('Environment:')}`,
     `  HAPPIER_CLI_UPDATE_CHECK=0                 Disable update notice + background check`,
@@ -509,7 +509,7 @@ export async function handleSelfCliCommand(context: CommandContext): Promise<voi
       process.exitCode = 0;
       return;
     }
-    console.error(chalk.red('Error:'), `Unknown self subcommand: ${sub}`);
+    console.error(fail(`Unknown self subcommand: ${sub}`));
     console.log(usage());
     process.exit(1);
   } catch (error) {

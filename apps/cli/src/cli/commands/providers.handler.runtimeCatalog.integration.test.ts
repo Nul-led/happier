@@ -75,7 +75,7 @@ describe('happier providers command boundary', () => {
     });
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await handleProvidersCliCommand(context(['probe', 'pc_1']), load);
-    expect(error).toHaveBeenCalledWith('Error: Provider operation failed: provider_endpoint_unreachable');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Provider operation failed: provider_endpoint_unreachable'));
     expect(process.exitCode).toBe(1);
 
     process.exitCode = 0;
@@ -143,7 +143,7 @@ describe('happier providers command boundary', () => {
     await handleProvidersCliCommand(context(['show', '--', '--json']), load);
 
     expect(log).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith('Error: Terminated --json is positional');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Terminated --json is positional'));
     expect(process.exitCode).toBe(1);
   });
 });

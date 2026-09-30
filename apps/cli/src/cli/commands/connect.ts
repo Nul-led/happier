@@ -12,6 +12,7 @@ import {
   banner,
   bullets,
   cmd,
+  createStepPrinter,
   dim,
   errorFrame,
   gray,
@@ -562,6 +563,14 @@ async function continueAuthentication(params: Readonly<{
   const timeoutMs = (params.options.timeoutSeconds ?? 10 * 60) * 1000;
   let response = params.initial;
   let renderedDeviceAttemptId: string | null = null;
+  // One step spans the whole device-code wait (every poll), from the printed code to the daemon's answer.
+  const steps = createStepPrinter();
+  let waiting = false;
+  const leaveWaiting = () => {
+    if (!waiting) return;
+    waiting = false;
+    steps.pause();
+  };
   const resolveAuthenticationMode = () => {
     const reconnectAccount =
       params.intent.kind === 'reconnect' ? params.intent.account : null;
@@ -582,155 +591,173 @@ async function continueAuthentication(params: Readonly<{
     );
   };
 
-  for (let step = 0; step < 1_000; step += 1) {
-    if (Date.now() - startedAt > timeoutMs) {
-      if ('attemptId' in response && response.attemptId) {
-        await params.client
-          .authenticate({ operation: 'cancel', attemptId: response.attemptId })
-          .catch(() => undefined);
+  try {
+    for (let step = 0; step < 1_000; step += 1) {
+      if (Date.now() - startedAt > timeoutMs) {
+        if ('attemptId' in response && response.attemptId) {
+          await params.client
+            .authenticate({ operation: 'cancel', attemptId: response.attemptId })
+            .catch(() => undefined);
+        }
+        throw new Error('Connected-account authentication timed out.');
       }
-      throw new Error('Connected-account authentication timed out.');
-    }
-    switch (response.status) {
-      case 'starting':
-        await delay(100);
-        response = await params.client.authenticate({
-          operation: 'read',
-          attemptId: response.attemptId,
-        });
-        break;
-      case 'awaitingManual': {
-        const mode = resolveAuthenticationMode();
-        if (!mode || mode.kind !== 'manual') {
-          throw new Error('Daemon returned an undeclared manual authentication phase.');
-        }
-        response = await params.client.authenticate({
-          operation: 'submitManual',
-          attemptId: response.attemptId,
-          fields: await promptManualFields(mode),
-        });
-        break;
-      }
-      case 'awaitingOAuth': {
-        if (!response.authorizationUrl) {
-          throw new Error('Daemon did not provide an OAuth authorization URL.');
-        }
-        console.log(`\n${dim('Open this authorization URL:')}\n${response.authorizationUrl}\n`);
-        if (!params.options.noOpen) {
-          await openBrowser(response.authorizationUrl);
-        }
-        const pasted = await promptInput('Paste the final redirect URL: ');
-        const parsed = parseOauthRedirectPaste({ pasted });
-        if (!parsed.ok) {
-          throw new Error(`Invalid OAuth callback (${parsed.error}).`);
-        }
-        response = await params.client.authenticate({
-          operation: 'completeOAuth',
-          attemptId: response.attemptId,
-          completion: {
-            code: parsed.code,
-            callbackUrl: response.callbackUrl,
-            state: parsed.state,
-          },
-        });
-        break;
-      }
-      case 'awaitingDeviceAuthorization': {
-        if (renderedDeviceAttemptId !== response.attemptId) {
-          const verificationUrl =
-            response.verificationUriComplete ?? response.verificationUri;
-          console.log(
-            [
-              '',
-              response.userCode
-                ? `Device code: ${response.userCode}`
-                : 'Complete device authorization in the browser.',
-              verificationUrl ? `Verification URL: ${verificationUrl}` : null,
-              '',
-            ]
-              .filter((line): line is string => line !== null)
-              .join('\n'),
-          );
-          if (verificationUrl && !params.options.noOpen) {
-            await openBrowser(verificationUrl);
-          }
-          renderedDeviceAttemptId = response.attemptId;
-        }
-        await delay(Math.max(250, response.pollIntervalMs ?? 1_000));
-        response = await params.client.authenticate({
-          operation: 'pollDevice',
-          attemptId: response.attemptId,
-        });
-        break;
-      }
-      case 'pending': {
-        const mode = resolveAuthenticationMode();
-        if (!mode) {
-          throw new Error(
-            'Daemon returned a pending phase for an undeclared authentication mode.',
-          );
-        }
-        await delay(Math.max(250, response.retryAfterMs));
-        response = await params.client.authenticate({
-          operation: mode.kind === 'oauthDeviceCode'
-            ? 'pollDevice'
-            : 'reconcile',
-          attemptId: response.attemptId,
-        });
-        break;
-      }
-      case 'configurationRequired': {
-        const revision = await replaceRequiredConfiguration({
-          client: params.client,
-          response,
-        });
-        if (response.attemptId) {
+      switch (response.status) {
+        case 'starting':
+          await delay(100);
           response = await params.client.authenticate({
-            operation: 'continueConnect',
+            operation: 'read',
             attemptId: response.attemptId,
-            ...(revision ? { expectedConfigurationRevision: revision } : {}),
           });
-        } else if (params.intent.kind === 'connect') {
+          break;
+        case 'awaitingManual': {
+          leaveWaiting();
+          const mode = resolveAuthenticationMode();
+          if (!mode || mode.kind !== 'manual') {
+            throw new Error('Daemon returned an undeclared manual authentication phase.');
+          }
           response = await params.client.authenticate({
-            operation: 'beginConnect',
-            service: params.intent.service,
-            modeId: params.intent.modeId,
-            ...(revision ? { expectedConfigurationRevision: revision } : {}),
+            operation: 'submitManual',
+            attemptId: response.attemptId,
+            fields: await promptManualFields(mode),
           });
-        } else {
-          response = await params.client.authenticate({
-            operation: 'beginReconnect',
-            account: params.intent.account,
-            ...(revision ? { expectedConfigurationRevision: revision } : {}),
-          });
+          break;
         }
-        break;
+        case 'awaitingOAuth': {
+          leaveWaiting();
+          if (!response.authorizationUrl) {
+            throw new Error('Daemon did not provide an OAuth authorization URL.');
+          }
+          console.log(`\n${dim('Open this authorization URL:')}\n${response.authorizationUrl}\n`);
+          if (!params.options.noOpen) {
+            await openBrowser(response.authorizationUrl);
+          }
+          const pasted = await promptInput('Paste the final redirect URL: ');
+          const parsed = parseOauthRedirectPaste({ pasted });
+          if (!parsed.ok) {
+            throw new Error(`Invalid OAuth callback (${parsed.error}).`);
+          }
+          response = await params.client.authenticate({
+            operation: 'completeOAuth',
+            attemptId: response.attemptId,
+            completion: {
+              code: parsed.code,
+              callbackUrl: response.callbackUrl,
+              state: parsed.state,
+            },
+          });
+          break;
+        }
+        case 'awaitingDeviceAuthorization': {
+          if (renderedDeviceAttemptId !== response.attemptId) {
+            leaveWaiting();
+            const verificationUrl =
+              response.verificationUriComplete ?? response.verificationUri;
+            console.log(
+              [
+                '',
+                response.userCode
+                  ? `Device code: ${response.userCode}`
+                  : 'Complete device authorization in the browser.',
+                verificationUrl ? `Verification URL: ${verificationUrl}` : null,
+                '',
+              ]
+                .filter((line): line is string => line !== null)
+                .join('\n'),
+            );
+            if (verificationUrl && !params.options.noOpen) {
+              await openBrowser(verificationUrl);
+            }
+            renderedDeviceAttemptId = response.attemptId;
+            steps.start('Waiting for authorization');
+            waiting = true;
+          }
+          await delay(Math.max(250, response.pollIntervalMs ?? 1_000));
+          response = await params.client.authenticate({
+            operation: 'pollDevice',
+            attemptId: response.attemptId,
+          });
+          break;
+        }
+        case 'pending': {
+          const mode = resolveAuthenticationMode();
+          if (!mode) {
+            throw new Error(
+              'Daemon returned a pending phase for an undeclared authentication mode.',
+            );
+          }
+          await delay(Math.max(250, response.retryAfterMs));
+          response = await params.client.authenticate({
+            operation: mode.kind === 'oauthDeviceCode'
+              ? 'pollDevice'
+              : 'reconcile',
+            attemptId: response.attemptId,
+          });
+          break;
+        }
+        case 'configurationRequired': {
+          leaveWaiting();
+          const revision = await replaceRequiredConfiguration({
+            client: params.client,
+            response,
+          });
+          if (response.attemptId) {
+            response = await params.client.authenticate({
+              operation: 'continueConnect',
+              attemptId: response.attemptId,
+              ...(revision ? { expectedConfigurationRevision: revision } : {}),
+            });
+          } else if (params.intent.kind === 'connect') {
+            response = await params.client.authenticate({
+              operation: 'beginConnect',
+              service: params.intent.service,
+              modeId: params.intent.modeId,
+              ...(revision ? { expectedConfigurationRevision: revision } : {}),
+            });
+          } else {
+            response = await params.client.authenticate({
+              operation: 'beginReconnect',
+              account: params.intent.account,
+              ...(revision ? { expectedConfigurationRevision: revision } : {}),
+            });
+          }
+          break;
+        }
+        case 'outcomeUnknown':
+          response = await params.client.authenticate({
+            operation: 'reconcile',
+            attemptId: response.attemptId,
+          });
+          break;
+        case 'cleanupPending':
+          response = await params.client.authenticate({
+            operation: 'cancel',
+            attemptId: response.attemptId,
+          });
+          break;
+        case 'connected':
+          if (waiting) {
+            waiting = false;
+            steps.stop('✓', 'Authorized');
+          }
+          return response;
+        case 'cancelled':
+        case 'reconnectRequired':
+        case 'rejected':
+        case 'unavailable':
+        case 'conflict':
+          throw new Error(
+            `Connected-account authentication failed (${describeFailure(response)}).`,
+          );
       }
-      case 'outcomeUnknown':
-        response = await params.client.authenticate({
-          operation: 'reconcile',
-          attemptId: response.attemptId,
-        });
-        break;
-      case 'cleanupPending':
-        response = await params.client.authenticate({
-          operation: 'cancel',
-          attemptId: response.attemptId,
-        });
-        break;
-      case 'connected':
-        return response;
-      case 'cancelled':
-      case 'reconnectRequired':
-      case 'rejected':
-      case 'unavailable':
-      case 'conflict':
-        throw new Error(
-          `Connected-account authentication failed (${describeFailure(response)}).`,
-        );
     }
+    throw new Error('Connected-account authentication exceeded its operation bound.');
+  } catch (error) {
+    if (waiting) {
+      waiting = false;
+      steps.stop('x', 'Waiting for authorization');
+    }
+    throw error;
   }
-  throw new Error('Connected-account authentication exceeded its operation bound.');
 }
 
 async function describeService(
@@ -887,9 +914,7 @@ export async function handleConnectCliCommand(
     await handleConnectCommand(context.args.slice(1));
   } catch (error) {
     console.error(
-      errorFrame('Error:', [
-        error instanceof Error ? error.message : 'Unknown error',
-      ]),
+      errorFrame(error instanceof Error ? error.message : 'Unknown error'),
     );
     if (process.env.DEBUG) console.error(error);
     process.exit(1);

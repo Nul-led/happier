@@ -38,7 +38,7 @@ export async function handleCapabilitiesCliCommand(context: CommandContext): Pro
           error: { code: 'unknown_subcommand', message: `Unknown capabilities subcommand: ${subcommand}` },
         });
       } else {
-        console.error(errorFrame('Error:', [`Unknown capabilities subcommand: ${subcommand}`]));
+        console.error(errorFrame(`Unknown capabilities subcommand: ${subcommand}`));
         console.log(usage());
         process.exitCode = 1;
       }
@@ -70,7 +70,7 @@ export async function handleCapabilitiesCliCommand(context: CommandContext): Pro
       return;
     }
 
-    console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Unknown error']));
+    console.error(errorFrame(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

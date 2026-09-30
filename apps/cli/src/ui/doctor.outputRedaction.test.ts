@@ -200,4 +200,28 @@ describe('doctor output redaction', () => {
     expect(output).not.toContain('doctor-process-arg-secret-123456');
     expect(output).not.toContain('doctor-process-env-secret-123456');
   });
+
+  it('opens with the brand header and shows a step while it inspects this computer', async () => {
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '1');
+    const events: string[] = [];
+    consoleLogMock.mockImplementation((...args: unknown[]) => events.push(args.join(' ')));
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      events.push(String(chunk));
+      return true;
+    });
+
+    await runDoctorCommand('all');
+
+    const text = events.join('\n').replace(/\u001b\[[0-9;]*m/gu, '');
+    expect(text).not.toContain('🩺');
+    const header = text.indexOf('Happier CLI doctor');
+    const inspecting = text.indexOf('- [..] Inspecting this computer');
+    const inspected = text.indexOf('- [✓] Inspected this computer');
+    const firstSection = text.indexOf('Basic information');
+    expect(header).toBeGreaterThanOrEqual(0);
+    expect(inspecting).toBeGreaterThan(header);
+    expect(inspected).toBeGreaterThan(inspecting);
+    expect(firstSection).toBeGreaterThan(inspected);
+    vi.unstubAllEnvs();
+  });
 });

@@ -4,12 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 
-vi.mock('node:readline', () => ({
-  createInterface: () => ({
-    question: (_prompt: string, cb: (answer: string) => void) => cb('y'),
-    close: () => {},
-  }),
-}));
+// The terminal is a system boundary: a readline interface that answers "y" to the confirmation.
+vi.mock('node:readline', async () => {
+  const { EventEmitter } = await import('node:events');
+  return {
+    createInterface: () => Object.assign(new EventEmitter(), {
+      question: (_prompt: string, cb: (answer: string) => void) => cb('y'),
+      close: () => {},
+    }),
+  };
+});
 
 import { reloadConfiguration } from '@/configuration';
 import { readSettings } from '@/persistence';

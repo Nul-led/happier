@@ -146,7 +146,8 @@ describe('happier daemon start output', () => {
 
       const stdout = await runDaemonStartAndCapture(0);
 
-      expect(stdout).toContain('Daemon started successfully');
+      expect(stdout).toContain('- [..] Starting daemon');
+      expect(stdout).toContain('- [✓] Started daemon');
       expect(stdout).toContain('Relay: http://localhost:4321');
       expect(stdout).toContain('Relay ID: env_test');
       expect(stdout).toContain('Account: account-123');

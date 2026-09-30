@@ -433,7 +433,7 @@ export async function readSettings(): Promise<Settings> {
     // Warn if schema version is newer than supported
     if (schemaVersion > SUPPORTED_SCHEMA_VERSION) {
       logger.warn(
-        `⚠️ Settings schema v${schemaVersion} > supported v${SUPPORTED_SCHEMA_VERSION}. ` +
+        `Settings file uses schema v${schemaVersion}, newer than the supported v${SUPPORTED_SCHEMA_VERSION}. ` +
         'Update Happier CLI for full functionality.'
       );
     }

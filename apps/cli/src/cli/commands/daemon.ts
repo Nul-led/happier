@@ -51,7 +51,7 @@ import { resolveDaemonServiceCliRuntimeFromEnv } from '@/daemon/service/cli';
 
 import type { CommandContext } from '@/cli/commandRegistry';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { cmd, errorFrame, kv, neutral, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
+import { cmd, createStepPrinter, errorFrame, kv, neutral, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
 
 async function printDaemonJson(payload: unknown): Promise<void> {
   await writeJsonStdout(payload);
@@ -213,7 +213,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
   if (daemonSubcommand === 'stop-session') {
     const sessionId = args[2];
     if (!sessionId) {
-      console.error(errorFrame('Error:', ['Session ID required']));
+      console.error(errorFrame('Session ID required'));
       process.exit(1);
     }
 
@@ -306,6 +306,9 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
         },
       }
       : {};
+    // Starting waits until the daemon answers; show that as a timed step (never in --json).
+    const steps = createStepPrinter({ enabled: !jsonRequested });
+    steps.start('Starting daemon');
     const child = await spawnDetachedDaemonStartSync(spawnOptions);
     child.unref();
 
@@ -317,6 +320,8 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
       timeoutMs,
       pollMs,
     });
+    if (started) steps.stop('✓', 'Started daemon');
+    else steps.pause();
 
     if (started) {
       let account: string | undefined;
@@ -335,7 +340,6 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
           ...(account ? { account } : {}),
         });
       } else {
-        console.log(ok('Daemon started successfully'));
         console.log(`  ${kv('Relay:', configuration.serverUrl)}`);
         console.log(`  ${kv('Relay ID:', configuration.activeServerId)}`);
         if (account) console.log(`  ${kv('Account:', account)}`);
@@ -460,8 +464,9 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
   if (daemonSubcommand === 'stop') {
     const stopSessions = args.includes('--kill-sessions');
     const stopOptions = { stopSessions };
+    const steps = createStepPrinter({ enabled: !args.includes('--json') });
     if (args.includes('--all')) {
-      await stopAllDaemonsBestEffort(stopOptions);
+      await steps.run('Stopping all daemons', () => stopAllDaemonsBestEffort(stopOptions), () => 'Stopped all daemons');
       process.exit(0);
     }
     const ownership = await evaluateCurrentDaemonOwner();
@@ -473,7 +478,9 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
       console.error(errorFrame(message.title, [...message.lines]));
       process.exit(1);
     }
-    await stopDaemon(stopOptions);
+    await steps.run('Stopping daemon', () => stopDaemon(stopOptions), (result) => (
+      result.status === 'stopped' ? 'Stopped daemon' : 'No daemon was running'
+    ));
     process.exit(0);
   }
 
@@ -546,7 +553,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
           message,
         });
       } else {
-        console.error(errorFrame('Error:', [message]));
+        console.error(errorFrame(message));
       }
       process.exit(1);
     }
@@ -559,7 +566,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
           message,
         });
       } else {
-        console.error(errorFrame('Error:', [message]));
+        console.error(errorFrame(message));
       }
       process.exit(1);
     }
@@ -622,6 +629,8 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
       }
     }
 
+    const restartSteps = createStepPrinter({ enabled: !jsonRequested });
+    restartSteps.start('Restarting daemon');
     const restartResult = await restartDaemonAndWait({
       stopSessions,
       takeover: takeoverRequested,
@@ -633,6 +642,8 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
         : {}),
     });
     const started = typeof restartResult === 'boolean' ? restartResult : restartResult.ok;
+    if (started) restartSteps.stop('✓', 'Restarted daemon');
+    else restartSteps.pause();
     const sessionRunnerRestart = typeof restartResult === 'boolean'
       ? undefined
       : restartResult.sessionRunnerRestart;
@@ -647,7 +658,6 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
           ...(sessionRunnerRestart ? { sessionRunnerRestart } : {}),
         });
       } else {
-        console.log(ok('Daemon restarted successfully'));
         console.log(`  ${kv('Relay:', configuration.serverUrl)}`);
         console.log(`  ${kv('Relay ID:', configuration.activeServerId)}`);
         if (sessionRunnerRestart) {
@@ -794,7 +804,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     try {
       await runDaemonServiceCliCommand({ argv: ['install', ...args.slice(2)] });
     } catch (error) {
-      console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Unknown error']));
+      console.error(errorFrame(error instanceof Error ? error.message : 'Unknown error'));
       process.exit(1);
     }
     return;
@@ -804,7 +814,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     try {
       await runDaemonServiceCliCommand({ argv: ['uninstall', ...args.slice(2)] });
     } catch (error) {
-      console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Unknown error']));
+      console.error(errorFrame(error instanceof Error ? error.message : 'Unknown error'));
       process.exit(1);
     }
     return;

@@ -518,7 +518,7 @@ export async function handleMachineCommand(args: string[], deps: Partial<Machine
       return;
     }
 
-    console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Unknown error']));
+    console.error(errorFrame(error instanceof Error ? error.message : 'Unknown error'));
     showMachineHelp();
     if (process.env.DEBUG) {
       console.error(error);

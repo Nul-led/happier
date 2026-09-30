@@ -7,7 +7,7 @@ import { configuration } from '@/configuration';
 import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
 import { printJsonEnvelope, wantsJson } from '@/cli/output/jsonEnvelope';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
-import { definitionList, fail, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
+import { cmd, definitionList, fail, gray, neutral, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
 
 export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
@@ -22,12 +22,12 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
   }
 
   if (!json) {
-    console.log(`\n${sectionTitle('Authentication Status')}\n`);
+    console.log(sectionTitle('Authentication'));
   }
 
   if (!credentials) {
     console.log(fail('Not authenticated'));
-    console.log('  Run "happier auth login" to authenticate');
+    console.log(gray(`  Run ${cmd('happier auth login')} to sign in.`));
     return;
   }
 
@@ -53,8 +53,8 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
     }
 
     console.log(fail('Not authenticated'));
-    console.log('  Stored credentials were rejected by the selected server');
-    console.log('  Run "happier auth login --force" to authenticate again');
+    console.log(gray('  The selected server rejected the stored credentials.'));
+    console.log(gray(`  Run ${cmd('happier auth login --force')} to sign in again.`));
     return;
   }
 
@@ -99,20 +99,13 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
 
   if (machineRegistered) {
     console.log(ok('Machine registered'));
-    console.log(definitionList([
-      { label: 'Machine ID', value: machineId ?? '' },
-      { label: 'Host', value: os.hostname() },
-    ], { indent: '  ' }));
   } else {
     console.log(warn('Machine not registered'));
-    console.log('  Run "happier auth login --force" to fix this');
+    console.log(gray(`  Run ${cmd('happier auth login --force')} to fix this.`));
   }
-
-  console.log(`\n  Data directory: ${configuration.happyHomeDir}`);
-
-  if (daemonRunning) {
-    console.log(ok('Daemon running'));
-  } else {
-    console.log(fail('Daemon not running'));
-  }
+  console.log(daemonRunning ? ok('Daemon running') : neutral('Daemon not running'));
+  console.log(definitionList([
+    ...(machineRegistered ? [{ label: 'Machine ID', value: machineId ?? '' }, { label: 'Host', value: os.hostname() }] : []),
+    { label: 'Data directory', value: configuration.happyHomeDir },
+  ], { indent: '  ' }));
 }

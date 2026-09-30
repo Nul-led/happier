@@ -136,7 +136,7 @@ async function failClosedReservedRootCommand(args: readonly string[], command: s
     return true;
   }
 
-  console.error(errorFrame('Error:', [message]));
+  console.error(errorFrame(message));
   process.exitCode = 1;
   return true;
 }
@@ -156,7 +156,7 @@ async function rejectTmuxInvocation(args: readonly string[], message: string): P
     );
     return;
   }
-  console.error(errorFrame('Error:', [message]));
+  console.error(errorFrame(message));
   process.exit(1);
 }
 
@@ -176,7 +176,7 @@ async function reportInvalidGlobalArguments(args: readonly string[], error: unkn
     );
     return;
   }
-  console.error(errorFrame('Error:', [message]));
+  console.error(errorFrame(message));
   process.exit(1);
 }
 
@@ -263,7 +263,7 @@ async function launchCommandInTmux(
       );
       return;
     }
-    console.error(errorFrame('Error:', [message]));
+    console.error(errorFrame(message));
     if (process.env.DEBUG) {
       console.error(error);
     }

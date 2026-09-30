@@ -10,6 +10,7 @@ import type {
 } from '@/diagnostics/doctorRepair';
 
 import { renderDoctorRepairReport } from './renderDoctorRepairReport';
+import { warn } from '@happier-dev/cli-common/output';
 
 const cli: CurrentCliInfo = {
   releaseChannel: 'dev',
@@ -204,7 +205,7 @@ describe('renderDoctorRepairReport — card layout', () => {
     expect(mismatched).toMatch(/→.*service definition drifted/);
   });
 
-  it('card uses ● glyph for entries', () => {
+  it('marks a card that needs attention with the shared warning glyph', () => {
     const finding: RepairFinding = {
       kind: 'automatic_startup_stale_definition',
       severity: 'warning',
@@ -212,6 +213,6 @@ describe('renderDoctorRepairReport — card layout', () => {
       entry,
     };
     const out = renderDoctorRepairReport(makeReport({ findings: [finding] })).join('\n');
-    expect(out).toContain('●');
+    expect(out).toContain(warn());
   });
 });

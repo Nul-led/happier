@@ -388,6 +388,54 @@ describe('handleConnectCommand daemon facade', () => {
     }
   });
 
+  it('shows the device code, then one waiting step until the daemon reports the account connected', async () => {
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '1');
+    const described = describedCodex();
+    controlMock.mockResolvedValueOnce({
+      ...described,
+      descriptor: {
+        ...described.descriptor,
+        authentication: {
+          defaultModeId: 'device',
+          modes: [{ id: 'device', kind: 'oauthDeviceCode', scopes: ['openid'], outcomeReconciliation: 'none' }],
+        },
+      },
+    });
+    authenticateMock
+      .mockResolvedValueOnce({
+        status: 'awaitingDeviceAuthorization',
+        attemptId: 'attempt-device',
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://auth.example.test/device',
+        pollIntervalMs: 250,
+      })
+      .mockResolvedValueOnce({ status: 'pending', attemptId: 'attempt-device', retryAfterMs: 250 })
+      .mockResolvedValueOnce({
+        status: 'connected',
+        attemptId: 'attempt-device',
+        account: { service: CODEX_SERVICE, accountId: 'account-device' },
+      });
+    const output = captureConsoleLogAndMuteStdout();
+    try {
+      const { handleConnectCommand } = await import('./connect');
+      await handleConnectCommand(['openai-codex', '--device', '--no-open']);
+
+      const rendered = output.logs.join('\n').replace(/\u001b\[[0-9;]*m/gu, '');
+      const code = rendered.indexOf('ABCD-1234');
+      const waiting = rendered.indexOf('- [..] Waiting for authorization');
+      const authorized = rendered.indexOf('- [✓] Authorized');
+      const connected = rendered.indexOf('connected (account-device)');
+      expect(code).toBeGreaterThanOrEqual(0);
+      expect(waiting).toBeGreaterThan(code);
+      expect(rendered.split('Waiting for authorization')).toHaveLength(2);
+      expect(authorized).toBeGreaterThan(waiting);
+      expect(connected).toBeGreaterThan(authorized);
+    } finally {
+      output.restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('reads status from daemon-described qualified accounts', async () => {
     controlMock
       .mockResolvedValueOnce(describedGithub([{

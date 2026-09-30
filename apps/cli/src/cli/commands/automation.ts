@@ -12,6 +12,7 @@ import { assertCommandArguments, readRawFlagValue } from '@/cli/commands/shared/
 import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping';
 import { printJsonEnvelope, wantsJson } from '@/cli/output/jsonEnvelope';
 import { readCredentials } from '@/persistence';
+import { fail } from '@happier-dev/cli-common/output';
 
 type AutomationCommandDeps = Readonly<{
   readCredentialsFn: typeof readCredentials;
@@ -182,7 +183,7 @@ export async function handleAutomationCliCommand(context: CommandContext): Promi
       }, { exitCode: mapped.unexpected ? 2 : 1 });
       return;
     }
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     process.exitCode = 1;
   }
 }

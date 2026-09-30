@@ -92,8 +92,8 @@ export async function handleProvidersCliCommand(
         // guidance the other Provider surfaces show instead of a bare code.
         const typed = ProviderErrorV1Schema.safeParse(cliError.details);
         console.error(typed.success
-            ? errorFrame('Error:', presentProviderCliRefusal(typed.data))
-            : `Error: ${cliError.message}`);
+            ? errorFrame('The provider refused the request', presentProviderCliRefusal(typed.data))
+            : errorFrame(cliError.message));
         process.exitCode = 1;
     }
 }

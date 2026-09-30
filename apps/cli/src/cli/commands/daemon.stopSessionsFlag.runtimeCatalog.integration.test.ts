@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DaemonRunningInspection } from '@/daemon/controlClient';
 import type { HappyProcessInfo } from '@/daemon/doctor';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { captureStdout } from '@/testkit/logger/captureOutput';
 
 const { findAllHappyProcessesMock, inspectDaemonMock, stopDaemonMock, stopAllDaemonsBestEffortMock } = vi.hoisted(() => ({
   findAllHappyProcessesMock: vi.fn<() => Promise<HappyProcessInfo[]>>(async () => []),
@@ -56,15 +57,41 @@ describe('handleDaemonCliCommand: daemon stop --kill-sessions', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       throw new Error(`exit:${code ?? ''}`);
     }) as any);
+    stopDaemonMock.mockResolvedValue({ status: 'stopped', method: 'graceful' });
+    const stdout = captureStdout();
 
-    await expect(
-      handleDaemonCliCommand({
-        args: ['daemon', 'stop', '--kill-sessions'],
-      } as any),
-    ).rejects.toThrow(/exit:0/);
+    try {
+      await expect(
+        handleDaemonCliCommand({
+          args: ['daemon', 'stop', '--kill-sessions'],
+        } as any),
+      ).rejects.toThrow(/exit:0/);
+    } finally {
+      stdout.restore();
+    }
 
     expect(exitSpy).toHaveBeenCalledWith(0);
     expect(stopDaemonMock).toHaveBeenCalledWith({ stopSessions: true });
+    expect(stdout.text()).toBe('- [..] Stopping daemon\n- [✓] Stopped daemon\n');
+  }, 60_000);
+
+  it('keeps daemon stop --all --json output silent for machine callers', async () => {
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? ''}`);
+    }) as any);
+    const stdout = captureStdout();
+
+    try {
+      await expect(
+        handleDaemonCliCommand({
+          args: ['daemon', 'stop', '--all', '--json'],
+        } as any),
+      ).rejects.toThrow(/exit:0/);
+    } finally {
+      stdout.restore();
+    }
+
+    expect(stdout.text()).toBe('');
   }, 60_000);
 
   it('passes stopSessions to stopAllDaemonsBestEffort when --all is present', async () => {

@@ -25,6 +25,7 @@ import { applyStackSessionPriority } from '@/utils/process/applyStackSessionPrio
 import { installTerminalAuthorityCeiling } from '@/api/client/terminalAuthorityCeiling';
 import { refreshTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { readStoredCredentials } from '@/persistence';
+import { fail } from '@happier-dev/cli-common/output';
 
 const isCliDistIntegrityProbe = process.env.HAPPIER_CLI_DIST_INTEGRITY_PROBE === '1';
 
@@ -74,7 +75,7 @@ if (!isCliDistIntegrityProbe) {
     await dispatchCli({ args, terminalRuntime, rawArgv: process.argv });
   })().catch((error) => {
     logger.fatal(error);
-    console.error('Error:', error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }
