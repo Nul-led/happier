@@ -1,3 +1,5 @@
+import { hasFlag } from './commands/shared/argvFlags';
+import { wantsJson } from './output/jsonEnvelope';
 import type { CommandContext, CommandHandler } from './commandRegistry';
 
 export type FirstClassSessionCommandDescriptor = Readonly<{
@@ -11,7 +13,8 @@ export type FirstClassSessionCommandDescriptor = Readonly<{
 
 function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandler {
   return async (context: CommandContext) => {
-    if (context.args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
+    const argv = context.args.slice(1);
+    if (hasFlag(argv, '--help') || hasFlag(argv, '-h')) {
       const [
         { formatFirstClassSessionCommandHelp },
         { emitSessionHelp, inferSessionKind },
@@ -22,7 +25,7 @@ function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandle
       const command = context.args[0] ?? sessionPath[0] ?? 'session';
       await emitSessionHelp({
         help: formatFirstClassSessionCommandHelp({ command, sessionPath }),
-        json: context.args.includes('--json'),
+        json: wantsJson(argv),
         kind: inferSessionKind(sessionPath),
       });
       return;
@@ -30,7 +33,7 @@ function delegateToSessionCommand(sessionPath: readonly string[]): CommandHandle
     const { handleSessionCliCommand } = await import('./commands/session');
     await handleSessionCliCommand({
       ...context,
-      args: ['session', ...sessionPath, ...context.args.slice(1)],
+      args: ['session', ...sessionPath, ...argv],
     });
   };
 }

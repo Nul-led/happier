@@ -17,6 +17,25 @@ describe('happier session send (action executor)', () => {
     createCliActionExecutorFromCredentials.mockClear();
   });
 
+  it.each(['--local-id', '--help', '--json'])('treats %s after the option terminator as the literal message', async (message) => {
+    const readCredentialsFn = vi.fn(async () => null);
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['send', '--json', 'sess-1', '--', message], { readCredentialsFn });
+      expect(readCredentialsFn).toHaveBeenCalledOnce();
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'not_authenticated' } });
+    } finally { output.restore(); }
+  });
+
+  it.each(['', '  ', 'agent-transition:claim-1'])('rejects invalid caller local id %j before credentials', async (localId) => {
+    const readCredentialsFn = vi.fn(async () => null);
+    const { cmdSessionSend } = await import('./send');
+    await expect(cmdSessionSend(['send', '--json', 'sess-1', 'Hello', '--local-id', localId], { readCredentialsFn }))
+      .rejects.toMatchObject({ code: 'invalid_arguments' });
+    expect(readCredentialsFn).not.toHaveBeenCalled();
+  });
+
   it('routes through ActionExecutor with the expected action id and args', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
@@ -321,14 +340,14 @@ describe('happier session send (action executor)', () => {
     };
     const success = {
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-42', waited: false },
+      result: { ok: true, sessionId: 'sess-1', localId: ' local-42 ', waited: false },
     };
 
     execute.mockResolvedValueOnce(success);
     let output = captureConsoleJsonOutput();
     try {
       await handleSessionCommand(
-        ['send', 'sess-1', 'Hello', '--model', 'provider/model', '--provider-connection', 'pc_work', '--local-id', 'local-42', '--json'],
+        ['send', 'sess-1', 'Hello', '--model', 'provider/model', '--provider-connection', 'pc_work', '--local-id', ' local-42 ', '--json'],
         credentials,
       );
     } finally {
@@ -339,7 +358,7 @@ describe('happier session send (action executor)', () => {
       expect.objectContaining({
         modelOverride: 'provider/model',
         providerConnectionId: 'pc_work',
-        localId: 'local-42',
+        localId: ' local-42 ',
       }),
       { surface: 'cli', defaultSessionId: null },
     );
@@ -399,7 +418,7 @@ describe('happier session send (action executor)', () => {
   it('prints the durable local id so a human retry can rejoin the same input', async () => {
     execute.mockResolvedValueOnce({
       ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-42', waited: false },
+      result: { ok: true, sessionId: 'sess-1', localId: ' local-42 ', waited: false },
     });
     const { handleSessionCommand } = await import('./handleSessionCommand');
 
@@ -415,7 +434,7 @@ describe('happier session send (action executor)', () => {
       text.restore();
     }
 
-    expect(text.text()).toContain('local-42');
+    expect(text.text()).toContain(' local-42 ');
   });
 
   it('names the durable retry identity when a send fails ambiguously', async () => {

@@ -75,3 +75,13 @@ describe('readIntFlagValue', () => {
       .toThrow(expect.objectContaining({ code: 'invalid_arguments' }));
   });
 });
+
+describe('option terminator', () => {
+  it('recognizes flags only before the positional-only boundary', () => {
+    const argv = ['send', '--local-id', ' chosen-id ', 'session-id', '--', '--local-id', '--timeout', 'oops'];
+    expect(readFlagValue(argv, '--local-id')).toBe('chosen-id');
+    expect(hasFlag(argv, '--timeout')).toBe(false);
+    expect(readIntFlagValue(argv, '--timeout')).toBeNull();
+    expect(readFlagValue(['send', 'session-id', '--', '--model', 'gpt-4o'], '--model')).toBeNull();
+  });
+});

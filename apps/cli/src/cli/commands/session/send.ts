@@ -5,10 +5,11 @@ import chalk from 'chalk';
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import type { PermissionIntent } from '@happier-dev/agents';
 import { ok } from '@happier-dev/cli-common/output';
+import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
-import { hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue, readFlagValueUnlessFlagToken } from '@/cli/commands/shared/argvFlags';
+import { hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue, readRawFlagValue, readFlagValueUnlessFlagToken } from '@/cli/commands/shared/argvFlags';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import {
   normalizeActionExecuteResult,
@@ -92,7 +93,12 @@ export async function cmdSessionSend(
   // identity minted out of reach downstream cannot be named.
   // `assertSessionCommandArguments` already rejected a missing or flag-shaped
   // value above.
-  const localId = readFlagValueUnlessFlagToken(argv, '--local-id') ?? randomUUID();
+  const localIdRaw = readRawFlagValue(argv, '--local-id');
+  const callerLocalId = readPendingLocalId(localIdRaw);
+  if (localIdRaw !== null && (callerLocalId === null || isSessionAgentTransitionDividerLocalId(callerLocalId))) {
+    throw invalidArguments('Invalid --local-id');
+  }
+  const localId = callerLocalId ?? randomUUID();
   const timeoutSeconds =
     typeof timeoutSecondsRaw === 'number' && Number.isFinite(timeoutSecondsRaw) && timeoutSecondsRaw > 0
       ? Math.min(3600, timeoutSecondsRaw)

@@ -5,6 +5,27 @@ import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/c
 import { FIRST_CLASS_SESSION_COMMANDS } from './firstClassSessionCommands';
 
 describe('first-class CLI session command help', () => {
+  it.each(['--help', '-h'])('keeps %s after -- as the public send message', async (message) => {
+    const send = FIRST_CLASS_SESSION_COMMANDS.find((entry) => entry.command === 'send')!;
+    const output = captureConsoleJsonOutput();
+    try {
+      await send.handler({ args: ['send', '--json', 'sess-1', '--', message], rawArgv: [], terminalRuntime: null });
+      expect(output.json()).toMatchObject({ ok: false, kind: 'session_send', error: { code: 'not_authenticated' } });
+    } finally {
+      output.restore();
+      process.exitCode = undefined;
+    }
+  });
+
+  it('keeps a positional --json literal out of the public help output mode', async () => {
+    const send = FIRST_CLASS_SESSION_COMMANDS.find((entry) => entry.command === 'send')!;
+    const output = captureConsoleText();
+    try {
+      await send.handler({ args: ['send', '--help', '--', '--json'], rawArgv: [], terminalRuntime: null });
+      expect(output.text().startsWith('happier send')).toBe(true);
+    } finally { output.restore(); }
+  });
+
   it('renders each command with its invoked top-level command', async () => {
     for (const sessionCommand of FIRST_CLASS_SESSION_COMMANDS) {
       const output = captureConsoleText();

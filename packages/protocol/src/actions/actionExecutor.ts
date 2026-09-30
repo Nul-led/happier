@@ -1,3 +1,4 @@
+import { isSessionAgentTransitionDividerLocalId } from '../sessions/agentTransitionDivider.js';
 import {
   actionSpecToActionDefinitionV1,
   findActionInputFieldHint,
@@ -4170,6 +4171,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
           const actionCaller = ctx.actionCaller ?? { kind: 'host' as const };
+          if (actionCaller.kind !== 'plugin' && isSessionAgentTransitionDividerLocalId(data.localId)) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
           // Only a plugin caller owns a declared Composer attachment the host
           // can qualify. A generic caller supplying the field is refused rather
           // than silently stripped, so a mis-routed send never delivers its

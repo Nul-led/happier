@@ -1,9 +1,16 @@
+/** Options end at --; later tokens belong to the positional arguments. */
+function findFlagIndex(argv: readonly string[], flag: string, allowInlineValue = false): number {
+  const terminator = argv.indexOf('--');
+  const index = argv.findIndex((value) => value === flag || (allowInlineValue && value.startsWith(`${flag}=`)));
+  return index >= 0 && (terminator < 0 || index < terminator) ? index : -1;
+}
+
 export function hasFlag(argv: readonly string[], flag: string): boolean {
-  return argv.includes(flag);
+  return findFlagIndex(argv, flag) >= 0;
 }
 
 export function hasFlagValue(argv: readonly string[], flag: string): boolean {
-  return argv.some((argument) => argument === flag || argument.startsWith(`${flag}=`));
+  return findFlagIndex(argv, flag, true) >= 0;
 }
 
 export function readCommandPositionals(
@@ -46,7 +53,7 @@ export function readFlagValue(argv: readonly string[], flag: string): string | n
 
 /** Reads a flag value without changing the caller-owned bytes. */
 export function readRawFlagValue(argv: readonly string[], flag: string): string | null {
-  const idx = argv.findIndex((value) => value === flag || value.startsWith(`${flag}=`));
+  const idx = findFlagIndex(argv, flag, true);
   if (idx < 0) return null;
   const argument = argv[idx]!;
   const raw = argument === flag
@@ -69,6 +76,7 @@ export function readRepeatedFlagValues(
   const values: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
+    if (argument === '--') break;
     const raw = argument === flag
       ? argv[index + 1]
       : argument.startsWith(`${flag}=`)

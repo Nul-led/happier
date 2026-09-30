@@ -50,6 +50,17 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (session control)', () => {
+  it('rejects a reserved transition local id before dispatching a host message', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+    await expect(executor.execute(
+      'session.message.send',
+      { sessionId: 's1', message: 'Hello', localId: 'agent-transition:claim-1' },
+      { surface: 'cli', defaultSessionId: null },
+    )).resolves.toEqual({ ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
   it('executes session.message.send via deps.sessionSendMessage (including optional overrides)', async () => {
     const sessionSendMessage = vi.fn(async () => ({ ok: true }));
     const executor = createExecutor({ sessionSendMessage });
