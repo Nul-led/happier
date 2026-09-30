@@ -2703,6 +2703,7 @@ export const de: TranslationStructure = {
             launchSourceUnknown: 'Unbekannt',
         },
         updates: {
+            desktopTitle: "Desktop-Updates",
             otaStatus: 'OTA-Status',
             lastChecked: 'Zuletzt geprüft',
             openStore: 'Store-Update öffnen',

@@ -3073,6 +3073,7 @@ localTailscale: {
       launchSourceUnknown: "不明",
     },
     updates: {
+      desktopTitle: "デスクトップアプリの更新",
       otaStatus: "OTA 状態",
       lastChecked: "最終確認",
       openStore: "ストアの更新を開く",

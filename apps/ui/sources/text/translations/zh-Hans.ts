@@ -2695,6 +2695,7 @@ export const zhHans = {
       launchSourceUnknown: "未知",
     },
     updates: {
+      desktopTitle: "桌面应用更新",
       otaStatus: "OTA 状态",
       lastChecked: "上次检查",
       openStore: "打开商店更新",

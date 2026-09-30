@@ -2741,6 +2741,7 @@ export const en = {
             launchSourceUnknown: 'Unknown',
         },
         updates: {
+            desktopTitle: "Desktop updates",
             otaStatus: 'OTA status',
             lastChecked: 'Last checked',
             openStore: 'Open store update',

@@ -56,6 +56,19 @@ describe('buildAppUpdateStatusModel', () => {
         expect(model.actionLabel).toBe('Open the App Store update');
     });
 
+    it('keeps an available desktop update visible but disables apply during a shared manual check', () => {
+        const model = buildAppUpdateStatusModel({
+            platformOs: 'web',
+            nativeUpdateUrl: null,
+            desktop: { status: 'available', availableVersion: '2.0.0', error: null, isChecking: true },
+            ota: { isUpdatePending: false },
+            releaseNotes: { hasUnread: false },
+            changelog: { hasUnread: false },
+            t: fakeT,
+        });
+        expect(model).toMatchObject({ visible: true, kind: 'desktop', actionDisabled: true });
+    });
+
     it('builds a desktop retry state when the desktop updater errors', () => {
         const model = buildAppUpdateStatusModel({
             platformOs: 'web',

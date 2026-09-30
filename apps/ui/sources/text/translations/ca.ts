@@ -2433,6 +2433,7 @@ export const ca = {
             launchSourceUnknown: 'Desconegut',
         },
         updates: {
+            desktopTitle: "Actualitzacions de l’aplicació d’escriptori",
             otaStatus: 'Estat OTA',
             lastChecked: 'Última comprovació',
             openStore: 'Obre l’actualització de la botiga',

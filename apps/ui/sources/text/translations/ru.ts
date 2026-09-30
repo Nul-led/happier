@@ -2715,6 +2715,7 @@ export const ru = {
       launchSourceUnknown: "Неизвестно",
     },
     updates: {
+      desktopTitle: "Обновления приложения для компьютера",
       otaStatus: "Статус OTA",
       lastChecked: "Последняя проверка",
       openStore: "Открыть обновление в магазине",

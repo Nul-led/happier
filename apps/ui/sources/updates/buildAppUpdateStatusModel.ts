@@ -61,12 +61,14 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
                 error: params.desktop.error,
                 t: params.t,
             }),
-            actionLabel: params.desktop.status === 'error'
+            actionLabel: params.desktop.isChecking
+                ? params.t('common.loading')
+                : params.desktop.status === 'error'
                 ? params.t('common.retry')
                 : params.desktop.status === 'installing'
                     ? params.t('common.loading')
                     : params.t('updateBanner.pressToApply'),
-            actionDisabled: params.desktop.status === 'installing',
+            actionDisabled: params.desktop.isChecking === true || params.desktop.status === 'installing',
             dismissLabel: params.desktop.status === 'installing' ? undefined : params.t('common.cancel'),
         };
     }

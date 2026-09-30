@@ -40,6 +40,7 @@ import {
 } from '@/components/machines/doctorSnapshot/useMachineDoctorSnapshotCollection';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { OtaUpdateStatusSection } from './OtaUpdateStatusSection';
+import { DesktopUpdateStatusSection } from './DesktopUpdateStatusSection';
 import { Icon } from '@/components/ui/icons/Icon';
 
 function formatRelativeTimeMs(ms: number | null | undefined): string {
@@ -296,6 +297,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
           />
         </ItemGroup>
 
+        <DesktopUpdateStatusSection />
         <OtaUpdateStatusSection />
 
         <ItemGroup title={t('systemStatus.sections.currentServer')}>

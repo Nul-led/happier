@@ -2762,6 +2762,7 @@ export const fr = {
       launchSourceUnknown: "Inconnue",
     },
     updates: {
+      desktopTitle: "Mises à jour de l’application de bureau",
       otaStatus: "Statut OTA",
       lastChecked: "Dernière vérification",
       openStore: "Ouvrir la mise à jour du store",

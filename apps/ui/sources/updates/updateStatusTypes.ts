@@ -35,6 +35,7 @@ export type BuildAppUpdateStatusModelParams = Readonly<{
         status: DesktopUpdateStatus;
         availableVersion: string | null;
         error: string | null;
+        isChecking?: boolean;
     }>;
     ota: Readonly<{
         isUpdatePending: boolean;

@@ -3008,6 +3008,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             launchSourceUnknown: '未知',
         },
         updates: {
+            desktopTitle: "桌面應用程式更新",
             otaStatus: 'OTA 狀態',
             lastChecked: '上次檢查',
             openStore: '開啟商店更新',

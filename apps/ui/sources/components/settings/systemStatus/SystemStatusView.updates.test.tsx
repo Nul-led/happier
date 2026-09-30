@@ -2,7 +2,8 @@ import * as React from 'react';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 
 (
     globalThis as typeof globalThis & {
@@ -17,6 +18,7 @@ const checkForUpdatesMock = vi.hoisted(() => vi.fn(async () => {}));
 
 afterEach(() => {
     standardCleanup();
+    vi.unstubAllGlobals();
     useUpdatesMock.mockReset();
     useNativeUpdateMock.mockReset();
     reloadAppMock.mockReset();
@@ -137,6 +139,30 @@ vi.mock('@/sync/domains/state/storage', async () => {
     });
 });
 
+// Machine diagnostics are unrelated to update controls; keep their network RPC at its test boundary.
+vi.mock('@/sync/ops/machines', () => ({
+    machineCollectBugReportDiagnostics: vi.fn(async () => null),
+}));
+
+vi.mock('@/sync/domains/state/storageStore', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
+
+// Unchanged list primitives have their own suites; this suite owns update actions.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const { createPassThroughModule } = await import('@/dev/testkit/mocks/components');
+    return createPassThroughModule(['Item']);
+});
+vi.mock('@/components/ui/lists/ItemGroup', async () => {
+    const { createPassThroughModule } = await import('@/dev/testkit/mocks/components');
+    return createPassThroughModule(['ItemGroup']);
+});
+vi.mock('@/components/ui/lists/ItemList', async () => {
+    const { createPassThroughModule } = await import('@/dev/testkit/mocks/components');
+    return createPassThroughModule(['ItemList']);
+});
+
 vi.mock('@/utils/sessions/machineUtils', () => ({
     isMachineOnline: () => false,
 }));
@@ -150,6 +176,30 @@ vi.mock('@/hooks/ui/useNativeUpdate', () => ({
 }));
 
 describe('SystemStatusView OTA section', () => {
+    it('runs a manual desktop check through the shared updater and shows its result', async () => {
+        vi.resetModules();
+        const invoke = vi.fn(async () => null);
+        vi.stubGlobal('__DEV__', false);
+        vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
+        useNativeUpdateMock.mockReturnValue(null);
+        useUpdatesMock.mockReturnValue({ otaRuntimeSupported: false });
+
+        const { SystemStatusView } = await import('./SystemStatusView');
+        const screen = await renderScreen(<SystemStatusView />);
+        expect(screen.findByTestId('settings-desktop-update-check')).not.toBeNull();
+        expect(screen.findByTestId('settings-desktop-update-check')?.props.subtitle).toBe('systemStatus.updates.upToDate');
+        await screen.pressByTestIdAsync('settings-desktop-update-check');
+        expect(invoke).toHaveBeenCalledTimes(2);
+        expect(invoke).toHaveBeenLastCalledWith('desktop_fetch_update', undefined);
+        expect(screen.findByTestId('settings-desktop-update-last-checked')?.props.detail).not.toBe('status.unknown');
+
+        invoke.mockRejectedValueOnce(new Error('feed unavailable'));
+        await screen.pressByTestIdAsync('settings-desktop-update-check');
+        expect(screen.findByTestId('settings-desktop-update-check')?.props.subtitle).toBe('systemStatus.updates.error');
+        await screen.pressByTestIdAsync('settings-desktop-update-check');
+        expect(screen.findByTestId('settings-desktop-update-check')?.props.subtitle).toBe('systemStatus.updates.upToDate');
+    });
+
     it('shows a manual OTA check action when no update is pending', async () => {
         useNativeUpdateMock.mockReturnValue(null);
         useUpdatesMock.mockReturnValue({

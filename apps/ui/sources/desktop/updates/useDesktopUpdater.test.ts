@@ -1,9 +1,11 @@
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 
-import { useDesktopUpdater } from './useDesktopUpdater';
 
 type DesktopStorage = ReturnType<typeof createLocalStorage>;
 type TauriInvoke = (command: string, args?: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -59,14 +61,17 @@ async function renderDesktopUpdaterHook(options: {
     isDesktop: boolean;
 }) {
     setDesktopGlobals(options);
+    const { useDesktopUpdater } = await import('./useDesktopUpdater');
     return renderHook(() => useDesktopUpdater());
 }
 
 describe('useDesktopUpdater (hook)', () => {
     beforeEach(() => {
+        vi.resetModules();
         vi.clearAllMocks();
         vi.unstubAllEnvs();
         clearDesktopGlobals();
+        (globalThis as { __DEV__?: boolean }).__DEV__ = false;
     });
 
     afterEach(() => {
@@ -112,6 +117,86 @@ describe('useDesktopUpdater (hook)', () => {
         expect(invokeMock).toHaveBeenCalledWith('desktop_fetch_update', undefined);
         expect(latest?.status).toBe('available');
         expect(latest?.availableVersion).toBe('9.9.9');
+    });
+
+    it('shares the automatic check and manual refresh result between mounted desktop surfaces', async () => {
+        const invokeMock = vi.fn<TauriInvoke>(async () => null);
+        const storage = createLocalStorage();
+        const first = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        const second = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        expect(invokeMock).toHaveBeenCalledTimes(1);
+        expect(first.getCurrent()?.status).toBe('upToDate');
+        expect(second.getCurrent()?.status).toBe('upToDate');
+
+        invokeMock.mockResolvedValueOnce({ version: '1.0.1', currentVersion: '1.0.0', notes: null, pubDate: null });
+        await act(async () => { await first.getCurrent()?.refresh(); });
+        expect(first.getCurrent()?.availableVersion).toBe('1.0.1');
+        expect(second.getCurrent()?.availableVersion).toBe('1.0.1');
+        expect(first.getCurrent()?.lastCheckedAt).toEqual(second.getCurrent()?.lastCheckedAt);
+    });
+
+    it('keeps automatic unsupported checks quiet and reports a foreground failure through the same owner', async () => {
+        const invokeMock = vi.fn<TauriInvoke>(async () => { throw new Error('HAPPIER_DESKTOP_NOT_IMPLEMENTED: desktop_fetch_update'); });
+        const hook = await renderDesktopUpdaterHook({ storage: createLocalStorage(), invokeMock, isDesktop: true });
+        expect(hook.getCurrent().status).toBe('idle');
+        expect(hook.getCurrent().error).toBeNull();
+        await act(async () => { await hook.getCurrent().refresh(); });
+        expect(hook.getCurrent().status).toBe('error');
+        expect(hook.getCurrent().error).toContain('HAPPIER_DESKTOP_NOT_IMPLEMENTED');
+        expect(hook.getCurrent().lastCheckedAt).not.toBeNull();
+        expect(invokeMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports a failed manual check and recovers on retry', async () => {
+        const invokeMock = vi.fn<TauriInvoke>(async () => null);
+        const hook = await renderDesktopUpdaterHook({ storage: createLocalStorage(), invokeMock, isDesktop: true });
+        invokeMock.mockRejectedValueOnce(new Error('signed feed unavailable'));
+        await act(async () => { await hook.getCurrent()?.refresh(); });
+        expect(hook.getCurrent()?.status).toBe('error');
+        expect(hook.getCurrent()?.error).toBe('signed feed unavailable');
+        invokeMock.mockResolvedValueOnce(null);
+        await act(async () => { await hook.getCurrent()?.refresh(); });
+        expect(hook.getCurrent()?.status).toBe('upToDate');
+        expect(hook.getCurrent()?.error).toBeNull();
+    });
+
+    it('keeps the last available update visible while a manual check is pending', async () => {
+        const pending = createDeferred<null>();
+        const invokeMock = vi.fn<TauriInvoke>(async () => ({ version: '1.0.1', currentVersion: '1.0.0', notes: null, pubDate: null }));
+        const hook = await renderDesktopUpdaterHook({ storage: createLocalStorage(), invokeMock, isDesktop: true });
+        invokeMock.mockReturnValueOnce(pending.promise);
+        let refresh!: Promise<void>;
+        await act(async () => { refresh = hook.getCurrent().refresh(); });
+        expect(hook.getCurrent().status).toBe('available');
+        expect(hook.getCurrent().availableVersion).toBe('1.0.1');
+        expect(hook.getCurrent().isChecking).toBe(true);
+        await act(async () => { pending.resolve(null); await refresh; });
+        expect(hook.getCurrent().status).toBe('upToDate');
+        expect(hook.getCurrent().isChecking).toBe(false);
+    });
+
+    it('shares an installation and prevents a check from replacing its native pending update', async () => {
+        const pending = createDeferred<boolean>();
+        const invokeMock = vi.fn<TauriInvoke>(async (command) => command === 'desktop_fetch_update'
+            ? { version: '1.0.1', currentVersion: '1.0.0', notes: null, pubDate: null }
+            : pending.promise);
+        const storage = createLocalStorage();
+        const first = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        const second = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        let installation!: Promise<void>;
+        let duplicate!: Promise<void>;
+        let refresh!: Promise<void>;
+        await act(async () => {
+            installation = first.getCurrent().startInstall();
+            duplicate = second.getCurrent().startInstall();
+            refresh = second.getCurrent().refresh();
+        });
+        expect(first.getCurrent().status).toBe('installing');
+        expect(second.getCurrent().status).toBe('installing');
+        expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(['desktop_fetch_update', 'desktop_install_update']);
+        await act(async () => { pending.resolve(false); await Promise.all([installation, duplicate, refresh]); });
+        expect(first.getCurrent().status).toBe('upToDate');
+        expect(second.getCurrent().status).toBe('upToDate');
     });
 
     it('persists dismissal until available version changes', async () => {

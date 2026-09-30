@@ -2791,6 +2791,7 @@ export const pl = {
       launchSourceUnknown: "Nieznane",
     },
     updates: {
+      desktopTitle: "Aktualizacje aplikacji komputerowej",
       otaStatus: "Status OTA",
       lastChecked: "Ostatnie sprawdzenie",
       openStore: "Otwórz aktualizację sklepu",

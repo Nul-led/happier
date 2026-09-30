@@ -34,6 +34,7 @@ export function useAppUpdateStatus() {
                 status: desktop.status,
                 availableVersion: desktop.availableVersion,
                 error: desktop.error,
+                isChecking: desktop.isChecking,
             },
             ota: {
                 isUpdatePending: ota.isUpdatePending,
@@ -50,6 +51,7 @@ export function useAppUpdateStatus() {
             changelog.hasUnread,
             desktop.availableVersion,
             desktop.error,
+            desktop.isChecking,
             desktop.status,
             nativeUpdateUrl,
             ota.isUpdatePending,
