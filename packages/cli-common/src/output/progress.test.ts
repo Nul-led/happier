@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import chalk from 'chalk';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -202,6 +202,26 @@ describe('createStepPrinter', () => {
         if (descriptor) Object.defineProperty(stream, key, descriptor);
         else Reflect.deleteProperty(stream, key);
       }
+    }
+  });
+});
+
+describe('runCommandLogged', () => {
+  it('stays silent when steps are hidden but still logs the child output', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'happier-progress-silent-'));
+    const writes = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const logPath = join(directory, 'command.log');
+      const result = await runCommandLogged({
+        label: 'noop', cmd: process.execPath, args: ['-e', "process.stdout.write('hello')"],
+        logPath, showSteps: false,
+      });
+      expect(result.ok).toBe(true);
+      expect(writes).not.toHaveBeenCalled();
+      expect(await readFile(logPath, 'utf8')).toContain('hello');
+    } finally {
+      writes.mockRestore();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });
