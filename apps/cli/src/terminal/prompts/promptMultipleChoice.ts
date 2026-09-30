@@ -5,7 +5,10 @@ import { promptInput } from './promptInput';
  * keeps single-letter/full-word aliases everywhere. Empty line input picks the
  * default; Enter after arrow navigation picks the highlighted option.
  *
- * Letter aliases remain case-insensitive and are the static/non-TTY fallback.
+ * Keeps inputs short — `Y/n/r/p` — rather than requiring users to type whole
+ * words. Case-insensitive. With `renderMessage`, a capable terminal also moves
+ * the highlight with ↑/↓ and Enter picks the highlighted option; letter aliases
+ * stay authoritative and remain the static/non-TTY fallback.
  */
 export type MultipleChoiceOption<TId extends string> = Readonly<{
   /** The id returned when this option is chosen. */
@@ -27,9 +30,9 @@ export async function promptMultipleChoice<TId extends string>(
     maxAttempts?: number;
     /** Injected by callers that already own their input seam (setup). */
     promptInputFn?: typeof promptInput;
-    /** Same-height frames for a readline-owned animated prompt. */
     animate?: boolean;
     renderMessage?: (elapsedSeconds: number, selectedId?: TId) => string;
+    intervalMs?: number | ((elapsedSeconds: number) => number);
   }>,
 ): Promise<TId> {
   const readAnswer = config.promptInputFn ?? promptInput;
@@ -45,7 +48,8 @@ export async function promptMultipleChoice<TId extends string>(
     const answer = config.renderMessage
       ? await readAnswer(fullPrompt, {
           animation: {
-            animate: config.animate,
+            ...(config.animate === undefined ? {} : { animate: config.animate }),
+            ...(config.intervalMs === undefined ? {} : { intervalMs: config.intervalMs }),
             render: (seconds) => `${config.renderMessage!(seconds, options[selectedIndex]!.id).trimEnd()} ${suffix}`,
             onMove: (delta) => { selectedIndex = (selectedIndex + delta + options.length) % options.length; },
             answerOnEmpty: () => options[selectedIndex]!.keys.find((key) => key.length > 0) ?? options[selectedIndex]!.short,

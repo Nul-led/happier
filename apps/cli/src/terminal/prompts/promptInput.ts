@@ -12,7 +12,7 @@ import { ReadStream, WriteStream } from 'node:tty';
 
 export type PromptAnimation = Readonly<{
   animate?: boolean;
-  intervalMs?: number;
+  intervalMs?: number | ((elapsedSeconds: number) => number);
   render: (elapsedSeconds: number) => string;
   onMove?: (delta: -1 | 1) => void;
   onToggle?: () => void;
@@ -209,7 +209,8 @@ function askQuestion(params: Readonly<{
         };
         params.input.on('keypress', onKeypress);
         if (params.animation.animate !== false) {
-          animationTimer = setInterval(redraw, Math.max(40, params.animation.intervalMs ?? 120));
+          const interval = params.animation.intervalMs;
+          animationTimer = setInterval(redraw, Math.max(40, (typeof interval === 'function' ? interval(0) : interval) ?? 120));
           animationTimer.unref?.();
         }
       }

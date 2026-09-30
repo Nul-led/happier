@@ -24,7 +24,7 @@ import { readServerPortFromEnvFile, resolveServerPortFromEnv } from './utils/ser
 import { runOrchestratedGuidedAuthFlow } from './utils/auth/orchestrated_stack_auth_flow.mjs';
 import { buildSetupChildEnv } from './utils/setup/child_env.mjs';
 import { getVerbosityLevel } from './utils/cli/verbosity.mjs';
-import { runCommandLogged } from './utils/cli/progress.mjs';
+import { runCommandLogged } from '@happier-dev/cli-common/output';
 import { bold, cyan, dim, green, yellow } from './utils/ui/ansi.mjs';
 import { expandHome } from './utils/paths/canonical_home.mjs';
 import { listAllStackNames, stackExistsSync } from './utils/stack/stacks.mjs';

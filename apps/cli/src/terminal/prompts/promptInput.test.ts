@@ -254,6 +254,51 @@ describe('promptInput', () => {
     expect(outputDestroy).toHaveBeenCalledTimes(1);
   });
 
+  it('animates a /dev/tty prompt, moves on arrow keys and answers Enter with the highlighted choice', async () => {
+    vi.useFakeTimers();
+    try {
+      platformRef.value = 'linux';
+      existsSyncMock.mockReturnValue(true);
+      const input = new PassThrough();
+      const output = Object.assign(new PassThrough(), { columns: 100, rows: 30 });
+      openSyncMock.mockReturnValueOnce(40).mockReturnValueOnce(41);
+      ttyReadStreamMock.mockReturnValue(input);
+      ttyWriteStreamMock.mockReturnValue(output);
+      let answer: ((value: string) => void) | null = null;
+      const rl = Object.assign(new EventEmitter(), {
+        question: vi.fn((_prompt: string, resolve: (value: string) => void) => { answer = resolve; }),
+        close: vi.fn(),
+        setPrompt: vi.fn(),
+        prompt: vi.fn(),
+        getCursorPos: () => ({ rows: 0, cols: 0 }),
+      });
+      createInterfaceMock.mockReturnValue(rl);
+      const moves: number[] = [];
+
+      const { promptInput } = await import('./promptInput');
+      const pending = promptInput('Choose: ', {
+        animation: {
+          intervalMs: 50,
+          render: (seconds) => `frame ${seconds.toFixed(2)}`,
+          onMove: (delta) => moves.push(delta),
+          answerOnEmpty: () => 'b',
+        },
+      });
+      await vi.advanceTimersByTimeAsync(120);
+      expect(rl.setPrompt).toHaveBeenCalledWith(expect.stringMatching(/^frame /u));
+      input.emit('keypress', '', { name: 'down' });
+      expect(moves).toEqual([1]);
+      answer!('');
+      await expect(pending).resolves.toBe('b');
+      expect(input.listenerCount('keypress')).toBe(0);
+      const redraws = rl.setPrompt.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(rl.setPrompt.mock.calls).toHaveLength(redraws);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('falls back to process stdio when /dev/tty cannot be opened', async () => {
     platformRef.value = 'linux';
     existsSyncMock.mockReturnValue(true);

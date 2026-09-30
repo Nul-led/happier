@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSetupChoicePrompt, renderPlanet, renderSetupChoice, renderSetupWelcome, supportsBrailleArt } from './planet';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import chalk from 'chalk';
+import { createSetupChoicePrompt, renderPlanet, renderSetupChoice, renderSetupWelcome, resolveTerminalTheme, supportsBrailleArt } from './planet';
 
-beforeEach(() => vi.stubEnv('WT_SESSION', 'test-modern-terminal'));
+const PLANET_DOT = /[\u2801-\u28ff]/u;
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -18,7 +19,7 @@ describe('setup welcome handoff', () => {
     expect(output).toContain('preview-machine');
     expect(output).toContain('Choose your connection');
     expect(output.split('\n')).not.toContain('Happier');
-    expect(output).not.toMatch(/[\u2801-\u28ff]/u);
+    expect(output).not.toMatch(PLANET_DOT);
   });
 
   it('places the static planet beside the complete first setup choice on a wide terminal', () => {
@@ -27,14 +28,12 @@ describe('setup welcome handoff', () => {
     vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '');
     const output = renderSetupChoice({
       machineName: 'preview-machine',
-      subtitle: 'Choose or create a Home. Your coding agents run here.',
-      question: 'How would you like to set up this computer?',
-      description: 'A Home keeps your Happier account, sessions, and settings together.',
+      subtitle: 'Connect your devices. Your coding agents run here.',
+      question: 'How would you like to connect your devices?',
       choices: [
-        { key: 'f', label: 'Find my linked Homes (recommended)', description: 'sign in through your sign-in service', isDefault: true },
-        { key: 'e', label: 'Connect to an existing Home' },
-        { key: 'c', label: 'Create a Personal Home on this computer' },
-        { key: 'x', label: 'Exit' },
+        { key: 'c', label: 'Happier Cloud (recommended)', description: 'No server maintenance', isDefault: true },
+        { key: 'r', label: 'Existing server', description: 'Address from the Happier app or your administrator' },
+        { key: 't', label: 'Host on this computer', description: 'Installs an additional server; needs a reachable network route' },
       ],
       columns: 92,
       rows: 24,
@@ -42,9 +41,9 @@ describe('setup welcome handoff', () => {
     });
     const lines = output.split('\n');
     expect(lines.some((line) => /^[ \u2800-\u28ff]{24} {3}Happier$/u.test(line))).toBe(true);
-    expect(lines.some((line) => /^[ \u2800-\u28ff]{24} {3}How would you like to set up this computer\?$/u.test(line))).toBe(true);
-    expect(output).toContain('Find my linked Homes (recommended)');
-    expect(output).toContain('sign-in service');
+    expect(lines.some((line) => /^[ \u2800-\u28ff]{24} {3}How would you like to connect your devices\?$/u.test(line))).toBe(true);
+    expect(output).toContain('Existing server');
+    expect(output).toContain('Happier app or your administrator');
     expect(output.trimEnd().endsWith('Use ↑/↓ to move, Enter to select, or type a letter')).toBe(true);
   });
 
@@ -63,12 +62,12 @@ describe('setup welcome handoff', () => {
     const narrow = renderSetupChoice(options);
     expect(narrow).toContain('Happier\nChoose your connection\nComputer: preview-machine');
     expect(narrow.replace(/\n\s*/gu, ' ')).toContain('A deliberately long option whose meaning must wrap instead of being cropped');
-    expect(narrow).not.toMatch(/[\u2801-\u28ff]/u);
+    expect(narrow).not.toMatch(PLANET_DOT);
 
     vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '1');
     const handedOff = renderSetupChoice({ ...options, columns: 100 });
     expect(handedOff).not.toContain('Happier');
-    expect(handedOff).toMatch(/[\u2801-\u28ff]/u);
+    expect(handedOff).toMatch(PLANET_DOT);
     expect(handedOff).toContain('Question');
     expect(handedOff).toContain('Computer: preview-machine');
   });
@@ -86,12 +85,9 @@ describe('setup welcome handoff', () => {
       isTTY: true,
     } as const;
     const animated = createSetupChoicePrompt(base);
-    expect(animated.message).toBe(animated.renderMessage?.(0));
     expect(animated.renderMessage?.(1)).not.toBe(animated.message);
     vi.stubEnv('HAPPIER_NO_ANIMATION', ' TRUE ');
-    const still = createSetupChoicePrompt(base);
-    expect(still).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
-    expect(still.renderMessage?.(0)).toBe(still.message);
+    expect(createSetupChoicePrompt(base)).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
     vi.stubEnv('HAPPIER_NO_ANIMATION', '');
     expect(createSetupChoicePrompt({ ...base, columns: 44 })).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
     expect(createSetupChoicePrompt({ ...base, isTTY: false }).renderMessage).toBeUndefined();
@@ -136,41 +132,116 @@ describe('setup welcome handoff', () => {
     expect(prompt.message).toContain('Try again?\n› r) Retry\n  x) Exit');
     expect(prompt.message).not.toContain('Happier');
     expect(prompt.message).not.toContain('Computer:');
-    expect(prompt.message).not.toMatch(/[\u2801-\u28ff]/u);
+    expect(prompt.message).not.toMatch(PLANET_DOT);
     expect(prompt).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
   });
 });
 
-describe('planet', () => {
-  it('uses readable text instead of Braille in legacy Windows consoles', () => {
-    expect(supportsBrailleArt({}, 'win32')).toBe(false);
-    expect(supportsBrailleArt({ WT_SESSION: 'terminal-session' }, 'win32')).toBe(true);
-    expect(supportsBrailleArt({ TERM_PROGRAM: 'vscode' }, 'win32')).toBe(true);
-    expect(supportsBrailleArt({}, 'linux')).toBe(true);
-    expect(supportsBrailleArt({}, 'darwin')).toBe(true);
+describe('setup planet', () => {
+  const choiceOptions = {
+    machineName: 'preview-machine',
+    subtitle: 'Choose your connection',
+    question: 'Question',
+    choices: [
+      { id: 'first', key: 'a', label: 'First answer', isDefault: true },
+      { id: 'second', key: 'b', label: 'Second answer' },
+    ],
+    columns: 92,
+    rows: 24,
+    isTTY: true,
+  } as const;
+  const planetDots = (message: string) => message.split('\n').join('').match(/[⠁-⣿]/gu)?.length ?? 0;
+  const planetLuminance = (message: string) => {
+    const colours = [...message.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m[⠁-⣿]/gu)].map((m) => [Number(m[1]), Number(m[2]), Number(m[3])]);
+    return colours.reduce((sum, [r, g, b]) => sum + 0.2126 * r! + 0.7152 * g! + 0.0722 * b!, 0) / colours.length;
+  };
+
+  it('rises out of an eclipse on a fresh welcome, but continues lit after the installer already welcomed', () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '1');
+    vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '');
+    const fresh = renderSetupChoice({ ...choiceOptions, seconds: 0.25 });
+    const settled = renderSetupChoice({ ...choiceOptions, seconds: 8 });
+    expect(planetDots(fresh)).toBeLessThan(planetDots(settled) * 0.45);
+    vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '1');
+    expect(planetDots(renderSetupChoice({ ...choiceOptions, seconds: 0.25 }))).toBeGreaterThan(planetDots(settled) * 0.8);
   });
-  it('opens from an eclipse inside a fixed-height Braille canvas', () => {
-    const first = renderPlanet({ columns: 24, seconds: 0, color: false });
-    const later = renderPlanet({ columns: 24, seconds: 2, color: false });
-    expect(later).not.toEqual(first);
-    const occupiedCells = (frame: string[]) => frame.join('').replace(/\s/gu, '').length;
-    expect(occupiedCells(later)).toBeGreaterThan(occupiedCells(first));
-    expect(later).toHaveLength(first.length);
-    for (const frame of [first, later]) {
-      expect(frame.join('\n')).toMatch(/^[\u2801-\u28ff \n]+$/u);
-      expect(frame.every((line) => line.length <= 24)).toBe(true);
+
+  it('keeps breathing but steps back once the user starts choosing', () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const prompt = createSetupChoicePrompt(choiceOptions);
+      expect(prompt.animate).toBe(true);
+      const beforeChoosing = prompt.renderMessage!(8, 'first');
+      prompt.renderMessage!(8.05, 'second');
+      const whileChoosing = prompt.renderMessage!(9, 'second');
+      expect(planetLuminance(whileChoosing)).toBeLessThan(planetLuminance(beforeChoosing) * 0.7);
+      // Moving back to the recommendation does not bring the spotlight back.
+      expect(planetLuminance(prompt.renderMessage!(10, 'first'))).toBeLessThan(planetLuminance(beforeChoosing) * 0.7);
+      // Half a breath later it is still alive, only quieter.
+      expect(prompt.renderMessage!(9 + 4.8, 'second')).not.toBe(whileChoosing);
+    } finally {
+      chalk.level = level;
     }
   });
 
-  it('renders a rounded globe with varied dot density', () => {
-    const frame = renderPlanet({ columns: 28, seconds: 1.6, color: false });
-    const occupiedWidths = frame.map((line) => line.trim().length).filter((width) => width > 0);
-    const visible = frame.join('').replace(/[ .]/gu, '');
+  it('redraws smoothly while it steps back, then returns to a calm breath', () => {
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const prompt = createSetupChoicePrompt(choiceOptions);
+      const calm = prompt.intervalMs!(8);
+      prompt.renderMessage!(8, 'first');
+      prompt.renderMessage!(8.05, 'second');
+      // The step back is a short fade: it needs the fast cadence to read as one.
+      expect(prompt.intervalMs!(8.2)).toBeLessThan(calm / 2);
+      expect(prompt.intervalMs!(9)).toBe(calm);
+    } finally {
+      chalk.level = level;
+    }
+  });
 
-    expect(frame).toHaveLength(13);
-    expect(occupiedWidths.at(0)).toBeLessThan(occupiedWidths[Math.floor(occupiedWidths.length / 2)]!);
-    expect(occupiedWidths.at(-1)).toBeLessThan(occupiedWidths[Math.floor(occupiedWidths.length / 2)]!);
-    expect(new Set(visible).size).toBeGreaterThanOrEqual(8);
-    expect(visible).toMatch(/^[\u2801-\u28ff]+$/u);
+  it('leaves the art out where the console has no Braille glyphs', () => {
+    expect(supportsBrailleArt({}, 'linux')).toBe(true);
+    expect(supportsBrailleArt({}, 'darwin')).toBe(true);
+    expect(supportsBrailleArt({}, 'win32')).toBe(false);
+    expect(supportsBrailleArt({ WT_SESSION: 'abc' }, 'win32')).toBe(true);
+    expect(supportsBrailleArt({ TERM_PROGRAM: 'vscode' }, 'win32')).toBe(true);
+
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '1');
+    vi.stubEnv('WT_SESSION', '');
+    vi.stubEnv('TERM_PROGRAM', '');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    try {
+      const legacyConsole = renderSetupChoice(choiceOptions);
+      expect(legacyConsole).not.toMatch(PLANET_DOT);
+      expect(legacyConsole).toContain('Second answer');
+      expect(createSetupChoicePrompt(choiceOptions)).toMatchObject({ animate: false });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('reads a light terminal from COLORFGBG and defaults to the dark planet', () => {
+    expect(resolveTerminalTheme({})).toBe('dark');
+    expect(resolveTerminalTheme({ COLORFGBG: '15;0' })).toBe('dark');
+    expect(resolveTerminalTheme({ COLORFGBG: '0;15' })).toBe('light');
+    expect(resolveTerminalTheme({ COLORFGBG: '0;default;7' })).toBe('light');
+  });
+
+  it('renders the settled planet as uncoloured Braille when colour is off', () => {
+    const frame = renderPlanet({ columns: 24, color: false });
+    expect(frame.join('\n')).toMatch(/^[⠀-⣿ \n]+$/u);
+    expect(frame.every((line) => [...line].length <= 24)).toBe(true);
+    // Static renderings use the settled, fully lit pose rather than the eclipse's first frame.
+    expect(planetDots(frame.join('\n'))).toBeGreaterThan(planetDots(renderPlanet({ columns: 24, seconds: 0.25, color: false }).join('\n')) * 2);
   });
 });
