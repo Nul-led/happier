@@ -1657,18 +1657,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.checkout_sha != '' && inputs.checkout_sha || github.sha }}
+          ref: ${{ job.workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Verify exact requested checkout
         env:
-          CHECKOUT_SHA: ${{ inputs.checkout_sha }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
-          if [ -n "$CHECKOUT_SHA" ]; then
-            test "$(git rev-parse HEAD)" = "$CHECKOUT_SHA"
-          fi
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
