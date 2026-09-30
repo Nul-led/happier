@@ -4454,7 +4454,7 @@ export const pl: TranslationStructure = {
     loadingIndicator: "Wskaźnik ładowania",
     loadingIndicatorStyle: "Styl",
     loadingIndicatorDescription: "Jak wyglądają wskaźniki podczas trwającej pracy",
-    loadingIndicatorFooter: "Gdy włączone jest Ograniczenie ruchu, wskaźnik pozostaje nieruchomy i łagodnie przygasa zamiast się poruszać.",
+    loadingIndicatorFooter: "Gdy włączone jest Ograniczenie ruchu, style kropkowe pozostają nieruchome i łagodnie przygasają, a Klasyczny pierścień przestaje się obracać.",
     loadingIndicatorOptions: {
       wave: "Fala",
       handwritten: "Odręczny",

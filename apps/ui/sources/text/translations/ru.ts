@@ -4381,11 +4381,11 @@ export const ru: TranslationStructure = {
     loadingIndicator: "Индикатор загрузки",
     loadingIndicatorStyle: "Стиль",
     loadingIndicatorDescription: "Как выглядят индикаторы, пока идёт работа",
-    loadingIndicatorFooter: "Когда включено «Уменьшение движения», индикатор не двигается, а плавно гаснет и появляется.",
+    loadingIndicatorFooter: "Когда включено «Уменьшение движения», точечные стили не двигаются, а плавно гаснут и появляются, а Классическое кольцо перестаёт вращаться.",
     loadingIndicatorOptions: {
       wave: "Волна",
       handwritten: "От руки",
-      buildAndRelease: "Сборка и отпуск",
+      buildAndRelease: "Сборка и выпуск",
       relay: "Эстафета",
       twinStems: "Двойные стебли",
       slowBreath: "Медленное дыхание",

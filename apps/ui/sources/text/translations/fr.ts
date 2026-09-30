@@ -4127,7 +4127,7 @@ export const fr: TranslationStructure = {
         loadingIndicator: "Indicateur de chargement",
         loadingIndicatorStyle: "Style",
         loadingIndicatorDescription: "L'apparence des indicateurs pendant qu'un travail est en cours",
-        loadingIndicatorFooter: "Avec Réduire les animations activé, l'indicateur reste immobile et s'estompe doucement au lieu de bouger.",
+        loadingIndicatorFooter: "Lorsque l'option « Réduire les animations » est activée, les styles à points restent immobiles et s'estompent doucement, et l'Anneau classique cesse de tourner.",
         loadingIndicatorOptions: {
             wave: "Vague",
             handwritten: "Manuscrit",

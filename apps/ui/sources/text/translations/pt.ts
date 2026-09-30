@@ -4546,7 +4546,7 @@ export const pt: TranslationStructure = {
     loadingIndicator: "Indicador de carregamento",
     loadingIndicatorStyle: "Estilo",
     loadingIndicatorDescription: "Como os indicadores aparecem enquanto há trabalho em andamento",
-    loadingIndicatorFooter: "Com Reduzir movimento ativado, o indicador fica parado e esmaece suavemente em vez de se mover.",
+    loadingIndicatorFooter: "Com Reduzir movimento ativado, os estilos de pontos ficam parados e esmaecem suavemente, e o Anel clássico para de girar.",
     loadingIndicatorOptions: {
       wave: "Onda",
       handwritten: "Manuscrito",

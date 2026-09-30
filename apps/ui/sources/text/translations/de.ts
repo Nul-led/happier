@@ -4127,7 +4127,7 @@ export const de: TranslationStructure = {
         loadingIndicator: "Ladeanzeige",
         loadingIndicatorStyle: "Stil",
         loadingIndicatorDescription: "Wie Ladeanzeigen aussehen, während gearbeitet wird",
-        loadingIndicatorFooter: "Mit „Bewegung reduzieren“ bleibt die Anzeige stehen und blendet sanft ein und aus, statt sich zu bewegen.",
+        loadingIndicatorFooter: "Mit „Bewegung reduzieren“ bleiben die Punktstile stehen und blenden sanft ein und aus, und der Klassische Ring hört auf, sich zu drehen.",
         loadingIndicatorOptions: {
             wave: "Welle",
             handwritten: "Handschrift",

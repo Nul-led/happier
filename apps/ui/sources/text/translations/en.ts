@@ -4145,7 +4145,7 @@ export const en = {
         loadingIndicator: "Loading Indicator",
         loadingIndicatorStyle: "Style",
         loadingIndicatorDescription: "How spinners look while work is in progress",
-        loadingIndicatorFooter: "With Reduce Motion on, the indicator holds still and fades gently instead of moving.",
+        loadingIndicatorFooter: "With Reduce Motion on, dot styles hold still and fade gently, and the Classic Ring stops turning.",
         loadingIndicatorOptions: {
             wave: "Wave",
             handwritten: "Handwritten",

@@ -4709,7 +4709,7 @@ localTailscale: {
     loadingIndicator: "読み込みインジケーター",
     loadingIndicatorStyle: "スタイル",
     loadingIndicatorDescription: "処理中に表示されるインジケーターの見た目",
-    loadingIndicatorFooter: "「視差効果を減らす」がオンのときは、動かずにゆっくりフェードします。",
+    loadingIndicatorFooter: "「視差効果を減らす」がオンのときは、ドットのスタイルは動かずにゆっくりフェードし、クラシックリングは回転を止めます。",
     loadingIndicatorOptions: {
       wave: "ウェーブ",
       handwritten: "手書き",

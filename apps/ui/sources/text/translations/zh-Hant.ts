@@ -4032,7 +4032,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         loadingIndicator: "載入指示器",
         loadingIndicatorStyle: "樣式",
         loadingIndicatorDescription: "工作進行時指示器的樣子",
-        loadingIndicatorFooter: "開啟「減少動態效果」後，指示器保持靜止並輕柔地淡入淡出。",
+        loadingIndicatorFooter: "開啟「減少動態效果」後，圓點樣式保持靜止並輕柔地淡入淡出，經典圓環則停止旋轉。",
         loadingIndicatorOptions: {
             wave: "波浪",
             handwritten: "手寫",

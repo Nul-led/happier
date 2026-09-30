@@ -4297,7 +4297,7 @@ export const zhHans: TranslationStructure = {
     loadingIndicator: "加载指示器",
     loadingIndicatorStyle: "样式",
     loadingIndicatorDescription: "工作进行时指示器的样子",
-    loadingIndicatorFooter: "开启“减弱动态效果”后，指示器保持静止并轻柔地淡入淡出。",
+    loadingIndicatorFooter: "开启“减弱动态效果”后，点状样式保持静止并轻柔地淡入淡出，经典圆环则停止旋转。",
     loadingIndicatorOptions: {
       wave: "波浪",
       handwritten: "手写",

@@ -4207,7 +4207,7 @@ export const ca: TranslationStructure = {
         loadingIndicator: "Indicador de càrrega",
         loadingIndicatorStyle: "Estil",
         loadingIndicatorDescription: "Com es veuen els indicadors mentre hi ha feina en curs",
-        loadingIndicatorFooter: "Amb Reduir el moviment activat, l'indicador es queda quiet i s'esvaeix suaument en lloc de moure's.",
+        loadingIndicatorFooter: "Amb Reduir el moviment activat, els estils de punts es queden quiets i s'esvaeixen suaument, i l'Anell clàssic deixa de girar.",
         loadingIndicatorOptions: {
             wave: "Onada",
             handwritten: "Manuscrit",

@@ -4767,7 +4767,7 @@ export const it: TranslationStructure = {
     loadingIndicator: "Indicatore di caricamento",
     loadingIndicatorStyle: "Stile",
     loadingIndicatorDescription: "Come appaiono gli indicatori mentre il lavoro è in corso",
-    loadingIndicatorFooter: "Con Riduci movimento attivo, l'indicatore resta fermo e sfuma dolcemente invece di muoversi.",
+    loadingIndicatorFooter: "Con Riduci movimento attivo, gli stili a punti restano fermi e sfumano dolcemente, e l'Anello classico smette di girare.",
     loadingIndicatorOptions: {
       wave: "Onda",
       handwritten: "Scritto a mano",
