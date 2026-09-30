@@ -14,6 +14,7 @@ import {
     normalizePendingDeliveryStatusV1,
     normalizePendingRequestedActionV1,
     PendingProviderActionSchema,
+    PendingRequestedActionV1Schema,
     SessionInputAdmissionReceiptV1Schema,
     SESSION_PENDING_ADMISSION_SETTLEMENT_EVENT_V1,
     SessionPendingAdmissionSettlementRequestV1Schema,
@@ -816,11 +817,27 @@ export async function enqueuePendingQueueV2MessageViaHttp(params: {
         },
     );
     const data = response?.data;
+    const terminal = data && typeof data === 'object' && (data as { terminal?: unknown }).terminal === true;
+    if (terminal) {
+        const message = readMaterializedMessageFromAck(data);
+        const rawMessage = (data as { message?: { requestedAction?: unknown } }).message;
+        const proofAction = PendingRequestedActionV1Schema.safeParse(rawMessage?.requestedAction);
+        if (
+            !message
+            || readNonBlankOpaqueIdentifier(message.id) === null
+            || message.seq === null
+            || message.localId !== readPendingLocalId(params.body.localId)
+            || !proofAction.success
+            || proofAction.data.kind !== params.body.requestedAction.kind
+        ) {
+            throw new Error('Invalid Pending enqueue terminal proof');
+        }
+    }
     return {
         didWrite: data && typeof data === 'object' && typeof (data as { didWrite?: unknown }).didWrite === 'boolean'
             ? (data as { didWrite: boolean }).didWrite
             : null,
-        terminal: data && typeof data === 'object' && (data as { terminal?: unknown }).terminal === true,
+        terminal,
         suppressed: data && typeof data === 'object' && (data as { suppressed?: unknown }).suppressed === true,
     };
 }

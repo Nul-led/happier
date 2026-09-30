@@ -77,6 +77,16 @@ describe('readIntFlagValue', () => {
 });
 
 describe('option terminator', () => {
+  it('keeps the standalone terminator out of a preceding option value', () => {
+    const argv = ['send', 'session-id', '--model', '--', '--json'];
+    expect(readCommandPositionals(argv, { startIndex: 1, valueFlags: ['--model'] }))
+      .toEqual(['session-id', '--json']);
+    expect(readFlagValue(argv, '--model')).toBeNull();
+    expect(hasFlag(argv, '--json')).toBe(false);
+    expect(readRawFlagValue(['send', '--model=--', '--json'], '--model')).toBe('--');
+    expect(hasFlag(['send', '--model=--', '--json'], '--json')).toBe(true);
+  });
+
   it('recognizes flags only before the positional-only boundary', () => {
     const argv = ['send', '--local-id', ' chosen-id ', 'session-id', '--', '--local-id', '--timeout', 'oops'];
     expect(readFlagValue(argv, '--local-id')).toBe('chosen-id');

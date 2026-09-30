@@ -176,7 +176,7 @@ export async function cmdSessionSend(
     // The identity this send used is the only safe retry: resubmitting it
     // rejoins the same durable input instead of queueing a second message.
     throw new Error(
-      `${normalized.errorMessage ?? normalized.errorCode} Retry with --local-id ${safeBashSingleQuote(localId)} to rejoin this exact input.`,
+      `${normalized.errorMessage ?? normalized.errorCode} Retry the same input with --local-id; preserve every ID byte.\nLocal ID (JSON): ${JSON.stringify(localId)}\nBash: --local-id ${safeBashSingleQuote(localId)}`,
     );
   }
 

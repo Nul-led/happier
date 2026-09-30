@@ -5,6 +5,16 @@ import { handleSessionCommand } from './handleSessionCommand';
 import { SESSION_HELP_LINES } from './shared/sessionCommandUsage';
 
 describe('handleSessionCommand help output', () => {
+  it('handles explicit help without authenticating a malformed send', async () => {
+    const readCredentialsFn = vi.fn(async () => null);
+    const output = captureConsoleText();
+    try {
+      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', '--help'], { readCredentialsFn });
+      expect(output.text()).toContain('happier session send');
+      expect(readCredentialsFn).not.toHaveBeenCalled();
+    } finally { output.restore(); }
+  });
+
   it('lists the direct session control subcommands and run subcommands', async () => {
     const output = captureConsoleText();
 

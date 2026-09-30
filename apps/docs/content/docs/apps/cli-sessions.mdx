@@ -296,6 +296,20 @@ ambiguously, retry with that exact id instead of sending again:
 happier session send <session-id-or-prefix-or-tag> "ping" --local-id <local-id>
 ```
 
+IDs are opaque: leading and trailing spaces are part of the identity. In v0.3 development
+builds, blank IDs and IDs beginning with `agent-transition:` are rejected before authentication.
+Copy the exact ID from the JSON result or the human error's `Local ID (JSON)` field. The error's
+`Bash` example is for Bash-compatible shells; Cmd and PowerShell need their own quoting.
+The v0.3 host Action also accepts caller IDs; plugin input keeps its host-derived identity.
+
+For option-looking message text, put all options before the standalone `--`:
+
+```bash
+happier session send --json <session-id-or-prefix-or-tag> -- --help
+```
+
+This sends the literal text `--help`.
+
 The pending queue is keyed by `localId`, so a retry rejoins the same durable input rather than
 queueing a second message. `happier session create` has the same property through
 `--spawn-attempt-id <id> --resume-spawn-attempt`.

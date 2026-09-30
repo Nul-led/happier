@@ -35,7 +35,7 @@ export function readCommandPositionals(
       continue;
     }
     if (value.startsWith('-')) {
-      if (valueFlags.has(value)) index += 1;
+      if (valueFlags.has(value) && argv[index + 1] !== '--') index += 1;
       continue;
     }
     positionals.push(value.trim());
@@ -59,7 +59,7 @@ export function readRawFlagValue(argv: readonly string[], flag: string): string 
   const raw = argument === flag
     ? argv[idx + 1]
     : argument.slice(flag.length + 1);
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== 'string' || (argument === flag && raw === '--')) return null;
   return raw;
 }
 
