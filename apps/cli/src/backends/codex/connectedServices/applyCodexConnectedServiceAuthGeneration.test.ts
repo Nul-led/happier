@@ -32,6 +32,30 @@ describe('Codex connected-service runtime auth application', () => {
     expect(activeSelection).toBe('original');
   });
 
+  it('rolls refresh selection back when group credentials are superseded during selection resync', async () => {
+    const candidate = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+      oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: 'id', scope: null, tokenType: null,
+        providerAccountId: 'acct_work', providerEmail: null } });
+    const client = { request: vi.fn(async () => ({ ok: true })) };
+    let current = true;
+    let activeSelection = 'original';
+    const persistAuthStore = vi.fn();
+    const result = await applyCodexConnectedServiceAuthGeneration({
+      client, candidate, forcedWorkspaceId: null, persistAuthStore,
+      validateCurrentBeforeMutation: async () => current,
+      refreshSelection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+      updateRefreshSelection: async () => {
+        activeSelection = 'work';
+        current = false;
+        return () => { activeSelection = 'original'; };
+      },
+    });
+    expect(result).toEqual({ applied: false, reason: 'credential_revision_superseded' });
+    expect(client.request).not.toHaveBeenCalled();
+    expect(persistAuthStore).not.toHaveBeenCalled();
+    expect(activeSelection).toBe('original');
+  });
+
   it('rejects forced-workspace mismatches before mutating live auth', async () => {
     const candidate = buildConnectedServiceCredentialRecord({
       now: 1000,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ConnectedServiceGroupMutationTarget } from '@/daemon/connectedServices/credentials/createConnectedServiceGroupMutationCurrentnessValidator';
 import type { PermissionResult } from '@/agent/permissions/permissionResult';
 
 import type { ApiSessionClient } from '@/api/session/sessionClient';
@@ -1231,6 +1232,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
         classification: CodexConnectedServiceRuntimeFailureClassification;
     }>) => Promise<CodexUsageLimitGroupRecoveryOutcome> | CodexUsageLimitGroupRecoveryOutcome;
     initialConnectedServiceRuntimeIdentity?: CodexConnectedServiceRuntimeIdentitySeed | null;
+    validateConnectedServiceGroupCurrentness?: (
+        target: ConnectedServiceGroupMutationTarget,
+    ) => Promise<Readonly<{ current: boolean }>>;
     onChatGptAuthTokensRefresh?: (params: unknown) => Promise<CodexChatGptTokensRefreshBridgeResponse>;
     onConnectedServiceAuthGenerationApplied?: (params: Readonly<{
         selection: CodexConnectedServiceRefreshSelection;
@@ -5547,9 +5551,22 @@ export function createCodexAppServerRuntime(params: Readonly<{
             if (isProviderTurnInFlight()) {
                 return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
             }
+            const groupSelection = request.selection?.kind === 'group' ? request.selection : null;
+            const validateGroupCurrentness = params.validateConnectedServiceGroupCurrentness;
             const applied = await applyCodexConnectedServiceAuthGeneration({
                 client,
                 canApplyAuth: () => !isProviderTurnInFlight(),
+                ...(validateGroupCurrentness && groupSelection
+                    ? {
+                        validateCurrentBeforeMutation: async () => (await validateGroupCurrentness({
+                            serviceId: 'openai-codex',
+                            groupId: groupSelection.groupId,
+                            profileId: groupSelection.activeProfileId,
+                            generation: groupSelection.generation,
+                            credentialRevision: request.expected?.credentialRevision ?? null,
+                        })).current,
+                    }
+                    : {}),
                 candidate: request.candidate,
                 forcedWorkspaceId: request.forcedWorkspaceId ?? null,
                 forcedLoginMethod: request.forcedLoginMethod ?? null,

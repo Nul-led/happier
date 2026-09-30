@@ -8,6 +8,7 @@ import { resolveHasTTY } from '@/ui/tty/resolveHasTTY';
 import { Credentials } from '@/persistence';
 import type { Metadata } from '@/api/types';
 import { initialMachineMetadata } from '@/daemon/machine/metadata';
+import { createConnectedServiceGroupMutationCurrentnessValidator } from '@/daemon/connectedServices/credentials/createConnectedServiceGroupMutationCurrentnessValidator';
 import {
     refreshDaemonOpenAiCodexChatGptAuthTokensForBridge,
     type OpenAiCodexDaemonRefreshSelection,
@@ -1985,6 +1986,10 @@ export async function runCodex(opts: {
                     liveAppliedCodexRefreshSelection = previousSelection;
                 };
             },
+            validateConnectedServiceGroupCurrentness: createConnectedServiceGroupMutationCurrentnessValidator({
+                api,
+                credentials: opts.credentials,
+            }),
             onChatGptAuthTokensRefresh: async (requestParams) => {
                 const resolvedRefreshSelection = resolveOpenAiCodexDaemonRefreshSelection(codexAppServerProcessEnv, session);
                 const refreshSelection = liveAppliedCodexRefreshSelection

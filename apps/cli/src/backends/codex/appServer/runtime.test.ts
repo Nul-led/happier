@@ -1,3 +1,4 @@
+import { createCodexConnectedServiceRuntimeAuthAdapter } from '../connectedServices/createCodexConnectedServiceRuntimeAuthAdapter';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12411,6 +12412,46 @@ describe('createCodexAppServerRuntime', () => {
         const afterBoundary = await readRequestLog(requestLogPath);
         expect(afterBoundary.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
         expect(afterBoundary.filter(entry => entry.method === 'initialize')).toHaveLength(1);
+    });
+
+    it('refuses a group credential superseded while queued behind another runtime auth apply', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-queued-auth-currentness-');
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+        const updateSelection = vi.fn(async () => { if (updateSelection.mock.calls.length === 1) await firstGate; });
+        let current = true;
+        const validateRuntimeCurrentness = vi.fn(async () => ({ current }));
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            validateConnectedServiceGroupCurrentness: validateRuntimeCurrentness,
+            onConnectedServiceAuthGenerationApplied: updateSelection,
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any,
+        });
+        const candidate = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'target', kind: 'oauth', expiresAt: 2000,
+            oauth: { accessToken: 'target-access', refreshToken: 'target-refresh', idToken: 'target-id', scope: null, tokenType: null, providerAccountId: 'acct_target', providerEmail: null } });
+        await runtime.startOrLoad({});
+        const first = runtime.applyConnectedServiceAuthGeneration({ serviceId: 'openai-codex', reason: 'manual', expected: { profileId: 'target' },
+            authGeneration: { credential: candidate, forcedWorkspaceId: null } });
+        await waitForCondition(() => updateSelection.mock.calls.length === 1, { timeoutMs: 1000, label: 'first auth held' });
+        const validate = vi.fn(async () => ({ current }));
+        const adapter = createCodexConnectedServiceRuntimeAuthAdapter();
+        const second = adapter.hotApply({ target: { agentId: 'codex' }, validateCurrentBeforeMutation: validate,
+            selection: { record: candidate, groupId: 'main', generation: 1, activeProfileId: 'target', credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+                applyConnectedServiceAuthGeneration: (request: unknown) => runtime.applyConnectedServiceAuthGeneration(request as any) } });
+        await waitForCondition(() => validate.mock.calls.length === 1, { timeoutMs: 1000, label: 'queued group authority validated' });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        current = false;
+        releaseFirst();
+        await first;
+        const result = await second;
+        const requestLog = await readRequestLog(requestLogPath);
+        expect(result).toMatchObject({ applied: false, reason: 'credential_revision_superseded' });
+        expect(requestLog.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
+        expect(validateRuntimeCurrentness).toHaveBeenCalledWith({
+            serviceId: 'openai-codex', groupId: 'main', profileId: 'target', generation: 1,
+            credentialRevision: 'csr_abcdefghijklmnopqrstuv',
+        });
     });
 
     it('keeps a new prompt behind an unfinished idle connected-service auth mutation', async () => {

@@ -56,6 +56,7 @@ export type CodexDirectLiveAuthApplyFailureReason =
   | 'refresh_selection_resync_failed'
   | 'experimental_api_unavailable'
   | 'live_hot_auth_failed'
+  | 'credential_revision_superseded'
   | 'turn_in_flight';
 
 export type CodexDirectLiveAuthApplyResult =
@@ -83,6 +84,7 @@ export type CodexDirectLiveAuthApplyResult =
 export type CodexDirectLiveAuthApplyInput = Readonly<{
   client: CodexLoginStartClient;
   canApplyAuth?: () => boolean;
+  validateCurrentBeforeMutation?: () => Promise<boolean>;
   candidate: ConnectedServiceCredentialRecordV1;
   forcedWorkspaceId: string | null;
   forcedLoginMethod?: string | null;

@@ -85,6 +85,9 @@ export async function applyCodexDirectLiveAppServerAuth(
     return { applied: false, reason: 'refresh_selection_resync_failed' };
   }
 
+  if (params.validateCurrentBeforeMutation && !(await params.validateCurrentBeforeMutation())) {
+    return { applied: false, reason: 'credential_revision_superseded' };
+  }
   if (params.canApplyAuth?.() === false) return { applied: false, reason: 'turn_in_flight' };
 
   let rollbackRefreshSelection: CodexRefreshSelectionRollback | null = null;
@@ -97,9 +100,12 @@ export async function applyCodexDirectLiveAppServerAuth(
     }
   }
 
-  // Native Codex work can start while selection resync awaits the daemon.
-  // Recheck at the actual login boundary and restore intent if it became busy.
-  if (params.canApplyAuth?.() === false) {
+  // Group authority and native turn activity can change while selection resync awaits.
+  // Recheck at the login boundary and restore intent before refusing the mutation.
+  const current = params.validateCurrentBeforeMutation
+    ? await params.validateCurrentBeforeMutation()
+    : true;
+  if (!current || params.canApplyAuth?.() === false) {
     if (params.refreshSelection) {
       if (!rollbackRefreshSelection) return { applied: false, reason: 'refresh_selection_resync_failed' };
       try {
@@ -108,7 +114,7 @@ export async function applyCodexDirectLiveAppServerAuth(
         return { applied: false, reason: 'refresh_selection_resync_failed' };
       }
     }
-    return { applied: false, reason: 'turn_in_flight' };
+    return { applied: false, reason: current ? 'turn_in_flight' : 'credential_revision_superseded' };
   }
 
   const record = requireConnectedServiceOauthCredentialRecord(params.candidate);
