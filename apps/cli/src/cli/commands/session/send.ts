@@ -6,7 +6,7 @@ import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@hap
 
 import type { Credentials } from '@/persistence';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue } from '@/cli/commands/shared/argvFlags';
+import { findFlagIndex, hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue } from '@/cli/commands/shared/argvFlags';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { tryHandleApprovalRequestCreated } from './shared/tryHandleApprovalRequestCreated';
 
@@ -33,7 +33,7 @@ export async function cmdSessionSend(
   const timeoutSecondsRaw = readIntFlagValue(argv, '--timeout', { min: 1 });
   const permissionModeFlag = (readFlagValue(argv, '--permission-mode') ?? '').trim();
   const modelFlagRaw = readFlagValue(argv, '--model');
-  const localIdFlagIndex = argv.indexOf('--local-id');
+  const localIdFlagIndex = findFlagIndex(argv, '--local-id');
   const localIdRaw = localIdFlagIndex >= 0 ? argv[localIdFlagIndex + 1] : undefined;
   const localId = readPendingLocalId(localIdRaw);
   if (localIdFlagIndex >= 0 && (

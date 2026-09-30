@@ -27,7 +27,6 @@ import {
 import { SessionTerminalComposerClearRequestV1Schema } from '../sessionControl/sessionTerminalComposerClearV1.js';
 import { SessionPendingInputInterruptAndRunRequestV1Schema } from '../sessionControl/sessionPendingInputInterruptAndRunV1.js';
 import { PendingRequestedActionV1Schema } from '../sessionMessages/pendingRequestedActionV1.js';
-import { PendingLocalIdSchema } from '../sessionMessages/pendingLocalId.js';
 import { SessionWorkStateStatusV1Schema } from '../sessionWorkState/sessionWorkStateV1.js';
 import { STRUCTURED_QUESTION_LIMITS } from '../tools/structuredQuestionAnswersV1.js';
 import { AcpConfigOptionOverridesV1Schema } from '../sessionMetadata/metadataOverridesV1.js';

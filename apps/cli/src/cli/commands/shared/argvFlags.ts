@@ -1,5 +1,12 @@
+/** Options end at --; later tokens belong to the positional arguments. */
+export function findFlagIndex(argv: readonly string[], flag: string): number {
+  const terminator = argv.indexOf('--');
+  const index = argv.indexOf(flag);
+  return index >= 0 && (terminator < 0 || index < terminator) ? index : -1;
+}
+
 export function hasFlag(argv: readonly string[], flag: string): boolean {
-  return argv.includes(flag);
+  return findFlagIndex(argv, flag) >= 0;
 }
 
 export function readCommandPositionals(
@@ -34,7 +41,7 @@ export function readCommandPositionals(
 }
 
 export function readFlagValue(argv: readonly string[], flag: string): string | null {
-  const idx = argv.findIndex((value) => value === flag);
+  const idx = findFlagIndex(argv, flag);
   if (idx < 0) return null;
   const raw = argv[idx + 1];
   if (typeof raw !== 'string') return null;

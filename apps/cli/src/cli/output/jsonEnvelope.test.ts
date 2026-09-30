@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { printJsonEnvelope } from './jsonEnvelope';
+import { printJsonEnvelope, wantsJson } from './jsonEnvelope';
 
 describe('printJsonEnvelope', () => {
   afterEach(() => {
@@ -46,5 +46,12 @@ describe('printJsonEnvelope', () => {
       kind: 'large_output_probe',
       data: { payload: 'x'.repeat(128 * 1024) },
     })).rejects.toMatchObject({ code: 'EPIPE' });
+  });
+});
+
+describe('wantsJson', () => {
+  it('does not treat a positional --json literal as an output option', () => {
+    expect(wantsJson(['send', 'session-id', '--', '--json'])).toBe(false);
+    expect(wantsJson(['send', '--json', 'session-id', '--', '--json'])).toBe(true);
   });
 });

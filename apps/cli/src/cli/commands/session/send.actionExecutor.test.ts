@@ -53,6 +53,19 @@ describe('happier session send (action executor)', () => {
     }
   });
 
+  it.each(['--local-id', '--help', '--json'])('treats %s after the option terminator as the literal message', async (message) => {
+    const readCredentialsFn = vi.fn(async () => null);
+    const { handleSessionCommand } = await import('./handleSessionCommand');
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['send', '--json', 'sess-1', '--', message], { readCredentialsFn });
+      expect(readCredentialsFn).toHaveBeenCalledOnce();
+      expect(output.json()).toMatchObject({ ok: false, error: { code: 'not_authenticated' } });
+    } finally {
+      output.restore();
+    }
+  });
+
   it('rejects a malformed timeout before reading credentials', async () => {
     const readCredentialsFn = vi.fn(async () => null);
     const { cmdSessionSend } = await import('./send');

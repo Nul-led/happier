@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readCommandPositionals, readIntFlagValue } from './argvFlags';
+import { hasFlag, readFlagValue, readCommandPositionals, readIntFlagValue } from './argvFlags';
 
 describe('readCommandPositionals', () => {
   it('excludes flags and their declared values from positional arguments', () => {
@@ -35,5 +35,15 @@ describe('readIntFlagValue', () => {
   ])('rejects %s', (_label, argv) => {
     expect(() => readIntFlagValue(argv, '--limit', { min: 1, max: 200 }))
       .toThrow(expect.objectContaining({ code: 'invalid_arguments' }));
+  });
+});
+
+describe('option terminator', () => {
+  it('recognizes flags only before the positional-only boundary', () => {
+    const argv = ['send', '--local-id', ' chosen-id ', 'session-id', '--', '--local-id', '--timeout', 'oops'];
+    expect(readFlagValue(argv, '--local-id')).toBe('chosen-id');
+    expect(hasFlag(argv, '--timeout')).toBe(false);
+    expect(readIntFlagValue(argv, '--timeout')).toBeNull();
+    expect(readFlagValue(['send', 'session-id', '--', '--model', 'gpt-4o'], '--model')).toBeNull();
   });
 });
