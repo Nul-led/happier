@@ -59,6 +59,8 @@ export type ApplyConnectedServiceStateSharingDescriptorInput = Readonly<{
   symlinkUnavailableDegradePolicy?: 'block_continuity' | 'degrade_to_isolated';
   mapStateSymlinkUnavailableDiagnostic?: (error: ConnectedServiceSharedStateLinkUnavailableError) => ConnectedServicesMaterializationDiagnostic;
   copyTransformByEntry?: Readonly<Record<string, (content: string) => string>>;
+  /** Profile-owned config used only when the native source entry is absent. */
+  copyFallbackContentByEntry?: Readonly<Record<string, string>>;
   forceCopiedEntries?: readonly string[];
   /** Runs after shared-state link preflight succeeds and before state is imported or linked. */
   prepareSharedStateSource?: () => Promise<void>;
@@ -449,9 +451,11 @@ export async function applyConnectedServiceStateSharingDescriptor(
         ? (content: string) => profileTransform(descriptorTransform ? descriptorTransform(content) : content)
         : descriptorTransform;
       if (!sourceStat) {
-        if (!profileTransform) continue;
+        const fallbackContent = input.copyFallbackContentByEntry?.[entryName];
+        if (!profileTransform && fallbackContent === undefined) continue;
         await prepareManagedConnectedServiceHomeDestination(destinationPath);
-        await writeFile(destinationPath, transform!(''), { encoding: 'utf8', mode: 0o600 });
+        const content = fallbackContent ?? '';
+        await writeFile(destinationPath, transform ? transform(content) : content, { encoding: 'utf8', mode: 0o600 });
         configEntries.push(entryName);
         continue;
       }

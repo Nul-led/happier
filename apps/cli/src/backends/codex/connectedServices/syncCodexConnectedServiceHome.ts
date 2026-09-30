@@ -87,13 +87,17 @@ function asTomlTable(value: TomlValue | undefined): TomlTable | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as TomlTable : null;
 }
 
-async function readCodexHookState(effectiveCodexHome: string): Promise<TomlTable> {
+async function readCodexProfileConfig(effectiveCodexHome: string): Promise<Readonly<{
+  content: string | null;
+  hookState: TomlTable;
+}>> {
   const configPath = join(effectiveCodexHome, 'config.toml');
   try {
     // Only preferences owned by this profile may survive replacement. A linked
     // native config does not establish a profile-owned hook trust decision.
-    if (!(await lstat(configPath)).isFile()) return {};
-    const config = parse(await readFile(configPath, 'utf8'), { integersAsBigInt: 'asNeeded' });
+    if (!(await lstat(configPath)).isFile()) return { content: null, hookState: {} };
+    const content = await readFile(configPath, 'utf8');
+    const config = parse(content, { integersAsBigInt: 'asNeeded' });
     const states = asTomlTable(asTomlTable(config.hooks)?.state);
     const ownState: TomlTable = {};
     for (const [key, value] of Object.entries(states ?? {})) {
@@ -105,9 +109,9 @@ async function readCodexHookState(effectiveCodexHome: string): Promise<TomlTable
       if (typeof state.enabled === 'boolean') fields.enabled = state.enabled;
       if (Object.keys(fields).length > 0) ownState[key] = fields;
     }
-    return ownState;
+    return { content, hookState: ownState };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { content: null, hookState: {} };
     throw error;
   }
 }
@@ -260,9 +264,10 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
 
     await mkdir(params.destinationCodexHome, { recursive: true });
     const manifest = await readConnectedServiceStateSharingManifest(params.destinationCodexHome);
-    const hookState = settings.configMode === 'isolated'
-      ? {}
-      : await readCodexHookState(params.previousCodexHome ?? params.destinationCodexHome);
+    const profileConfig = settings.configMode === 'isolated'
+      ? { content: null, hookState: {} }
+      : await readCodexProfileConfig(params.previousCodexHome ?? params.destinationCodexHome);
+    const hookState = profileConfig.hookState;
     const configEntryNames = await resolveCodexConfigEntryNames(sourceCodexHome);
     const stateEntryNames = codexConnectedServiceStateSharingDescriptor.state.entries.map((entry) => entry.path);
 
@@ -285,6 +290,9 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
         cwd: process.cwd(),
         existingManifest: manifest,
         configEntryNames,
+        copyFallbackContentByEntry: profileConfig.content !== null
+          ? { 'config.toml': profileConfig.content }
+          : undefined,
         copyTransformByEntry: Object.keys(hookState).length > 0
           ? { 'config.toml': (content) => mergeCodexHookState(content, hookState) }
           : undefined,
