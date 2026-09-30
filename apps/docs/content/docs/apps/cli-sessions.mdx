@@ -138,6 +138,8 @@ Keep that exact ID when correlating the send result with session history. IDs ar
 leading and trailing spaces are part of the ID, so quote them when supplying the flag.
 Blank IDs and IDs beginning with `agent-transition:` are rejected before authentication.
 This override belongs to the CLI; MCP and voice tools continue using host-generated IDs.
+IDs can begin with `-`. If an ID equals an option name or `--`, use inline syntax to
+keep it unambiguous: `--local-id=--json` supplies the ID `--json`.
 
 Put `--` before a message that looks like an option:
 

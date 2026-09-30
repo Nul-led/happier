@@ -85,7 +85,7 @@ describe('happier session send (action executor)', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(['--wait', '--timeout'])('rejects %s as a missing local id value', async (nextFlag) => {
+  it.each(['--wait', '--timeout', '--json', '--model', '--model=x', '--permission-mode', '--local-id', '--', '--help', '-h'])('rejects %s as a missing local id value', async (nextFlag) => {
     execute.mockClear();
     const readCredentialsFn = vi.fn(async () => null);
     const { cmdSessionSend } = await import('./send');

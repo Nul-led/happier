@@ -9,12 +9,13 @@ describe('session send caller identity through the real command and HTTP transpo
   it('reconciles an exact terminal identity and refuses a corrupted proof', async () => {
     let corruptProof = false;
     const sessionId = 'c123456789012345678901234';
-    const localId = " board-wake'42 ";
-    // The relay fixture already has this one terminal transcript row. Only
+    const localIds = [" board-wake'42 ", "-claim-1", "--claim-1", "--json", "--"];
+    // The relay fixture has one existing terminal transcript row per identity. Only
     // network/account state is substituted; CLI, ActionExecutor, send service,
     // encryption selection, HTTP client, and terminal-proof parser are real.
-    const terminalRow = { id: 'msg-1', seq: 1, localId, requestedAction: { v: 1, kind: 'steer_if_active' } };
-    const transcript = new Map([[localId, terminalRow]]);
+    const transcript = new Map(localIds.map((localId, index) => [localId, {
+      id: `msg-${index + 1}`, seq: index + 1, localId, requestedAction: { v: 1, kind: 'steer_if_active' },
+    }]));
     const server = createServer(async (request, response) => {
       response.setHeader('Content-Type', 'application/json');
       const path = request.url?.split('?')[0];
@@ -46,7 +47,7 @@ describe('session send caller identity through the real command and HTTP transpo
           return;
         }
         response.end(JSON.stringify({ didWrite: false, terminal: true,
-          message: { ...row, localId: corruptProof ? localId.trim() : row.localId } }));
+          message: { ...row, localId: corruptProof ? `${row.localId}:changed` : row.localId } }));
         return;
       }
       response.statusCode = 404;
@@ -63,19 +64,24 @@ describe('session send caller identity through the real command and HTTP transpo
       const { cmdSessionSend } = await import('./send');
       const credentials = { token: 'fixture_token',
         encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(7) } };
-      for (const corrupt of [false, true]) {
-        corruptProof = corrupt;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          const output = captureConsoleJsonOutput();
-          try {
-            await cmdSessionSend(['send', sessionId, 'Hello', '--local-id', localId, '--json'], {
-              readCredentialsFn: async () => credentials,
-            });
-            const result = output.json();
-            expect(result, JSON.stringify(result)).toMatchObject(corruptProof
-              ? { ok: false, kind: 'session_send', error: { code: 'timeout' } }
-              : { ok: true, kind: 'session_send', data: { sessionId, localId, waited: false } });
-          } finally { output.restore(); }
+      for (const localId of localIds) {
+        const localIdArgs = ['--json', '--'].includes(localId)
+          ? [`--local-id=${localId}`]
+          : ['--local-id', localId];
+        for (const corrupt of [false, true]) {
+          corruptProof = corrupt;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const output = captureConsoleJsonOutput();
+            try {
+              await cmdSessionSend(['send', sessionId, 'Hello', ...localIdArgs, '--json'], {
+                readCredentialsFn: async () => credentials,
+              });
+              const result = output.json();
+              expect(result, JSON.stringify(result)).toMatchObject(corruptProof
+                ? { ok: false, kind: 'session_send', error: { code: 'timeout' } }
+                : { ok: true, kind: 'session_send', data: { sessionId, localId, waited: false } });
+            } finally { output.restore(); }
+          }
         }
       }
     } finally {

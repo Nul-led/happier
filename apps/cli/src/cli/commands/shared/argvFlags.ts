@@ -1,12 +1,20 @@
 /** Options end at --; later tokens belong to the positional arguments. */
-export function findFlagIndex(argv: readonly string[], flag: string): number {
+export function findFlagIndex(argv: readonly string[], flag: string, allowInlineValue = false): number {
   const terminator = argv.indexOf('--');
-  const index = argv.indexOf(flag);
+  const index = argv.findIndex((value) => value === flag || (allowInlineValue && value.startsWith(`${flag}=`)));
   return index >= 0 && (terminator < 0 || index < terminator) ? index : -1;
 }
 
 export function hasFlag(argv: readonly string[], flag: string): boolean {
   return findFlagIndex(argv, flag) >= 0;
+}
+
+export function hasFlagValue(argv: readonly string[], flag: string): boolean {
+  return findFlagIndex(argv, flag, true) >= 0;
+}
+
+export function isCommandOptionToken(value: string, optionFlags: readonly string[]): boolean {
+  return value === '--' || optionFlags.includes(value.split('=', 1)[0]);
 }
 
 export function readCommandPositionals(
@@ -40,11 +48,23 @@ export function readCommandPositionals(
   return positionals;
 }
 
-export function readFlagValue(argv: readonly string[], flag: string): string | null {
-  const idx = findFlagIndex(argv, flag);
+export function readRawFlagValue(
+  argv: readonly string[],
+  flag: string,
+  options: Readonly<{ allowInlineValue?: boolean; optionFlags?: readonly string[] }> = {},
+): string | null {
+  const idx = findFlagIndex(argv, flag, options.allowInlineValue ?? true);
   if (idx < 0) return null;
-  const raw = argv[idx + 1];
-  if (typeof raw !== 'string' || raw === '--') return null;
+  const argument = argv[idx];
+  const raw = argument === flag ? argv[idx + 1] : argument.slice(flag.length + 1);
+  if (typeof raw !== 'string') return null;
+  if (argument === flag && isCommandOptionToken(raw, options.optionFlags ?? [])) return null;
+  return raw;
+}
+
+export function readFlagValue(argv: readonly string[], flag: string): string | null {
+  const raw = readRawFlagValue(argv, flag, { allowInlineValue: false });
+  if (raw === null) return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
