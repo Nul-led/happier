@@ -18,7 +18,7 @@ import {
   removeLegacyConnectedServiceStateSharingManifest,
   writeConnectedServiceStateSharingManifest,
 } from '@/daemon/connectedServices/stateSharing/connectedServiceStateSharingManifest';
-import { applyConnectedServiceStateSharingDescriptor } from '@/daemon/connectedServices/stateSharing/applyConnectedServiceStateSharingDescriptor';
+import { applyConnectedServiceStateSharingDescriptor, parseConnectedServiceTomlConfig } from '@/daemon/connectedServices/stateSharing/applyConnectedServiceStateSharingDescriptor';
 import {
   importConnectedServiceSessionFiles,
   type ConnectedServiceSessionFileImportDetail,
@@ -97,7 +97,7 @@ async function readCodexProfileConfig(effectiveCodexHome: string): Promise<Reado
     // native config does not establish a profile-owned hook trust decision.
     if (!(await lstat(configPath)).isFile()) return { content: null, hookState: {} };
     const content = await readFile(configPath, 'utf8');
-    const config = parse(content, { integersAsBigInt: 'asNeeded' });
+    const config = parseConnectedServiceTomlConfig(content, configPath);
     const states = asTomlTable(asTomlTable(config.hooks)?.state);
     const ownState: TomlTable = {};
     for (const [key, value] of Object.entries(states ?? {})) {

@@ -1,7 +1,7 @@
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 
-import { parse, stringify } from 'smol-toml';
+import { parse, stringify, TomlError, type TomlTable } from 'smol-toml';
 
 import type { ConnectedServiceStateSharingDescriptor, ConnectedServiceStateSharingDescriptorEntry } from '@/backends/types';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialize/providerMaterializerTypes';
@@ -333,11 +333,25 @@ function isConnectedServiceSharedStateLinkUnavailableError(error: unknown): erro
   return code === 'state_symlink_unavailable';
 }
 
+export function parseConnectedServiceTomlConfig(content: string, configPath: string): TomlTable {
+  try {
+    return parse(content, { integersAsBigInt: 'asNeeded' });
+  } catch (error) {
+    if (!(error instanceof TomlError)) throw error;
+    // Parser messages and codeblocks contain nearby config values. Retain only
+    // safe classification and location metadata when reporting the file error.
+    throw new Error(`Invalid TOML in ${configPath} (line ${error.line}, column ${error.column})`, {
+      cause: { name: 'TomlError', line: error.line, column: error.column },
+    });
+  }
+}
+
 function applyRewriteTomlSetStringValues(
   content: string,
   setStringValues: Readonly<Record<string, string>>,
+  configPath: string,
 ): string {
-  const config = parse(content, { integersAsBigInt: 'asNeeded' });
+  const config = parseConnectedServiceTomlConfig(content, configPath);
   for (const [key, value] of Object.entries(setStringValues)) {
     if (key.trim()) config[key] = value;
   }
@@ -346,11 +360,12 @@ function applyRewriteTomlSetStringValues(
 
 function buildDescriptorCopyTransformByEntry(
   descriptor: ConnectedServiceStateSharingDescriptor,
+  sourceRoot: string,
 ): Readonly<Record<string, (content: string) => string>> {
   const transforms: Record<string, (content: string) => string> = {};
   for (const transform of descriptor.transforms ?? []) {
     if (transform.kind === 'rewrite_toml') {
-      transforms[transform.entry] = (content) => applyRewriteTomlSetStringValues(content, transform.spec.setStringValues);
+      transforms[transform.entry] = (content) => applyRewriteTomlSetStringValues(content, transform.spec.setStringValues, join(sourceRoot, transform.entry));
       continue;
     }
     throw new Error(`Unsupported connected-service descriptor transform kind: ${transform.kind}`);
@@ -404,7 +419,7 @@ export async function applyConnectedServiceStateSharingDescriptor(
   const sourceRoot = resolve(input.nativeSourceContext.sourceRoot);
   const envOverrides: Record<string, string> = {};
   const diagnostics: ConnectedServicesMaterializationDiagnostic[] = [];
-  const descriptorCopyTransformByEntry = buildDescriptorCopyTransformByEntry(input.descriptor);
+  const descriptorCopyTransformByEntry = buildDescriptorCopyTransformByEntry(input.descriptor, sourceRoot);
   const previousManifest = input.existingManifest;
   const configEntryNames = input.configEntryNames ?? input.descriptor.config.entries.map((entry) => entry.path);
   const stateEntryNames = input.stateEntryNames ?? input.descriptor.state.entries.map((entry) => entry.path);

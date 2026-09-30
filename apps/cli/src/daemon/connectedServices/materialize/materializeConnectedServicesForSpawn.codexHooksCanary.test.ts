@@ -1,6 +1,7 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
 import { parse } from 'smol-toml';
@@ -12,6 +13,44 @@ import { resolveConnectedServiceMaterializedRootDir } from './resolveConnectedSe
 
 const firstHooks = '{"hooks":{"Stop":[]}}\n';
 const secondHooks = '{"hooks":{"SessionStart":[]}}\n';
+
+it.each(['native', 'profile'] as const)('reports a malformed %s TOML file without exposing config content or replacing the promoted home', async (invalidOwner) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-codex-invalid-config-'));
+  try {
+    const sourceHome = join(root, 'native');
+    await mkdir(sourceHome, { recursive: true });
+    await writeFile(join(sourceHome, 'config.toml'), 'model = "fixture"\n');
+    await writeFile(join(sourceHome, 'hooks.json'), firstHooks);
+    const record = buildConnectedServiceCredentialRecord({
+      now: 10, serviceId: 'openai-codex', profileId: 'synthetic', kind: 'oauth', expiresAt: null,
+      oauth: { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', idToken: 'synthetic-id',
+        scope: null, tokenType: null, providerAccountId: 'synthetic-account', providerEmail: null },
+    });
+    const materialize = async () => await materializeConnectedServicesForSpawn({
+      agentId: 'codex', materializationKey: 'invalid-config', activeServerDir: join(root, 'server'), baseDir: join(root, 'profiles'),
+      recordsByServiceId: new Map([['openai-codex', record]]),
+      accountSettings: { connectedServicesProviderStateSharingSettingsV1: {
+        v: 1, defaults: { configMode: 'linked', stateMode: 'isolated' }, byAgentId: {}, acknowledgedRisksByAgentId: {},
+      } },
+      processEnv: { CODEX_HOME: sourceHome, HOME: root },
+    });
+    const first = await materialize();
+    const home = first!.env.CODEX_HOME!;
+    const invalidPath = join(invalidOwner === 'native' ? sourceHome : home, 'config.toml');
+    const malformed = 'fixture_secret = "synthetic-sensitive-config"\n[broken\n';
+    await writeFile(invalidPath, malformed);
+    const priorConfig = await readFile(join(home, 'config.toml'), 'utf8');
+    const error = await materialize().then(() => null, (failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    const reported = inspect(error, { depth: 5 });
+    expect(reported).toContain(invalidPath);
+    expect(reported).toMatch(/line \d+, column \d+/);
+    expect(reported).toContain('TomlError');
+    expect(reported).not.toContain('synthetic-sensitive-config');
+    await expect(readFile(join(home, 'config.toml'), 'utf8')).resolves.toBe(priorConfig);
+    await expect(readFile(join(home, 'hooks.json'), 'utf8')).resolves.toBe(firstHooks);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 it('migrates linked hooks and preserves profile hook state through repeated staged materialization', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-codex-hooks-canary-'));
