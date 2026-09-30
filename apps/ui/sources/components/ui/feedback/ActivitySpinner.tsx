@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { useIsHostVisible } from '@/hooks/ui/useIsHostVisible';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import {
     normalizeLoadingIndicatorStyleId,
@@ -94,6 +95,9 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
     const reduceMotion = useReducedMotionPreference();
+    // A window nobody can see (a hidden tab, a backgrounded app) gets a still spinner: every
+    // animation loop declares its stop condition (`apps/ui/AGENTS.md`).
+    const hostVisible = useIsHostVisible();
     const {
         animating = true,
         animationEnabled = true,
@@ -116,11 +120,11 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
     );
 
     if (styleId === 'classicRing') {
-        return <ClassicRingSpinner {...props} color={resolvedColor} reduceMotion={reduceMotion} />;
+        return <ClassicRingSpinner {...props} color={resolvedColor} reduceMotion={reduceMotion} hostVisible={hostVisible} />;
     }
 
     const hidden = !animating && hidesWhenStopped !== false;
-    const motion = resolveSpinnerMotion({ paused: !animating || !animationEnabled, reduceMotion });
+    const motion = resolveSpinnerMotion({ paused: !animating || !animationEnabled || !hostVisible, reduceMotion });
     const resolvedSize = resolveSpinnerSize(size ?? DEFAULT_NUMERIC_SPINNER_SIZE);
     const accessibleViewProps = { ...viewProps, accessibilityRole: props.accessibilityRole ?? 'progressbar' as const };
 
@@ -140,8 +144,9 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
     return <DotSpinnerWeb styleId={styleId} size={resolvedSize} ink={ink} motion={motion} viewProps={accessibleViewProps} />;
 }
 
-function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolean }) {
-    const { reduceMotion, variant: _variant, ...spinnerProps } = props;
+function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolean; hostVisible: boolean }) {
+    // The platform ring stops with its window on its own, so only the web ring reads `hostVisible`.
+    const { reduceMotion, hostVisible, variant: _variant, ...spinnerProps } = props;
     const resolvedColor = spinnerProps.color;
 
     if (Platform.OS !== 'web') {
@@ -182,7 +187,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
         borderWidth: resolveSpinnerBorderWidth(resolvedSize),
         borderColor: typeof resolvedColor === 'string' ? resolvedColor : 'currentColor',
         borderTopColor: 'transparent',
-        ...(animationEnabled && !reduceMotion ? {
+        ...(animationEnabled && !reduceMotion && hostVisible ? {
             animationDuration: '850ms',
             animationIterationCount: 'infinite',
             animationName: SPINNER_ANIMATION_NAME,

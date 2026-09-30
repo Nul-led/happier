@@ -192,6 +192,20 @@ describe('ActivitySpinner (web)', () => {
         expect(frameSheetFor(strip)).toContain('fill-opacity="0.85"');
     });
 
+    it('drops every animation while the page is hidden, so an unseen tab never keeps a spinner moving', async () => {
+        vi.stubGlobal('document', { ...globalThis.document, visibilityState: 'hidden' });
+        const dots = await renderSpinner({ size: 12 });
+        expect(flattenStyle(dots.strip?.props.style).animationName).toBeUndefined();
+
+        reducedMotionMatches = true;
+        const breathing = await renderSpinner({ size: 12 });
+        expect(flattenStyle(breathing.spinner.props.style).animationName).toBeUndefined();
+
+        localSettingValues.loadingIndicatorStyle = 'classicRing';
+        const ring = await renderSpinner({ size: 12 });
+        expect(flattenStyle(ring.spinner.props.style).animationName).toBeUndefined();
+    });
+
     it('replaces the travelling light with a slow breath of the still H under reduced motion', async () => {
         reducedMotionMatches = true;
         const { spinner, strip } = await renderSpinner({ size: 12 });

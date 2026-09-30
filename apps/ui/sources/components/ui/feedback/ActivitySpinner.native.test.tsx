@@ -96,6 +96,27 @@ describe('ActivitySpinner (native)', () => {
         expect(dots.map((dot) => flattenStyle(dot.props.style).opacity)).toEqual(Array(7).fill(0.85));
     });
 
+    it('stops the frame clock while the app is in the background and resumes it on return', async () => {
+        const { AppState } = await import('react-native');
+        const { act } = await import('react-test-renderer');
+        const { createReactNativeAppStateEmitter } = await import('@/dev/testkit');
+        const appState = createReactNativeAppStateEmitter();
+        const restoreAppState = appState.install(AppState);
+        try {
+            const { callbacks } = await renderDotSpinner({});
+            const runningCount = () => [...callbacks].filter((callback) => callback.isActive).length;
+            expect(runningCount()).toBe(1);
+
+            await act(async () => appState.emit('background'));
+            expect(runningCount()).toBe(0);
+
+            await act(async () => appState.emit('active'));
+            expect(runningCount()).toBe(1);
+        } finally {
+            restoreAppState();
+        }
+    });
+
     it('releases its frame clock when it unmounts', async () => {
         const { screen, callbacks } = await renderDotSpinner({});
         expect(callbacks.size).toBe(1);
