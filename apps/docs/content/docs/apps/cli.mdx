@@ -190,15 +190,20 @@ treated as a rejected sign-in or a reason to sign in somewhere else.
 <Callout type="info">
   The current 0.2 checkout has the refreshed setup presentation; it is not part
   of the public 0.2.11 installer. Wide terminals place the planet beside the
-  setup choices, slowly growing and shrinking while you choose. Use the arrow
-  keys to select and Enter to continue; letter shortcuts remain available.
-  Narrow terminals use a compact text layout. On a capable terminal, set
-  `HAPPIER_NO_ANIMATION=1` to keep the branded output static. `NO_COLOR`
+  setup choices, drawn in Braille dots. It rises into view, turns briefly and
+  comes to rest, then keeps breathing slowly; once you move the selection it
+  dims so the choices lead. Terminals that report a light background through
+  `COLORFGBG` get the light planet. On Windows the planet needs a host that can
+  draw Braille characters, such as Windows Terminal; the legacy console uses the
+  compact text layout. Use the arrow keys to select and Enter to continue;
+  letter shortcuts remain available. Narrow terminals use a compact text layout.
+  On a capable terminal, set `HAPPIER_NO_ANIMATION=1` to keep the branded
+  output static. `NO_COLOR`
   disables colour, while `TERM=dumb` and non-interactive output suppress cursor
   animation and decorative art automatically.
 </Callout>
 
-On capable terminals, the corresponding installer introduces Happier with a static numeric planet
+On capable terminals, the corresponding installer introduces Happier with a static Braille planet
 and groups its work into Download, Verify, and Install. It retains detailed
 failure output and hands over to setup without repeating the welcome. Colours
 use your terminal's capabilities; its font and background remain yours.

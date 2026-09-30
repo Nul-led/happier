@@ -41,6 +41,87 @@ describe('createStepPrinter', () => {
     expect(output).not.toMatch(/[\x1b\r]/u);
   });
 
+  const withTerminal = (columns: number, run: () => void) => {
+    const descriptors = [
+      [process.stdout, 'isTTY', Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')],
+      [process.stderr, 'isTTY', Object.getOwnPropertyDescriptor(process.stderr, 'isTTY')],
+      [process.stdout, 'columns', Object.getOwnPropertyDescriptor(process.stdout, 'columns')],
+      [process.stdout, 'rows', Object.getOwnPropertyDescriptor(process.stdout, 'rows')],
+    ] as const;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stdout, 'columns', { configurable: true, value: columns });
+    Object.defineProperty(process.stdout, 'rows', { configurable: true, value: 30 });
+    try {
+      run();
+    } finally {
+      for (const [stream, key, descriptor] of descriptors) {
+        if (descriptor) Object.defineProperty(stream, key, descriptor);
+        else Reflect.deleteProperty(stream, key);
+      }
+    }
+  };
+
+  it('animates a TTY step with a Braille spinner and reports how long it took', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    withTerminal(80, () => {
+      const printer = createStepPrinter({ enabled: true });
+      printer.start('Installing');
+      vi.advanceTimersByTime(2400);
+      const spinning = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+      expect(spinning).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
+      expect(spinning).not.toContain('- [|]');
+      printer.stop('✓', 'Installing');
+      const done = String(writeSpy.mock.calls.at(-1)?.[0]);
+      expect(done.replace(/\x1b\[[0-9;]*m/gu, '')).toMatch(/^✓ Installing {2}2\.4s\n$/u);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('keeps an ASCII spinner on consoles without Braille glyphs', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    vi.stubEnv('WT_SESSION', '');
+    vi.stubEnv('TERM_PROGRAM', '');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    try {
+      withTerminal(80, () => {
+        const printer = createStepPrinter({ enabled: true, appearance: 'planet' });
+        printer.start('Waiting for authentication');
+        vi.advanceTimersByTime(600);
+        const output = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+        expect(output).not.toMatch(/[⠀-⣿]/u);
+        expect(output).toMatch(/[|/\\-]/u);
+        printer.pause();
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('shows the waiting label beside the breathing planet', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    withTerminal(80, () => {
+      const printer = createStepPrinter({ appearance: 'planet' });
+      printer.start('Waiting for authentication');
+      vi.advanceTimersByTime(3000);
+      const frame = writeSpy.mock.calls.map((call) => String(call[0])).join('').split('\n')
+        .map((line) => line.replace(/\x1b\[[0-9;]*[A-Za-z]|\r/gu, ''));
+      expect(frame.some((line) => /[⠁-⣿].* Waiting for authentication/u.test(line))).toBe(true);
+      printer.stop('✓', 'Waiting for authentication');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
   it.each(['message', 'no-motion', 'resize', 'resize-before-pause', 'dumb', 'child-output', 'spawn-error'] as const)('respects terminal ownership and motion controls: %s', async (scenario) => {
     vi.useFakeTimers();
     writeSpy.mockImplementation(() => true);

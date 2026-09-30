@@ -27,10 +27,10 @@
       "require": "./nodePtySpawnHelperPermissions.cjs",
       "default": "./nodePtySpawnHelperPermissions.cjs"
     },
-    "./numericPlanetFrame": {
-      "types": "./numericPlanetFrame.d.mts",
-      "import": "./numericPlanetFrame.mjs",
-      "default": "./numericPlanetFrame.mjs"
+    "./planetFrame": {
+      "types": "./planetFrame.d.mts",
+      "import": "./planetFrame.mjs",
+      "default": "./planetFrame.mjs"
     },
     "./workspaceLockLease": {
       "types": "./workspaceLockLease.d.mts",

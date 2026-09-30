@@ -245,7 +245,11 @@ async function askWhereTheRelayLives(): Promise<SetupRelaySelection> {
             defaultId: 'cloud',
             maxAttempts: 3,
             ...(setupChoicePrompt.renderMessage
-                ? { animate: setupChoicePrompt.animate === true, renderMessage: setupChoicePrompt.renderMessage }
+                ? {
+                    animate: setupChoicePrompt.animate === true,
+                    renderMessage: setupChoicePrompt.renderMessage,
+                    ...(setupChoicePrompt.intervalMs === undefined ? {} : { intervalMs: setupChoicePrompt.intervalMs }),
+                }
                 : {}),
         },
     );

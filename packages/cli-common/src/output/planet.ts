@@ -1,28 +1,74 @@
 import chalk from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
-import { createNumericPlanetFrame } from '../../numericPlanetFrame.mjs';
+import { PLANET_FRAME_INTERVAL_MS, createPlanetFrame, planetRowsForColumns, type PlanetTheme } from '../../planetFrame.mjs';
 
 export function isTerminalAnimationDisabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.HAPPIER_NO_ANIMATION ?? '').trim().toLowerCase());
 }
 
-/** Numeric brand texture only; no identifiers, credentials or progress data. */
-export function renderNumericPlanet(options: Readonly<{
+/**
+ * Braille art needs a font with the Braille block. macOS and Linux terminals fall back
+ * to one; the legacy Windows console host does not, so there only Windows Terminal
+ * (WT_SESSION) and hosts that identify themselves (TERM_PROGRAM, e.g. VS Code) get it.
+ */
+export function supportsBrailleArt(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return true;
+  return Boolean(String(env.WT_SESSION ?? '').trim() || String(env.TERM_PROGRAM ?? '').trim());
+}
+
+/**
+ * COLORFGBG ("fg;bg" or "fg;default;bg") is the background hint terminals publish
+ * without being queried; white backgrounds (7, 15) get the light planet.
+ */
+export function resolveTerminalTheme(env: NodeJS.ProcessEnv = process.env): PlanetTheme {
+  const background = String(env.COLORFGBG ?? '').split(';').at(-1)?.trim();
+  return background === '7' || background === '15' ? 'light' : 'dark';
+}
+
+const easeInOut = (value: number): number => {
+  const t = Math.min(1, Math.max(0, value));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * A gold highlight band sweeping across text (phase 0 → 1). It only adds colour to
+ * the terminal's own foreground, so it reads on light and dark backgrounds alike.
+ */
+export function shimmerText(text: string, phase: number, colors: typeof chalk = chalk): string {
+  if (colors.level === 0 || phase < 0 || phase > 1) return text;
+  const chars = [...text];
+  const position = -4 + phase * (chars.length + 8);
+  return chars.map((ch, index) => {
+    const distance = Math.abs(index - position);
+    if (distance <= 1.5) return colors.hex('#ffd98a')(ch);
+    if (distance <= 3.5) return colors.hex('#d6a24a')(ch);
+    return ch;
+  }).join('');
+}
+
+/** Brand texture only; no identifiers, credentials or progress data. */
+export function renderPlanet(options: Readonly<{
   columns?: number;
+  /** Seconds since the planet appeared; omit for the settled, fully lit pose. */
   seconds?: number;
+  intro?: boolean;
+  dim?: number;
   chalkLike?: typeof chalk;
   color?: boolean;
 }> = {}): string[] {
   const colors = options.chalkLike ?? chalk;
-  return createNumericPlanetFrame({
+  return createPlanetFrame({
     ...(options.columns === undefined ? {} : { columns: options.columns }),
     ...(options.seconds === undefined ? {} : { seconds: options.seconds }),
+    ...(options.intro === undefined ? {} : { intro: options.intro }),
+    ...(options.dim === undefined ? {} : { dim: options.dim }),
+    theme: resolveTerminalTheme(),
   }).map((row) => {
     const line = row.map((cell) => {
       if (!cell) return ' ';
       return options.color === false || colors.level === 0
-        ? cell.digit
-        : colors.rgb(...cell.rgb)(cell.digit);
+        ? cell.ch
+        : colors.rgb(...cell.rgb)(cell.ch);
     }).join('');
     return line.trimEnd();
   });
@@ -40,8 +86,8 @@ export function renderSetupWelcome(options: Readonly<{
   }
   const rich = Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb';
   const width = options.columns ?? process.stdout.columns ?? 80;
-  const lines = rich && width >= 40 && (process.stdout.rows ?? 24) >= 18
-    ? renderNumericPlanet({ color: !process.env.NO_COLOR })
+  const lines = rich && width >= 40 && (process.stdout.rows ?? 24) >= 18 && supportsBrailleArt()
+    ? renderPlanet({ color: !process.env.NO_COLOR })
     : [];
   return [...lines, '', 'Happier', options.subtitle, `Computer: ${options.machineName}`, ''].join('\n');
 }
@@ -63,8 +109,11 @@ export type SetupChoiceRenderOptions = Readonly<{
   columns?: number;
   rows?: number;
   isTTY?: boolean;
+  /** Seconds since the prompt appeared; omit for the settled, static pose. */
   seconds?: number;
   selectedId?: string;
+  /** When the user first moved the selection; the planet steps back from then on. */
+  interactedAtSeconds?: number;
   showWelcome?: boolean;
 }>;
 
@@ -72,6 +121,7 @@ export type SetupChoicePrompt = Readonly<{
   message: string;
   animate?: boolean;
   renderMessage?: (elapsedSeconds: number, selectedId?: string) => string;
+  intervalMs?: number;
 }>;
 
 const SETUP_PLANET_WIDTH = 24;
@@ -101,7 +151,9 @@ function renderSetupChoiceText(options: SetupChoiceRenderOptions, width: number,
   const title = (value: string): string => color ? chalk.bold(value) : value;
   const lines: string[] = [];
   if (options.showWelcome !== false) {
-    if (showBrand) lines.push(title('Happier'));
+    // One slow highlight across the name while the planet rises; then it stays still.
+    const brandPhase = options.seconds === undefined ? -1 : (options.seconds - 0.5) / 1.6;
+    if (showBrand) lines.push(title(color ? shimmerText('Happier', brandPhase) : 'Happier'));
     lines.push(...wrapSetupText(options.subtitle, width));
     lines.push(...wrapSetupText(`Computer: ${options.machineName}`, width), '');
   }
@@ -127,12 +179,12 @@ function renderSetupChoiceText(options: SetupChoiceRenderOptions, width: number,
 }
 
 function canRenderSetupChoiceRich(options: SetupChoiceRenderOptions, width: number, rows: number, isTTY: boolean, showBrand: boolean): boolean {
-  if (!isTTY || process.env.TERM === 'dumb' || width < SETUP_PLANET_WIDTH + SETUP_PLANET_GAP + SETUP_MIN_RIGHT_WIDTH) {
+  if (!isTTY || process.env.TERM === 'dumb' || width < SETUP_PLANET_WIDTH + SETUP_PLANET_GAP + SETUP_MIN_RIGHT_WIDTH || !supportsBrailleArt()) {
     return false;
   }
   const rightWidth = width - SETUP_PLANET_WIDTH - SETUP_PLANET_GAP;
   const rightLineCount = renderSetupChoiceText(options, rightWidth, showBrand, false).length;
-  const planetLineCount = Math.ceil(SETUP_PLANET_WIDTH / 2.2);
+  const planetLineCount = planetRowsForColumns(SETUP_PLANET_WIDTH);
   return Math.max(rightLineCount, planetLineCount) + 2 < rows;
 }
 
@@ -157,9 +209,14 @@ export function renderSetupChoice(options: SetupChoiceRenderOptions): string {
 
   const rightWidth = width - SETUP_PLANET_WIDTH - SETUP_PLANET_GAP;
   const right = renderSetupChoiceText(options, rightWidth, showBrand, color);
-  const planet = renderNumericPlanet({
+  const planet = renderPlanet({
     columns: SETUP_PLANET_WIDTH,
-    seconds: options.seconds ?? 0,
+    ...(options.seconds === undefined ? {} : { seconds: options.seconds }),
+    // After the installer's welcome the planet is already up; setup continues it.
+    intro: showBrand,
+    dim: options.interactedAtSeconds === undefined || options.seconds === undefined
+      ? 0
+      : easeInOut((options.seconds - options.interactedAtSeconds) / 0.4),
     color: !process.env.NO_COLOR,
   });
   const lines: string[] = [];
@@ -181,11 +238,26 @@ export function createSetupChoicePrompt(options: SetupChoiceRenderOptions): Setu
   const rich = options.showWelcome !== false && canRenderSetupChoiceRich(options, width, rows, isTTY, showBrand);
   const canNavigate = isTTY && process.env.TERM !== 'dumb';
   const canAnimate = !isTerminalAnimationDisabled() && rich;
-  return canNavigate
-    ? {
-        message,
-        animate: canAnimate,
-        renderMessage: (elapsedSeconds, selectedId) => renderSetupChoice({ ...options, seconds: elapsedSeconds, selectedId }),
+  if (!canNavigate) return { message };
+  const initialId = options.selectedId
+    ?? options.choices.find((choice) => choice.isDefault)?.id
+    ?? options.choices.find((choice) => choice.isDefault)?.key;
+  let interactedAtSeconds: number | undefined;
+  return {
+    // A static prompt shows the settled planet; an animated one starts at its first frame.
+    message: canAnimate ? renderSetupChoice({ ...options, seconds: 0 }) : message,
+    animate: canAnimate,
+    intervalMs: PLANET_FRAME_INTERVAL_MS,
+    renderMessage: (elapsedSeconds, selectedId) => {
+      if (interactedAtSeconds === undefined && selectedId !== undefined && selectedId !== initialId) {
+        interactedAtSeconds = elapsedSeconds;
       }
-    : { message };
+      return renderSetupChoice({
+        ...options,
+        ...(canAnimate ? { seconds: elapsedSeconds } : {}),
+        ...(selectedId === undefined ? {} : { selectedId }),
+        ...(interactedAtSeconds === undefined ? {} : { interactedAtSeconds }),
+      });
+    },
+  };
 }
