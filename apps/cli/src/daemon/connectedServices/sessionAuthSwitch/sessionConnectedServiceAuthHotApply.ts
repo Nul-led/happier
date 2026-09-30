@@ -1,3 +1,4 @@
+import { summarizeConnectedServiceSwitchApplyError } from './diagnostics/buildSwitchFailureResult';
 import {
   ConnectedServiceCredentialRevisionV1Schema,
   ConnectedServiceIdSchema,
@@ -247,12 +248,14 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
       const sessionId = input.tracked.happySessionId;
       const queue = deps?.turnDeferralQueue;
       let boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
+      let underlyingError: string | undefined;
       let result = await adapter.hotApply(applyInput);
       while (result.reason === 'turn_in_flight' && boundary && queue && sessionId) {
         try {
           await boundary.wait();
-        } catch {
-          // Preserve prior service effects for partial-application reconciliation.
+        } catch (error) {
+          // Preserve prior service effects and the canonical observable failure reason.
+          underlyingError = summarizeConnectedServiceSwitchApplyError(error);
           break;
         }
         boundary = queue.captureTurnBoundary(sessionId);
@@ -269,6 +272,7 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
           errorCode,
           serviceId,
           serviceResultsByServiceId,
+          ...(underlyingError ? { underlyingError } : {}),
         };
       }
       serviceResultsByServiceId[serviceId] = { status: 'applied' };
