@@ -160,6 +160,35 @@ describe('useDesktopUpdater (hook)', () => {
         expect(hook.getCurrent()?.error).toBeNull();
     });
 
+    it('retries a failed automatic check when another desktop surface mounts', async () => {
+        const invokeMock = vi.fn<TauriInvoke>().mockRejectedValueOnce(new Error('feed unavailable')).mockResolvedValueOnce(null);
+        const storage = createLocalStorage();
+        const first = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        expect(first.getCurrent().status).toBe('idle');
+        const second = await renderDesktopUpdaterHook({ storage, invokeMock, isDesktop: true });
+        expect(second.getCurrent().status).toBe('upToDate');
+        expect(first.getCurrent().status).toBe('upToDate');
+        expect(invokeMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports checking rather than an available update while retrying a failed check', async () => {
+        const invokeMock = vi.fn<TauriInvoke>(async () => null);
+        const hook = await renderDesktopUpdaterHook({ storage: createLocalStorage(), invokeMock, isDesktop: true });
+        invokeMock.mockRejectedValueOnce(new Error('feed unavailable'));
+        await act(async () => { await hook.getCurrent().refresh(); });
+        const pending = createDeferred<null>();
+        invokeMock.mockReturnValueOnce(pending.promise);
+        let refresh!: Promise<void>;
+        await act(async () => { refresh = hook.getCurrent().refresh(); });
+        try {
+            expect(hook.getCurrent().status).toBe('checking');
+            expect(hook.getCurrent().availableVersion).toBeNull();
+            expect(hook.getCurrent().isChecking).toBe(true);
+        } finally {
+            await act(async () => { pending.resolve(null); await refresh; });
+        }
+    });
+
     it('keeps the last available update visible while a manual check is pending', async () => {
         const pending = createDeferred<null>();
         const invokeMock = vi.fn<TauriInvoke>(async () => ({ version: '1.0.1', currentVersion: '1.0.0', notes: null, pubDate: null }));

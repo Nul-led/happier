@@ -5,6 +5,7 @@ import { buildAppUpdateStatusModel } from './buildAppUpdateStatusModel';
 function fakeT(key: string): string {
     const map: Record<string, string> = {
         'common.retry': 'Retry',
+        'common.error': 'Error',
         'common.loading': 'Loading...',
         'common.cancel': 'Cancel',
         'navigation.whatsNew': "What's New",
@@ -69,11 +70,14 @@ describe('buildAppUpdateStatusModel', () => {
         expect(model).toMatchObject({ visible: true, kind: 'desktop', actionDisabled: true });
     });
 
-    it('builds a desktop retry state when the desktop updater errors', () => {
+    it.each([
+        { availableVersion: null, label: 'Error' },
+        { availableVersion: '2.0.0', label: 'Update available' },
+    ])('builds an accurate desktop retry state with version $availableVersion', ({ availableVersion, label }) => {
         const model = buildAppUpdateStatusModel({
             platformOs: 'web',
             nativeUpdateUrl: null,
-            desktop: { status: 'error', availableVersion: null, error: 'network timeout' },
+            desktop: { status: 'error', availableVersion, error: 'network timeout' },
             ota: { isUpdatePending: false },
             releaseNotes: { hasUnread: false },
             changelog: { hasUnread: false },
@@ -86,6 +90,7 @@ describe('buildAppUpdateStatusModel', () => {
         expect(model.actionLabel).toBe('Retry');
         expect(model.dismissLabel).toBe('Cancel');
         expect(model.message).toContain('network timeout');
+        expect(model.label).toBe(label);
     });
 
     it('prefers release-notes over changelog when both are unread', () => {

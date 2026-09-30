@@ -78,7 +78,6 @@ export type DesktopUpdaterSnapshot = Readonly<{
 export function createDesktopUpdaterStore() {
     let snapshot: DesktopUpdaterSnapshot = { status: 'idle', availableVersion: null, error: null, lastCheckedAt: null, isChecking: false };
     const listeners = new Set<() => void>();
-    let started = false;
     let checksEnabled: boolean | null = null;
     let checkInFlight: Promise<void> | null = null;
     let reportCheckErrors = false;
@@ -100,7 +99,12 @@ export function createDesktopUpdaterStore() {
             return checkInFlight;
         }
         reportCheckErrors = reportErrors;
-        patch({ error: null, isChecking: true, status: snapshot.status === 'idle' ? 'checking' : snapshot.status });
+        patch({
+            error: null,
+            isChecking: true,
+            status: snapshot.status === 'idle' || (snapshot.status === 'error' && !snapshot.availableVersion)
+                ? 'checking' : snapshot.status,
+        });
         checkInFlight = (async () => {
             try {
                 const update = await invokeDesktopHost<UpdateMetadata>('desktop_fetch_update');
@@ -149,8 +153,7 @@ export function createDesktopUpdaterStore() {
             return () => { listeners.delete(listener); };
         },
         ensureChecked: () => {
-            if (started) return;
-            started = true;
+            if (snapshot.status !== 'idle') return;
             // Preserve the existing quiet automatic check; foreground checks report errors.
             void check(false);
         },

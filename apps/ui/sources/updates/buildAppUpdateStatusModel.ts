@@ -55,7 +55,8 @@ export function buildAppUpdateStatusModel(params: BuildAppUpdateStatusModelParam
             kind: 'desktop',
             tone: params.desktop.status === 'error' ? 'warning' : 'success',
             iconName: params.desktop.status === 'error' ? 'arrow-clockwise' : 'download',
-            label: params.t('updateBanner.updateAvailable'),
+            label: params.t(params.desktop.status === 'error' && !params.desktop.availableVersion
+                ? 'common.error' : 'updateBanner.updateAvailable'),
             message: buildDesktopMessage({
                 availableVersion: params.desktop.availableVersion,
                 error: params.desktop.error,
