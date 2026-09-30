@@ -145,6 +145,47 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
     } finally { persistence.dispose(); }
   });
 
+  it('publishes an existing global record to a new session when the real persistence owner rejects its future update', async () => {
+    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
+    const { createProviderAccountUsageStore } = await import('./store');
+    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
+    const write = vi.fn(async () => {});
+    const publishRecordId = vi.fn(async () => {});
+    const store = createProviderAccountUsageStore();
+    const persistence = createProviderAccountUsagePersistenceScheduler({
+      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
+      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const snapshot = createSnapshot();
+    const getChildren = () => [{ happySessionId: 'past' }, { happySessionId: 'future' }, { happySessionId: 'other-account' }];
+    try {
+      await recordProviderAccountUsageSnapshotForSession({
+        getChildren, sessionId: 'past', snapshot, store, persistence, publishRecordId,
+      });
+      await persistence.flush(1_000);
+      await vi.waitFor(() => expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'past', recordId: snapshot.recordId }));
+      expect(write).toHaveBeenCalledTimes(1);
+      const future = { ...snapshot, fetchedAtMs: 100_000, observedAtMs: 100_000 };
+      const result = await recordProviderAccountUsageSnapshotForSession({
+        getChildren, sessionId: 'future', snapshot: future, store, persistence, publishRecordId,
+      });
+      await Promise.resolve();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'future', recordId: snapshot.recordId });
+      expect(publishRecordId).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: true });
+      // Successful state for this account cannot prove a different account's record exists.
+      const other = { ...createSnapshot(createRecordKey('acct_other')), fetchedAtMs: 100_000, observedAtMs: 100_000 };
+      const otherResult = await recordProviderAccountUsageSnapshotForSession({
+        getChildren, sessionId: 'other-account', snapshot: other, store, persistence, publishRecordId,
+      });
+      await Promise.resolve();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(publishRecordId).toHaveBeenCalledTimes(2);
+      expect(otherResult).toMatchObject({ persisted: false });
+    } finally { persistence.dispose(); }
+  });
+
   it('records latest state, forwards explicit source context, queues persistence, and waits for confirmed persistence before metadata refs', async () => {
     const module = await loadRecordModule();
     expect(module).not.toBeNull();

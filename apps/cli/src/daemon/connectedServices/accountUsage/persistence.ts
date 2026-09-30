@@ -147,7 +147,11 @@ function shouldPersistProviderAccountUsageSnapshot(input: Readonly<{
   if (!isConnectedServiceQuotaObservationAtOrBeforeNow({
     observedAtMs: input.next.fetchedAt,
     nowMs: input.nowMs,
-  })) return { persist: false, reason: 'future' };
+  })) {
+    // The incoming future observation stays rejected. An earlier successful write
+    // for this exact record/source still proves the global record exists.
+    return { persist: false, reason: input.previous ? 'future_existing_record' : 'future' };
+  }
   if (!input.previous) return { persist: true, reason: 'first_snapshot' };
   const recency = compareConnectedServiceQuotaObservationRecency({
     existingObservedAtMs: input.previous.fetchedAt,
