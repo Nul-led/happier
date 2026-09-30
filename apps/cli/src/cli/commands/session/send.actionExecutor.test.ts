@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ok } from '@happier-dev/cli-common/output';
 
@@ -437,6 +438,25 @@ describe('happier session send (action executor)', () => {
     expect(text.text()).toContain(' local-42 ');
   });
 
+  it.skipIf(process.platform === 'win32').each([' local-42 ', " local'42 $(printf expanded) "])(
+    'preserves opaque local id %j when copying the retry argument into a shell',
+    async (localId) => {
+      execute.mockResolvedValueOnce({ ok: true, result: { ok: false, code: 'timeout' } });
+      const { handleSessionCommand } = await import('./handleSessionCommand');
+      const thrown = await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', localId], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      }).then(() => null, (error: unknown) => error);
+      const message = String((thrown as Error | null)?.message);
+      const retryArgument = message.split(' Retry with --local-id ')[1]?.split(' to rejoin this exact input.')[0];
+      expect(retryArgument).toBeDefined();
+      const parsed = execFileSync('bash', ['-c', `printf '%s\\0' ${retryArgument}`]);
+      expect(parsed).toEqual(Buffer.from(`${localId}\0`));
+    },
+  );
+
   it('names the durable retry identity when a send fails ambiguously', async () => {
     const { handleSessionCommand } = await import('./handleSessionCommand');
     const credentials = {
@@ -462,7 +482,7 @@ describe('happier session send (action executor)', () => {
     const humanInput = execute.mock.calls.at(-1)?.[1] as { localId?: unknown };
     expect(typeof humanInput.localId).toBe('string');
     expect(String((thrown as Error | null)?.message))
-      .toContain(`--local-id ${String(humanInput.localId)}`);
+      .toContain(`--local-id '${String(humanInput.localId)}'`);
 
     // JSON path: the same identity is machine-readable on the failure envelope.
     execute.mockReset();

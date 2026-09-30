@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import type { PermissionIntent } from '@happier-dev/agents';
 import { ok } from '@happier-dev/cli-common/output';
+import { safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
@@ -175,7 +176,7 @@ export async function cmdSessionSend(
     // The identity this send used is the only safe retry: resubmitting it
     // rejoins the same durable input instead of queueing a second message.
     throw new Error(
-      `${normalized.errorMessage ?? normalized.errorCode} Retry with --local-id ${localId} to rejoin this exact input.`,
+      `${normalized.errorMessage ?? normalized.errorCode} Retry with --local-id ${safeBashSingleQuote(localId)} to rejoin this exact input.`,
     );
   }
 
