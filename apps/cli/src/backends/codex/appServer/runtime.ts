@@ -1310,6 +1310,21 @@ export function createCodexAppServerRuntime(params: Readonly<{
     let turnInFlight = false;
     let thinking = false;
     let pendingTurn: PendingTurn | null = null;
+    let connectedServiceAuthApplyTail: Promise<void> = Promise.resolve();
+    let connectedServiceAuthApplyCount = 0;
+    const runConnectedServiceAuthApply = async <T>(apply: () => Promise<T>): Promise<T> => {
+        const previous = connectedServiceAuthApplyTail;
+        let release!: () => void;
+        connectedServiceAuthApplyTail = new Promise<void>(resolve => { release = resolve; });
+        connectedServiceAuthApplyCount += 1;
+        await previous;
+        try {
+            return await apply();
+        } finally {
+            connectedServiceAuthApplyCount -= 1;
+            release();
+        }
+    };
     let latestPendingTurnId: string | null = null;
     let resolveActiveTurnLifecycleChange!: () => void;
     let activeTurnLifecycleChange = new Promise<void>((resolve) => {
@@ -4714,11 +4729,17 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const compactActiveThread = async (activeThreadId: string): Promise<void> => {
         await waitForNativeTurnHandoff();
+        while (connectedServiceAuthApplyCount > 0) {
+            await connectedServiceAuthApplyTail;
+        }
         if (pendingTurn) {
             throw new Error('Codex app-server already has a turn in flight');
         }
         const client = await ensureClient();
         await waitForNativeTurnHandoff();
+        while (connectedServiceAuthApplyCount > 0) {
+            await connectedServiceAuthApplyTail;
+        }
         if (pendingTurn) {
             throw new Error('Codex app-server already has a turn in flight');
         }
@@ -4815,6 +4836,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
         }>,
     ): Promise<PendingTurn> => {
         await waitForNativeTurnHandoff();
+        while (connectedServiceAuthApplyCount > 0) {
+            await connectedServiceAuthApplyTail;
+        }
         if (pendingTurn) {
             throw new Error('Codex app-server already has a turn in flight');
         }
@@ -5438,7 +5462,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         },
         // K5:fsm_switch app-server runtime applies auth generations through the session-auth FSM;
         // callers only supply the provider-owned direct-live hook surface here.
-        applyConnectedServiceAuthGeneration: async (rawRequest) => {
+        applyConnectedServiceAuthGeneration: async (rawRequest) => await runConnectedServiceAuthApply(async () => {
             const currentGroupTruth = SessionConnectedServiceAuthCurrentGroupTruthV1Schema.safeParse(
                 rawRequest.authGeneration,
             );
@@ -5520,8 +5544,12 @@ export function createCodexAppServerRuntime(params: Readonly<{
             });
 
             const client = await ensureClient();
+            if (isProviderTurnInFlight()) {
+                return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
+            }
             const applied = await applyCodexConnectedServiceAuthGeneration({
                 client,
+                canApplyAuth: () => !isProviderTurnInFlight(),
                 candidate: request.candidate,
                 forcedWorkspaceId: request.forcedWorkspaceId ?? null,
                 forcedLoginMethod: request.forcedLoginMethod ?? null,
@@ -5621,7 +5649,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 },
                 durability: applied.durability,
             };
-        },
+        }),
         readConnectedServiceRuntimeIdentity: async (request) => {
             if (request.serviceId !== 'openai-codex') {
                 return {
@@ -5673,11 +5701,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 },
                 runtime: {
                     safeToProbe: true,
-                    // Codex account/login/start is the provider-owned direct-live
-                    // hot-auth boundary and is supported while a turn is active.
-                    // `inProviderTurn` remains informational; it must not make the
-                    // generic coordinator defer or restart an otherwise valid apply.
-                    safeToApply: true,
+                    safeToApply: !isProviderTurnInFlight() && connectedServiceAuthApplyCount === 0,
                     inProviderTurn: isProviderTurnInFlight(),
                     profileId: identity.profileId,
                     ...(identity.groupId ? { groupId: identity.groupId } : {}),

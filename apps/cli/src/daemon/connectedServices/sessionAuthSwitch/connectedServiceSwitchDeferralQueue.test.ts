@@ -21,6 +21,54 @@ describe('connectedServiceSwitchDeferralQueue', () => {
     vi.useFakeTimers();
   });
 
+  it.each([false, true])('auth boundary waiting preserves the active turn on timeout (disabled=%s)', async (disableDeferral) => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    const boundary = queue.captureTurnBoundary('sess_1');
+    const outcome = boundary.wait().catch(error => error);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await outcome).toMatchObject({ code: 'switch_execution_timeout' });
+    expect(queue.isTurnInFlight('sess_1')).toBe(true);
+  });
+
+  it('retains a boundary delivered while an auth refusal was in flight', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    const boundary = queue.captureTurnBoundary('sess_1');
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    await expect(boundary.wait()).resolves.toBeUndefined();
+    expect(queue.isTurnInFlight('sess_1')).toBe(false);
+  });
+
+  it('releases all auth waiters only at the next boundary when a successor started', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    const boundary = queue.captureTurnBoundary('sess_1');
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    let settled = 0;
+    const waits = [1, 2].map(() => boundary.wait().then(() => { settled += 1; }));
+    await Promise.resolve();
+    expect(settled).toBe(0);
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'turn_cancelled' });
+    await Promise.all(waits);
+    expect(settled).toBe(2);
+  });
+
+  it.each(['session_terminated', 'daemon_shutdown'] as const)('cancels auth waiters on %s', async (reason) => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    const outcomes = [1, 2].map(() => queue.captureTurnBoundary('sess_1').wait().catch(error => error));
+    if (reason === 'daemon_shutdown') await queue.cancelAll(reason); else await queue.cancelSession('sess_1', reason);
+    expect(await Promise.all(outcomes)).toEqual([expect.objectContaining({ code: reason }), expect.objectContaining({ code: reason })]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains session teardown delivered before an auth refusal settles', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    const boundary = queue.captureTurnBoundary('sess_1');
+    await queue.cancelSession('sess_1', 'session_terminated');
+    await expect(boundary.wait()).rejects.toMatchObject({ code: 'session_terminated' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('defers restart_resume until assistant-message-end when the session is mid-turn', async () => {
     const emitSessionEvent = vi.fn();
     const runSwitch = vi.fn(async () => {});

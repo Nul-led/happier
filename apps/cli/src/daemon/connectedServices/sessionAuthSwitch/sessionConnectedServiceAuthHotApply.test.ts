@@ -1,9 +1,130 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { createCodexConnectedServiceRuntimeAuthAdapter } from '@/backends/codex/connectedServices/createCodexConnectedServiceRuntimeAuthAdapter';
+
 import type { ConnectedServiceProviderRuntimeAuthAdapter } from '../runtimeAuth/types';
+import { requestConnectedServiceSwitchBeforeTurnWithDeferral } from './connectedServiceSwitchBeforeTurnDeferral';
+import { createConnectedServiceSwitchDeferralQueue } from './connectedServiceSwitchDeferralQueue';
 import { createSessionConnectedServiceAuthHotApply } from './sessionConnectedServiceAuthHotApply';
 
 describe('createSessionConnectedServiceAuthHotApply', () => {
+  it.each([{ selection: 'profile', superseded: false }, { selection: 'group', superseded: false }, { selection: 'group', superseded: true }] as const)('retries a busy $selection auth apply with currentness (superseded=$superseded)', async ({ selection, superseded }) => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 60000, disableDeferral: false });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    let providerBusy = true;
+    let groupCurrent = true;
+    const mutations: string[] = [];
+    const adapter = createCodexConnectedServiceRuntimeAuthAdapter();
+    const record = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+      oauth: { accessToken: 'work-token', refreshToken: 'refresh', idToken: 'id', scope: null, tokenType: null,
+        providerAccountId: 'acct_work', providerEmail: null } });
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => {
+      if (providerBusy) return { ok: false, errorCode: 'turn_in_flight' };
+      mutations.push('new-account');
+      return { ok: true };
+    });
+    const apply = createSessionConnectedServiceAuthHotApply({
+      resolveRuntimeAuthAdapter: async () => adapter,
+      turnDeferralQueue: queue,
+      validateGroupMutationCurrentness: async () => groupCurrent ? ({ current: true }) : ({ current: false }),
+    });
+    let settled = false;
+    const pending = apply({
+      tracked: { startedBy: 'daemon', happySessionId: 'sess_1', pid: 123,
+        spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'builtInAgent', agentId: 'codex' } } },
+      normalizedBindings: { v: 1, bindingsByServiceId: {
+        'openai-codex': selection === 'group'
+          ? { source: 'connected', selection: 'group', groupId: 'main', profileId: 'work' }
+          : { source: 'connected', selection: 'profile', profileId: 'work' },
+      } },
+      runtimeAuthSelectionsByServiceId: new Map([['openai-codex', { record, applyConnectedServiceAuthGeneration, profileId: 'work', generation: 2, groupId: selection === 'group' ? 'main' : null }]]),
+    }).then(result => { settled = true; return result; });
+    await vi.waitFor(() => expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledTimes(1));
+    expect(queue.isTurnInFlight('sess_1')).toBe(true);
+    expect(settled).toBe(false);
+    expect(mutations).toEqual([]);
+    providerBusy = false;
+    groupCurrent = !superseded;
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    if (superseded) {
+      await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'credential_revision_superseded' });
+      expect(mutations).toEqual([]);
+    } else {
+      await expect(pending).resolves.toEqual({ ok: true });
+      expect(mutations).toEqual(['new-account']);
+    }
+  });
+
+  it('releases concurrent auth callers at the same canonical boundary', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    let providerBusy = true;
+    const hotApply = vi.fn(async () => providerBusy
+      ? { applied: false, reason: 'turn_in_flight' }
+      : { applied: true });
+    const adapter = { hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter;
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => adapter, turnDeferralQueue: queue });
+    const input = {
+      tracked: { startedBy: 'daemon' as const, happySessionId: 'sess_1', pid: 123,
+        spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'builtInAgent' as const, agentId: 'codex' as const } } },
+      normalizedBindings: { v: 1 as const, bindingsByServiceId: {
+        'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
+      } },
+    };
+    const first = apply(input);
+    const second = apply(input);
+    await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(2));
+    providerBusy = false;
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    expect(hotApply).toHaveBeenCalledTimes(4);
+    expect(queue.isTurnInFlight('sess_1')).toBe(false);
+  });
+
+  it('retries immediately when completion arrives before a delayed busy reply', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    let release!: (result: { applied: boolean; reason: string }) => void;
+    const hotApply = vi.fn().mockImplementationOnce(() => new Promise(resolve => { release = resolve; })).mockResolvedValue({ applied: true });
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => ({ hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter), turnDeferralQueue: queue });
+    const pending = apply({
+      tracked: { startedBy: 'daemon', happySessionId: 'sess_1', pid: 123, spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'builtInAgent', agentId: 'codex' } } },
+      normalizedBindings: { v: 1, bindingsByServiceId: { 'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' } } },
+    });
+    await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(1));
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    release({ applied: false, reason: 'turn_in_flight' });
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(hotApply).toHaveBeenCalledTimes(2);
+    expect(queue.isTurnInFlight('sess_1')).toBe(false);
+  });
+
+  it('can await a native successor from inside an executing proactive switch', async () => {
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    let providerBusy = true;
+    const hotApply = vi.fn(async () => providerBusy ? { applied: false, reason: 'turn_in_flight' } : { applied: true });
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => ({ hotApply } as unknown as ConnectedServiceProviderRuntimeAuthAdapter), turnDeferralQueue: queue });
+    let result: unknown;
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    await expect(requestConnectedServiceSwitchBeforeTurnWithDeferral({
+      deferralQueue: queue, sessionId: 'sess_1', source: 'automatic', policy: 'defer_until_turn_boundary',
+      target: { serviceId: 'openai-codex', profileId: 'work', groupId: '', generation: 0 },
+      runSwitch: async () => {
+        queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+        result = await apply({
+          tracked: { startedBy: 'daemon', happySessionId: 'sess_1', pid: 123, spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'builtInAgent', agentId: 'codex' } } },
+          normalizedBindings: { v: 1, bindingsByServiceId: { 'openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' } } },
+        });
+      },
+    })).resolves.toMatchObject({ status: 'deferred' });
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    await vi.waitFor(() => expect(hotApply).toHaveBeenCalledTimes(1));
+    expect(result).toBeUndefined();
+    providerBusy = false;
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+    await vi.waitFor(() => expect(result).toEqual({ ok: true }));
+  });
+
   it('invokes the provider runtime auth adapter for connected bindings', async () => {
     const hotApply = vi.fn(async () => ({ applied: true }));
     const adapter = {

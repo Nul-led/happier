@@ -5249,6 +5249,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               });
             },
             hotApply: createSessionConnectedServiceAuthHotApply({
+            turnDeferralQueue: connectedServiceTurnDeferralQueue,
               validateGroupMutationCurrentness: validateConnectedServiceGroupMutationCurrentness,
             }),
             recoverAfterRuntimeAuthSwitch: recoverTrackedSessionConnectedServiceRuntimeAuthSwitch,
@@ -6751,6 +6752,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             });
           },
           hotApply: createSessionConnectedServiceAuthHotApply({
+            turnDeferralQueue: connectedServiceTurnDeferralQueue,
             validateGroupMutationCurrentness: validateConnectedServiceGroupMutationCurrentness,
           }),
           recoverAfterRuntimeAuthSwitch: recoverTrackedSessionConnectedServiceRuntimeAuthSwitch,

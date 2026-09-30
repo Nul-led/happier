@@ -3346,7 +3346,7 @@ describe('createCodexAppServerRuntime', () => {
             ok: true,
             runtime: {
                 inProviderTurn: true,
-                safeToApply: true,
+                safeToApply: false,
             },
         });
         await expect((runtime as any).rollbackConversation({
@@ -8519,7 +8519,7 @@ describe('createCodexAppServerRuntime', () => {
         }
     });
 
-    it('attributes a delayed turn failure to frozen auth while keeping a later prompt eligible on hot-applied auth', async () => {
+    it('keeps delayed failure attribution on the serving account before a safe auth switch', async () => {
         const { root, fakeAppServer, requestLogPath } = await createRuntimeFixture(
             'happier-codex-app-server-runtime-turn-identity-race-',
             { accountReadResult: { account: { id: 'acct_replacement', email: 'replacement@example.test' } } },
@@ -8603,7 +8603,7 @@ describe('createCodexAppServerRuntime', () => {
             const runtimeControls = runtime as typeof runtime & {
                 applyConnectedServiceAuthGeneration: (request: unknown) => Promise<unknown>;
             };
-            await expect(runtimeControls.applyConnectedServiceAuthGeneration({
+            const applyRequest = {
                 serviceId: 'openai-codex',
                 reason: 'same_provider_account_exhausted',
                 expected: {
@@ -8624,7 +8624,8 @@ describe('createCodexAppServerRuntime', () => {
                     },
                     forcedWorkspaceId: null,
                 },
-            })).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_replacement' });
+            };
+            await expect(runtimeControls.applyConnectedServiceAuthGeneration(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
             (metadata as Record<string, unknown>).connectedServices = {
                 v: 1,
                 bindingsByServiceId: {
@@ -8649,6 +8650,8 @@ describe('createCodexAppServerRuntime', () => {
                     failingAccessTokenFingerprint: 'sha256:11111111',
                 },
             });
+
+            await expect(runtimeControls.applyConnectedServiceAuthGeneration(applyRequest)).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_replacement' });
 
             await expect(runtime.sendPrompt('ordinary-prompt-after-superseded-failure')).resolves.toBeUndefined();
             await expect((runtime as unknown as {
@@ -12311,12 +12314,13 @@ describe('createCodexAppServerRuntime', () => {
         expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
     });
 
-    it('direct-live applies connected-service auth while a provider turn is in flight', async () => {
+    it('refuses connected-service auth mutation until the provider turn reaches its boundary', async () => {
         const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-live-auth-busy-', {
-            omitTurnCompletedForPrompt: 'overlap-start',
+            omitTurnCompletedForPrompt: 'auth-switch-active-turn',
         });
         const runtime = createCodexAppServerRuntime({
             directory: root,
+            initialConnectedServiceRuntimeIdentity: { serviceId: 'openai-codex', activeAccountId: 'acct_original', accountLabel: null, profileId: 'original', credentialFingerprint: 'sha256:original', source: 'spawn_selection' },
             onThinkingChange: vi.fn(),
             onConnectedServiceAuthGenerationApplied: vi.fn(async () => {}),
             session: {
@@ -12343,13 +12347,13 @@ describe('createCodexAppServerRuntime', () => {
         });
 
         await runtime.startOrLoad({});
-        const promptPromise = runtime.sendPrompt('overlap-start');
+        const promptPromise = runtime.sendPrompt('auth-switch-active-turn');
         const promptOutcome = promptPromise.catch(() => undefined);
         await waitForCondition(async () => {
             const requestLog = await readRequestLog(requestLogPath);
             return requestLog.some((entry) => {
                 const params = entry.params as { input?: Array<{ text?: string }> } | null;
-                return entry.method === 'turn/start' && params?.input?.[0]?.text === 'overlap-start';
+                return entry.method === 'turn/start' && params?.input?.[0]?.text === 'auth-switch-active-turn';
             });
         }, {
             timeoutMs: 1_000,
@@ -12357,7 +12361,7 @@ describe('createCodexAppServerRuntime', () => {
             label: 'Codex app-server test prompt to start before live auth apply',
         });
 
-        await expect((runtime as any).applyConnectedServiceAuthGeneration({
+        const applyRequest = {
             serviceId: 'openai-codex',
             reason: 'same_provider_account_exhausted',
             expected: {
@@ -12368,17 +12372,8 @@ describe('createCodexAppServerRuntime', () => {
                 credential: candidate,
                 forcedWorkspaceId: null,
             },
-        })).resolves.toMatchObject({
-            ok: true,
-            appliedVia: 'direct_live_hot_auth',
-            activeAccountId: 'acct_target',
-            verification: {
-                activeAccountId: 'acct_target',
-                proofStrength: 'exact',
-                source: 'applied_credential',
-                reason: 'direct_live_exact_proof_accepted',
-            },
-        });
+        };
+        await expect((runtime as any).applyConnectedServiceAuthGeneration(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
 
         const identityResponse = await (runtime as any).readConnectedServiceRuntimeIdentity({
             serviceId: 'openai-codex',
@@ -12393,14 +12388,13 @@ describe('createCodexAppServerRuntime', () => {
             identity: {
                 strategy: 'provider_account_id',
                 proofStrength: 'exact',
-                providerAccountId: 'acct_target',
-                source: 'applied_credential',
+                providerAccountId: 'acct_original',
+                source: 'spawn_selection',
             },
             runtime: {
                 inProviderTurn: true,
-                safeToApply: true,
-                profileId: 'target',
-                credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+                safeToApply: false,
+                profileId: 'original',
             },
         });
         expect(identityResponse.runtime).not.toHaveProperty('safeToDirectLiveApply');
@@ -12408,20 +12402,28 @@ describe('createCodexAppServerRuntime', () => {
 
         expect(runtime.isTurnInFlight()).toBe(true);
         const requestLog = await readRequestLog(requestLogPath);
-        expect(requestLog.map((entry) => entry.method)).toContain('account/login/start');
-        await runtime.reset();
+        expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
+        await runtime.cancel();
         await promptOutcome;
+        const afterApply = await (runtime as any).applyConnectedServiceAuthGeneration(applyRequest);
+        expect(afterApply.errorCode).toBeUndefined();
+        expect(afterApply).toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+        const afterBoundary = await readRequestLog(requestLogPath);
+        expect(afterBoundary.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
+        expect(afterBoundary.filter(entry => entry.method === 'initialize')).toHaveLength(1);
     });
 
-    it('diagnoses whether a new prompt can start while direct-live auth mutation is unfinished', async () => {
+    it('keeps a new prompt behind an unfinished idle connected-service auth mutation', async () => {
         const { root, requestLogPath } = await createRuntimeFixture(
             'happier-codex-app-server-runtime-live-auth-new-prompt-',
-            { loginStartResponseDelayMs: 20 },
         );
+        let releaseSelection!: () => void;
+        const selectionGate = new Promise<void>(resolve => { releaseSelection = resolve; });
+        const updateSelection = vi.fn(async () => { await selectionGate; });
         const runtime = createCodexAppServerRuntime({
             directory: root,
             onThinkingChange: vi.fn(),
-            onConnectedServiceAuthGenerationApplied: vi.fn(async () => {}),
+            onConnectedServiceAuthGenerationApplied: updateSelection,
             session: {
                 updateMetadata: vi.fn(),
                 sendCodexMessage: vi.fn(),
@@ -12446,17 +12448,6 @@ describe('createCodexAppServerRuntime', () => {
         });
 
         await runtime.startOrLoad({});
-        const inFlightPrompt = runtime.sendPrompt('overlap-start');
-        await waitForCondition(async () => (
-            (await readRequestLog(requestLogPath)).some((entry) => {
-                const params = entry.params as { input?: Array<{ text?: string }> } | null;
-                return entry.method === 'turn/start' && params?.input?.[0]?.text === 'overlap-start';
-            })
-        ), {
-            timeoutMs: 1_000,
-            intervalMs: 10,
-            label: 'Codex prompt to enter its active provider turn before live auth apply',
-        });
         const authApply = (runtime as any).applyConnectedServiceAuthGeneration({
             serviceId: 'openai-codex',
             reason: 'same_provider_account_exhausted',
@@ -12466,18 +12457,19 @@ describe('createCodexAppServerRuntime', () => {
                 forcedWorkspaceId: null,
             },
         });
-        await expect(runtime.sendPrompt('new-prompt-during-auth-apply'))
-            .rejects.toThrow('already has a turn in flight');
-
+        await waitForCondition(() => updateSelection.mock.calls.length === 1, { timeoutMs: 1000, label: 'idle auth selection update held at daemon boundary' });
+        const newPrompt = runtime.sendPrompt('new-prompt-during-auth-apply');
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const whileApplying = await readRequestLog(requestLogPath);
+        expect(whileApplying.filter(entry => entry.method === 'turn/start')).toHaveLength(0);
+        releaseSelection();
         await expect(authApply).resolves.toMatchObject({ ok: true, appliedVia: 'direct_live_hot_auth' });
-        await expect(inFlightPrompt).resolves.toBeUndefined();
+        await newPrompt;
         const requestLog = await readRequestLog(requestLogPath);
-        expect(requestLog.map((entry) => entry.method)).toContain('account/login/start');
-        expect(requestLog.some((entry) => {
-            const params = entry.params as { input?: Array<{ text?: string }> } | null;
-            return entry.method === 'turn/start'
-                && params?.input?.[0]?.text === 'new-prompt-during-auth-apply';
-        })).toBe(false);
+        const loginIndex = requestLog.findIndex(entry => entry.method === 'account/login/start');
+        const turnIndex = requestLog.findIndex(entry => entry.method === 'turn/start');
+        expect(loginIndex).toBeGreaterThanOrEqual(0);
+        expect(turnIndex).toBeGreaterThan(loginIndex);
     });
 
     it('keeps the legacy transport-invalidation RPC passive because Codex auth applies directly', async () => {

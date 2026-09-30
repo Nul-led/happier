@@ -6,6 +6,21 @@ import { createCodexConnectedServiceRuntimeAuthAdapter } from './createCodexConn
 import { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from '@/daemon/connectedServices/accountGroups/quotas/ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
 
 describe('createCodexConnectedServiceRuntimeAuthAdapter', () => {
+  it('rechecks group authority before a deferred runtime credential mutation', async () => {
+    const record = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+      oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: 'id', scope: null, tokenType: null,
+        providerAccountId: 'acct_work', providerEmail: null } });
+    const applyConnectedServiceAuthGeneration = vi.fn(async () => ({ ok: true }));
+    const adapter = createCodexConnectedServiceRuntimeAuthAdapter();
+    const result = await adapter.hotApply({
+      target: { agentId: 'codex' },
+      selection: { record, applyConnectedServiceAuthGeneration, groupId: 'main', generation: 1, activeProfileId: 'work' },
+      validateCurrentBeforeMutation: async () => ({ current: false }),
+    });
+    expect(result).toMatchObject({ applied: false, reason: 'credential_revision_superseded' });
+    expect(applyConnectedServiceAuthGeneration).not.toHaveBeenCalled();
+  });
+
   it('reports direct live hot apply support when runtime apply RPC is available', () => {
     const adapter = createCodexConnectedServiceRuntimeAuthAdapter();
     const applyConnectedServiceAuthGeneration = vi.fn();

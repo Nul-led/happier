@@ -205,6 +205,9 @@ export function createCodexConnectedServiceRuntimeAuthAdapter(deps: Readonly<{
       };
     },
     async hotApply(input) {
+      if (input.validateCurrentBeforeMutation && !(await input.validateCurrentBeforeMutation()).current) {
+        return { applied: false, reason: 'credential_revision_superseded' };
+      }
       const record = readCredentialRecord(input);
       if (!record) {
         return {

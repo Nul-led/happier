@@ -85,6 +85,8 @@ export async function applyCodexDirectLiveAppServerAuth(
     return { applied: false, reason: 'refresh_selection_resync_failed' };
   }
 
+  if (params.canApplyAuth?.() === false) return { applied: false, reason: 'turn_in_flight' };
+
   let rollbackRefreshSelection: CodexRefreshSelectionRollback | null = null;
   if (params.refreshSelection) {
     try {
@@ -93,6 +95,20 @@ export async function applyCodexDirectLiveAppServerAuth(
     } catch {
       return { applied: false, reason: 'refresh_selection_resync_failed' };
     }
+  }
+
+  // Native Codex work can start while selection resync awaits the daemon.
+  // Recheck at the actual login boundary and restore intent if it became busy.
+  if (params.canApplyAuth?.() === false) {
+    if (params.refreshSelection) {
+      if (!rollbackRefreshSelection) return { applied: false, reason: 'refresh_selection_resync_failed' };
+      try {
+        await rollbackRefreshSelection();
+      } catch {
+        return { applied: false, reason: 'refresh_selection_resync_failed' };
+      }
+    }
+    return { applied: false, reason: 'turn_in_flight' };
   }
 
   const record = requireConnectedServiceOauthCredentialRecord(params.candidate);

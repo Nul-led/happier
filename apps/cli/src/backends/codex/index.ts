@@ -34,7 +34,7 @@ const codexConnectedServiceCredentialLifecycleDescriptor: ConnectedServiceCreden
   generationApplicationScope: 'per_session_runtime',
   runtimeAuthApply: {
     directLiveHotAuth: {
-      supportsInTurnApply: true,
+      supportsInTurnApply: false,
       requiresExactRuntimeIdentity: true,
       refreshSelectionResync: 'required',
       authMode: {

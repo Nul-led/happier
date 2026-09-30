@@ -359,7 +359,7 @@ describe('AGENTS', () => {
       },
       runtimeAuthApply: {
         directLiveHotAuth: {
-          supportsInTurnApply: true,
+          supportsInTurnApply: false,
           requiresExactRuntimeIdentity: true,
           refreshSelectionResync: 'required',
           authMode: {

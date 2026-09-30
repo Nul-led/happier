@@ -6,6 +6,8 @@ import {
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
 
+import type { ConnectedServiceSwitchDeferralQueue } from './connectedServiceSwitchDeferralQueue';
+
 import { getConnectedServiceRuntimeAuthAdapter, resolveCatalogAgentId } from '@/backends/catalog';
 import { CATALOG_AGENT_IDS, type CatalogAgentId } from '@/backends/types';
 import type {
@@ -166,6 +168,7 @@ function readHotApplyFailureErrorCode(
 }
 
 export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
+  turnDeferralQueue?: ConnectedServiceSwitchDeferralQueue;
   resolveRuntimeAuthAdapter?: (agentId: CatalogAgentId) => Promise<ConnectedServiceProviderRuntimeAuthAdapter | null>;
   validateGroupMutationCurrentness?: (input: Readonly<{
     serviceId: ConnectedServiceId;
@@ -229,7 +232,7 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
             });
           }
         : undefined;
-      const result = await adapter.hotApply({
+      const applyInput = {
         target: { agentId },
         selection: materializedSelection ?? {
           serviceId,
@@ -240,7 +243,16 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
             : {}),
         },
         ...(validateCurrentBeforeMutation ? { validateCurrentBeforeMutation } : {}),
-      });
+      };
+      const sessionId = input.tracked.happySessionId;
+      const queue = deps?.turnDeferralQueue;
+      let boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
+      let result = await adapter.hotApply(applyInput);
+      while (result.reason === 'turn_in_flight' && boundary && queue && sessionId) {
+        await boundary.wait();
+        boundary = queue.captureTurnBoundary(sessionId);
+        result = await adapter.hotApply(applyInput);
+      }
       if (!resultApplied(result)) {
         const errorCode = readHotApplyFailureErrorCode(result);
         serviceResultsByServiceId[serviceId] = { status: 'failed', errorCode };

@@ -8,6 +8,30 @@ import {
 } from './applyCodexConnectedServiceAuthGeneration';
 
 describe('Codex connected-service runtime auth application', () => {
+  it('rolls refresh selection back when native provider work starts before login mutation', async () => {
+    const candidate = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+      oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: 'id', scope: null, tokenType: null,
+        providerAccountId: 'acct_work', providerEmail: null } });
+    const client = { request: vi.fn(async () => ({ ok: true })) };
+    let busy = false;
+    let activeSelection = 'original';
+    const persistAuthStore = vi.fn();
+    const result = await applyCodexConnectedServiceAuthGeneration({
+      client, candidate, forcedWorkspaceId: null, persistAuthStore,
+      canApplyAuth: () => !busy,
+      refreshSelection: { kind: 'profile', serviceId: 'openai-codex', profileId: 'work' },
+      updateRefreshSelection: async () => {
+        activeSelection = 'work';
+        busy = true;
+        return () => { activeSelection = 'original'; };
+      },
+    });
+    expect(result).toEqual({ applied: false, reason: 'turn_in_flight' });
+    expect(client.request).not.toHaveBeenCalled();
+    expect(persistAuthStore).not.toHaveBeenCalled();
+    expect(activeSelection).toBe('original');
+  });
+
   it('rejects forced-workspace mismatches before mutating live auth', async () => {
     const candidate = buildConnectedServiceCredentialRecord({
       now: 1000,
