@@ -274,6 +274,23 @@ test('nightly desktop resume admits exact unsigned artifacts independently of mi
   assert.throws(() => resolveReleaseResume({ ...input, originRun: { ...input.originRun, run_number: '337\nother=true' } }), /run number/);
 });
 
+test('nightly desktop resume selects channel-scoped artifacts and retains unambiguous legacy single-channel recovery', () => {
+  const input = {
+    originRun: originRun(), downloadedDigest: DIGEST, status: status(), expected,
+    artifacts: [statusArtifact(),
+      statusArtifact({ id: 101, name: 'tauri-candidate-dev-linux-x86_64' }),
+      statusArtifact({ id: 102, name: 'tauri-candidate-preview-linux-x86_64' }),
+      statusArtifact({ id: 103, name: 'tauri-candidate-production-linux-x86_64' })],
+  };
+  assert.deepEqual(resolveReleaseResume(input).desktop.artifacts, { 'linux-x86_64': { id: 101, digest: DIGEST } });
+  assert.deepEqual(resolveReleaseResume({ ...input, artifacts: [input.artifacts[0], ...input.artifacts.slice(2)] }).desktop.artifacts, {});
+  const legacy = statusArtifact({ id: 104, name: 'tauri-candidate-linux-x86_64' });
+  assert.deepEqual(resolveReleaseResume({ ...input, artifacts: [input.artifacts[0], legacy] }).desktop.artifacts,
+    { 'linux-x86_64': { id: 104, digest: DIGEST } });
+  assert.throws(() => resolveReleaseResume({ ...input, artifacts: [...input.artifacts, legacy] }), /duplicate desktop/);
+  assert.throws(() => resolveReleaseResume({ ...input, artifacts: [input.artifacts[0], input.artifacts[1], input.artifacts[1]] }), /duplicate desktop/);
+});
+
 test('release resume preserves originally requested optional publication surfaces', () => {
   const releaseExpected = {
     repository: REPOSITORY,

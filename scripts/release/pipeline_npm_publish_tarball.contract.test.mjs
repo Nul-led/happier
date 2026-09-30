@@ -125,6 +125,7 @@ function runNpmPublication(tmpDir, mode, initialState, { npmToken = false } = {}
     NPM_STUB_CALLS: callsPath,
     NPM_STUB_INTEGRITY: integrity,
     GITHUB_ACTIONS: 'false',
+    NODE_AUTH_TOKEN: npmToken ? 'npm-token-for-test' : '',
     NPM_TOKEN: npmToken ? 'npm-token-for-test' : '',
   };
   let error;

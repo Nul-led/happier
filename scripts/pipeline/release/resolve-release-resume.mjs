@@ -92,7 +92,7 @@ function flattenArtifacts(value) {
 }
 
 /** @param {Record<string, unknown>} artifact @param {number} runId @param {string} workflowSha */
-function inspectOriginArtifact(artifact, runId, workflowSha) {
+export function inspectReleaseResumeArtifact(artifact, runId, workflowSha) {
   if (!Number.isSafeInteger(artifact.id) || Number(artifact.id) < 1) {
     throw new Error('[release] resume artifact ID is invalid');
   }
@@ -105,8 +105,8 @@ function inspectOriginArtifact(artifact, runId, workflowSha) {
   return { id: Number(artifact.id), digest };
 }
 
-/** @param {unknown} artifacts @param {Record<string, unknown>} run @param {string} workflowSha */
-function resolveDesktopArtifacts(artifacts, run, workflowSha) {
+/** @param {unknown} artifacts @param {Record<string, unknown>} run @param {string} workflowSha @param {string} channel */
+function resolveDesktopArtifacts(artifacts, run, workflowSha, channel) {
   if (!Number.isSafeInteger(run.run_number) || Number(run.run_number) < 1) {
     throw new Error('[release] desktop origin run number must be a positive safe integer');
   }
@@ -116,11 +116,16 @@ function resolveDesktopArtifacts(artifacts, run, workflowSha) {
   for (const rawArtifact of flattenArtifacts(artifacts)) {
     const artifact = asRecord(rawArtifact, 'artifact');
     if (typeof artifact.name !== 'string' || !artifact.name.startsWith('tauri-candidate-')) continue;
-    const platform = artifact.name.slice('tauri-candidate-'.length);
+    const suffix = artifact.name.slice('tauri-candidate-'.length);
+    const environment = ['dev', 'preview', 'production'].find((value) => suffix.startsWith(`${value}-`));
+    if (environment && environment !== channel) continue;
+    // Unscoped artifacts were produced by the predecessor single-channel nightly workflow.
+    // This resolver is invoked only for that origin; materialization still validates environment.
+    const platform = environment ? suffix.slice(environment.length + 1) : suffix;
     if (!BUNDLE_CANDIDATE_PLATFORMS.includes(platform)) throw new Error('[release] unknown desktop candidate artifact platform');
     if (seen.has(platform)) throw new Error('[release] duplicate desktop candidate artifact');
     seen.add(platform);
-    const admitted = inspectOriginArtifact(artifact, Number(run.id), workflowSha);
+    const admitted = inspectReleaseResumeArtifact(artifact, Number(run.id), workflowSha);
     if (typeof artifact.expired !== 'boolean') throw new Error('[release] desktop artifact expiry must be boolean');
     if (!artifact.expired) selected[platform] = admitted;
   }
@@ -202,7 +207,7 @@ export function inspectReleaseResumeOrigin(input) {
   }
   const artifact = matches[0];
   if (artifact.expired !== false) throw new Error('[release] resume status artifact is expired');
-  const admitted = inspectOriginArtifact(artifact, runId, workflowSha);
+  const admitted = inspectReleaseResumeArtifact(artifact, runId, workflowSha);
   return { artifactDigest: admitted.digest, artifactId: admitted.id, workflowSha };
 }
 
@@ -385,7 +390,7 @@ export function resolveReleaseResume(input) {
   return {
     sourceSha: statusSourceSha,
     ...(input.expected.workflowPath === '.github/workflows/nightly-dev.yml'
-      ? { desktop: resolveDesktopArtifacts(input.artifacts, originRun, inspected.workflowSha) } : {}),
+      ? { desktop: resolveDesktopArtifacts(input.artifacts, originRun, inspected.workflowSha, input.expected.channel) } : {}),
     versions: validated.versions,
     requested,
     completed,

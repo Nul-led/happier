@@ -191,8 +191,17 @@ the combined parent. Each channel retains its own planning and final admission,
 which verifies that the shared evidence covers that channel's selected risks.
 They deliberately do not share built artifacts: preview and production
 embed different feature-policy environments and therefore require distinct
-candidate bytes. Same-channel releases still serialize, while the two channel
-calls use separate non-cancelling concurrency groups. Issues advance directly
+candidate bytes. Desktop candidate, finalized, and publication artifact names
+include the environment so downloads and asset preparation cannot select or
+merge the other channel's bytes. Nightly desktop recovery accepts its historical
+single-channel candidate names; candidate materialization still verifies the
+exact environment before bundling or signing. Mobile build artifacts include
+environment, platform, and effective profile; immediate APK publication uses
+the producer's artifact ID. Android store retry downloads historical collided
+AAB/APK artifacts separately and admits exactly one AAB with its adjacent
+candidate identity. OTA and release-note artifacts also include the environment.
+Same-channel releases still serialize, while the two channel calls use separate
+non-cancelling concurrency groups. Issues advance directly
 to `stage:stable` only after both channel workflows succeed.
 
 Use GitHub's failed-job rerun when workflow control is unchanged. If control
@@ -230,6 +239,11 @@ directly as a substitute for the conductor.
 Issue availability is tracked by the mutually exclusive `stage:source`, `stage:dev`, `stage:preview`, and `stage:stable` labels documented in `docs/issue-triage.md`. Ordinary current-`dev` nightlies perform `source → dev`; preview, production, and combined releases perform the transitions above. Failed and dry-run releases move nothing. The reconciler re-reads each snapshotted issue, preserves unrelated labels, and skips closed or manually restaged issues. It never comments on or closes an issue.
 
 Deploy branches typically include `deploy/<env>/ui`, `deploy/<env>/server`, `deploy/<env>/website`, and `deploy/<env>/docs` (depending on what changed and which options you select).
+
+Release/deploy-ref promotion requests both Contents and Workflows write permission from
+the release app: moving a branch to a source commit can change `.github/workflows`
+even when the deployed component itself is unchanged. Asset-only publishing
+tokens retain their narrower scope.
 
 `website` and `docs` are independent release targets. Either may be selected
 without the other, and each has its own change decision, deploy job, status

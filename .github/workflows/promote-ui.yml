@@ -419,7 +419,7 @@ jobs:
       - name: Upload release notes assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-release-notes-${{ needs.apply_bump.outputs.release_sha }}
+          name: ui-release-notes-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
           path: ${{ runner.temp }}/release-notes-assets
           if-no-files-found: error
           retention-days: 1
@@ -447,7 +447,7 @@ jobs:
         if: inputs.expo_action == 'ota' || inputs.expo_action == 'full'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-ota-${{ needs.apply_bump.outputs.release_sha }}
+          name: ui-ota-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
           path: ${{ runner.temp }}/prepared-ota
           include-hidden-files: true
           if-no-files-found: error
@@ -498,13 +498,13 @@ jobs:
       - name: Download release notes assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: ui-release-notes-${{ needs.apply_bump.outputs.release_sha }}
+          name: ui-release-notes-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
           path: ${{ runner.temp }}/release-notes-assets
       - name: Download prepared OTA artifacts
         if: inputs.expo_action == 'ota' || inputs.expo_action == 'full'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: ui-ota-${{ needs.apply_bump.outputs.release_sha }}
+          name: ui-ota-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
           path: ${{ runner.temp }}/prepared-ota
       - name: Create GitHub App token
         id: app_token
@@ -515,6 +515,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
+          permission-workflows: write
       - name: Create release notes asset token
         id: release_notes_assets_token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547

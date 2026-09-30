@@ -118,7 +118,7 @@ test('build-tauri gates the production desktop publish on desktop-setup against 
   assert.match(String(skipNotice.env?.SKIP_REASON ?? ''), /steps\.plan\.outputs\.skip_reason/);
 
   const download = steps.find((step) => String(step.uses ?? '').startsWith('actions/download-artifact@'));
-  assert.equal(download.with.name, 'tauri-updates-linux-x86_64', 'the same-run bundle finalize uploaded');
+  assert.equal(download.with.name, 'tauri-updates-${{ inputs.environment }}-linux-x86_64', 'the same-run, same-channel bundle finalize uploaded');
   assert.equal(download.with['run-id'], undefined);
   const runStep = steps.find((step) => /--suite desktop-setup/.test(String(step.run ?? '')) && /release-validate/.test(String(step.run ?? '')));
   assert.ok(steps.indexOf(plan) < steps.indexOf(download) && steps.indexOf(download) < steps.indexOf(runStep));

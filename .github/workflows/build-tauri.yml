@@ -454,7 +454,7 @@ jobs:
       - name: Upload desktop candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: tauri-candidate-${{ matrix.platform_key }}
+          name: tauri-candidate-${{ inputs.environment }}-${{ matrix.platform_key }}
           path: dist/tauri/candidates/${{ matrix.platform_key }}/**
           retention-days: 7
 
@@ -527,7 +527,7 @@ jobs:
         if: ${{ matrix.artifact_id == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: tauri-candidate-${{ matrix.platform_key }}
+          name: tauri-candidate-${{ inputs.environment }}-${{ matrix.platform_key }}
           path: dist/tauri/candidate/${{ matrix.platform_key }}
 
       - name: Download and verify admitted desktop candidate
@@ -730,7 +730,7 @@ jobs:
       - name: Upload finalized updater assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: tauri-updates-${{ matrix.platform_key }}
+          name: tauri-updates-${{ inputs.environment }}-${{ matrix.platform_key }}
           path: dist/tauri/updates/${{ matrix.platform_key }}/**
           retention-days: 7
 
@@ -766,7 +766,7 @@ jobs:
       - name: Download updater assets artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: tauri-updates-*
+          pattern: tauri-updates-${{ inputs.environment }}-*
           path: dist/tauri/updates
           merge-multiple: true
 
@@ -799,7 +799,7 @@ jobs:
       - name: Upload publish assets artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-desktop-assets
+          name: ui-desktop-assets-${{ inputs.environment }}
           path: dist/tauri/publish/**
           retention-days: 7
 
@@ -855,7 +855,7 @@ jobs:
         if: steps.plan.outputs.run == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: tauri-updates-linux-x86_64
+          name: tauri-updates-${{ inputs.environment }}-linux-x86_64
           path: dist/desktop-setup-candidate
 
       - name: Enable Corepack (Yarn)
@@ -884,7 +884,7 @@ jobs:
           set -euo pipefail
           mapfile -t debs < <(find dist/desktop-setup-candidate -maxdepth 1 -type f -name '*.deb' -print)
           if [ "${#debs[@]}" -ne 1 ]; then
-            echo "::error::expected exactly one Linux desktop .deb in tauri-updates-linux-x86_64, found ${#debs[@]}" >&2
+            echo "::error::expected exactly one finalized Linux desktop .deb for this environment, found ${#debs[@]}" >&2
             exit 1
           fi
           desktop_artifact="${debs[0]}"
@@ -899,7 +899,7 @@ jobs:
         if: always() && steps.plan.outputs.run == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: desktop-setup-summary
+          name: desktop-setup-summary-${{ inputs.environment }}
           path: output/desktop-setup-*/summary.json
           if-no-files-found: ignore
 
@@ -916,7 +916,7 @@ jobs:
       rolling_tag: true
       generate_notes: false
       notes: ${{ needs.resolve_source.outputs.release_notes_github_markdown }}
-      assets_artifact: ui-desktop-assets
+      assets_artifact: ui-desktop-assets-${{ inputs.environment }}
       assets_artifact_path: dist/ui-desktop-assets
       assets_dir: dist/ui-desktop-assets/ui-desktop-preview
       clobber: true
@@ -934,7 +934,7 @@ jobs:
       rolling_tag: true
       generate_notes: false
       notes: ${{ needs.resolve_source.outputs.release_notes_github_markdown }}
-      assets_artifact: ui-desktop-assets
+      assets_artifact: ui-desktop-assets-${{ inputs.environment }}
       assets_artifact_path: dist/ui-desktop-assets
       assets_dir: dist/ui-desktop-assets/ui-desktop-dev
       clobber: true
@@ -952,7 +952,7 @@ jobs:
       rolling_tag: false
       generate_notes: false
       notes: ${{ needs.resolve_source.outputs.release_notes_github_markdown }}
-      assets_artifact: ui-desktop-assets
+      assets_artifact: ui-desktop-assets-${{ inputs.environment }}
       assets_artifact_path: dist/ui-desktop-assets
       assets_dir: dist/ui-desktop-assets/ui-desktop-v
       clobber: false

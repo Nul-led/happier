@@ -142,7 +142,7 @@ node scripts/release/release-assets-e2e/desktop-setup.mjs --desktop-artifact <de
   BLOCKED instead of being driven with another version's contract.
 - Requires an x86_64 Linux Docker host (Linux desktop artifacts ship for x86_64 only). The suite
   gates the desktop build, not release verification: `build-tauri.yml` job `desktop_setup` runs it
-  on `ubuntu-latest` against the just-finalized `tauri-updates-linux-x86_64` `.deb`, and
+  on `ubuntu-latest` against the just-finalized `tauri-updates-production-linux-x86_64` `.deb`, and
   `publish_stable_release` needs it. The registry (`resolve-validation-plan.mjs --suite
   desktop-setup`; `registry.mjs` `resolveReleaseValidationSuiteApplicability` and
   `resolveDesktopSetupCliSource`) decides both whether it runs and which CLI it installs:
