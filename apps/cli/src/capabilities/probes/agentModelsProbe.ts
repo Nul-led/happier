@@ -345,13 +345,17 @@ async function probeModelsFromCliModelsCommand(params: {
   });
 }
 
+function normalizeProbeConfigOptions(configOptionsRaw: unknown[]) {
+  return configOptionsRaw
+    .map((option) => ProbeConfigOptionCandidateSchema.safeParse(option))
+    .filter((parsed): parsed is Extract<typeof parsed, { success: true }> => parsed.success)
+    .map((parsed) => parsed.data);
+}
+
 function normalizeModelsFromConfigOptions(configOptionsRaw: unknown): ProbedAgentModel[] | null {
   if (!Array.isArray(configOptionsRaw)) return null;
 
-  const configOptions = configOptionsRaw
-    .map((optionRaw) => ProbeConfigOptionCandidateSchema.safeParse(optionRaw))
-    .filter((parsed): parsed is Extract<typeof parsed, { success: true }> => parsed.success)
-    .map((parsed) => parsed.data);
+  const configOptions = normalizeProbeConfigOptions(configOptionsRaw);
   if (configOptions.length === 0) return null;
 
   const candidate =
@@ -362,11 +366,6 @@ function normalizeModelsFromConfigOptions(configOptionsRaw: unknown): ProbedAgen
   const optionsRaw = candidate.options ?? null;
   if (!optionsRaw) return null;
 
-  const modelScopedOptions = configOptions
-    .filter(isAcpModelScopedConfigOption)
-    .map((option) => normalizeProbeModelOption(option))
-    .filter((option): option is ProbedAgentModelOption => option !== null);
-
   const parsed = normalizeAcpConfigOptionChoices(optionsRaw, (value) => {
     const id = ProbeNonEmptyStringSchema.safeParse(value);
     return id.success ? id.data : null;
@@ -374,7 +373,6 @@ function normalizeModelsFromConfigOptions(configOptionsRaw: unknown): ProbedAgen
     id: choice.value,
     name: choice.name,
     ...(choice.description ? { description: choice.description } : {}),
-    ...(modelScopedOptions.length > 0 ? { modelOptions: modelScopedOptions } : {}),
   } satisfies ProbedAgentModel));
 
   if (optionsRaw.length > 0 && parsed.length === 0) return null;
@@ -392,12 +390,43 @@ function normalizeModelsFromConfigOptions(configOptionsRaw: unknown): ProbedAgen
   });
 }
 
+function attachObservedModelOptions(
+  models: ProbedAgentModel[],
+  configOptionsRaw: unknown,
+  currentModelId?: unknown,
+): ProbedAgentModel[] {
+  if (!Array.isArray(configOptionsRaw)) return models;
+  const configOptions = normalizeProbeConfigOptions(configOptionsRaw);
+  const observedModelId = typeof currentModelId === 'string'
+    ? currentModelId
+    : configOptions.find(isAcpModelConfigOptionLike)?.currentValue;
+  const observedOptions = configOptions
+    .filter(isAcpModelScopedConfigOption)
+    .map(normalizeProbeModelOption)
+    .filter((option): option is ProbedAgentModelOption => option !== null);
+  if (observedOptions.length === 0) return models;
+
+  // Session config options describe the current model. They are not evidence of the
+  // controls supported by other models, or by the synthetic Default choice.
+  return models.map((model) => {
+    if (model.id === 'default' || model.id !== observedModelId) return model;
+    const observedIds = new Set(observedOptions.map((option) => option.id));
+    return {
+      ...model,
+      modelOptions: [
+        ...(model.modelOptions ?? []).filter((option) => !observedIds.has(option.id)),
+        ...observedOptions,
+      ],
+    };
+  });
+}
+
 export async function probeModelsFromAcpBackend(params: {
   backend: AgentBackend;
   timeoutMs: number;
 }): Promise<ReadonlyArray<ProbedAgentModel> | null> {
   type ProbeModelsBackend = AgentBackend & Partial<{
-    getSessionModelState: () => { availableModels?: unknown } | null;
+    getSessionModelState: () => { currentModelId?: unknown; availableModels?: unknown } | null;
     getSessionConfigOptionsState: () => unknown;
     /** Resolve false on failed discovery; a ready empty list is still a successful observation. */
     waitForSessionModels: () => Promise<boolean>;
@@ -422,17 +451,17 @@ export async function probeModelsFromAcpBackend(params: {
   });
   if (!modelsReady) return null;
 
+  const configOptions = backend.getSessionConfigOptionsState?.();
   if (typeof backend.getSessionModelState === 'function') {
     const state = backend.getSessionModelState();
     const modelsRaw = state?.availableModels;
     const models = normalizeDynamicModels(modelsRaw);
-    if (models) return models;
+    if (models) return attachObservedModelOptions(models, configOptions, state?.currentModelId);
   }
 
   if (typeof backend.getSessionConfigOptionsState === 'function') {
-    const configOptions = backend.getSessionConfigOptionsState();
     const models = normalizeModelsFromConfigOptions(configOptions);
-    if (models) return models;
+    if (models) return attachObservedModelOptions(models, configOptions);
   }
 
   return null;
