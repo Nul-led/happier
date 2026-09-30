@@ -35,6 +35,9 @@ describe('createSessionConnectedServiceAuthHotApply', () => {
           'happier.provider.anthropic/anthropic': { status: 'not_attempted' },
         },
       });
+      await expect(outcome).resolves.toMatchObject({
+        underlyingError: expect.stringContaining(`(code=${reason === 'timeout' ? 'switch_execution_timeout' : reason})`),
+      });
       expect(hotApply).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
   });

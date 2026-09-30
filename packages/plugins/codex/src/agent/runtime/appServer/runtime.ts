@@ -2028,7 +2028,8 @@ export function createCodexAppServerRuntime(
     nextClient.onExit((result) => {
       if (disposed || unexpectedExitPublished) return;
       unexpectedExitPublished = true;
-      // Physical process exit retires all cancelled work owned by this client.
+      // The native provider transport has terminated before this observer runs.
+      // Retire its cancelled turns; descendant tool cleanup remains supervisor-owned.
       preAckCancelledTurns.clear();
       const exitDescription = result.signal
         ? `signal ${result.signal}`
