@@ -159,6 +159,7 @@ describe('projectCurrentAgentSessionView — state disposition (§8)', () => {
     providerBindingV1: { v: 1 },
     acpSessionModesV1: { v: 1 },
     sessionModesV1: { v: 1 },
+    sessionModesV2: { v: 2, agentId: 'claude', updatedAt: 1, currentModeId: null, availableModes: [{ id: 'plan', name: 'Plan' }] },
     acpSessionModelsV1: { v: 1 },
     sessionModelsV1: { v: 1 },
     acpConfigOptionsV1: { v: 1 },

@@ -56,6 +56,7 @@ const AGENT_SCOPED_CURRENT_METADATA_KEYS: readonly string[] = Object.freeze([
   // Mode/model/config catalogs and applied values belonging to the source Agent.
   'acpSessionModesV1',
   'sessionModesV1',
+  'sessionModesV2',
   'acpSessionModelsV1',
   'sessionModelsV1',
   'acpConfigOptionsV1',
