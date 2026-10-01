@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,7 +96,11 @@ test('ui-mobile-release validates TestFlight groups without starting a native bu
   assert.doesNotMatch(out, /scripts\/pipeline\/expo\/submit\.mjs/);
 });
 
-test('ui-mobile-release can defer external TestFlight distribution after scheduling the exact build', () => {
+test('ui-mobile-release current control defers distribution after scheduling the candidate build', (t) => {
+  const tmpDir = fs.mkdtempSync(resolve(os.tmpdir(), 'happier-testflight-candidate-root-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const candidateRoot = resolve(tmpDir, 'candidate');
+  fs.symlinkSync(repoRoot, candidateRoot, 'junction');
   const out = execFileSync(
     process.execPath,
     [
@@ -121,6 +127,7 @@ test('ui-mobile-release can defer external TestFlight distribution after schedul
         EXPO_TOKEN: 'expo-token',
         APPLE_API_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----',
         APP_STORE_CONNECT_PUBLICDEV_EXTERNAL_GROUPS: 'beta-a',
+        HAPPIER_PIPELINE_REPO_ROOT: candidateRoot,
       },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -129,5 +136,6 @@ test('ui-mobile-release can defer external TestFlight distribution after schedul
   );
 
   assert.match(out, /TestFlight external distribution deferred/i);
+  assert.ok(out.includes(resolve(candidateRoot, 'scripts/pipeline/expo/native-build.mjs')));
   assert.doesNotMatch(out, /scripts\/pipeline\/expo\/testflight-distribute\.mjs/);
 });

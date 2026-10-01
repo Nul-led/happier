@@ -355,25 +355,94 @@ async function resolveExternalGroups({ request, ascAppId, externalGroupNames }) 
   });
 }
 
-async function attachBuildToGroups({ request, build, groups }) {
+async function reconcileGroupAttachment({ request, ascAppId, buildId, groupId }) {
+  const currentBuild = await request({
+    url: buildAscBaseUrl(`/v1/builds/${buildId}?include=betaGroups`),
+  });
+  const currentGroupIds = new Set(
+    (Array.isArray(currentBuild?.data?.relationships?.betaGroups?.data)
+      ? currentBuild.data.relationships.betaGroups.data
+      : [])
+      .map((entry) => String(entry?.id ?? '').trim())
+      .filter(Boolean),
+  );
+  if (currentGroupIds.has(groupId)) return { attached: true, groupExists: true };
+
+  const currentGroups = await ascListAll({
+    request,
+    url: buildAscBaseUrl(`/v1/apps/${ascAppId}/betaGroups?limit=200`),
+  });
+  return {
+    attached: false,
+    groupExists: currentGroups.some((group) => String(group?.id ?? '').trim() === groupId),
+  };
+}
+
+async function attachBuildToGroups({ request, ascAppId, build, groups }) {
   const existingGroupIds = new Set(
     (Array.isArray(build?.relationships?.betaGroups?.data) ? build.relationships.betaGroups.data : [])
       .map((entry) => String(entry?.id ?? '').trim())
       .filter(Boolean),
   );
+  const buildId = String(build?.id ?? '').trim();
+  const maxAttempts = 4;
+  const retryDelayMs = readNonNegativeInteger(
+    process.env.HAPPIER_TESTFLIGHT_ATTACHMENT_RETRY_DELAY_MS,
+    5_000,
+  );
 
   for (const group of groups) {
     const groupId = String(group?.id ?? '').trim();
     if (!groupId || existingGroupIds.has(groupId)) continue;
-    await request({
-      method: 'POST',
-      url: buildAscBaseUrl(`/v1/betaGroups/${groupId}/relationships/builds`),
-      body: {
-        data: [{ type: 'builds', id: String(build?.id ?? '').trim() }],
-      },
-    });
     const groupLabel = String(group?.attributes?.name ?? '').trim() || groupId;
-    console.log(`[pipeline] attached build ${String(build?.id ?? '').trim()} to TestFlight group ${groupLabel}`);
+    try {
+      await request({
+        method: 'POST',
+        url: buildAscBaseUrl(`/v1/betaGroups/${groupId}/relationships/builds`),
+        body: {
+          data: [{ type: 'builds', id: buildId }],
+        },
+      });
+      console.log(`[pipeline] attached build ${buildId} to TestFlight group ${groupLabel}`);
+      continue;
+    } catch (error) {
+      if (!(error instanceof AscApiError) || error.status !== 404) throw error;
+      const state = await reconcileGroupAttachment({ request, ascAppId, buildId, groupId });
+      if (state.attached) {
+        console.log(`[pipeline] confirmed build ${buildId} is already attached to TestFlight group ${groupLabel}`);
+        continue;
+      }
+      if (!state.groupExists) throw error;
+    }
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        console.log(
+          `[pipeline] retrying TestFlight group attachment through build relationship after state reconciliation ` +
+          `(group=${groupLabel}, attempt=${attempt}/${maxAttempts})`,
+        );
+        await request({
+          method: 'POST',
+          url: buildAscBaseUrl(`/v1/builds/${buildId}/relationships/betaGroups`),
+          body: {
+            data: [{ type: 'betaGroups', id: groupId }],
+          },
+        });
+        console.log(`[pipeline] attached build ${buildId} to TestFlight group ${groupLabel}`);
+        break;
+      } catch (error) {
+        const state = await reconcileGroupAttachment({ request, ascAppId, buildId, groupId });
+        if (state.attached) {
+          console.log(`[pipeline] confirmed build ${buildId} is already attached to TestFlight group ${groupLabel}`);
+          break;
+        }
+        const transient = error instanceof AscApiError && (
+          [404, 408, 425, 429].includes(error.status) || error.status >= 500
+        );
+        if (!state.groupExists || !transient || attempt === maxAttempts) throw error;
+        await sleep(retryDelayMs);
+      }
+    }
   }
 }
 
@@ -491,7 +560,7 @@ async function main() {
     waitProcessing,
     timeoutSeconds,
   });
-  await attachBuildToGroups({ request, build, groups });
+  await attachBuildToGroups({ request, ascAppId, build, groups });
   await ensureBetaReviewSubmission({
     build,
     submitBetaReview,

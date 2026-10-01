@@ -15,8 +15,9 @@ function isInstallablePayload(name) {
 }
 
 /**
- * Stable and preview rolling releases retain signed metadata and expose each
- * installable payload only under its channel-stable filename.
+ * Stable and preview rolling releases retain every immutable asset and add
+ * channel-stable aliases for installable payloads. Signed metadata stays under
+ * its immutable name. The promoter audits each alias against its source bytes.
  *
  * @param {{
  *   immutableNames: readonly string[];
@@ -26,15 +27,12 @@ function isInstallablePayload(name) {
  * }} params
  */
 export function buildRollingAssetPlan({ immutableNames, payloadNames, version, rollingTag }) {
+  const plan = immutableNames.map((name) => ({ name, sourceName: name }));
   if (!rollingTag.endsWith('-stable') && !rollingTag.endsWith('-preview')) {
-    return immutableNames.map((name) => ({ name, sourceName: name }));
+    return plan;
   }
 
-  const payloadNameSet = new Set(payloadNames);
-  const plan = immutableNames
-    .filter((name) => !payloadNameSet.has(name) || !isInstallablePayload(name))
-    .map((name) => ({ name, sourceName: name }));
-  const occupied = new Set(plan.map(({ name }) => name));
+  const occupied = new Set(immutableNames);
   const versionToken = `-v${version}`;
 
   for (const sourceName of payloadNames) {
@@ -51,6 +49,7 @@ export function buildRollingAssetPlan({ immutableNames, payloadNames, version, r
         name = `${sourceName.slice(0, first)}${sourceName.slice(first + versionToken.length)}`;
       }
     }
+    if (name === sourceName) continue;
     if (!name || basename(name) !== name || name === '.' || name === '..') {
       fail(`Unable to derive a safe stable asset name from ${sourceName}.`);
     }

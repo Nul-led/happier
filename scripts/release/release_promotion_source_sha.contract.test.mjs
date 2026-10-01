@@ -45,7 +45,9 @@ test('release dry-run JSON resolves the actual promotion source independently of
       },
     );
 
-    assert.deepEqual(JSON.parse(raw), {
+    const plan = JSON.parse(raw);
+    // Source authorization must survive additive, independently owned release controls.
+    for (const [key, expected] of Object.entries({
       kind: 'happier.release-dispatch-plan.v3',
       schemaVersion: 3,
       sourceBranch: 'preview',
@@ -56,7 +58,9 @@ test('release dry-run JSON resolves the actual promotion source independently of
       releaseNotesId: '2026-08-09.1',
       resumeRunId: '31506884258',
       approvals: { qualifiedV4Activation: true },
-    });
+    })) {
+      assert.deepEqual(plan[key], expected, key);
+    }
   } finally {
     stub.cleanup();
   }

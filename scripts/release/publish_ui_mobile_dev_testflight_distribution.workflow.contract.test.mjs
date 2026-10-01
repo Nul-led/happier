@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import YAML from 'yaml';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
@@ -30,5 +31,13 @@ test('publish-ui-mobile-dev defers TestFlight processing through the canonical r
     assert.match(job, /--testflight-distribution-mode deferred/);
     assert.match(job, /dispatch-testflight-reconciliation\.mjs/);
     assert.match(job, /actions: write/);
+  }
+  const workflow = YAML.parse(src);
+  for (const job of [workflow.jobs.ios_cloud, workflow.jobs.ios_local]) {
+    const submit = job.steps.find((step) => step.run?.includes('--testflight-distribution-mode deferred'));
+    const dispatch = job.steps.find((step) => step.run?.includes('dispatch-testflight-reconciliation.mjs'));
+    assert.notEqual(submit['continue-on-error'], true);
+    assert.equal(dispatch.if, undefined, 'dispatch keeps the default success gate after submission');
+    assert.ok(job.steps.indexOf(dispatch) > job.steps.indexOf(submit));
   }
 });

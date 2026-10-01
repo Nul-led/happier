@@ -1165,7 +1165,7 @@ jobs:
 
   deploy_ui:
     if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && needs.verify_release_candidates.result == 'success' && inputs.dry_run != true && contains(format(',{0},', inputs.deploy_targets), ',ui,') && (needs.deploy_plan.outputs.deploy_ui_needed == 'true' || needs.plan.outputs.bump_app != 'none' || inputs.force_deploy == true || inputs.ui_expo_action != 'none')
-    needs: [plan, release_admission, prepare_release_candidate, deploy_plan, verify_release_candidates]
+    needs: [resolve_resume, plan, release_admission, prepare_release_candidate, deploy_plan, verify_release_candidates]
     permissions:
       contents: write
       actions: write
@@ -1182,6 +1182,14 @@ jobs:
       desktop_mode: ${{ inputs.desktop_mode }}
       run_tests: false
       release_notes_id: ${{ inputs.release_notes_id }}
+      resume_desktop_artifacts: ${{ needs.resolve_resume.outputs.desktop_artifacts }}
+      resume_desktop_finalized_artifacts: ${{ needs.resolve_resume.outputs.desktop_finalized_artifacts }}
+      resume_desktop_run_number: ${{ needs.resolve_resume.outputs.desktop_run_number }}
+      resume_source_sha: ${{ needs.resolve_resume.outputs.source_sha }}
+      ui_ota_complete: ${{ needs.resolve_resume.outputs.ui_ota_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_native_ios_complete: ${{ needs.resolve_resume.outputs.ui_native_ios_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_native_android_complete: ${{ needs.resolve_resume.outputs.ui_native_android_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_apk_complete: ${{ needs.resolve_resume.outputs.ui_apk_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
 
   deploy_server:
     if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && (needs.promote_server_runtime.result == 'success' || needs.promote_server_runtime.result == 'skipped') && inputs.dry_run != true && contains(format(',{0},', inputs.deploy_targets), ',server,') && (needs.deploy_plan.outputs.deploy_server_needed == 'true' || needs.plan.outputs.bump_server != 'none' || inputs.force_deploy == true)
@@ -1239,6 +1247,9 @@ jobs:
     permissions:
       actions: read
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -1307,9 +1318,11 @@ jobs:
       verify_runner_release: ${{ needs.publish_runner_binaries.result == 'success' && needs.resolve_resume.outputs.runner_version == '' }}
       verify_ui_web_release: ${{ needs.publish_ui_web.result == 'success' && needs.resolve_resume.outputs.ui_web_version == '' }}
       validation_profile: ${{ needs.plan.outputs.validation_profile }}
-      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' }}
-      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' }}
-      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' }}
+      # An earlier attempt may have advanced the target branch, erasing its risk diff.
+      # Recheck applicable upgrade suites on resume; the registry still checks candidate inputs.
+      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' || inputs.resume_run_id != '' }}
+      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' || inputs.resume_run_id != '' }}
+      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' || inputs.resume_run_id != '' }}
       include_validation_suites: ${{ inputs.include_validation_suites }}
       waive_validation_suites: ${{ inputs.waive_validation_suites }}
 
@@ -1363,6 +1376,9 @@ jobs:
     permissions:
       actions: read
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -1408,6 +1424,7 @@ jobs:
     needs: [plan, release_admission, prepare_release_candidate, verify_release_candidates, publish_cli_binaries, publish_server_runtime, promote_cli_binaries, promote_server_runtime, promote_ui_web]
     permissions:
       contents: read
+      packages: write
     uses: ./.github/workflows/publish-docker.yml
     secrets: inherit
     with:
@@ -1632,6 +1649,7 @@ jobs:
           RUNNER_RESULT: ${{ needs.promote_runner_binaries.result }}
           UI_WEB_RESULT: ${{ needs.promote_ui_web.result }}
           DEPLOY_UI_RESULT: ${{ needs.deploy_ui.result }}
+          DEPLOY_UI_EXPO_ACTION: ${{ inputs.ui_expo_action }}
           DEPLOY_SERVER_RESULT: ${{ needs.deploy_server.result }}
           DEPLOY_WEBSITE_RESULT: ${{ needs.deploy_website.result }}
           DEPLOY_DOCS_RESULT: ${{ needs.deploy_docs.result }}

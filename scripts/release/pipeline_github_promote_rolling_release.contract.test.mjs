@@ -83,8 +83,10 @@ function fixture({ missingRolling = false } = {}) {
   const rollingReadFailureMarker = join(root, 'rolling-read-failure-marker');
   const deleteConfirmFailureMarker = join(root, 'delete-confirm-failure-marker');
   const assetDownloadFailureMarker = join(root, 'asset-download-failure-marker');
+  const downloadFailureCounter = join(root, 'download-failure-counter');
   writeFileSync(log, '');
   writeFileSync(uploadCounter, '0');
+  writeFileSync(downloadFailureCounter, '0');
   if (missingRolling) {
     rmSync(join(rolling, 'old-asset'));
   } else {
@@ -109,6 +111,18 @@ not_found() {
   exit 1
 }
 
+fail_download_if_requested() {
+  if [ "\${HAPPIER_TEST_DOWNLOAD_FAILURE_PHASE:-}" != "$1" ]; then return; fi
+  count="$(cat ${JSON.stringify(downloadFailureCounter)})"
+  count=$((count + 1))
+  printf '%s' "$count" > ${JSON.stringify(downloadFailureCounter)}
+  if [ "$count" -le "\${HAPPIER_TEST_DOWNLOAD_FAILURES:-1}" ]; then
+    printf 'partial-bytes'
+    echo "\${HAPPIER_TEST_DOWNLOAD_ERROR:-unexpected end of JSON input}" >&2
+    exit 1
+  fi
+}
+
 if [ "$1" = "release" ] && [ "$2" = "view" ]; then
   if [ "$3" = "cli-preview" ] && [ ! -f ${JSON.stringify(publishedState)} ]; then exit 1; fi
   printf '%s\\n' "$3"
@@ -118,14 +132,20 @@ fi
 if [ "$1" = "release" ] && [ "$2" = "download" ]; then
   tag="$3"
   destination=""
+  clobber=false
+  case " $* " in *" --clobber "*) clobber=true ;; esac
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "--dir" ]; then destination="$2"; break; fi
     shift
   done
   mkdir -p "$destination"
   if [ "$tag" = "cli-v1.2.3-preview.4" ]; then
+    if [ -f "$destination"/${JSON.stringify(archiveName)} ] && [ "$clobber" = false ]; then echo 'file already exists; use --clobber' >&2; exit 1; fi
+    fail_download_if_requested immutable > "$destination"/${JSON.stringify(archiveName)}
     cp ${JSON.stringify(source)}/* "$destination"/
   elif [ -f ${JSON.stringify(release77Tag)} ] && [ "$(cat ${JSON.stringify(release77Tag)})" = "$tag" ] && [ ! -f ${JSON.stringify(draftState)} ]; then
+    if [ -f "$destination"/${JSON.stringify(aliasName)} ] && [ "$clobber" = false ]; then echo 'file already exists; use --clobber' >&2; exit 1; fi
+    fail_download_if_requested published > "$destination"/${JSON.stringify(aliasName)}
     cp ${JSON.stringify(staging)}/* "$destination"/
   else
     cp ${JSON.stringify(rolling)}/* "$destination"/
@@ -181,6 +201,9 @@ if [ "$1" = "api" ]; then
       done
       name="\${endpoint##*name=}"
       cp "$input" ${JSON.stringify(staging)}/"$name"
+      if [ "\${HAPPIER_TEST_CORRUPT_ALIAS:-0}" = "1" ] && [ "$name" = ${JSON.stringify(aliasName)} ]; then
+        printf 'corrupt\n' >> ${JSON.stringify(staging)}/"$name"
+      fi
       exit 0
       ;;
   esac
@@ -237,6 +260,7 @@ if [ "$1" = "api" ]; then
       ;;
     *"repos/test/test/releases/assets/"*)
       asset="\${2##*/}"
+      if [ "$asset" = ${JSON.stringify(`77-${aliasName}`)} ]; then fail_download_if_requested staged; fi
       if [ "\${HAPPIER_TEST_RESET_FIRST_ASSET_DOWNLOAD:-0}" = "1" ] && [ ! -f ${JSON.stringify(assetDownloadFailureMarker)} ]; then
         : > ${JSON.stringify(assetDownloadFailureMarker)}
         printf 'partial-bytes'
@@ -355,6 +379,7 @@ exit 2
     rolling,
     staging,
     uploadCounter,
+    downloadFailureCounter,
     draftState,
     staleOtherDraftState,
     staleOtherRefState,
@@ -427,11 +452,97 @@ test('rolling promotion retries a read-only asset audit without retaining partia
       encoding: 'utf8',
     });
     assert.equal(result.status, 0, String(result.stderr));
-    assert.match(String(result.stderr), /retrying GitHub release asset read/i);
+    assert.match(String(result.stderr), /retrying.*(?:read|download)|download.*retrying/i);
   } finally {
     rmSync(testFixture.root, { recursive: true, force: true });
   }
 });
+
+test('rolling promotion rejects a corrupt channel alias after download recovery without replacing its predecessor', () => {
+  const testFixture = fixture();
+  try {
+    const result = spawnSync(process.execPath, args(), {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
+        HAPPIER_TEST_CORRUPT_ALIAS: '1',
+        HAPPIER_TEST_DOWNLOAD_FAILURE_PHASE: 'staged',
+        HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS: '0',
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /(?:checksum mismatch|differs from immutable source bytes)/i);
+    assert.equal(readFileSync(testFixture.release1Tag, 'utf8'), 'cli-preview');
+    assert.equal(readFileSync(testFixture.channelRef, 'utf8'), oldSha);
+    assert.deepEqual(readdirSync(testFixture.rolling), ['old-asset']);
+  } finally {
+    rmSync(testFixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const phase of ['immutable', 'staged', 'published']) {
+  test(`rolling promotion retries a truncated ${phase} asset read with a complete fresh download`, () => {
+    const testFixture = fixture();
+    try {
+      const result = spawnSync(process.execPath, args(), {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
+          HAPPIER_TEST_DOWNLOAD_FAILURE_PHASE: phase,
+          HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS: '0',
+        },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /retrying.*(?:read|download)|download.*retrying/i);
+      assert.equal(readFileSync(testFixture.channelRef, 'utf8'), targetSha);
+      assert.deepEqual(
+        readFileSync(join(testFixture.staging, testFixture.aliasName)),
+        readFileSync(join(testFixture.root, 'source', testFixture.archiveName)),
+      );
+    } finally {
+      rmSync(testFixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const [error, attempts] of [
+  ['unexpected end of JSON input', 4],
+  ['gh: Bad credentials (HTTP 401)', 1],
+  ['gh: Resource not accessible by integration (HTTP 403)', 1],
+  ['gh: permanent download failure', 1],
+]) {
+  test(`rolling promotion leaves predecessor unchanged when asset reads fail: ${error}`, () => {
+    const testFixture = fixture();
+    try {
+      const result = spawnSync(process.execPath, args(), {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
+          HAPPIER_TEST_DOWNLOAD_FAILURE_PHASE: 'staged',
+          HAPPIER_TEST_DOWNLOAD_FAILURES: '99',
+          HAPPIER_TEST_DOWNLOAD_ERROR: error,
+          HAPPIER_PIPELINE_GH_ASSET_READ_ATTEMPTS: '4',
+          HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS: '0',
+        },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes(error), result.stderr);
+      assert.equal(Number(readFileSync(testFixture.downloadFailureCounter, 'utf8')), attempts);
+      assert.equal(readFileSync(testFixture.release1Tag, 'utf8'), 'cli-preview');
+      assert.equal(readFileSync(testFixture.channelRef, 'utf8'), oldSha);
+      assert.deepEqual(readdirSync(testFixture.rolling), ['old-asset']);
+      assert.doesNotMatch(readFileSync(testFixture.log, 'utf8'), /-X PATCH repos\/test\/test\/git\/refs\/tags\/cli-preview/);
+    } finally {
+      rmSync(testFixture.root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('existing rolling replacement stages privately, restores after publish failure, and exposes only audited bytes', () => {
   const testFixture = fixture();

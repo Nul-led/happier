@@ -16,10 +16,10 @@ hmaint release bootstrap --repo <absolute checkout> --json
 ```
 
 `hmaint` is an access-controlled maintainer-tool installation, not a public npm
-fallback. If it is unavailable, obtain the approved `@happier-dev/maintainer-cli`
-installation, verify `hmaint --help` exposes `release bootstrap`, then rerun the
-command above. Do not copy private runbooks or recreate their shell workflow in
-this repository.
+fallback. If the configured wrapper is unavailable, stop and obtain the approved
+`@happier-dev/maintainer-cli` installation. Verify that exact wrapper's `--help`
+exposes `release bootstrap`, then rerun the command above through it. Do not copy
+private runbooks or recreate their shell workflow in this repository.
 
 Use that response to choose the supported release profile and follow the
 maintainer-owned approval/dispatch flow. Do not treat this skill as permission
@@ -31,15 +31,23 @@ Establish the execution host (`uname -s`, `pwd -P`) and absolute source path
 before invoking the conductor. A repository under a VM-mounted path does not
 prove that the agent process itself is running inside Linux.
 
-- On the configured macOS host, resolve `hmaint` on `PATH`, then the configured
-  maintainer-tools checkout's `bin/hmaint` wrapper. Prove the wrapper with
-  `hmaint --help`; do not invoke the internal JavaScript entry point or install
-  a second conductor. This placement lets it use Keychain and native release
-  prerequisites.
+- On the configured macOS host, invoke
+  `/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint`
+  directly and prove that exact wrapper with
+  `/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint --help`.
+  Do not resolve a different copy from `PATH`, invoke the internal JavaScript
+  entry point, or install a second conductor. This placement lets it use
+  Keychain and native release prerequisites.
 - From the managed Linux VM, keep source work in the authoritative VM checkout
-  and execute Mac-only authority through `apps/stack/bin/hstack-exec` with the
-  configured Mac target (normally `mac-host`). Never copy signing or GitHub
-  credentials into the VM.
+  and first enter the configured 0.3 checkout that owns
+  `./apps/stack/bin/hstack-exec --target=mac-host -- <command> ...`; invoking it
+  while still in 0.2 fails its repository boundary. The launcher's working
+  directory is separate from `hmaint --repo`, which must name the independently
+  verified Mac-visible target checkout and may be 0.2. See [the execution
+  example](../../../docs/release-process.md#public-release-contract-and-approval-boundary).
+  If the launcher, configured Mac target, exact Mac wrapper, or target checkout
+  cannot be proved, fail closed. Never copy signing or GitHub credentials into
+  the VM or substitute a VM-local conductor.
 - Use `yarn ghops auth status` as the safe credential-path probe; it must not
   print the token. Do not replace a failed broker/Keychain path with a personal
   `gh` login.

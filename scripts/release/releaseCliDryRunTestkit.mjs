@@ -111,7 +111,9 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
       '  esac',
       '  exit 0',
       'fi',
-      'if [ "${1:-}" = "diff" ] && [ "${2:-}" = "--name-only" ]; then',
+      // The fixture repository contains these paths, all changed. Components
+      // without a published baseline discover them through ls-files instead.
+      'if [ "${1:-}" = "ls-files" ] || { [ "${1:-}" = "diff" ] && [ "${2:-}" = "--name-only" ]; }; then',
       `  printf "%s\\n" ${diffPaths.map((value) => JSON.stringify(value)).join(' ')}`,
       '  exit 0',
       'fi',

@@ -54,7 +54,9 @@ if (args[0] === 'view' && args[2] === 'dist-tags') {
 }
 if (args[0] === 'publish') {
   const name = packageNameFromTarball(args[1]);
+  const version = JSON.parse(execFileSync('tar', ['-xOf', args[1], 'package/package.json'], { encoding: 'utf8' })).version;
   state.integrities[name] = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(args[1])).digest('base64');
+  state.tags[name] = { ...(state.tags[name] ?? {}), [args[args.indexOf('--tag') + 1]]: version };
   persist();
   process.stdout.write('published\\n');
   process.exit(0);
@@ -126,7 +128,7 @@ test('plugin SDK pair publisher accepts an exact release-admitted public candida
       '--github-output', outputPath,
     ], {
       cwd: repoRoot,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
+      env: { ...process.env, NODE_AUTH_TOKEN: 'npm-token-for-test', NPM_TOKEN: '', PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -168,7 +170,7 @@ test('plugin SDK pair publisher refuses a real publication without an admitted e
       '--github-output', outputPath,
     ], {
       cwd: repoRoot,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
+      env: { ...process.env, NODE_AUTH_TOKEN: 'npm-token-for-test', NPM_TOKEN: '', PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -215,7 +217,7 @@ test('plugin SDK pair publisher reports the verified SDK identity when the UI fi
       '--github-output', outputPath,
     ], {
       cwd: repoRoot,
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
+      env: { ...process.env, NODE_AUTH_TOKEN: 'npm-token-for-test', NPM_TOKEN: '', PATH: `${binDir}:${process.env.PATH ?? ''}`, NPM_PAIR_STATE: statePath, GITHUB_ACTIONS: 'false' },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

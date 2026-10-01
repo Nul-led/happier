@@ -36,6 +36,11 @@ on:
         required: false
         default: ""
         type: string
+      resume_run_id:
+        description: "Completed nightly run — Reuse its unsigned desktop candidates for the exact source"
+        required: false
+        default: ""
+        type: string
       release_notes_id:
         description: "Release notes — Exact approved project release ID when projecting candidate notes"
         required: false
@@ -65,9 +70,31 @@ on:
         required: false
         default: ""
         type: string
+      resume_run_id:
+        required: false
+        default: ""
+        type: string
+      # Full release callers forward evidence already admitted by the canonical resolver.
+      resume_desktop_artifacts:
+        required: false
+        default: '{}'
+        type: string
+      resume_desktop_finalized_artifacts:
+        required: false
+        default: '{}'
+        type: string
+      resume_desktop_run_number:
+        required: false
+        default: ''
+        type: string
+      resume_source_sha:
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: build-tauri-${{ github.ref }}-${{ inputs.environment }}
@@ -121,10 +148,21 @@ jobs:
           app_id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private_key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
+  resolve_resume:
+    if: ${{ inputs.resume_run_id != '' }}
+    needs: [release_actor_guard]
+    uses: ./.github/workflows/resolve-release-resume.yml
+    with:
+      origin_run_id: ${{ inputs.resume_run_id }}
+      expected_workflow: .github/workflows/nightly-dev.yml
+      expected_channel: ${{ inputs.environment }}
+      expected_source_sha: ${{ inputs.source_ref }}
+
   resolve_source:
     name: Resolve source ref to SHA
     runs-on: ubuntu-latest
-    needs: [release_actor_guard]
+    needs: [release_actor_guard, resolve_resume]
+    if: ${{ !cancelled() && needs.release_actor_guard.result == 'success' && (needs.resolve_resume.result == 'success' || needs.resolve_resume.result == 'skipped') }}
     permissions:
       contents: read
     outputs:
@@ -132,12 +170,19 @@ jobs:
       ui_version: ${{ steps.resolve.outputs.ui_version }}
       build_version: ${{ steps.resolve.outputs.build_version }}
       retry_version: ${{ steps.resolve.outputs.retry_version }}
+      build_needed: ${{ steps.plan.outputs.build_needed }}
+      build_matrix: ${{ steps.plan.outputs.build_matrix }}
+      finalize_matrix: ${{ steps.plan.outputs.finalize_matrix }}
+      finalize_needed: ${{ steps.plan.outputs.finalize_needed }}
+      reuse_needed: ${{ steps.plan.outputs.reuse_needed }}
+      reuse_matrix: ${{ steps.plan.outputs.reuse_matrix }}
+      release_run_number: ${{ needs.resolve_resume.outputs.desktop_run_number || inputs.resume_desktop_run_number || github.run_number }}
       release_notes_github_markdown: ${{ inputs.release_message != '' && inputs.release_message || steps.resolve.outputs.release_notes_github_markdown }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.retry_version != '' && format('ui-desktop-v{0}', inputs.retry_version) || inputs.source_ref }}
+          ref: ${{ inputs.retry_version != '' && format('ui-desktop-v{0}', inputs.retry_version) || needs.resolve_resume.outputs.source_sha || inputs.source_ref }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -146,6 +191,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Checkout trusted candidate planning control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-control
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Resolve source SHA
         id: resolve
         env:
@@ -153,6 +207,9 @@ jobs:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           PUBLISH_RELEASE: ${{ inputs.publish_release }}
           RETRY_VERSION: ${{ inputs.retry_version }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          RESUME_SOURCE_SHA: ${{ inputs.resume_source_sha }}
+          RELEASE_RUN_NUMBER: ${{ needs.resolve_resume.outputs.desktop_run_number || inputs.resume_desktop_run_number || github.run_number }}
           RELEASE_MESSAGE: ${{ inputs.release_message }}
           RELEASE_NOTES_ID: ${{ inputs.release_notes_id }}
           GH_TOKEN: ${{ github.token }}
@@ -163,6 +220,14 @@ jobs:
             echo "Unable to resolve a canonical source SHA from ref '${SOURCE_REF}'" >&2
             exit 1
           fi
+          if [ -n "${RESUME_SOURCE_SHA:-}" ] && [ "$RESUME_SOURCE_SHA" != "$source_sha" ]; then
+            echo "Forwarded desktop resume source does not match the candidate checkout" >&2
+            exit 1
+          fi
+          if [ -n "${RESUME_SOURCE_SHA:-}" ] && { [ -n "${RESUME_RUN_ID:-}" ] || [ -n "${RETRY_VERSION:-}" ]; }; then
+            echo "Forwarded desktop resume evidence cannot be mixed with standalone recovery" >&2
+            exit 1
+          fi
           ui_version="$(node -p 'require("./apps/ui/package.json").version')"
           canonical_semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
           if [[ ! "${ui_version}" =~ ${canonical_semver_re} ]]; then
@@ -170,6 +235,10 @@ jobs:
             exit 1
           fi
           retry_version="${RETRY_VERSION:-}"
+          if [ -n "${RESUME_RUN_ID:-}" ] && [ -n "$retry_version" ]; then
+            echo "resume_run_id and retry_version are mutually exclusive" >&2
+            exit 1
+          fi
           if [ -n "${retry_version}" ]; then
             if [ "${RELEASE_ENVIRONMENT}" != "production" ]; then
               echo "retry_version is supported only for production desktop releases" >&2
@@ -235,8 +304,8 @@ jobs:
           fi
           case "${RELEASE_ENVIRONMENT}" in
             preview|dev)
-              if [[ ! "${GITHUB_RUN_NUMBER}" =~ ^[0-9]+$ ]]; then
-                echo "GITHUB_RUN_NUMBER must contain only decimal digits" >&2
+              if [[ ! "${RELEASE_RUN_NUMBER}" =~ ^[0-9]+$ ]]; then
+                echo "RELEASE_RUN_NUMBER must contain only decimal digits" >&2
                 exit 1
               fi
               version_core="${ui_version%%+*}"
@@ -244,7 +313,7 @@ jobs:
               if [[ "${ui_version}" == *+* ]]; then
                 version_metadata="+${ui_version#*+}"
               fi
-              build_version="${version_core}-${RELEASE_ENVIRONMENT}.${GITHUB_RUN_NUMBER}${version_metadata}"
+              build_version="${version_core}-${RELEASE_ENVIRONMENT}.${RELEASE_RUN_NUMBER}${version_metadata}"
               ;;
             production) build_version="${ui_version}" ;;
             *)
@@ -261,9 +330,28 @@ jobs:
           printf '%s=%s\n' build_version "${build_version}" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' retry_version "${retry_version}" >> "$GITHUB_OUTPUT"
 
+      - name: Plan missing builds and all finalizers
+        id: plan
+        env:
+          RESUME_ARTIFACTS: ${{ needs.resolve_resume.outputs.desktop_artifacts || inputs.resume_desktop_artifacts || '{}' }}
+          RESUME_FINALIZED_ARTIFACTS: ${{ needs.resolve_resume.outputs.desktop_finalized_artifacts || inputs.resume_desktop_finalized_artifacts || '{}' }}
+          RESUME_SOURCE_SHA: ${{ inputs.resume_source_sha }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$RESUME_ARTIFACTS" != '{}' ] || [ "$RESUME_FINALIZED_ARTIFACTS" != '{}' ]; then
+            if [ -z "$RESUME_SOURCE_SHA" ] && [ -z "$RESUME_RUN_ID" ]; then
+              echo "Desktop resume artifacts require canonical source admission" >&2
+              exit 1
+            fi
+          fi
+          node "$GITHUB_WORKSPACE/.release-control/scripts/pipeline/tauri/bundle-candidate.mjs" \
+            --mode plan --resume-artifacts-json "$RESUME_ARTIFACTS" \
+            --resume-finalized-artifacts-json "$RESUME_FINALIZED_ARTIFACTS" --github-output "$GITHUB_OUTPUT"
+
   build:
     name: Build desktop candidate (${{ matrix.platform_key }})
-    if: ${{ needs.resolve_source.outputs.retry_version == '' }}
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.resolve_source.outputs.retry_version == '' && needs.resolve_source.outputs.build_needed == 'true' }}
     runs-on: ${{ matrix.os }}
     needs: [resolve_source]
     permissions:
@@ -278,21 +366,7 @@ jobs:
       EXPO_PUBLIC_SERVER_URL: https://api.happier.dev
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # AppImage tooling (linuxdeploy/AppImageKit) is significantly more reliable on 22.04 than on ubuntu-latest.
-          - os: ubuntu-22.04
-            platform_key: linux-x86_64
-            tauri_target: ""
-          - os: windows-latest
-            platform_key: windows-x86_64
-            tauri_target: ""
-          - os: macos-latest
-            platform_key: darwin-aarch64
-            tauri_target: aarch64-apple-darwin
-          - os: macos-latest
-            platform_key: darwin-x86_64
-            tauri_target: x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.resolve_source.outputs.build_matrix) }}
     steps:
       - name: Checkout candidate source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -359,7 +433,7 @@ jobs:
           npm_config_production: "false"
           # Desktop builds should not require installing backend/CLI workspaces (which can pull native deps
           # that are flaky on Windows runners). Keep installs focused on UI + shared packages.
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           # Prefer the npm registry over the Yarn registry to avoid transient 5xx fetch failures
           # that can break long cross-platform build workflows.
           npm_config_registry: https://registry.npmjs.org
@@ -482,27 +556,16 @@ jobs:
 
   finalize:
     name: Finalize desktop artifacts (${{ matrix.platform_key }})
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.resolve_source.outputs.retry_version == '' && needs.resolve_source.outputs.finalize_needed == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ${{ matrix.os }}
     needs: [resolve_source, build]
     permissions:
       contents: read
+      actions: read
     environment: release-shared
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            platform_key: linux-x86_64
-            tauri_target: ""
-          - os: windows-latest
-            platform_key: windows-x86_64
-            tauri_target: ""
-          - os: macos-latest
-            platform_key: darwin-aarch64
-            tauri_target: aarch64-apple-darwin
-          - os: macos-latest
-            platform_key: darwin-x86_64
-            tauri_target: x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.resolve_source.outputs.finalize_matrix) }}
     steps:
       - name: Checkout trusted workflow control bytes
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -539,7 +602,7 @@ jobs:
         env:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           npm_config_registry: https://registry.npmjs.org
         uses: ./.github/actions/install-yarn-dependencies
         with:
@@ -560,6 +623,7 @@ jobs:
             desktop-file-utils gstreamer1.0-tools gstreamer1.0-plugins-base squashfs-tools patchelf xvfb weston rpm
 
       - name: Download desktop candidate
+        if: ${{ matrix.artifact_id == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: tauri-candidate-${{ inputs.environment }}-${{ matrix.platform_key }}
@@ -568,6 +632,27 @@ jobs:
       - name: Install pinned linuxdeploy
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-linuxdeploy
+
+      - name: Download and verify admitted desktop candidate
+        if: ${{ matrix.artifact_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ matrix.artifact_id }}
+          ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
+          ARCHIVE_PATH: ${{ runner.temp }}/desktop-candidate.zip
+          CANDIDATE_DIR: dist/tauri/candidate/${{ matrix.platform_key }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/resolve-release-resume.mjs \
+            --mode download --expected-repository "$GITHUB_REPOSITORY" \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --archive-path "$ARCHIVE_PATH"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh -NoProfile -Command 'Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:CANDIDATE_DIR'
+          else
+            mkdir -p "$CANDIDATE_DIR"
+            unzip -q "$ARCHIVE_PATH" -d "$CANDIDATE_DIR"
+          fi
 
       - name: Validate and materialize desktop candidate
         env:
@@ -643,6 +728,9 @@ jobs:
       - name: Bundle and sign desktop updater artifacts
         env:
           CI: "true"
+          # Tauri skips the Finder layout step (background, icon positions) whenever
+          # CI=true unless this is set (tauri-bundler dmg/mod.rs, issue #592).
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           APP_ENV: ${{ inputs.environment }}
           BUILD_VERSION: ${{ needs.resolve_source.outputs.build_version }}
           TAURI_TARGET: ${{ matrix.tauri_target }}
@@ -669,6 +757,16 @@ jobs:
           node scripts/pipeline/run.mjs tauri-sign-updater-artifacts \
             --ui-dir "apps/ui" \
             --tauri-target "${TAURI_TARGET}"
+
+      - name: Re-lay-out the DMG window (macOS)
+        # Tauri cannot set the DMG icon size or hide the volume's dot-files; see
+        # scripts/pipeline/tauri/relayout-macos-dmg.mjs. Must run before notarization,
+        # and re-signs the DMG because Tauri already signed the original.
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_id.outputs.identity }}
+        run: |
+          node scripts/pipeline/tauri/relayout-macos-dmg.mjs --ui-dir "apps/ui" --show-hidden-files
 
       - name: Notarize macOS artifacts (updater + DMG) (macOS)
         if: runner.os == 'macOS' && steps.signing.outputs.apple_ready == 'true'
@@ -739,10 +837,61 @@ jobs:
           path: dist/tauri/updates/${{ matrix.platform_key }}/**
           retention-days: 7
 
+  reuse_finalized:
+    name: Restore finalized desktop artifacts (${{ matrix.platform_key }})
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.resolve_source.outputs.retry_version == '' && needs.resolve_source.outputs.reuse_needed == 'true' }}
+    needs: [resolve_source]
+    runs-on: ubuntu-latest
+    # Reuse the desktop artifact-consumer budget; download retries alone can exceed 30 minutes.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve_source.outputs.reuse_matrix) }}
+    steps:
+      - name: Checkout trusted workflow control bytes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download and verify admitted finalized desktop assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ matrix.artifact_id }}
+          ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
+          ARCHIVE_PATH: ${{ runner.temp }}/desktop-finalized.zip
+          ARTIFACT_DIR: dist/tauri/updates/${{ matrix.platform_key }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/release/resolve-release-resume.mjs \
+            --mode download --expected-repository "$GITHUB_REPOSITORY" \
+            --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --archive-path "$ARCHIVE_PATH"
+          mkdir -p "$ARTIFACT_DIR"
+          unzip -q "$ARCHIVE_PATH" -d "$ARTIFACT_DIR"
+
+      - name: Upload restored finalized updater assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tauri-updates-${{ inputs.environment }}-${{ matrix.platform_key }}
+          path: dist/tauri/updates/${{ matrix.platform_key }}/**
+          retention-days: 7
+
   prepare_assets:
     name: Prepare latest.json + publish assets
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && (needs.finalize.result == 'success' || (needs.resolve_source.outputs.finalize_needed == 'false' && needs.finalize.result == 'skipped')) && (needs.reuse_finalized.result == 'success' || (needs.resolve_source.outputs.reuse_needed == 'false' && needs.reuse_finalized.result == 'skipped')) }}
     runs-on: ubuntu-latest
-    needs: [resolve_source, finalize]
+    needs: [resolve_source, finalize, reuse_finalized]
     permissions:
       contents: read
     environment: release-shared
@@ -775,6 +924,7 @@ jobs:
 
       - name: Generate latest.json
         env:
+          GITHUB_RUN_NUMBER: ${{ needs.resolve_source.outputs.release_run_number }}
           REPO: ${{ env.UI_REPO }}
           ENVIRONMENT: ${{ inputs.environment }}
           UI_VERSION: ${{ needs.resolve_source.outputs.ui_version }}
@@ -789,6 +939,16 @@ jobs:
             --artifacts-dir "dist/tauri/updates" \
             --publish-dir "dist/tauri/publish"
 
+      - name: Verify latest.json updater signatures
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          node scripts/pipeline/tauri/verify-updater-manifest.mjs \
+            --environment "${ENVIRONMENT}" \
+            --latest-json "dist/tauri/publish/latest.json" \
+            --artifacts-dir "dist/tauri/updates"
+
       - name: Upload publish assets artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -797,7 +957,7 @@ jobs:
           retention-days: 7
 
   publish_preview:
-    if: ${{ inputs.publish_release == true && inputs.environment == 'preview' }}
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.prepare_assets.result == 'success' && inputs.publish_release == true && inputs.environment == 'preview' }}
     needs: [prepare_assets, resolve_source]
     uses: ./.github/workflows/publish-ui-release.yml
     secrets: inherit
@@ -815,7 +975,7 @@ jobs:
       clobber: true
 
   publish_dev:
-    if: ${{ inputs.publish_release == true && inputs.environment == 'dev' }}
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.prepare_assets.result == 'success' && inputs.publish_release == true && inputs.environment == 'dev' }}
     needs: [prepare_assets, resolve_source]
     uses: ./.github/workflows/publish-ui-release.yml
     secrets: inherit
@@ -833,7 +993,7 @@ jobs:
       clobber: true
 
   publish_stable_release:
-    if: ${{ inputs.publish_release == true && inputs.environment == 'production' && needs.resolve_source.outputs.retry_version == '' }}
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && needs.prepare_assets.result == 'success' && inputs.publish_release == true && inputs.environment == 'production' && needs.resolve_source.outputs.retry_version == '' }}
     needs: [prepare_assets, resolve_source]
     uses: ./.github/workflows/publish-ui-release.yml
     secrets: inherit
@@ -852,7 +1012,7 @@ jobs:
 
   promote_stable_feed:
     name: Promote immutable desktop release to stable feed
-    if: ${{ always() && inputs.publish_release == true && inputs.environment == 'production' && (needs.publish_stable_release.result == 'success' || needs.resolve_source.outputs.retry_version != '') }}
+    if: ${{ !cancelled() && needs.resolve_source.result == 'success' && inputs.publish_release == true && inputs.environment == 'production' && (needs.publish_stable_release.result == 'success' || needs.resolve_source.outputs.retry_version != '') }}
     needs: [resolve_source, publish_stable_release]
     runs-on: ubuntu-latest
     permissions:

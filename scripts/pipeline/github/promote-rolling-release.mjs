@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { buildRollingAssetPlan } from './rolling-release-asset-plan.mjs';
+import { downloadReleaseAssetWithRetry } from './lib/release-asset-transfer.mjs';
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const DEFAULT_ASSET_READ_ATTEMPTS = 4;
@@ -28,7 +29,7 @@ function parseBool(value, name) {
 /**
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ env?: Record<string, string>; dryRun?: boolean; allowNotFound?: boolean; cwd?: string }} [opts]
+ * @param {{ env?: Record<string, string>; dryRun?: boolean; allowNotFound?: boolean; cwd?: string; timeoutMs?: number }} [opts]
  */
 function run(cmd, args, opts = {}) {
   const printable = `${cmd} ${args.map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg)).join(' ')}`;
@@ -42,7 +43,7 @@ function run(cmd, args, opts = {}) {
       env: { ...process.env, ...(opts.env ?? {}) },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10 * 60_000,
+      timeout: opts.timeoutMs ?? 10 * 60_000,
     });
   } catch (error) {
     if (opts.allowNotFound && isExplicitHttpNotFound(error)) return '';
@@ -62,9 +63,9 @@ function isExplicitHttpNotFound(error) {
  * @param {string} cmd
  * @param {string[]} args
  * @param {string} destination
- * @param {{ env?: Record<string, string>; dryRun?: boolean; cwd?: string }} [opts]
+ * @param {{ env?: Record<string, string>; dryRun?: boolean; cwd?: string; timeoutMs: number }} opts
  */
-function runToFile(cmd, args, destination, opts = {}) {
+function runToFile(cmd, args, destination, opts) {
   const printable = `${cmd} ${args.map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg)).join(' ')}`;
   if (opts.dryRun) {
     console.log(`[dry-run] ${printable}`);
@@ -76,13 +77,14 @@ function runToFile(cmd, args, destination, opts = {}) {
       cwd: opts.cwd ?? process.cwd(),
       env: { ...process.env, ...(opts.env ?? {}) },
       stdio: ['ignore', output, 'pipe'],
-      timeout: 10 * 60_000,
+      timeout: opts.timeoutMs,
     });
   } finally {
     closeSync(output);
   }
 }
 
+/** @param {string} name @param {number} defaultValue */
 function readPositiveIntegerEnv(name, defaultValue) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return defaultValue;
@@ -91,6 +93,7 @@ function readPositiveIntegerEnv(name, defaultValue) {
   return value;
 }
 
+/** @param {string} name @param {number} defaultValue */
 function readNonNegativeIntegerEnv(name, defaultValue) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return defaultValue;
@@ -99,9 +102,15 @@ function readNonNegativeIntegerEnv(name, defaultValue) {
   return value;
 }
 
-function sleepSync(ms) {
-  if (!Number.isFinite(ms) || ms <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.trunc(ms));
+// Keep the rolling promoter's established read budget; the shared transfer
+// owner applies its retry classification and backoff to every download phase.
+function resolveRollingAssetReadPolicy() {
+  return {
+    retries: readPositiveIntegerEnv('HAPPIER_PIPELINE_GH_ASSET_READ_ATTEMPTS', DEFAULT_ASSET_READ_ATTEMPTS),
+    retryDelayMs: readNonNegativeIntegerEnv('HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS', DEFAULT_ASSET_READ_RETRY_DELAY_MS),
+    maxRetryDelayMs: readNonNegativeIntegerEnv('HAPPIER_PIPELINE_GH_ASSET_READ_MAX_RETRY_DELAY_MS', DEFAULT_ASSET_READ_MAX_RETRY_DELAY_MS),
+    timeoutMs: 10 * 60_000,
+  };
 }
 
 async function fileSha256(filePath) {
@@ -332,6 +341,7 @@ function deleteReleaseIfPresent({ repo, releaseId, env, dryRun }) {
   });
 }
 
+/** @param {{ repo: string; releaseId: string; destination: string; env: Record<string, string>; dryRun: boolean }} input */
 async function downloadReleaseAssetsById({ repo, releaseId, destination, env, dryRun }) {
   const assets = run('gh', [
     'api',
@@ -346,34 +356,24 @@ async function downloadReleaseAssetsById({ repo, releaseId, destination, env, dr
     const name = line.slice(separator + 1);
     const destinationPath = join(destination, name);
     const attemptPath = `${destinationPath}.attempt`;
-    const attempts = readPositiveIntegerEnv('HAPPIER_PIPELINE_GH_ASSET_READ_ATTEMPTS', DEFAULT_ASSET_READ_ATTEMPTS);
-    const retryDelayMs = readNonNegativeIntegerEnv(
-      'HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS',
-      DEFAULT_ASSET_READ_RETRY_DELAY_MS,
-    );
-    const maxRetryDelayMs = readNonNegativeIntegerEnv(
-      'HAPPIER_PIPELINE_GH_ASSET_READ_MAX_RETRY_DELAY_MS',
-      DEFAULT_ASSET_READ_MAX_RETRY_DELAY_MS,
-    );
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      await rm(attemptPath, { force: true });
-      try {
-        runToFile('gh', [
-          'api',
-          `repos/${repo}/releases/assets/${assetId}`,
-          '-H',
-          'Accept: application/octet-stream',
-        ], attemptPath, { env, dryRun });
-        if (!dryRun) await rename(attemptPath, destinationPath);
-        break;
-      } catch (error) {
+    await downloadReleaseAssetWithRetry({
+      name: `${name} (asset ${assetId})`,
+      policy: resolveRollingAssetReadPolicy(),
+      download: async (timeoutMs) => {
         await rm(attemptPath, { force: true });
-        if (attempt >= attempts) throw error;
-        const delayMs = Math.min(retryDelayMs * (2 ** (attempt - 1)), maxRetryDelayMs);
-        console.warn(`[pipeline] retrying GitHub release asset read for ${name} (${attempt + 1}/${attempts})`);
-        sleepSync(delayMs);
-      }
-    }
+        try {
+          runToFile('gh', [
+            'api',
+            `repos/${repo}/releases/assets/${assetId}`,
+            '-H',
+            'Accept: application/octet-stream',
+          ], attemptPath, { env, dryRun, timeoutMs });
+          if (!dryRun) await rename(attemptPath, destinationPath);
+        } finally {
+          await rm(attemptPath, { force: true });
+        }
+      },
+    });
   }
 }
 
@@ -397,10 +397,17 @@ async function auditDownloadedAssetDirectory({ directory, expectedDir, assetPlan
   }
 }
 
+/** @param {{ repo: string; tag: string; expectedDir: string; assetPlan: ReturnType<typeof buildRollingAssetPlan>; publicKey: string; env: Record<string, string> }} input */
 async function auditReleaseByTag({ repo, tag, expectedDir, assetPlan, publicKey, env }) {
   const destination = await mkdtemp(join(tmpdir(), 'happier-visible-release-audit-'));
   try {
-    run('gh', ['release', 'download', tag, '--repo', repo, '--dir', destination], { env });
+    await downloadReleaseAssetWithRetry({
+      name: tag,
+      policy: resolveRollingAssetReadPolicy(),
+      download: (timeoutMs) => {
+        run('gh', ['release', 'download', tag, '--repo', repo, '--dir', destination, '--clobber'], { env, timeoutMs });
+      },
+    });
     await auditDownloadedAssetDirectory({ directory: destination, expectedDir, assetPlan, publicKey });
   } finally {
     await rm(destination, { recursive: true, force: true });
@@ -454,7 +461,13 @@ async function main() {
     if (!dryRun && immutableSha !== targetSha) {
       fail(`Immutable source tag ${sourceTag} does not resolve to authorized SHA ${targetSha}.`);
     }
-    run('gh', ['release', 'download', sourceTag, '--repo', repo, '--dir', sourceDir], { env: ghEnv, dryRun });
+    await downloadReleaseAssetWithRetry({
+      name: sourceTag,
+      policy: resolveRollingAssetReadPolicy(),
+      download: (timeoutMs) => {
+        run('gh', ['release', 'download', sourceTag, '--repo', repo, '--dir', sourceDir, '--clobber'], { env: ghEnv, dryRun, timeoutMs });
+      },
+    });
     if (!dryRun) {
       const { names, checksumsName, payloadNames } = await assertSignedBundle(sourceDir);
       run(process.execPath, [

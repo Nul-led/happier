@@ -213,6 +213,12 @@ jobs:
     name: CLI binaries (dev)
     needs: [resolve_resume, prepare_release_candidate, verify_source_ci]
     if: ${{ needs.prepare_release_candidate.outputs.release_needed == 'true' }}
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -338,7 +344,7 @@ jobs:
 
   release_verify:
     name: Verify exact immutable nightly candidates
-    needs: [prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, resolve_validation_risk]
+    needs: [prepare_release_candidate, cli, hstack, runner, server_runtime, ui_web, resolve_validation_risk, resolve_resume]
     uses: ./.github/workflows/release-verify.yml
     secrets: inherit
     with:
@@ -400,6 +406,12 @@ jobs:
   promote_cli:
     name: Promote verified CLI candidate
     needs: [prepare_release_candidate, cli, promote_hstack]
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     uses: ./.github/workflows/publish-cli-binaries.yml
     secrets: inherit
     with:
@@ -453,6 +465,7 @@ jobs:
     secrets: inherit
     with:
       environment: dev
+      resume_run_id: ${{ inputs.resume_run_id }}
       source_ref: ${{ needs.prepare_release_candidate.outputs.source_sha }}
       publish_release: true
       release_message: ${{ needs.prepare_release_candidate.outputs.release_message }}
@@ -577,6 +590,7 @@ jobs:
           UI_WEB_RESULT: ${{ needs.promote_ui_web.result }}
           MOBILE_RESULT: ${{ needs.ui_mobile.result }}
           DESKTOP_RESULT: ${{ needs.ui_desktop.result }}
+          DESKTOP_ORIGIN_RUN_ID: ${{ inputs.resume_run_id || github.run_id }}
           DOCKER_RESULT: ${{ needs.docker.result }}
           POST_PROMOTION_RESULT: ${{ needs.verify_promoted.result }}
         run: |

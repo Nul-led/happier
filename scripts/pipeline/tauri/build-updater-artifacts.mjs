@@ -11,6 +11,7 @@ import { resolveTauriSigningPrivateKeyPassword } from './resolve-signing-key-pas
 import { resolveYarnInvocation } from './resolve-yarn-invocation.mjs';
 import { formatPublicReleaseChannelChoices, normalizePublicReleaseChannel } from '../release/lib/public-release-rings.mjs';
 import { execFileSyncPortable } from '../lib/exec-file-sync-portable.mjs';
+import { createTauriActoolEnvironment } from '../../../apps/ui/scripts/tauriActoolEnvironment.mjs';
 
 function fail(message) {
   console.error(message);
@@ -176,7 +177,7 @@ export function resolveLinuxAppImageDiagnosticsLayout(opts) {
  * @param {{ dryRun: boolean }} opts
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ cwd: string; env?: Record<string, string>; timeoutMs?: number; stdio?: import('node:child_process').StdioOptions }} extra
+ * @param {{ cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; stdio?: import('node:child_process').StdioOptions }} extra
  */
 function run(opts, cmd, args, extra) {
   const printable = `${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`;
@@ -197,7 +198,7 @@ function run(opts, cmd, args, extra) {
  * @param {{ dryRun: boolean }} opts
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ cwd: string; env?: Record<string, string> }} extra
+ * @param {{ cwd: string; env?: NodeJS.ProcessEnv }} extra
  * @returns {string}
  */
 function runCapture(opts, cmd, args, extra) {
@@ -593,57 +594,65 @@ function main() {
     }
   }
 
-  if (environment !== 'production') {
-    const tauriBuildVersion = platform === 'win32'
-      ? normalizeTauriBuildVersionForWindows(buildVersion)
-      : buildVersion;
-    const versionOverride = tempFile(tmpRoot, 'tauri.version.override.json');
-    if (opts.dryRun) {
-      console.log(`[dry-run] write ${versionOverride} (version=${tauriBuildVersion})`);
-    } else {
-      fs.writeFileSync(versionOverride, `${JSON.stringify({ version: tauriBuildVersion })}\n`, 'utf8');
-    }
+  const actool = !opts.dryRun && !noBundle
+    ? createTauriActoolEnvironment({ env: { ...process.env, ...baseTauriEnv }, tempRoot: tmpRoot })
+    : null;
+  const tauriEnv = actool?.env ?? baseTauriEnv;
+  try {
+    if (environment !== 'production') {
+      const tauriBuildVersion = platform === 'win32'
+        ? normalizeTauriBuildVersionForWindows(buildVersion)
+        : buildVersion;
+      const versionOverride = tempFile(tmpRoot, 'tauri.version.override.json');
+      if (opts.dryRun) {
+        console.log(`[dry-run] write ${versionOverride} (version=${tauriBuildVersion})`);
+      } else {
+        fs.writeFileSync(versionOverride, `${JSON.stringify({ version: tauriBuildVersion })}\n`, 'utf8');
+      }
 
-    const configPath = environment === 'publicdev' ? 'src-tauri/tauri.publicdev.conf.json' : 'src-tauri/tauri.preview.conf.json';
+      const configPath = environment === 'publicdev' ? 'src-tauri/tauri.publicdev.conf.json' : 'src-tauri/tauri.preview.conf.json';
+
+      if (platform === 'win32') {
+        const tauri = resolveTauriCliInvocation({ platform, absUiDir });
+        run(opts, tauri.cmd, [bundleOnly ? 'bundle' : 'build', '-v', '--config', configPath, '--config', versionOverride, ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
+          cwd: absUiDir,
+          env: tauriEnv,
+        });
+      } else {
+        try {
+          run(
+            opts,
+            yarn.cmd,
+            [...yarn.prefixArgs, 'tauri', bundleOnly ? 'bundle' : 'build', '-v', '--config', configPath, '--config', versionOverride, ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])],
+            {
+              cwd: absUiDir,
+              env: tauriEnv,
+            },
+          );
+        } catch (error) {
+          dumpLinuxAppImageDiagnostics({ repoRoot, absUiDir, environment });
+          throw error;
+        }
+      }
+      return;
+    }
 
     if (platform === 'win32') {
       const tauri = resolveTauriCliInvocation({ platform, absUiDir });
-      run(opts, tauri.cmd, [bundleOnly ? 'bundle' : 'build', '-v', '--config', configPath, '--config', versionOverride, ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
+      run(opts, tauri.cmd, [bundleOnly ? 'bundle' : 'build', '-v', ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
         cwd: absUiDir,
-        env: baseTauriEnv,
+        env: tauriEnv,
       });
-    } else {
-      try {
-        run(
-          opts,
-          yarn.cmd,
-          [...yarn.prefixArgs, 'tauri', bundleOnly ? 'bundle' : 'build', '-v', '--config', configPath, '--config', versionOverride, ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])],
-          {
-            cwd: absUiDir,
-            env: baseTauriEnv,
-          },
-        );
-      } catch (error) {
-        dumpLinuxAppImageDiagnostics({ repoRoot, absUiDir, environment });
-        throw error;
-      }
+      return;
     }
-    return;
-  }
 
-  if (platform === 'win32') {
-    const tauri = resolveTauriCliInvocation({ platform, absUiDir });
-    run(opts, tauri.cmd, [bundleOnly ? 'bundle' : 'build', '-v', ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
+    run(opts, yarn.cmd, [...yarn.prefixArgs, 'tauri', bundleOnly ? 'bundle' : 'build', '-v', ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
       cwd: absUiDir,
-      env: baseTauriEnv,
+      env: tauriEnv,
     });
-    return;
+  } finally {
+    actool?.cleanup();
   }
-
-  run(opts, yarn.cmd, [...yarn.prefixArgs, 'tauri', bundleOnly ? 'bundle' : 'build', '-v', ...configs, ...featureArgs, ...targetArgs, ...(noBundle ? ['--no-bundle'] : [])], {
-    cwd: absUiDir,
-    env: baseTauriEnv,
-  });
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';

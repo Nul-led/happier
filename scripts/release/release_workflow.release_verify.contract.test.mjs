@@ -8,6 +8,15 @@ import YAML from 'yaml';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
+test('release resume rechecks risk-selected suites after the target branch has advanced', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+  const verification = YAML.parse(raw).jobs.verify_release_candidates.with;
+  for (const risk of ['cli_upgrade', 'session_continuity', 'relay_upgrade']) {
+    assert.match(String(verification[`risk_${risk}`]), /needs\.plan\.outputs\.risk_/);
+    assert.match(String(verification[`risk_${risk}`]), /inputs\.resume_run_id != ''/);
+  }
+});
+
 test('release workflow verifies immutable candidates before promoting preview or production channels', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
   const workflow = YAML.parse(raw);

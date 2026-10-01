@@ -6,6 +6,14 @@ import YAML from 'yaml';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
+test('native mobile artifact names distinguish environment, platform, and effective profile', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(repoRoot, '.github/workflows/build-ui-mobile-local.yml'), 'utf8'));
+  for (const platform of ['android', 'ios']) {
+    const upload = workflow.jobs[`build_${platform}`].steps.find((step) => step.name === 'Upload mobile build artifact');
+    assert.equal(upload.with.name, `ui-mobile-\${{ inputs.environment }}-${platform}-\${{ inputs.profile == 'auto' && inputs.environment || inputs.profile }}`);
+  }
+});
+
 test('build-ui-mobile-local workflow delegates local builds to ui-mobile-release pipeline command', () => {
   const src = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-ui-mobile-local.yml'), 'utf8');
   assert.match(src, /node scripts\/pipeline\/run\.mjs ui-mobile-release/);
@@ -65,6 +73,18 @@ test('build-ui-mobile-local defers and can resume exact TestFlight distribution 
   assert.match(retryJob, /--build-number "\$RETRY_TESTFLIGHT_BUILD_NUMBER"/);
   assert.match(retryJob, /--app-version "\$RETRY_TESTFLIGHT_APP_VERSION"/);
   assert.doesNotMatch(retryJob, /Install dependencies|native-build\.mjs|ui-mobile-release/);
+
+  const workflow = YAML.parse(src);
+  const job = workflow.jobs.build_ios;
+  const submit = job.steps.find((step) => step.run?.includes('--testflight-distribution-mode deferred'));
+  const dispatch = job.steps.find((step) => step.run?.includes('dispatch-testflight-reconciliation.mjs'));
+  assert.notEqual(submit['continue-on-error'], true);
+  assert.match(dispatch.if, /inputs\.action == 'build_and_submit'/);
+  assert.doesNotMatch(dispatch.if, /always\(|failure\(/);
+  assert.ok(job.steps.indexOf(dispatch) > job.steps.indexOf(submit));
+  assert.match(workflow.jobs.build_ios.if, /inputs\.action != 'retry_testflight_distribution'/);
+  assert.match(workflow.jobs.build_android.if, /inputs\.action != 'retry_testflight_distribution'/);
+  assert.match(workflow.jobs.ota_update.if, /inputs\.action == 'ota'/);
 });
 
 test('production APK publishing reuses an existing exact-source immutable release before rebuilding', () => {
@@ -123,4 +143,14 @@ test('build-ui-mobile-local passes approved release notes and projects exact ret
   assert.match(src, /--changelog "\$GITHUB_WORKSPACE\/candidate\/apps\/ui\/CHANGELOG\.md"/);
   assert.match(src, /release_notes_github_markdown<<\$\{delimiter\}\\n\$\{value\}\\n\$\{delimiter\}\\n/);
   assert.match(src, /--release-message\s+"\$RELEASE_MESSAGE"/);
+});
+
+test('immutable APK recovery installs the release verifier runtime before promotion', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(repoRoot, '.github/workflows/build-ui-mobile-local.yml'), 'utf8'));
+  const publish = workflow.jobs.promote_existing_apk;
+  const install = publish.steps.find((step) => step.uses === './.github/actions/install-yarn-dependencies');
+  assert.equal(install?.env?.HAPPIER_INSTALL_SCOPE, 'release-runtime');
+  assert.ok(publish.steps.find((step) => step.run?.includes('corepack enable')));
+  assert.ok(publish.steps.findIndex((step) => step.uses === './.github/actions/install-yarn-dependencies')
+    < publish.steps.findIndex((step) => step.name === 'Recover rolling APK projection from immutable bytes'));
 });

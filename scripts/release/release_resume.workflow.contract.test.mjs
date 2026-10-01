@@ -25,6 +25,9 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
   assert.ok(parsed.on.workflow_call.inputs.expected_channel);
   for (const output of [
     'source_sha',
+    'desktop_run_number',
+    'desktop_artifacts',
+    'desktop_finalized_artifacts',
     'cli_version',
     'stack_version',
     'server_version',
@@ -35,6 +38,11 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
     'server_requested',
     'runner_requested',
     'ui_web_requested',
+    'ui_ota_complete',
+    'ui_native_ios_complete',
+    'ui_native_android_complete',
+    'ui_apk_complete',
+    'deploy_ui_expo_action',
   ]) {
     assert.ok(parsed.on.workflow_call.outputs[output], `missing resume output ${output}`);
   }
@@ -43,10 +51,43 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
   assert.equal(resolveJob.permissions.contents, 'read');
   const source = resolveJob.steps.map((step) => step.run ?? '').join('\n');
   assert.match(source, /resolve-release-resume\.mjs[\s\S]*--mode inspect/);
-  assert.match(source, /actions\/artifacts\/\$\{STATUS_ARTIFACT_ID\}\/zip/);
-  assert.match(source, /sha256sum/);
-  assert.match(source, /test "sha256:\$\{actual_digest\}" = "\$\{EXPECTED_DIGEST\}"/);
+  assert.match(source, /resolve-release-resume\.mjs[\s\S]*--mode download/);
+  assert.match(source, /--artifact-id "\$STATUS_ARTIFACT_ID"/);
+  assert.match(source, /--artifact-digest "\$EXPECTED_DIGEST"/);
   assert.match(source, /resolve-release-resume\.mjs[\s\S]*--mode resolve/);
+  assert.equal((source.match(/\/jobs\?filter=latest&per_page=100/g) ?? []).length, 1);
+  assert.match(source, /--jobs-json "\$RUNNER_TEMP\/resume-jobs.json"/);
+  const ui = workflow('promote-ui.yml');
+  const mobile = workflow('build-ui-mobile-local.yml');
+  for (const input of ['ui_ota_complete', 'ui_native_ios_complete', 'ui_native_android_complete', 'ui_apk_complete']) {
+    assert.equal(ui.on.workflow_call.inputs[input]?.type, 'boolean');
+    assert.equal(ui.on.workflow_call.inputs[input]?.default, false);
+  }
+  const evaluate = (expression, inputs) => Function('inputs', 'needs', `return ${expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '')};`)(
+    inputs, { promote: { result: 'success' } },
+  );
+  const fresh = { expo_action: 'native_submit', ui_ota_complete: false, ui_native_ios_complete: false, ui_native_android_complete: false, ui_apk_complete: false };
+  const complete = { ...fresh, ui_ota_complete: true, ui_native_ios_complete: true, ui_native_android_complete: true, ui_apk_complete: true };
+  assert.equal(evaluate(ui.jobs.mobile_native.if, fresh), true);
+  assert.equal(evaluate(ui.jobs.mobile_native.if, complete), false);
+  assert.equal(evaluate(ui.jobs.mobile_apk_release.if, fresh), true);
+  assert.equal(evaluate(ui.jobs.mobile_apk_release.if, complete), false);
+  assert.equal(evaluate(ui.jobs.mobile_native.with.platform, fresh), 'all');
+  assert.equal(evaluate(ui.jobs.mobile_native.with.platform, { ...fresh, ui_native_ios_complete: true }), 'android');
+  assert.equal(evaluate(ui.jobs.mobile_native.with.platform, { ...fresh, ui_native_android_complete: true }), 'ios');
+  assert.equal(ui.jobs.mobile_native.name, 'Mobile native (local runner)');
+  assert.equal(ui.jobs.mobile_apk_release.name, 'Mobile APK release (local runner)');
+  assert.equal(mobile.jobs.build_android.name, 'Build (android)');
+  assert.equal(mobile.jobs.build_ios.name, 'Build (ios)');
+  assert.equal(ui.jobs.mobile_apk_release.with.publish_apk_release, 'true');
+  assert.ok(mobile.jobs.build_android.steps.find((step) => step.name === 'EAS build (local runner) (pipeline)').run.includes('--publish-apk-release "${{ inputs.publish_apk_release }}"'),
+    'the admitted APK flow publishes inside the existing Android pipeline step');
+  for (const job of [ui.jobs.validate_candidate, ui.jobs.promote]) {
+    for (const step of job.steps.filter((step) => /^(Prepare .* OTA artifact without credentials|Upload prepared OTA artifacts|Download prepared OTA artifacts|Publish .* OTA from validated bytes)$/.test(step.name))) {
+      assert.equal(evaluate(step.if, { ...fresh, expo_action: 'ota' }), true);
+      assert.equal(evaluate(step.if, { ...complete, expo_action: 'ota' }), false);
+    }
+  }
 });
 
 for (const [name, buildJobs] of [
@@ -77,6 +118,7 @@ test('nightly resume pins the prior source, reuses completed immutable candidate
   assert.ok(parsed.on.workflow_dispatch.inputs.resume_run_id);
   assert.equal(parsed.jobs.resolve_resume.uses, './.github/workflows/resolve-release-resume.yml');
   assert.equal(parsed.jobs.resolve_resume.with.expected_workflow, '.github/workflows/nightly-dev.yml');
+  assert.equal(parsed.jobs.ui_desktop.with.resume_run_id, '${{ inputs.resume_run_id }}');
   assert.ok(needs(parsed.jobs.prepare_release_candidate).includes('resolve_resume'));
   const checkout = parsed.jobs.prepare_release_candidate.steps.find((step) => String(step.name).includes('Checkout requested nightly source'));
   assert.match(checkout.with.ref, /needs\.resolve_resume\.outputs\.source_sha/);
@@ -90,6 +132,7 @@ test('nightly resume pins the prior source, reuses completed immutable candidate
     assert.equal(parsed.jobs[jobName].with.authorized_sha, '${{ needs.prepare_release_candidate.outputs.source_sha }}');
   }
   assert.equal(parsed.jobs.release_verify.with.verify_cli_release, "${{ needs.resolve_resume.outputs.cli_version == '' }}");
+  assert.ok(needs(parsed.jobs.release_verify).includes('resolve_resume'), 'verification must directly depend on the resume outputs it consumes');
   assert.equal(parsed.jobs.release_verify.with.verify_stack_release, "${{ needs.resolve_resume.outputs.stack_version == '' }}");
   assert.equal(parsed.jobs.release_verify.with.verify_server_release, "${{ needs.resolve_resume.outputs.server_version == '' }}");
   assert.equal(parsed.jobs.release_verify.with.verify_ui_web_release, "${{ needs.resolve_resume.outputs.ui_web_version == '' }}");
@@ -110,6 +153,7 @@ test('nightly resume pins the prior source, reuses completed immutable candidate
   const projection = parsed.jobs.release_status.steps.find((step) => String(step.name).includes('Project nightly'));
   assert.equal(projection.env.CLI_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.cli_verified }}');
   assert.equal(projection.env.HSTACK_RESUME_VERIFIED, '${{ needs.verify_resume_candidates.outputs.stack_verified }}');
+  assert.equal(projection.env.DESKTOP_ORIGIN_RUN_ID, '${{ inputs.resume_run_id || github.run_id }}');
 });
 
 test('full release resume binds the prior run to the same operation and authorized source', () => {
@@ -127,6 +171,22 @@ test('full release resume binds the prior run to the same operation and authoriz
   assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /needs\.resolve_resume\.outputs\.runner_requested/);
   assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /steps\.plan\.outputs\.changed_runner/);
   assert.match(parsed.jobs.publish_ui_web.if, /needs\.resolve_resume\.outputs\.ui_web_requested/);
+  assert.ok(needs(parsed.jobs.deploy_ui).includes('resolve_resume'));
+  const uiPromotion = workflow('promote-ui.yml');
+  for (const [input, output] of [
+    ['resume_desktop_artifacts', 'desktop_artifacts'],
+    ['resume_desktop_finalized_artifacts', 'desktop_finalized_artifacts'],
+    ['resume_desktop_run_number', 'desktop_run_number'],
+    ['resume_source_sha', 'source_sha'],
+  ]) {
+    assert.equal(parsed.jobs.deploy_ui.with[input], `\${{ needs.resolve_resume.outputs.${output} }}`);
+    assert.equal(uiPromotion.on.workflow_call.inputs[input]?.type, 'string');
+    assert.equal(uiPromotion.jobs.desktop.with[input], `\${{ inputs.${input} }}`);
+  }
+  for (const output of ['ui_ota_complete', 'ui_native_ios_complete', 'ui_native_android_complete', 'ui_apk_complete']) {
+    assert.match(String(parsed.jobs.deploy_ui.with[output]), new RegExp(`needs\\.resolve_resume\\.outputs\\.${output} == 'true'`));
+    assert.match(String(parsed.jobs.deploy_ui.with[output]), /needs\.resolve_resume\.outputs\.deploy_ui_expo_action == inputs\.ui_expo_action/);
+  }
   for (const [jobName, output] of [
     ['publish_cli_binaries', 'cli_version'],
     ['publish_hstack_binaries', 'stack_version'],

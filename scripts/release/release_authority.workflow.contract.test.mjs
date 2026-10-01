@@ -457,6 +457,14 @@ test('every App token in signed publishers scopes owner, repositories, and conte
 });
 
 test('every App token reachable from full or nightly release has exact repository and permission scope', () => {
+  const refWriters = new Set([
+    'promote-branch.yml/promote/app_token',
+    'promote-server.yml/promote/app_token',
+    'promote-ui.yml/promote/app_token',
+    'promote-website.yml/promote/app_token',
+    'promote-docs.yml/promote/app_token',
+  ]);
+  const observedRefWriters = new Set();
   for (const name of reachableWorkflowNames(['release.yml', 'nightly-dev.yml'])) {
     for (const [jobName, job] of Object.entries(workflow(name).jobs ?? {})) {
       for (const step of job.steps ?? []) {
@@ -467,9 +475,23 @@ test('every App token reachable from full or nightly release has exact repositor
           Object.keys(step.with ?? {}).some((field) => field.startsWith('permission-')),
           `${name}/${jobName}/${step.name} permission`,
         );
+        const key = `${name}/${jobName}/${step.id}`;
+        if (refWriters.has(key)) {
+          observedRefWriters.add(key);
+          assert.equal(step.with.owner, '${{ github.repository_owner }}', key);
+          assert.equal(step.with.repositories, '${{ github.event.repository.name }}', key);
+          assert.equal(step.with['permission-contents'], 'write', key);
+          assert.equal(step.with['permission-workflows'], 'write', key);
+          assert.deepEqual(
+            Object.keys(step.with).filter((field) => field.startsWith('permission-')).sort(),
+            ['permission-contents', 'permission-workflows'],
+            `${key} must not request unrelated App permissions`,
+          );
+        }
       }
     }
   }
+  assert.deepEqual([...observedRefWriters].sort(), [...refWriters].sort());
 });
 
 test('full release binds one candidate SHA for runtime publication and deployment', () => {

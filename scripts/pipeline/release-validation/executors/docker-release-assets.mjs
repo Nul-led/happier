@@ -155,13 +155,16 @@ function resolveImmutableServerCandidate(raw) {
  * @param {{ tag: string; version: string } | null} [immutableCandidate]
  */
 function createRelayUpgradePlan(fromChannel, immutableCandidate = null) {
+  // The immutable upgrade runs before rolling CLI promotion. Remote-server setup
+  // would install the previous rolling CLI, not the candidate under validation.
+  const withRemoteServer = immutableCandidate === null;
   return {
     mode: 'local',
     monorepo: 'local',
     stackSpec: null,
     cliSpec: null,
     withRemoteDaemon: true,
-    withRemoteServer: true,
+    withRemoteServer,
     remoteInstaller: 'shim',
     remoteAuthMode: 'reuse-cli',
     withRelayUpgrade: true,
@@ -175,7 +178,7 @@ function createRelayUpgradePlan(fromChannel, immutableCandidate = null) {
       '--mode=local',
       '--monorepo=local',
       '--with-remote-daemon',
-      '--with-remote-server',
+      withRemoteServer ? '--with-remote-server' : '--no-remote-server',
       '--remote-installer=shim',
       '--remote-auth-mode=reuse-cli',
       '--with-relay-upgrade',

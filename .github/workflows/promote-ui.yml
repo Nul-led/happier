@@ -118,6 +118,46 @@ on:
         required: false
         default: none
         type: string
+      ui_ota_complete:
+        description: "Admitted current-origin OTA publication completion"
+        required: false
+        default: false
+        type: boolean
+      ui_native_ios_complete:
+        description: "Admitted current-origin iOS native flow completion"
+        required: false
+        default: false
+        type: boolean
+      ui_native_android_complete:
+        description: "Admitted current-origin Android native flow completion"
+        required: false
+        default: false
+        type: boolean
+      ui_apk_complete:
+        description: "Admitted current-origin APK publication completion"
+        required: false
+        default: false
+        type: boolean
+      resume_desktop_artifacts:
+        description: "Admitted unsigned desktop artifacts from the release resolver"
+        required: false
+        default: "{}"
+        type: string
+      resume_desktop_finalized_artifacts:
+        description: "Admitted finalized desktop artifacts from the release resolver"
+        required: false
+        default: "{}"
+        type: string
+      resume_desktop_run_number:
+        description: "Admitted desktop origin run number"
+        required: false
+        default: ""
+        type: string
+      resume_source_sha:
+        description: "Exact source bound by the release resume resolver"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -358,7 +398,7 @@ jobs:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
           HAPPIER_EMBEDDED_POLICY_ENV: ${{ inputs.environment == 'production' && 'production' || 'preview' }}
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
         run: bash scripts/ci/yarn-install-with-retry.sh --frozen-lockfile --ignore-engines --network-timeout 600000 --prefer-offline --non-interactive
       - name: Verify generated Mermaid WebView bundle
@@ -413,7 +453,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Prepare Android OTA artifact without credentials
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ needs.apply_bump.outputs.release_sha }}
@@ -423,7 +463,7 @@ jobs:
             --input-dir "$RUNNER_TEMP/prepared-ota/android" --source-sha "$RELEASE_SHA" \
             --eas-cli-version "$EAS_CLI_VERSION"
       - name: Prepare iOS OTA artifact without credentials
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         env:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SHA: ${{ needs.apply_bump.outputs.release_sha }}
@@ -433,7 +473,7 @@ jobs:
             --input-dir "$RUNNER_TEMP/prepared-ota/ios" --source-sha "$RELEASE_SHA" \
             --eas-cli-version "$EAS_CLI_VERSION"
       - name: Upload prepared OTA artifacts
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ui-ota-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
@@ -478,7 +518,7 @@ jobs:
         env:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
         run: bash scripts/ci/yarn-install-with-retry.sh --frozen-lockfile --ignore-engines --network-timeout 600000 --prefer-offline --non-interactive
       - name: Download release notes assets
@@ -487,7 +527,7 @@ jobs:
           name: ui-release-notes-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
           path: ${{ runner.temp }}/release-notes-assets
       - name: Download prepared OTA artifacts
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ui-ota-${{ inputs.environment }}-${{ needs.apply_bump.outputs.release_sha }}
@@ -501,6 +541,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
+          permission-workflows: write
       - name: Create release notes asset token
         id: release_notes_assets_token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547
@@ -518,7 +559,7 @@ jobs:
           node scripts/pipeline/release/release-notes/publish-release-notes-assets.mjs \
             --in-dir "$RUNNER_TEMP/release-notes-assets" --repo happier-dev/happier-assets --tag release-notes
       - name: Publish Android OTA from validated bytes
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
@@ -530,7 +571,7 @@ jobs:
             --input-dir "$RUNNER_TEMP/prepared-ota/android" --expected-source-sha "$RELEASE_SHA" \
             --message "$UPDATE_MESSAGE" --eas-cli-version "$EAS_CLI_VERSION"
       - name: Publish iOS OTA from validated bytes
-        if: inputs.expo_action == 'ota'
+        if: ${{ !inputs.ui_ota_complete && inputs.expo_action == 'ota' }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
@@ -600,7 +641,7 @@ jobs:
 
   mobile_native:
     name: Mobile native (local runner)
-    if: ${{ needs.promote.result == 'success' && (inputs.expo_action == 'native' || inputs.expo_action == 'native_submit') }}
+    if: ${{ needs.promote.result == 'success' && !(inputs.ui_native_ios_complete && inputs.ui_native_android_complete) && (inputs.expo_action == 'native' || inputs.expo_action == 'native_submit') }}
     needs: [promote]
     permissions:
       actions: write
@@ -610,7 +651,7 @@ jobs:
     with:
       source_ref: ${{ needs.promote.outputs.release_sha }}
       environment: ${{ inputs.environment }}
-      platform: all
+      platform: ${{ inputs.ui_native_ios_complete && 'android' || inputs.ui_native_android_complete && 'ios' || 'all' }}
       profile: auto
       action: ${{ inputs.expo_action == 'native_submit' && 'build_and_submit' || 'build_only' }}
       publish_apk_release: "false"
@@ -619,10 +660,11 @@ jobs:
 
   mobile_apk_release:
     name: Mobile APK release (local runner)
-    if: ${{ needs.promote.result == 'success' && (inputs.expo_action == 'native' || inputs.expo_action == 'native_submit') }}
+    if: ${{ needs.promote.result == 'success' && !inputs.ui_apk_complete && (inputs.expo_action == 'native' || inputs.expo_action == 'native_submit') }}
     needs: [promote]
     permissions:
       contents: write
+      actions: write
     uses: ./.github/workflows/build-ui-mobile-local.yml
     secrets: inherit
     with:
@@ -641,6 +683,7 @@ jobs:
     needs: [promote]
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/build-tauri.yml
     secrets: inherit
     with:
@@ -649,3 +692,7 @@ jobs:
       publish_release: ${{ inputs.desktop_mode == 'build_and_publish' }}
       release_message: ${{ needs.promote.outputs.release_notes_github_markdown }}
       release_notes_id: ${{ inputs.release_notes_id }}
+      resume_desktop_artifacts: ${{ inputs.resume_desktop_artifacts }}
+      resume_desktop_finalized_artifacts: ${{ inputs.resume_desktop_finalized_artifacts }}
+      resume_desktop_run_number: ${{ inputs.resume_desktop_run_number }}
+      resume_source_sha: ${{ inputs.resume_source_sha }}

@@ -7,12 +7,13 @@ const products = [
   ['cli', `happier-v${version}-darwin-arm64.tar.gz`, 'happier-darwin-arm64.tar.gz'],
   ['stack', `hstack-v${version}-linux-x64.tar.gz`, 'hstack-linux-x64.tar.gz'],
   ['server', `happier-server-v${version}-windows-x64.tar.gz`, 'happier-server-windows-x64.tar.gz'],
-  ['UI web', `happier-ui-web-v${version}.tar.gz`, 'happier-ui-web.tar.gz'],
+  ['UI web', `happier-ui-web-v${version}-web-any.tar.gz`, 'happier-ui-web-web-any.tar.gz'],
+  ['Runner', `happier-runner-v${version}-linux-arm64.zip`, 'happier-runner-linux-arm64.zip'],
   ['UI desktop installer', `happier-ui-desktop-linux-x86_64-v${version}.AppImage`, 'happier-ui-desktop-linux-x86_64.AppImage'],
 ];
 
 for (const [label, versionedName, stableName] of products) {
-  test(`rolling ${label} publishes only the versionless channel payload`, () => {
+  test(`rolling ${label} retains the immutable payload and adds a channel alias`, () => {
     const checksumsName = `checksums-product-v${version}.txt`;
     const metadataName = 'latest.json';
     const plan = buildRollingAssetPlan({
@@ -22,9 +23,13 @@ for (const [label, versionedName, stableName] of products) {
       rollingTag: 'product-preview',
     });
 
-    assert.deepEqual(plan.filter((entry) => entry.sourceName === versionedName), [
-      { name: stableName, sourceName: versionedName },
-    ]);
+    assert.deepEqual(
+      plan.filter((entry) => entry.sourceName === versionedName).sort((a, b) => a.name.localeCompare(b.name)),
+      [
+        { name: stableName, sourceName: versionedName },
+        { name: versionedName, sourceName: versionedName },
+      ].sort((a, b) => a.name.localeCompare(b.name)),
+    );
     assert.equal(plan.some((entry) => entry.name === 'checksums-product.txt'), false);
     assert.equal(plan.filter((entry) => entry.name === metadataName).length, 1);
   });
@@ -71,14 +76,17 @@ test('rolling alias derivation fails closed on a filename collision', () => {
   }), /collides/i);
 });
 
-test('stable mobile APK publishes only the channel-neutral public name', () => {
+test('stable mobile APK retains the immutable name and adds the channel-neutral public alias', () => {
   const versionedName = `happier-production-android-v${version}.apk`;
   assert.deepEqual(buildRollingAssetPlan({
     immutableNames: [versionedName],
     payloadNames: [versionedName],
     version,
     rollingTag: 'ui-mobile-stable',
-  }), [{ name: 'happier-android.apk', sourceName: versionedName }]);
+  }), [
+    { name: 'happier-android.apk', sourceName: versionedName },
+    { name: versionedName, sourceName: versionedName },
+  ].sort((a, b) => a.name.localeCompare(b.name)));
 });
 
 test('preview mobile APK keeps its single versionless channel name', () => {

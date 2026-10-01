@@ -195,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: release-shared
     permissions:
-      contents: write
+      contents: read
     outputs:
       release_sha: ${{ steps.release.outputs.sha }}
     steps:
@@ -354,6 +354,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
+          permission-workflows: write
       - name: Resolve deploy branch SHA before promotion
         id: before
         env:

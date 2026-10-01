@@ -295,7 +295,7 @@ function main() {
   }
 
   if (hadFailure) {
-    process.exitCode = 0;
+    process.exitCode = 1;
   }
 }
 

@@ -47,6 +47,7 @@ for (const { channel, rollingTag, versionSuffix } of [
           // instead of coupling the contract to local checkout metadata.
           GH_REPO: 'happier-dev/happier',
           GITHUB_REPOSITORY: '',
+          HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({ github: {}, npm: {} }),
         },
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -88,6 +89,7 @@ test('publish-server-runtime fails fast with helpful message when MINISIGN_SECRE
         ...process.env,
         MINISIGN_SECRET_KEY: 'RWQpH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1vH1',
         MINISIGN_PASSPHRASE: 'x',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({ github: {}, npm: {} }),
       },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],

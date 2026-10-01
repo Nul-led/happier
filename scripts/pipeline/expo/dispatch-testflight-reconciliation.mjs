@@ -4,18 +4,22 @@
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { readTestflightBuildRequest } from './testflight-build-request.mjs';
+import { resolveTestflightDistributionConfig } from './testflight-distribution-config.mjs';
 import {
   formatMobileReleaseEnvironment,
+  formatMobileReleaseProfile,
   normalizeMobileReleaseEnvironment,
   normalizeMobileReleaseProfile,
   supportsMobileNativeSubmit,
 } from './mobile-release-environments.mjs';
 
+/** @param {string} message @returns {never} */
 function fail(message) {
   process.stderr.write(`${message}\n`);
   process.exit(1);
 }
 
+/** @param {string[]} args */
 function printable(args) {
   return args.map((value) => JSON.stringify(value)).join(' ');
 }
@@ -43,10 +47,16 @@ const environment = normalizeMobileReleaseEnvironment(values.environment);
 if (!environment || !supportsMobileNativeSubmit(environment)) fail('--environment must select a store-capable mobile release environment');
 const environmentArg = formatMobileReleaseEnvironment(environment);
 const requestedProfile = String(values.profile ?? '').trim();
-const profile = normalizeMobileReleaseProfile(requestedProfile) || requestedProfile;
-if (!profile || !/^[a-z0-9-]+$/u.test(profile)) fail('--profile must be a valid EAS profile name');
+const normalizedProfile = normalizeMobileReleaseProfile(requestedProfile);
+if (!normalizedProfile) fail('--profile must be a supported mobile release profile');
+const profile = formatMobileReleaseProfile(normalizedProfile);
 const buildJsonPath = String(values['build-json'] ?? '').trim();
 if (!buildJsonPath) fail('--build-json is required');
+
+if (!resolveTestflightDistributionConfig({ environment, env: process.env }).enabled) {
+  process.stdout.write('[pipeline] TestFlight reconciliation not dispatched because no external groups are configured.\n');
+  process.exit(0);
+}
 
 let request;
 try {

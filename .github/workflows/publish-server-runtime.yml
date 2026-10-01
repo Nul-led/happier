@@ -578,7 +578,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release-shared
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ needs.prepare.outputs.version }}
     steps:
@@ -677,7 +677,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release-shared
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout trusted workflow control bytes
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

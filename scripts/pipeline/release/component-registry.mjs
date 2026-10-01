@@ -94,7 +94,7 @@ export const components = Object.freeze({
   },
   shared: {
     id: 'shared',
-    changedPrefixes: ['packages/agents/', 'packages/protocol/'],
+    changedPrefixes: ['packages/agents/', 'packages/protocol/', 'packages/session-core/'],
   },
 });
 

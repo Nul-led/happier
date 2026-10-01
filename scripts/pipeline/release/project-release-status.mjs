@@ -42,10 +42,10 @@ export function projectReleaseStatus(mode, env) {
       recoveryHint,
     };
   };
-  const accepted = (id, name, recoveryHint) => ({
+  const accepted = (id, name, recoveryHint, identity = {}) => ({
     id,
     result: exact(name) ? 'accepted' : result(env, name),
-    identity: { sourceSha, verified: false },
+    identity: { sourceSha, verified: false, ...identity },
     recoveryHint,
   });
   const npmPackage = (id, packageName, requestedValue, resultName, versionName, integrityName, recoveryHint) => {
@@ -65,13 +65,17 @@ export function projectReleaseStatus(mode, env) {
   };
 
   if (mode === 'nightly') {
-    const item = (id, required, evidence, name, verified, recoveryHint) => ({
+    const desktopOriginRunId = Number(env.DESKTOP_ORIGIN_RUN_ID || env.RELEASE_RUN);
+    if (!Number.isSafeInteger(desktopOriginRunId) || desktopOriginRunId < 1) {
+      throw new Error('[release] desktop candidate origin run ID must be a positive safe integer');
+    }
+    const item = (id, required, evidence, name, verified, recoveryHint, identity = {}) => ({
       id,
       requested: true,
       required,
       evidence,
       result: evidence === 'accepted' && exact(name) ? 'accepted' : result(env, name),
-      identity: { sourceSha, verified },
+      identity: { sourceSha, verified, ...identity },
       recoveryHint,
     });
     const candidateItem = (id, product, name, versionName, resumeVerifiedName, recoveryHint) => ({
@@ -95,7 +99,7 @@ export function projectReleaseStatus(mode, env) {
       item('runner_rolling_release', false, 'verified', 'RUNNER_RESULT', promotedVerified('RUNNER_RESULT'), { job: 'promote_runner' }),
       item('ui_web_rolling_release', false, 'verified', 'UI_WEB_RESULT', promotedVerified('UI_WEB_RESULT'), { job: 'promote_ui_web' }),
       item('ui_mobile', false, 'accepted', 'MOBILE_RESULT', false, { job: 'ui_mobile' }),
-      item('ui_desktop', false, 'accepted', 'DESKTOP_RESULT', false, { job: 'ui_desktop' }),
+      item('ui_desktop', false, 'accepted', 'DESKTOP_RESULT', false, { job: 'ui_desktop' }, { candidateOriginRunId: desktopOriginRunId }),
       item('docker', false, 'accepted', 'DOCKER_RESULT', false, { job: 'docker' }),
       item('post_promotion_identity', false, 'verified', 'POST_PROMOTION_RESULT', exact('POST_PROMOTION_RESULT'), { job: 'verify_promoted' }),
     ];
@@ -140,7 +144,7 @@ export function projectReleaseStatus(mode, env) {
       observed('server_rolling_release', 'SERVER_RESULT', releaseVerified('SERVER_RESULT'), { job: 'promote_server_runtime' }),
       observed('runner_rolling_release', 'RUNNER_RESULT', releaseVerified('RUNNER_RESULT'), { job: 'promote_runner_binaries' }),
       observed('ui_web_rolling_release', 'UI_WEB_RESULT', releaseVerified('UI_WEB_RESULT'), { job: 'promote_ui_web' }),
-      accepted('deploy_ui', 'DEPLOY_UI_RESULT', { job: 'deploy_ui' }), accepted('deploy_server', 'DEPLOY_SERVER_RESULT', { job: 'deploy_server' }), accepted('deploy_website', 'DEPLOY_WEBSITE_RESULT', { job: 'deploy_website' }), accepted('deploy_docs', 'DEPLOY_DOCS_RESULT', { job: 'deploy_docs' }), accepted('docker', 'DOCKER_RESULT', { job: 'publish_docker' }), accepted('npm', 'NPM_RESULT', { job: 'publish_npm' }),
+      accepted('deploy_ui', 'DEPLOY_UI_RESULT', { job: 'deploy_ui' }, env.DEPLOY_UI_EXPO_ACTION ? { expoAction: env.DEPLOY_UI_EXPO_ACTION } : {}), accepted('deploy_server', 'DEPLOY_SERVER_RESULT', { job: 'deploy_server' }), accepted('deploy_website', 'DEPLOY_WEBSITE_RESULT', { job: 'deploy_website' }), accepted('deploy_docs', 'DEPLOY_DOCS_RESULT', { job: 'deploy_docs' }), accepted('docker', 'DOCKER_RESULT', { job: 'publish_docker' }), accepted('npm', 'NPM_RESULT', { job: 'publish_npm' }),
       observed('post_promotion_identity', 'RELEASE_VERIFY_RESULT', exact('RELEASE_VERIFY_RESULT'), { job: 'release_verify' }),
       npmPackage('npm_plugin_sdk', '@happier-dev/plugin-sdk', request.pluginSdk, 'NPM_PLUGIN_SDK_RESULT', 'NPM_PLUGIN_SDK_VERSION', 'NPM_PLUGIN_SDK_INTEGRITY', { job: 'publish_plugin_sdk_pair' }),
       npmPackage('npm_plugin_ui', '@happier-dev/plugin-ui', request.pluginSdk, 'NPM_PLUGIN_UI_RESULT', 'NPM_PLUGIN_UI_VERSION', 'NPM_PLUGIN_UI_INTEGRITY', { job: 'publish_plugin_sdk_pair' }),

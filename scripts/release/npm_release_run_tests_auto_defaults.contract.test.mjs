@@ -31,7 +31,11 @@ test('npm release script defaults to skipping tests locally when run-tests=auto'
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env, GITHUB_ACTIONS: '' },
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: '',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({ github: {}, npm: {} }),
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
@@ -59,7 +63,11 @@ test('npm release script defaults to running tests in GitHub Actions when run-te
     ],
     {
       cwd: repoRoot,
-      env: { ...process.env, GITHUB_ACTIONS: 'true' },
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: 'true',
+        HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({ github: {}, npm: {} }),
+      },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,

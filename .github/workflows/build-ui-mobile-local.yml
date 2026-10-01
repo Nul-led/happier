@@ -359,7 +359,7 @@ jobs:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
           # Keep builds mobile-focused (desktop/web builds happen elsewhere).
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
           HAPPIER_EMBEDDED_POLICY_ENV: ${{ (inputs.environment == 'production' && 'production') || ((inputs.environment == 'dev' || inputs.environment == 'preview' || inputs.environment == 'internalpreview') && 'preview') || '' }}
         uses: ./.github/actions/install-yarn-dependencies
@@ -390,7 +390,7 @@ jobs:
       - name: Upload mobile build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-mobile-${{ inputs.environment }}-android
+          name: ui-mobile-${{ inputs.environment }}-android-${{ inputs.profile == 'auto' && inputs.environment || inputs.profile }}
           path: dist/ui-mobile/**
           retention-days: 7
 
@@ -460,7 +460,7 @@ jobs:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
           # Keep builds mobile-focused (desktop/web builds happen elsewhere).
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
           HAPPIER_EMBEDDED_POLICY_ENV: ${{ (inputs.environment == 'production' && 'production') || ((inputs.environment == 'dev' || inputs.environment == 'preview' || inputs.environment == 'internalpreview') && 'preview') || '' }}
         uses: ./.github/actions/install-yarn-dependencies
@@ -505,7 +505,7 @@ jobs:
       - name: Upload mobile build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ui-mobile-${{ inputs.environment }}-ios
+          name: ui-mobile-${{ inputs.environment }}-ios-${{ inputs.profile == 'auto' && inputs.environment || inputs.profile }}
           path: dist/ui-mobile/**
           retention-days: 7
 
@@ -643,7 +643,7 @@ jobs:
         env:
           YARN_PRODUCTION: "false"
           npm_config_production: "false"
-          HAPPIER_INSTALL_SCOPE: "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
+          HAPPIER_INSTALL_SCOPE: "ui,protocol,session-core,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native"
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
           HAPPIER_EMBEDDED_POLICY_ENV: ${{ (inputs.environment == 'production' && 'production') || ((inputs.environment == 'dev' || inputs.environment == 'preview' || inputs.environment == 'internalpreview') && 'preview') || '' }}
         uses: ./.github/actions/install-yarn-dependencies
@@ -680,6 +680,17 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.x
+
+      - name: Enable Corepack (Yarn)
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install release verifier dependencies
+        env:
+          HAPPIER_INSTALL_SCOPE: release-runtime
+        uses: ./.github/actions/install-yarn-dependencies
 
       - name: Bind exact immutable APK tag SHA
         id: source

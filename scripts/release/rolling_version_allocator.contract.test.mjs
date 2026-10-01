@@ -308,6 +308,8 @@ test('rolling version allocation merges remote git tags when GitHub release look
     mkdirSync(bin);
     writeFileSync(join(bin, 'gh'), '#!/usr/bin/env bash\nexit 0\n');
     chmodSync(join(bin, 'gh'), 0o755);
+    // Keep real local Git discovery while isolating the unrelated npm registry read.
+    executable(join(bin, 'npm'), '#!/usr/bin/env bash\nprintf "[]\\n"\n');
 
     git(root, ['init', '--bare', origin]);
     git(repo, ['init']);
@@ -352,6 +354,7 @@ test('support preview version allocation uses published npm support versions', a
       HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
         github: {},
         npm: { '@happier-dev/support': ['0.1.5-preview.8'] },
+        npmDistTags: { '@happier-dev/support': { next: '0.1.5-preview.8' } },
       }),
     },
   });
