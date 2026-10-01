@@ -75,7 +75,18 @@ test('schema edits regenerate family DTOs without any authored DTO input', async
     };
     type Definition = { [Id in 'inventory.list']: CanonicalActionSchemaDefinition<Id, (typeof INPUTS)[Id], (typeof OUTPUTS)[Id], typeof OptionalPluginInput> };
   `);
-  const derive = async () => [...(await deriveActionDtoSchemas({ repoRoot: root, onlyFamilies: ['inventory'] })).outputs.values()][0];
+  // A new family must enter generation solely through its canonical export.
+  const familyDirectory = resolve(root, 'packages/protocol/src/sessions/organization');
+  mkdirSync(familyDirectory, { recursive: true });
+  const familyOwner = resolve(familyDirectory, 'newFamily.ts');
+  writeFileSync(familyOwner, "export const NEW_ACTION_IDS = ['inventory.list'] as const;");
+  writeFileSync(resolve(actions, 'actionIds.ts'), `import { NEW_ACTION_IDS } from '../sessions/organization/newFamily.js';
+    export const ACTION_ID_FAMILIES_V1 = { fresh_family: NEW_ACTION_IDS } as const;`);
+  const derive = async () => {
+    const derived = await deriveActionDtoSchemas({ repoRoot: root, onlyFamilies: ['fresh_family'] });
+    assert.deepEqual([...derived.outputs.keys()], [resolve(familyDirectory, 'freshFamilyActionDtos.ts')]);
+    return [...derived.outputs.values()][0];
+  };
   const initial = await derive();
   assert.match(initial, /count: number/u);
   assert.match(initial, /query\?: string/u);

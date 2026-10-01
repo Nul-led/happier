@@ -26,7 +26,9 @@ const COMPILER_PATH = fileURLToPath(import.meta.resolve('typescript'));
 /** Project the generated neutral declaration closure without a compiler program. */
 export function projectActionDtoDeclarations({ repoRoot = REPO_ROOT, recordInput = () => {}, declarations = new Map() } = {}) {
   const protocolRoot = resolve(repoRoot, 'packages/protocol/src');
-  const indexPath = resolve(protocolRoot, 'actions/pluginActionDtos.ts');
+  const virtual = declarations.size > 0;
+  const declarationRoot = virtual ? protocolRoot : resolve(repoRoot, 'packages/plugin-sdk/src/actions');
+  const indexPath = resolve(declarationRoot, virtual ? 'actions/pluginActionDtos.ts' : 'actionTypeMap.generated.ts');
   const sources = new Map();
   const selected = new Map();
   const outputNames = new Map();
@@ -41,9 +43,9 @@ export function projectActionDtoDeclarations({ repoRoot = REPO_ROOT, recordInput
   const resolveImport = (path, specifier) => {
     if (!specifier.startsWith('.')) throw new ActionTypeProjectionValidationError(`Private DTO dependency: ${specifier}`);
     const target = resolve(dirname(path), specifier.replace(/\.js$/u, '.ts'));
-    const fromRoot = relative(protocolRoot, target);
+    const fromRoot = relative(declarationRoot, target);
     if (isAbsolute(fromRoot) || fromRoot === '..' || fromRoot.startsWith('../') || fromRoot.startsWith('..\\')
-      || resolve(protocolRoot, fromRoot) !== target) throw new ActionTypeProjectionValidationError(`DTO dependency outside Protocol: ${target}`);
+      || resolve(declarationRoot, fromRoot) !== target) throw new ActionTypeProjectionValidationError(`DTO dependency outside declaration closure: ${target}`);
     return target;
   };
   const declaration = (path, name) => {
@@ -94,7 +96,7 @@ export function projectActionDtoDeclarations({ repoRoot = REPO_ROOT, recordInput
   const rootNames = index.statements.filter((node) => ts.isTypeAliasDeclaration(node)
     && node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).map((node) => node.name.text);
   for (const name of rootNames) select(indexPath, name);
-  const uiPath = resolve(protocolRoot, 'plugins/contributions/ui/actionDeclarativeNodeDto.ts');
+  const uiPath = resolve(declarationRoot, virtual ? 'plugins/contributions/ui/actionDeclarativeNodeDto.ts' : 'dtos/actionDeclarativeNodeDto.generated.ts');
   if (declarations.has(uiPath) || ts.sys.fileExists(uiPath)) {
     for (const node of source(uiPath).statements) {
       if (ts.isTypeAliasDeclaration(node) && node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) select(uiPath, node.name.text);
@@ -117,7 +119,7 @@ export function projectActionDtoDeclarations({ repoRoot = REPO_ROOT, recordInput
   assertSameKeys(canonicalKeys, inputKeys, 'Canonical/DTO Action input maps');
   assertSameKeys(canonicalKeys, resultKeys, 'Canonical/DTO Action result maps');
   for (const path of selected.keys()) {
-    const name = path === indexPath ? 'actionTypeMap.generated.ts' : `dtos/${basename(path, '.ts')}.generated.ts`;
+    const name = path === indexPath ? 'actionTypeMap.generated.ts' : `dtos/${basename(path, '.ts')}${virtual ? '.generated' : ''}.ts`;
     if ([...outputNames.values()].includes(name)) throw new ActionTypeProjectionValidationError(`Duplicate DTO module name: ${name}`);
     outputNames.set(path, name);
   }
@@ -395,7 +397,7 @@ export async function prepareActionTypeMap() {
     throw error;
   }
   const { inputKeys, resultKeys } = projection;
-  const outputs = new Map([...schemaProjection.outputs, ...[...projection.outputs].map(([path, text]) => [resolve(REPO_ROOT, path), text])]);
+  const outputs = new Map([...projection.outputs].map(([path, text]) => [resolve(REPO_ROOT, path), text]));
   const output = outputs.get(OUTPUT_PATH);
   if (output === undefined) throw new ActionTypeProjectionValidationError('Action DTO projection is missing its public index.');
   timing('dto-declaration-projection');

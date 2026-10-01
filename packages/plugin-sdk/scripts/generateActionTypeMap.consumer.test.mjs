@@ -35,7 +35,12 @@ test('Action DTO declaration consumers retain literal keys and result fields wit
   `);
   assert.equal(typeof generator.projectActionDtoDeclarations, 'function',
     'the declaration consumer must receive the named Protocol DTO closure');
-  const project = () => generator.projectActionDtoDeclarations({ repoRoot: root });
+  const project = () => generator.projectActionDtoDeclarations({ repoRoot: root, declarations: new Map(
+    ['pluginActionDtos.ts', 'inventoryActionDtos.ts'].map(name => {
+      const path = resolve(root, 'packages/protocol/src/actions', name);
+      return [path, readFileSync(path, 'utf8')];
+    }),
+  ) });
   const publish = () => {
     const projection = project();
     for (const [path, output] of projection.outputs) put(path, output);
@@ -106,7 +111,12 @@ test('syntax projection retains concrete family rows beyond the retired compiler
     export type PluginInvocableActionId = keyof Inputs;
   `);
   writeFileSync(resolve(actions, 'family.ts'), `export type Inputs = { ${keys.map(key=>`${JSON.stringify(key)}: Record<string, never>;`).join('\n')} };\nexport type Results = { ${keys.map(key=>`${JSON.stringify(key)}: { payload: ${JSON.stringify(payload)} };`).join('\n')} };`);
-  const projection = generator.projectActionDtoDeclarations({ repoRoot: root });
+  const projection = generator.projectActionDtoDeclarations({ repoRoot: root, declarations: new Map(
+    ['pluginActionDtos.ts', 'family.ts'].map(name => {
+      const path = resolve(actions, name);
+      return [path, readFileSync(path, 'utf8')];
+    }),
+  ) });
   assert.deepEqual(projection.inputKeys, [...keys].sort());
   assert.deepEqual(projection.resultKeys, [...keys].sort());
   const text = projection.outputs.get('packages/plugin-sdk/src/actions/dtos/family.generated.ts');

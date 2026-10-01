@@ -14,29 +14,6 @@ const flags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseStructural
   | ts.TypeFormatFlags.MultilineObjectLiterals | ts.TypeFormatFlags.InTypeAlias
   | ts.TypeFormatFlags.UseSingleQuotesForStringLiteralType;
 
-// Placement and stable public names only. Payloads and membership come from Protocol.
-const domains = {
-  workspace_layout: 'actions', scope: 'actions', settings_declarations: 'actions',
-  command_palette: 'actions', app_shell: 'actions',
-  home_hub_layout: 'actions', machine_connection: 'actions', connected_services_configuration: 'connect',
-  boards: 'boards',
-  roles: 'prompts/roles', launch_profiles: 'launchProfiles', workflows: 'workflows', artifact_access: 'artifacts', notifications: 'account/notifications',
-  machine_agent_install: 'daemon', machine_agent_sign_in: 'daemon', session_access: 'sessions/access', session_lifecycle: 'sessions',
-  inventory: 'actions', messaging: 'sessions/messages', session_control: 'sessions', intent_start: 'execution/runs', review_comments: 'reviews',
-  subagent_registry: 'sessions/subagents', execution_run_control: 'execution/runs', session_targeting: 'sessions', session_follow: 'sessions/follow',
-  session_transcripts: 'sessions/messages', session_read_state: 'sessions/readState', session_board: 'sessions/board', session_discussion: 'sessions/discussions',
-  session_permissions: 'sessions/permissions', external_sessions: 'sessions/external', voice_controls: 'voice', current_ui_context: 'plugins/ui',
-  companion_controls: 'actions', memory: 'memory', agent_acp_catalog: 'acp/catalog', prompt_library: 'prompts', daemon_admin: 'daemon',
-  browser_control: 'browser', browser_diagnostics: 'browser', browser_context: 'browser', browser_automation: 'browser', browser_recording: 'browser',
-  local_services_inventory: 'local/services', local_services_launcher: 'local/services', local_services_preview: 'local/services',
-  local_services_public_preview: 'local/services', local_services_actions: 'local/services', peer_mediation_observability: 'actions', devices_simulator: 'devices/simulator',
-  approvals: 'actions', plugin_dev_loop: 'plugins', plugin_settings_administration: 'plugins', plugin_permission_grants: 'plugins', plugin_webhooks: 'plugins/webhooks',
-  account_plugin_data: 'account', account_sessions: 'account', account_security: 'account', identity_github_apps: 'identity', identity_providers: 'identity',
-  machine_pools: 'machines/pools', ephemeral_runner: 'ephemeralRunner', automation_events: 'automations', automation_conversation: 'automations',
-  scm_git: 'actions', scm_pull_request: 'scm', scm_repository: 'scm', scm_diff_summary: 'scm', home_governance: 'home/governance', teams: 'teams',
-  saved_secret_sharing: 'account/settings', discovery: 'actions', computer: 'computer',
-};
-
 const supportBindings = [
   ['plugins/contributions/jsonSchema.ts', 'PluginJsonSchemaV2'],
   ['plugins/contributions/publicTypes.ts', 'PluginPolicyExpressionV2'],
@@ -209,18 +186,32 @@ export function readActionCatalog(repoRoot, recordInput = () => {}) {
     }
     return sources.get(path);
   };
-  const value = (path, name) => {
+  const definition = (path, name) => {
     for (const node of source(path).statements) {
       if (ts.isVariableStatement(node)) {
         const declaration = node.declarationList.declarations.find(n => ts.isIdentifier(n.name) && n.name.text === name);
-        if (declaration) return evaluate(path, declaration.initializer);
+        if (declaration) return { path, node: declaration.initializer };
       }
       if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
         const binding = node.importClause.namedBindings.elements.find(n => n.name.text === name);
-        if (binding) return value(resolve(dirname(path), node.moduleSpecifier.text.replace(/\.js$/u, '.ts')), (binding.propertyName ?? binding.name).text);
+        if (binding) return definition(resolve(dirname(path), node.moduleSpecifier.text.replace(/\.js$/u, '.ts')), (binding.propertyName ?? binding.name).text);
       }
     }
     throw Error(`Unresolved Action catalog declaration: ${name}`);
+  };
+  const value = (path, name) => {
+    const found = definition(path, name);
+    return evaluate(found.path, found.node);
+  };
+  const unwrap = node => {
+    while (ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node)) node = node.expression;
+    return node;
+  };
+  const owner = (path, node) => {
+    node = unwrap(node);
+    if (!ts.isIdentifier(node)) return path;
+    const found = definition(path, node.text);
+    return owner(found.path, found.node);
   };
   const evaluate = (path, node) => {
     if (ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node)) return evaluate(path, node.expression);
@@ -232,8 +223,16 @@ export function readActionCatalog(repoRoot, recordInput = () => {}) {
     throw Error(`Unsupported Action catalog expression: ${node.getText(source(path))}`);
   };
   const protocol = resolve(repoRoot, 'packages/protocol/src');
+  const catalog = definition(resolve(protocol, 'actions/actionIds.ts'), 'ACTION_ID_FAMILIES_V1');
+  let catalogNode = unwrap(catalog.node);
+  if (ts.isCallExpression(catalogNode) && catalogNode.expression.getText(source(catalog.path)) === 'Object.freeze') catalogNode = unwrap(catalogNode.arguments[0]);
+  if (!ts.isObjectLiteralExpression(catalogNode)) throw Error('Action family catalog must declare its family exports');
+  const familyOwners = Object.fromEntries(catalogNode.properties.map(member => {
+    if (!ts.isPropertyAssignment(member)) throw Error('Action family catalog must name each family export');
+    return [member.name.text, owner(catalog.path, member.initializer)];
+  }));
   return { families: value(resolve(protocol, 'actions/actionIds.ts'), 'ACTION_ID_FAMILIES_V1'),
-    excluded: value(resolve(protocol, 'actions/pluginActionSurface.ts'), 'PLUGIN_SURFACE_EXCLUSION_REASONS') };
+    familyOwners, excluded: value(resolve(protocol, 'actions/pluginActionSurface.ts'), 'PLUGIN_SURFACE_EXCLUSION_REASONS') };
 }
 
 function deriveProgram({ repoRoot, keys, bindings, extraNames = [] }) {
@@ -460,7 +459,7 @@ async function worker(request) {
 
 export async function deriveActionDtoSchemas({ repoRoot, recordInput = () => {}, recordDigest = () => {}, onlyFamilies } = {}) {
   const protocol = resolve(repoRoot, 'packages/protocol/src');
-  const { families, excluded } = readActionCatalog(repoRoot, recordInput);
+  const { families, familyOwners, excluded } = readActionCatalog(repoRoot, recordInput);
   const outputs = new Map();
   const names = [[], []];
   const imports = [];
@@ -483,11 +482,11 @@ export async function deriveActionDtoSchemas({ repoRoot, recordInput = () => {},
     if (onlyFamilies && !onlyFamilies.includes(family)) continue;
     const keys = ids.filter(id => !Object.hasOwn(excluded, id));
     if (!keys.length) continue;
-    const domain = domains[family];
-    if (!domain) throw Error(`No Action DTO placement for ${family}`);
     const stem = family === 'computer' ? 'computerControl' : family.replace(/_([a-z])/gu, (_, letter) => letter.toUpperCase());
     const familyNames = ['Input', 'Result'].map(kind => stem[0].toUpperCase() + stem.slice(1) + `Action${kind}ById`);
-    const path = resolve(protocol, domain, `${stem}ActionDtos.ts`);
+    // Virtual declarations follow the defining family export; only their SDK
+    // projection is published. A newly declared family needs no placement list.
+    const path = resolve(dirname(familyOwners[family]), `${stem}ActionDtos.ts`);
     const result = await consume(family, { keys, bindings: familyNames.map((name, i) => ['actions/actionSpecs.ts', `PluginAction${i ? 'Result' : 'Input'}ById`, name, i === 0]) });
     const local = new Set(result.declarations.map(([name]) => name));
     const refs = result.references.filter(name => !local.has(name));

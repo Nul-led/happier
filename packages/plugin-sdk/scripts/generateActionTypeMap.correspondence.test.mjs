@@ -78,8 +78,7 @@ test('named declarative Action DTO matches the canonical Protocol document gramm
   writeFileSync(fixture, `
     import type { PublicValue } from './publicProjection.js';
     import type { PluginDeclarativeNodeV2 as Canonical } from '${protocol}/plugins/contributions/ui/v2.js';
-    import type { PluginDeclarativeNodeV2 as Dto } from '${protocol}/plugins/contributions/ui/actionDeclarativeNodeDto.js';
-    import type { PluginDeclarativeComposerApplyEffectV1 as DtoEffect } from '${protocol}/plugins/contributions/ui/actionDeclarativeNodeDto.js';
+    import type { PluginDeclarativeNodeV2 as Dto, PluginDeclarativeComposerApplyEffectV1 as DtoEffect } from '${repoRoot}/packages/plugin-sdk/src/actions/dtos/actionDeclarativeNodeDto.generated.js';
     declare const canonical: PublicValue<Canonical, false>;
     declare const dto: Dto;
     const forward: Dto = canonical;
