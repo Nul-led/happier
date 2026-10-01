@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 
 import {
+    getPathRemainderWithinBase,
     expandHomeRelativePath,
     normalizeSessionHandoffTargetPathForLocalMachine,
     resolveSessionHandoffWorkspaceSessionPath,
@@ -10,6 +11,13 @@ import {
 } from './sessionHandoffPathNormalization';
 
 describe('sessionHandoffPathNormalization', () => {
+    it('preserves the nested cwd spelling while comparing Windows roots case-insensitively', () => {
+        expect(getPathRemainderWithinBase(
+            'C:\\Users\\Alice\\Projects\\App\\Packages\\MixedCase',
+            'c:/users/alice/projects/app',
+        )).toBe('Packages/MixedCase');
+    });
+
     it('appends only a safe contained session-relative cwd to the target repository root', () => {
         expect(resolveSessionHandoffWorkspaceSessionPath({
             targetRoot: '/target/repository',

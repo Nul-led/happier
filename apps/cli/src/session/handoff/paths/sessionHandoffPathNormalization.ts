@@ -28,6 +28,8 @@ function normalizePathForComparison(path: string): string {
  * normalizer for path containment.
  */
 export function getPathRemainderWithinBase(path: string, basePath: string): string | null {
+    const displayPath = normalizeRelativePath(trimTrailingSeparators(path));
+    const displayBasePath = normalizeRelativePath(trimTrailingSeparators(basePath));
     const normalizedBasePath = normalizePathForComparison(basePath);
     const normalizedPath = normalizePathForComparison(path);
 
@@ -38,7 +40,7 @@ export function getPathRemainderWithinBase(path: string, basePath: string): stri
         return null;
     }
 
-    const remainder = normalizedPath.slice(normalizedBasePath.length);
+    const remainder = displayPath.slice(displayBasePath.length);
     if (!remainder.startsWith('/')) {
         return null;
     }
