@@ -76,11 +76,11 @@ export async function dispatchCli(params: Readonly<{
         const { startHappyHeadlessInTmux } = await import('@/terminal/tmux/startHappyHeadlessInTmux');
         await startHappyHeadlessInTmux(args);
       } catch (error) {
-        console.error(fail(error instanceof Error ? error.message : 'Unknown error'))
+        console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
         if (process.env.DEBUG) {
-          console.error(error)
+          console.error(error);
         }
-        process.exit(1)
+        process.exit(1);
       }
       return;
     }
