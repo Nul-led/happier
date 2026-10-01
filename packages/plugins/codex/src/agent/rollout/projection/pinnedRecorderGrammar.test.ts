@@ -85,6 +85,100 @@ describe('pinned Codex recorder grammar', () => {
     expect(emitted).toEqual([{ type: 'assistant-text', text: 'the answer' }]);
   });
 
+  /**
+   * Shapes observed in real rollouts written by `cli_version` `0.157.1`. Every
+   * recent rollout on a busy machine carries at least one of them, so refusing
+   * them fails nearly every page of a current Codex session.
+   */
+  it.each([
+    ['token_usage_record envelope', {
+      type: 'token_usage_record',
+      payload: {
+        thread_id: 'th',
+        turn_id: 't',
+        session_id: 'root',
+        response_id: 'resp_1',
+        usage: { input_tokens: 32804, cached_input_tokens: 0, output_tokens: 12 },
+      },
+    }],
+    ['response_item compaction', {
+      type: 'response_item',
+      payload: { type: 'compaction', id: 'cmp_1', encrypted_content: 'gAAAA' },
+    }],
+    ['event_msg item_completed SubAgentActivity', {
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: 'th',
+        turn_id: 't',
+        item: { type: 'SubAgentActivity', id: 'subagent-completed-1', kind: 'completed', agent_thread_id: 'child', agent_path: '/root/child' },
+      },
+    }],
+    ...([
+      ['Reasoning', { summary_text: [], raw_content: [] }],
+      ['AgentMessage', { content: [{ type: 'Text', text: 'already published from response_item' }] }],
+      ['CommandExecution', { command: ['/bin/bash', '-lc', 'ls'], cwd: 'file:///repo' }],
+      ['FileChange', { changes: {} }],
+      ['McpToolCall', { server: 'happier', tool: 'change_title', status: 'completed' }],
+      ['CollabAgentToolCall', { tool: 'wait', status: 'completed' }],
+      ['ContextCompaction', {}],
+      ['Extension', { kind: 'web.search', query: 'q' }],
+      ['ImageView', { path: 'file:///tmp/a.png' }],
+    ] as const).map(([itemType, fields]) => [`event_msg item_completed ${itemType}`, {
+      type: 'event_msg',
+      payload: { type: 'item_completed', thread_id: 'th', turn_id: 't', item: { type: itemType, id: 'i1', ...fields } },
+    }] as const),
+    ['event_msg thread_goal_updated', {
+      type: 'event_msg',
+      payload: { type: 'thread_goal_updated', threadId: 'th', turnId: 't', goal: { objective: 'o' } },
+    }],
+    ['event_msg thread_name_updated', {
+      type: 'event_msg',
+      payload: { type: 'thread_name_updated', thread_id: 'th', thread_name: 'AGENT2' },
+    }],
+    ['event_msg collab_agent_interaction_end', {
+      type: 'event_msg',
+      payload: { type: 'collab_agent_interaction_end', call_id: 'c', receiver_thread_id: 'child', status: { completed: 'done' } },
+    }],
+    ['event_msg collab_resume_end', {
+      type: 'event_msg',
+      payload: { type: 'collab_resume_end', call_id: 'c', receiver_thread_id: 'child', status: { completed: 'done' } },
+    }],
+    ['event_msg error', {
+      type: 'event_msg',
+      payload: { type: 'error', message: 'Codex ran out of room in the model context window.', codex_error_info: 'context_window_exceeded' },
+    }],
+    ['response_item tool_search_call', {
+      type: 'response_item',
+      payload: { type: 'tool_search_call', call_id: 'c', status: 'completed', arguments: { query: 'q' } },
+    }],
+    ['response_item tool_search_output', {
+      type: 'response_item',
+      payload: { type: 'tool_search_output', call_id: 'c', status: 'completed', tools: [] },
+    }],
+    ['event_msg item_completed UserMessage mirror', {
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: 'th',
+        turn_id: 't',
+        item: { type: 'UserMessage', id: 'u1', content: [{ type: 'text', text: 'already published from response_item' }] },
+      },
+    }],
+  ])('advances past the 0.157 content-free record %s', (_label, record) => {
+    const projected = project({ timestamp: 'ts', ...record });
+    expect(projected.disposition).toBe('known');
+    expect(projected.actions).toEqual([]);
+  });
+
+  it('still refuses an item_completed item family it does not know', () => {
+    expect(project({
+      timestamp: 'ts',
+      type: 'event_msg',
+      payload: { type: 'item_completed', item: { type: 'NotARealCodexItem' } },
+    }).disposition).toBe('unsupported');
+  });
+
   it('still refuses a genuinely unknown durable row', () => {
     expect(project({ timestamp: 'ts', type: 'event_msg', payload: { type: 'not_a_real_codex_event' } }).disposition)
       .toBe('unsupported');

@@ -33,6 +33,8 @@ type RolloutEnvelope = { timestamp?: string; type?: string; payload?: unknown };
 const CODEX_KNOWN_NON_TRANSCRIPT_ENVELOPE_TYPES: ReadonlySet<string> = new Set([
     'compacted',
     'inter_agent_communication_metadata',
+    // Per-response token accounting written from recorder 0.157.
+    'token_usage_record',
     'world_state',
 ]);
 
@@ -46,13 +48,22 @@ const CODEX_KNOWN_NON_TRANSCRIPT_ENVELOPE_TYPES: ReadonlySet<string> = new Set([
  */
 const CODEX_KNOWN_NON_TRANSCRIPT_EVENT_MSG_TYPES: ReadonlySet<string> = new Set([
     'agent_reasoning',
+    // Sub-agent interaction/resume completions: the reply belongs to the
+    // receiver thread's own rollout, like the spawn/close lifecycle echoes.
+    'collab_agent_interaction_end',
+    'collab_resume_end',
     'context_compacted',
+    // A turn-level failure notice (for example a full context window); the
+    // turn's own rows already record what happened.
+    'error',
     'exec_command_end',
     'mcp_tool_call_end',
     'patch_apply_end',
     'sub_agent_activity',
     'task_complete',
     'task_started',
+    'thread_goal_updated',
+    'thread_name_updated',
     'thread_rolled_back',
     'thread_settings_applied',
     'token_count',
@@ -62,16 +73,54 @@ const CODEX_KNOWN_NON_TRANSCRIPT_EVENT_MSG_TYPES: ReadonlySet<string> = new Set(
 ]);
 
 /**
+ * `item_completed` is the recorder's item-lifecycle echo (0.157): each item
+ * repeats a row the rollout already records as `response_item`/`event_msg`
+ * (for example `Reasoning` ↔ `reasoning`, `AgentMessage` ↔ the assistant
+ * message, `CommandExecution`/`FileChange`/`McpToolCall` ↔ the tool call and
+ * its output), so publishing it would duplicate the turn. The names are the
+ * recorder's spelling of the Codex app-server `ThreadItem` union
+ * (`codex app-server generate-json-schema`, 0.157.1) plus the observed
+ * `Extension`. Any other item family stays unsupported.
+ */
+const CODEX_KNOWN_NON_TRANSCRIPT_COMPLETED_ITEM_TYPES: ReadonlySet<string> = new Set([
+    'AgentMessage',
+    'CollabAgentToolCall',
+    'CommandExecution',
+    'ContextCompaction',
+    'DynamicToolCall',
+    'EnteredReviewMode',
+    'ExitedReviewMode',
+    'Extension',
+    'FileChange',
+    'FunctionCallOutput',
+    'HookPrompt',
+    'ImageGeneration',
+    'ImageView',
+    'McpToolCall',
+    'Plan',
+    'Reasoning',
+    'Sleep',
+    'SubAgentActivity',
+    'UserMessage',
+    'WebSearch',
+]);
+
+/**
  * `response_item` payload families the recorder persists that this leaf does
  * not publish: reasoning has no row in the Codex transcript vocabulary,
- * `ghost_snapshot` is git snapshot bookkeeping, and `agent_message` is the
- * inter-agent routing copy of a prompt already published from the
- * `spawn_agent` call that produced it.
+ * `ghost_snapshot` is git snapshot bookkeeping, `compaction` is the opaque
+ * encrypted history summary that replaces rows already published, and
+ * `agent_message` is the inter-agent routing copy of a prompt already
+ * published from the `spawn_agent` call that produced it.
  */
 const CODEX_KNOWN_NON_TRANSCRIPT_RESPONSE_ITEM_TYPES: ReadonlySet<string> = new Set([
     'agent_message',
+    'compaction',
     'ghost_snapshot',
     'reasoning',
+    // Client-side tool discovery, like the web search call beside it.
+    'tool_search_call',
+    'tool_search_output',
     'web_search_call',
 ]);
 
@@ -305,6 +354,13 @@ export function projectCodexRolloutRecord(
 
         if (CODEX_KNOWN_NON_TRANSCRIPT_EVENT_MSG_TYPES.has(payloadType)) {
             return { disposition: 'known', actions: [] };
+        }
+
+        if (payloadType === 'item_completed') {
+            const itemType = readStringField(asRecord(payload.item) ?? {}, 'type');
+            return itemType && CODEX_KNOWN_NON_TRANSCRIPT_COMPLETED_ITEM_TYPES.has(itemType)
+                ? { disposition: 'known', actions: [] }
+                : { disposition: 'unsupported', actions: [] };
         }
 
         return {
