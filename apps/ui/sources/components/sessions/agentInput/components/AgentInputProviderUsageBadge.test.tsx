@@ -2,7 +2,9 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConnectedServiceQuotaGaugeViewModel } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+import { computeConnectedServiceQuotaGaugeViewModel } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+
+import type { ConnectedServiceQuotaGaugeLabelFormatter, ConnectedServiceQuotaGaugeViewModel } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { renderScreen } from '@/dev/testkit';
 
 import { AgentInputProviderUsageBadge } from './AgentInputProviderUsageBadge';
@@ -12,6 +14,22 @@ vi.mock('react-native-svg', () => ({
     Svg: (props: Record<string, unknown> & { children?: React.ReactNode }) => React.createElement('Svg', props, props.children),
     Circle: (props: Record<string, unknown>) => React.createElement('Circle', props),
 }));
+
+const fixtureFormatter: ConnectedServiceQuotaGaugeLabelFormatter = {
+    remaining: ({ percent }) => `${percent} left`,
+    remainingWithReset: ({ percent, reset }) => `${percent} left · resets in ${reset}`,
+    used: ({ used, limit }) => `${used}/${limit} used`,
+    durationNow: () => 'now',
+    durationOutdated: () => 'outdated',
+    durationDaysHours: ({ days, hours }) => `${days}d ${hours}h`,
+    durationHoursMinutes: ({ hours, minutes }) => `${hours}h ${minutes}m`,
+    durationHours: ({ hours }) => `${hours}h`,
+    durationMinutes: ({ minutes }) => `${minutes}m`,
+    subscriptionEnds: ({ date }) => `Ends ${date}`,
+    subscriptionEndsInDays: ({ days }) => `Ends in ${days} day${days === 1 ? '' : 's'}`,
+    subscriptionRenews: ({ date }) => `Renews ${date}`,
+    subscriptionRenewsInDays: ({ days }) => `Renews in ${days} day${days === 1 ? '' : 's'}`,
+};
 
 function viewModel(): ConnectedServiceQuotaGaugeViewModel {
     return {
@@ -63,6 +81,27 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
 }
 
 describe('AgentInputProviderUsageBadge', () => {
+    it('includes every visible extra meter in the actual usage popover across comparison families', async () => {
+        const vm = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: {
+                v: 1, serviceId: 'openai-codex', profileId: 'work', fetchedAt: 1_000, staleAfterMs: 60_000,
+                planLabel: null, accountLabel: null, meters: [
+                    { meterId: 'weekly', label: 'Weekly', used: 82, limit: 100, unit: 'count', utilizationPct: null,
+                        resetsAt: null, status: 'ok', details: { limitCategory: 'usage_limit' } },
+                    { meterId: 'requests', label: 'Requests', used: 99, limit: 100, unit: 'requests', utilizationPct: null,
+                        resetsAt: null, status: 'ok', details: { limitCategory: 'rate_limit' } },
+                ],
+            },
+            windowMode: 'most_constrained', additionalMeterIds: ['requests'], nowMs: 2_000,
+            formatter: fixtureFormatter,
+        });
+        if (!vm) throw new Error('Expected a reported quota gauge');
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
+        expect(screen.findByTestId('agent-input-provider-usage-value:requests')).toBeTruthy();
+        act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
+        expect(screen.findByTestId('agent-input-provider-usage-meter:requests')).toBeTruthy();
+    });
+
     it('keeps meter labels off by default and honors explicit label intent', async () => {
         const vm = { ...viewModel(), usageRings: [
             { window: 'session' as const, meterId: 'five_hour', label: '5-hour', usedPct: 10, ringValueLabel: '10', tone: 'neutral' as const },

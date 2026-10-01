@@ -374,6 +374,18 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     const selectedRow = buildMeterRow(effectiveMeter, params.nowMs, params.formatter);
     if (!selectedRow) return null;
 
+    const displayedMeterRows = [...new Set([effectiveMeter.meterId, ...(params.additionalMeterIds ?? [])])].flatMap((meterId) => {
+        // Explicit extras may cross comparison families, but still share the reliability gate.
+        const meter = params.snapshot?.meters.find((candidate) => candidate.meterId === meterId
+            && isConnectedServiceQuotaMeterPercentRankable(candidate));
+        const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
+        return row && meter ? [{ meter, row }] : [];
+    });
+    // Keep the main comparison family first; every displayed extra has the same detail row.
+    for (const { row } of displayedMeterRows) {
+        if (!allMeterRows.some((existing) => existing.meterId === row.meterId)) allMeterRows.push(row);
+    }
+
     const selectedWindowPrefix = params.windowMode === 'most_constrained'
         ? null
         : resolveConnectedServiceQuotaMeterScopePrefix(effectiveMeter);
@@ -430,17 +442,10 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         recoveryCreditSummary: summarizeConnectedServiceQuotaRecoveryCredits(params.snapshot.recoveryCredits, params.nowMs),
         effectiveMeter,
         allMeterRows,
-        usageRings: [...new Set([effectiveMeter.meterId, ...(params.additionalMeterIds ?? [])])].flatMap((meterId) => {
-            // Extra meters are selected explicitly, so they need not share the main
-            // comparison family. Keep the same reliability/category gate as the selector.
-            const meter = params.snapshot?.meters.find((candidate) => candidate.meterId === meterId
-                && isConnectedServiceQuotaMeterPercentRankable(candidate));
-            const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
-            return row && meter ? [{
-                meterId, label: row.label, window: resolveConnectedServiceQuotaMeterWindow(meter),
-                usedPct: row.usedPct, ringValueLabel: String(Math.round(row.usedPct)), tone: row.tone,
-            }] : [];
-        }),
+        usageRings: displayedMeterRows.map(({ meter, row }) => ({
+            meterId: meter.meterId, label: row.label, window: resolveConnectedServiceQuotaMeterWindow(meter),
+            usedPct: row.usedPct, ringValueLabel: String(Math.round(row.usedPct)), tone: row.tone,
+        })),
     };
 }
 

@@ -6949,7 +6949,7 @@ settingsSession: {
             visibilityHiddenSubtitle: '在輸入框旁隱藏提供者配額。',
             windowTitle: '儀表視窗',
             labelsTitle: '顯示用量標籤',
-            labelsSubtitle: '為上下文和提供商用量儀表顯示標籤。',
+            labelsSubtitle: '為上下文和提供者用量儀表顯示標籤。',
             windowMostConstrainedTitle: '最受限制',
             windowMostConstrainedSubtitle: '顯示可靠配額視窗中剩餘最少的視窗。',
             windowDailyTitle: '每日',

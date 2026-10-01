@@ -165,7 +165,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
 
     return (
         <>
-            <View testID="agent-input-provider-quota-badge">
+            <View testID="agent-input-provider-quota-badge" style={styles.badgeContainer}>
             <Pressable
                 ref={anchorRef}
                 testID="agent-input-provider-usage-badge"
@@ -349,11 +349,14 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
 }, areProviderUsageBadgePropsEqual);
 
 const stylesheet = StyleSheet.create((theme) => ({
+    badgeContainer: { flexShrink: 1, maxWidth: '100%' },
     badge: {
         position: 'relative',
         flexDirection: 'row',
         minWidth: 20,
-        height: 20,
+        minHeight: 20,
+        maxWidth: '100%',
+        flexWrap: 'wrap',
         gap: 8,
         borderRadius: 999,
         justifyContent: 'center',
@@ -364,11 +367,15 @@ const stylesheet = StyleSheet.create((theme) => ({
         transform: [{ scale: 0.96 }],
     },
     windowRing: {
+        maxWidth: '100%',
+        flexShrink: 1,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
     },
     windowLabel: {
+        minWidth: 0,
+        flexShrink: 1,
         ...Typography.pillLabel(),
         color: theme.colors.text.secondary,
     },

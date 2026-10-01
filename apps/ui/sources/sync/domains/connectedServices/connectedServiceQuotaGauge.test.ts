@@ -166,7 +166,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
             windowMode: 'most_constrained', additionalMeterIds: ['requests', 'capacity'], nowMs: 2_000, formatter,
         });
         expect(viewModel?.effectiveMeter.meterId).toBe('weekly');
-        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly']);
+        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'requests']);
         expect(viewModel?.usageRings.map((ring) => ring.meterId)).toEqual(['weekly', 'requests']);
     });
 
