@@ -131,9 +131,6 @@ test.describe('ui e2e: session split canvas', () => {
                 HAPPIER_E2E_PROVIDER_SKIP_SERVER_SHARED_DEPS_BUILD: '1',
                 HAPPIER_E2E_PROVIDER_SKIP_SERVER_GENERATE: '1',
                 HAPPIER_E2E_PROVIDER_USE_SERVER_SOURCE_ENTRYPOINT: '1',
-                HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
-                HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
-                HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
             },
         });
 

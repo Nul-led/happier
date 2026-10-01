@@ -143,9 +143,6 @@ test.describe('ui e2e: details split canvas', () => {
                 HAPPIER_E2E_PROVIDER_SKIP_SERVER_SHARED_DEPS_BUILD: '1',
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
                 HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
-                HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
-                HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
-                HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
             },
         });
 
