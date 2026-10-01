@@ -75,10 +75,12 @@ function splitShellCommandTopLevelDetailed(command: string): ShellSplitDetailedR
       continue;
     }
 
-    if (!inSingle && !inDouble) {
-      // Fail-closed on command substitution / backticks: too hard to reason safely.
+    // Substitution executes in double quotes too; single quotes alone make it literal.
+    if (!inSingle) {
       if (ch === '`') return { ok: false };
       if (ch === '$' && src[i + 1] === '(') return { ok: false };
+    }
+    if (!inSingle && !inDouble) {
       // Fail-closed on process substitution: it embeds a command in an I/O redirection.
       if (ch === '<' && src[i + 1] === '(') return { ok: false };
       if (ch === '>' && src[i + 1] === '(') return { ok: false };

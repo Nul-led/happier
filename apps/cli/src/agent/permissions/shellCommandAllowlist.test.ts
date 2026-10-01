@@ -3,6 +3,12 @@ import { describe, it, expect } from 'vitest';
 import { isShellCommandAllowed, splitShellCommandTopLevel } from './shellCommandAllowlist';
 
 describe('shellCommandAllowlist', () => {
+  it('rejects command substitution inside double quotes but preserves literal single-quoted text', () => {
+    const patterns = [{ kind: 'prefix' as const, value: 'cat' }];
+    expect(isShellCommandAllowed('cat "$(touch changed.txt)"', patterns)).toBe(false);
+    expect(isShellCommandAllowed('cat "`touch changed.txt`"', patterns)).toBe(false);
+    expect(isShellCommandAllowed("cat '$(literal)'", patterns)).toBe(true);
+  });
   it('fails closed on process substitution', () => {
     expect(splitShellCommandTopLevel('echo <(whoami)').ok).toBe(false);
     expect(splitShellCommandTopLevel('echo >(whoami)').ok).toBe(false);
