@@ -31,18 +31,30 @@ class AsyncByteQueue implements AsyncIterable<Uint8Array> {
     private readonly items: QueuedRead[] = [];
     private readonly waiters: ((item: QueuedRead) => void)[] = [];
     private closed = false;
+    private failure: Error | undefined;
+    private readonly pendingConsumption = new Set<() => void>();
 
     push(chunk: Uint8Array): Promise<void> {
         if (this.closed) return Promise.resolve();
         return new Promise((resolve) => {
-            this.publish({ kind: "chunk", chunk, onConsumed: resolve });
+            const onConsumed = () => { this.pendingConsumption.delete(onConsumed); resolve(); };
+            this.pendingConsumption.add(onConsumed);
+            this.publish({ kind: "chunk", chunk, onConsumed });
         });
     }
 
-    close(): void {
+    end(): void {
         if (this.closed) return;
         this.closed = true;
         this.publish({ kind: "done" });
+    }
+
+    close(error?: Error): void {
+        this.failure ??= error;
+        this.closed = true;
+        this.items.splice(0);
+        for (const consume of this.pendingConsumption) consume();
+        for (const waiter of this.waiters.splice(0)) waiter({ kind: "done" });
     }
 
     private publish(item: QueuedRead): void {
@@ -55,8 +67,10 @@ class AsyncByteQueue implements AsyncIterable<Uint8Array> {
     }
 
     private async nextItem(): Promise<QueuedRead> {
+        if (this.failure) throw this.failure;
         const item = this.items.shift();
         if (item) return item;
+        if (this.closed) return { kind: "done" };
         return new Promise((resolve) => {
             this.waiters.push(resolve);
         });
@@ -65,9 +79,10 @@ class AsyncByteQueue implements AsyncIterable<Uint8Array> {
     async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
         while (true) {
             const item = await this.nextItem();
+            if (this.failure) throw this.failure;
             if (item.kind === "chunk") {
-                yield item.chunk;
-                item.onConsumed();
+                try { yield item.chunk; }
+                finally { item.onConsumed(); }
                 continue;
             }
             return;
@@ -116,7 +131,7 @@ export function createPeerTcpTunnelRelaySubstream(input: Readonly<{
     function release(): void {
         if (closed) return;
         closed = true;
-        queue.close();
+        queue.end();
         input.onRelease();
     }
 
@@ -130,7 +145,7 @@ export function createPeerTcpTunnelRelaySubstream(input: Readonly<{
         ackAfterBytes: 1,
         connection: {
             write: (bytes) => queue.push(bytes),
-            endWrite: () => queue.close(),
+            endWrite: () => queue.end(),
             close: () => release(),
         },
         sendFrame: (frame) => {
@@ -147,8 +162,14 @@ export function createPeerTcpTunnelRelaySubstream(input: Readonly<{
         write: (chunk) => frameSession.write(normalizeChunk(chunk)),
         endWrite: () => frameSession.endWrite("client_write_complete"),
         read: () => queue,
-        close: () => frameSession.terminate("client_stream_closed"),
-        abort: (reasonCode) => frameSession.abort(reasonCode || "client_stream_aborted"),
+        close: () => {
+            queue.close();
+            return frameSession.terminate("client_stream_closed");
+        },
+        abort: (reasonCode) => {
+            queue.close(new Error(reasonCode || "client_stream_aborted"));
+            return frameSession.abort(reasonCode || "client_stream_aborted");
+        },
     };
 
     return {
@@ -179,12 +200,18 @@ export function createPeerTcpTunnelRelaySubstream(input: Readonly<{
                 payload: decoded.payload,
             });
             if (!frame) return;
-            void frameSession.acceptFrame(frame).catch(() => release());
+            if (frame.kind === "abort") queue.close(new Error(frame.reasonCode));
+            void frameSession.acceptFrame(frame).catch((error) => {
+                queue.close(error instanceof Error ? error : new Error(String(error)));
+                release();
+            });
         },
         closeFromTunnel() {
-            if (closed) return;
-            closed = true;
-            queue.close();
+            queue.close(new Error("tunnel_closed"));
+            // The parent transport is already gone, so close only the local
+            // frame session. It owns pending credit-blocked write settlement,
+            // timers, queue teardown, and the exact connection release.
+            void frameSession.close().catch(() => undefined);
         },
     };
 }
