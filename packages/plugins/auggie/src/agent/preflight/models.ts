@@ -42,7 +42,7 @@ export function buildAuggiePreflightModelsFromModelListJson(outputRaw: string): 
     const parsedModel = parseAuggieModel(model);
     return parsedModel ? [parsedModel] : [];
   });
-  return models.length > 0 ? models : null;
+  return models.length > 0 || parsed.models.length === 0 ? models : null;
 }
 
 export const AUGGIE_PREFLIGHT_SESSION_CONTROLS = Object.freeze({

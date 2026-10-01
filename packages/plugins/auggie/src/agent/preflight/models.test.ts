@@ -18,6 +18,15 @@ describe('Auggie preflight model probing', () => {
     ]);
   });
 
+  it('preserves successful empty JSON catalogs while rejecting malformed observations', () => {
+    const parseOutput = AUGGIE_PREFLIGHT_SESSION_CONTROLS.models.parseOutput;
+    const result = (stdout: string) => ({ ok: true as const, stdout, stderr: '', exitCode: 0 });
+    expect(parseOutput(result(JSON.stringify({ models: [] })))).toEqual([]);
+    expect(parseOutput(result(JSON.stringify({ models: [{}] })))).toBeNull();
+    expect(parseOutput(result(JSON.stringify({})))).toBeNull();
+    expect(parseOutput(result(''))).toBeNull();
+  });
+
   it('declares only its native command and parses the host result', () => {
     const models = AUGGIE_PREFLIGHT_SESSION_CONTROLS.models;
     expect(models?.command).toEqual({ toolId: 'auggie-cli', args: ['model', 'list', '--json'] });
