@@ -136,6 +136,7 @@ async function loadProviderWithModules(
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   vi.resetModules();
   vi.unmock('node:module');
@@ -374,6 +375,35 @@ describe('createNodePtyProvider', () => {
     });
     expect(nodePty.spawn).toHaveBeenCalledTimes(1);
     expect(homebridge.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['linux', 'darwin'] as const)('uses the external fallback on %s Bun instead of the non-writable Homebridge backend', async (platform) => {
+    vi.stubGlobal('Bun', {});
+    const externalPty = createFakeProcess();
+    const homebridgePty = createFakeProcess();
+    const { provider } = await loadProviderWithModules({
+      'node-pty': { spawn: () => { throw new Error('native unavailable'); } },
+      '@homebridge/node-pty-prebuilt-multiarch': { spawn: () => homebridgePty },
+    }, {
+      platform,
+      fallbackProvider: { spawn: () => externalPty },
+      fallbackBackendName: 'python-relay',
+    });
+
+    expect(provider.spawn({ file: '/bin/sh', args: [], options: {} })).toBe(externalPty);
+  });
+
+  it('retains the Homebridge backend on Windows Bun', async () => {
+    vi.stubGlobal('Bun', {});
+    const homebridgePty = createFakeProcess(2468);
+    const { provider } = await loadProviderWithModules({
+      '@homebridge/node-pty-prebuilt-multiarch': { spawn: () => homebridgePty },
+    }, {
+      platform: 'win32',
+      fallbackProvider: null,
+    });
+
+    expect(provider.spawn({ file: 'cmd.exe', args: [], options: {} }).pid).toBe(2468);
   });
 
   it('uses homebridge when node-pty is missing', async () => {
