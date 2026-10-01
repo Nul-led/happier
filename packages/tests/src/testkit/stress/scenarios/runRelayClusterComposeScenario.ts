@@ -3,6 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   createPeerTcpTunnelRelayAuthorizationSigningInputV2,
+  decodePeerTcpTunnelBinaryFrameV2,
+  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
+  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES,
+  encodePeerTcpTunnelBinaryFrameV2,
+  PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
   PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
   redactBugReportSensitiveText,
   type PeerTcpTunnelRelayAuthorizationPayloadV2,
@@ -147,32 +152,40 @@ export function createRelayClusterEnvelopeFactory(input: Readonly<{
       };
     },
     userData: ({ tunnelId, sequence, payload }) => ({
-      v: 1,
+      v: 2,
       scopeUserId: input.accountId,
       sender: { kind: 'user' },
       recipient: { kind: 'machine', machineId: input.machineId },
-      frame: {
-        v: 1,
-        kind: 'data',
-        tunnelId,
-        direction: 'client_to_daemon',
-        sequence,
-        payloadBase64: Buffer.from(payload).toString('base64'),
-      },
+      encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+      frame: encodePeerTcpTunnelBinaryFrameV2({
+        header: {
+          version: 2,
+          kind: 'data',
+          tunnelId,
+          direction: 'client_to_daemon',
+          sequence,
+          payloadLength: Buffer.byteLength(payload),
+        },
+        payload: Buffer.from(payload),
+      }),
     }),
     machineData: ({ tunnelId, userSocketId, sequence, payload }) => ({
-      v: 1,
+      v: 2,
       scopeUserId: input.accountId,
       sender: { kind: 'machine', machineId: input.machineId },
       recipient: { kind: 'user', socketId: userSocketId },
-      frame: {
-        v: 1,
-        kind: 'data',
-        tunnelId,
-        direction: 'daemon_to_client',
-        sequence,
-        payloadBase64: Buffer.from(payload).toString('base64'),
-      },
+      encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+      frame: encodePeerTcpTunnelBinaryFrameV2({
+        header: {
+          version: 2,
+          kind: 'data',
+          tunnelId,
+          direction: 'daemon_to_client',
+          sequence,
+          payloadLength: Buffer.byteLength(payload),
+        },
+        payload: Buffer.from(payload),
+      }),
     }),
   };
 }
@@ -262,9 +275,37 @@ export async function withRelayClientCleanup<TResult>(
   }
 }
 
+function decodeBinaryRelayEnvelope(envelope: PeerTcpTunnelRelayEnvelope) {
+  if (envelope.v !== 2) return null;
+  const decoded = decodePeerTcpTunnelBinaryFrameV2({
+    frame: envelope.frame,
+    maxHeaderBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
+    maxPayloadBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES,
+  });
+  return decoded.ok ? decoded : null;
+}
+
 function envelopeTunnelId(envelope: PeerTcpTunnelRelayEnvelope): string | undefined {
-  if (envelope.v !== 1) return undefined;
-  return envelope.frame.kind === 'open' ? envelope.frame.open.tunnelId : envelope.frame.tunnelId;
+  if (envelope.v === 1) {
+    return envelope.frame.kind === 'open' ? envelope.frame.open.tunnelId : envelope.frame.tunnelId;
+  }
+  return decodeBinaryRelayEnvelope(envelope)?.header.tunnelId;
+}
+
+function envelopeFrameKind(envelope: PeerTcpTunnelRelayEnvelope): string | undefined {
+  return envelope.v === 1
+    ? envelope.frame.kind
+    : decodeBinaryRelayEnvelope(envelope)?.header.kind;
+}
+
+function terminalReasonCode(envelope: PeerTcpTunnelRelayEnvelope): string | undefined {
+  if (envelope.v === 1) {
+    return envelope.frame.kind === 'abort' || envelope.frame.kind === 'close'
+      ? envelope.frame.reasonCode
+      : undefined;
+  }
+  const header = decodeBinaryRelayEnvelope(envelope)?.header;
+  return header?.kind === 'abort' || header?.kind === 'close' ? header.reasonCode : undefined;
 }
 
 function framesForTunnel(
@@ -276,8 +317,9 @@ function framesForTunnel(
 
 function dataPayloads(frames: readonly PeerTcpTunnelRelayEnvelope[], tunnelId: string): string[] {
   return framesForTunnel(frames, tunnelId).flatMap((envelope) => {
-    if (envelope.v !== 1 || envelope.frame.kind !== 'data') return [];
-    return [Buffer.from(envelope.frame.payloadBase64, 'base64').toString('utf8')];
+    const decoded = decodeBinaryRelayEnvelope(envelope);
+    if (decoded?.header.kind !== 'data') return [];
+    return [Buffer.from(decoded.payload).toString('utf8')];
   });
 }
 
@@ -287,9 +329,7 @@ function terminalCount(
   reasonCode: string,
 ): number {
   return framesForTunnel(frames, tunnelId).filter((envelope) =>
-    envelope.v === 1
-    && (envelope.frame.kind === 'abort' || envelope.frame.kind === 'close')
-    && envelope.frame.reasonCode === reasonCode,
+    terminalReasonCode(envelope) === reasonCode,
   ).length;
 }
 
@@ -322,18 +362,13 @@ export function assertExternalPartitionTerminalWindow(input: Readonly<{
   const terminals = framesForTunnel(
     [...input.userFrames, ...input.machineFrames],
     input.tunnelId,
-  ).filter((envelope) =>
-    envelope.v === 1
-    && (envelope.frame.kind === 'abort' || envelope.frame.kind === 'close'));
+  ).filter((envelope) => terminalReasonCode(envelope) !== undefined);
   assert.equal(
     terminals.length,
     1,
     'External Redis partition requires exactly one public terminal envelope in the bounded terminal window',
   );
-  const reasonCodes = terminals.map((envelope) =>
-    envelope.v === 1 && (envelope.frame.kind === 'abort' || envelope.frame.kind === 'close')
-      ? envelope.frame.reasonCode
-      : 'unexpected');
+  const reasonCodes = terminals.map((envelope) => terminalReasonCode(envelope));
   assert.deepEqual(reasonCodes, ['relay_cap_exceeded']);
   return { terminalEnvelopeCount: 1, reasonCodes: ['relay_cap_exceeded'] };
 }
@@ -438,37 +473,37 @@ function summarizeRelaySocketError(value: unknown): Readonly<Record<string, stri
 
 function summarizeRelayFrame(envelope: PeerTcpTunnelRelayEnvelope): Readonly<Record<string, unknown>> {
   if (envelope.v === 2) {
+    const decoded = decodeBinaryRelayEnvelope(envelope);
+    if (!decoded) {
+      return {
+        v: 2,
+        kind: 'invalid_binary',
+        encodedBytes: envelope.frame.byteLength,
+      };
+    }
     return {
       v: 2,
-      kind: 'binary',
+      tunnelId: decoded.header.tunnelId,
+      kind: decoded.header.kind,
+      ...(typeof decoded.header.sequence === 'number' ? { sequence: decoded.header.sequence } : {}),
+      ...(typeof decoded.header.reasonCode === 'string'
+        ? { reasonCode: boundedDiagnosticString(decoded.header.reasonCode) }
+        : {}),
       payloadIdentity: {
-        decodedBytes: envelope.frame.byteLength,
-        sha256: createHash('sha256').update(envelope.frame).digest('hex'),
+        decodedBytes: decoded.payload.byteLength,
+        sha256: createHash('sha256').update(decoded.payload).digest('hex'),
       },
     };
   }
   const frame = envelope.frame;
   const tunnelId = frame.kind === 'open' ? frame.open.tunnelId : frame.tunnelId;
-  if (frame.kind !== 'data') {
-    return {
-      v: 1,
-      tunnelId,
-      kind: frame.kind,
-      ...('reasonCode' in frame && typeof frame.reasonCode === 'string'
-        ? { reasonCode: boundedDiagnosticString(frame.reasonCode) }
-        : {}),
-    };
-  }
-  const payload = Buffer.from(frame.payloadBase64, 'base64');
   return {
     v: 1,
     tunnelId,
     kind: frame.kind,
-    sequence: frame.sequence,
-    payloadIdentity: {
-      decodedBytes: payload.byteLength,
-      sha256: createHash('sha256').update(payload).digest('hex'),
-    },
+    ...('reasonCode' in frame && typeof frame.reasonCode === 'string'
+      ? { reasonCode: boundedDiagnosticString(frame.reasonCode) }
+      : {}),
   };
 }
 
@@ -505,36 +540,35 @@ export function buildOrderedForwardRelayDiagnostics(
   const duplicateSequences: number[] = [];
   let duplicateSequenceCount = 0;
   for (const envelope of orderedMachineFrames) {
-    if (envelope.v !== 1) continue;
-    if (envelope.frame.kind === 'open') {
+    if (envelopeFrameKind(envelope) === 'open') {
       openCount += 1;
       continue;
     }
-    if (envelope.frame.kind !== 'data') continue;
+    const decoded = decodeBinaryRelayEnvelope(envelope);
+    if (decoded?.header.kind !== 'data' || typeof decoded.header.sequence !== 'number') continue;
+    const sequence = decoded.header.sequence;
     dataCount += 1;
     if (dataSequences.length < orderedDiagnosticAggregateLimit) {
-      dataSequences.push(envelope.frame.sequence);
+      dataSequences.push(sequence);
     }
-    if (seenDataSequences.has(envelope.frame.sequence)
-      && !seenDuplicateSequences.has(envelope.frame.sequence)) {
+    if (seenDataSequences.has(sequence)
+      && !seenDuplicateSequences.has(sequence)) {
       duplicateSequenceCount += 1;
-      seenDuplicateSequences.add(envelope.frame.sequence);
+      seenDuplicateSequences.add(sequence);
       if (duplicateSequences.length < orderedDiagnosticAggregateLimit) {
-        duplicateSequences.push(envelope.frame.sequence);
+        duplicateSequences.push(sequence);
       }
     }
-    seenDataSequences.add(envelope.frame.sequence);
+    seenDataSequences.add(sequence);
   }
   const terminalReasons: string[] = [];
   let terminalReasonCount = 0;
   for (const envelope of [...orderedMachineFrames, ...orderedUserFrames]) {
-    if (envelope.v !== 1
-      || (envelope.frame.kind !== 'abort' && envelope.frame.kind !== 'close')) {
-      continue;
-    }
+    const reasonCode = terminalReasonCode(envelope);
+    if (reasonCode === undefined) continue;
     terminalReasonCount += 1;
     if (terminalReasons.length < orderedDiagnosticAggregateLimit) {
-      terminalReasons.push(boundedDiagnosticString(envelope.frame.reasonCode) ?? '');
+      terminalReasons.push(boundedDiagnosticString(reasonCode) ?? '');
     }
   }
   const socketErrorCount = Object.values(input.clients).reduce(
@@ -558,9 +592,7 @@ export function buildOrderedForwardRelayDiagnostics(
   const rejectedTunnelIds = duplicateIds.filter((tunnelId) =>
     [...input.clients.userA.frames, ...input.clients.userB.frames].some((envelope) =>
       envelopeTunnelId(envelope) === tunnelId
-      && envelope.v === 1
-      && (envelope.frame.kind === 'abort' || envelope.frame.kind === 'close')
-      && envelope.frame.reasonCode === 'relay_authorization_invalid',
+      && terminalReasonCode(envelope) === 'relay_authorization_invalid',
     ),
   );
 
@@ -595,12 +627,9 @@ export function buildOrderedForwardRelayDiagnostics(
 
 function freshTunnelTerminalReasons(input: FreshTunnelDiagnosticInput): string[] {
   return [...input.user.frames, ...input.machine.frames].flatMap((envelope) => {
-    if (envelopeTunnelId(envelope) !== input.tunnelId
-      || envelope.v !== 1
-      || (envelope.frame.kind !== 'abort' && envelope.frame.kind !== 'close')) {
-      return [];
-    }
-    return [envelope.frame.reasonCode];
+    if (envelopeTunnelId(envelope) !== input.tunnelId) return [];
+    const reasonCode = terminalReasonCode(envelope);
+    return reasonCode === undefined ? [] : [reasonCode];
   });
 }
 
@@ -1065,7 +1094,7 @@ async function executeRelayClusterComposeScenario(params: Readonly<{
     });
     assert.deepEqual(dataPayloads(machineB.frames, orderedTunnelId), ['forward-0', 'forward-1']);
     const orderedKinds = framesForTunnel(machineB.frames, orderedTunnelId).flatMap((envelope) =>
-      envelope.v === 1 ? [envelope.frame.kind] : [],
+      envelopeFrameKind(envelope) ?? [],
     );
     assert.deepEqual(orderedKinds.slice(0, 3), ['open', 'data', 'data']);
 

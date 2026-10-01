@@ -203,6 +203,28 @@ describe('runRelayClusterComposeScenario', () => {
       }],
       nowMs: 1_800_000_000_001,
     })).toMatchObject({ valid: true });
+
+    expect(PeerTcpTunnelRelayEnvelopeSchema.parse(factory.userData({
+      tunnelId: 'tunnel-1',
+      sequence: 0,
+      payload: 'forward',
+    }))).toMatchObject({
+      v: 2,
+      encoding: 'binary_frame_v2',
+      sender: { kind: 'user' },
+      recipient: { kind: 'machine', machineId: 'machine-1' },
+    });
+    expect(PeerTcpTunnelRelayEnvelopeSchema.parse(factory.machineData({
+      tunnelId: 'tunnel-1',
+      userSocketId: 'socket-1',
+      sequence: 0,
+      payload: 'reverse',
+    }))).toMatchObject({
+      v: 2,
+      encoding: 'binary_frame_v2',
+      sender: { kind: 'machine', machineId: 'machine-1' },
+      recipient: { kind: 'user', socketId: 'socket-1' },
+    });
   });
 
   it('fails before placement unless the topology has exactly two API replicas', async () => {
@@ -578,7 +600,7 @@ describe('runRelayClusterComposeScenario', () => {
           frames: [
             { v: 1, tunnelId, kind: 'open' },
             {
-              v: 1,
+              v: 2,
               tunnelId,
               kind: 'data',
               sequence: 0,

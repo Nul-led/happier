@@ -158,7 +158,8 @@ test.describe('ui e2e: custom theme profiles', () => {
     await expect(saveButton).toBeEnabled({ timeout: 60_000 });
     await saveButton.click();
 
-    await openThemeProfiles({ page, uiBaseUrl });
+    await page.goBack();
+    await expectVisibleTestId(page, 'settings-theme-profiles-screen');
     const profileId = await firstCustomProfileId(page);
     await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/settings/session?happier_hmr=0`, 180_000);
     await expectVisibleTestId(page, 'settings-session-sessionListDensity-trigger');

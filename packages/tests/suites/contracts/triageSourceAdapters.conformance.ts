@@ -93,13 +93,13 @@ import {
 import { encodeAzureSourceConfiguration } from '../../../plugins/scm-azure-devops/src/triage/configuration';
 import { AZURE_DEVOPS_TRIAGE_PURPOSE } from '../../../plugins/scm-azure-devops/src/triage/descriptor';
 import {
-  AZURE_NATIVE_PAGE_SIZE,
   runAzureTriageGet,
   runAzureTriageListInstances,
   runAzureTriageScan,
   type AzureTriageReadServices,
 } from '../../../plugins/scm-azure-devops/src/triage/operations';
 import { normalizeAzureDevOpsBaseUrl } from '../../../plugins/scm-azure-devops/src/triage/origin';
+import { AZURE_NATIVE_PAGE_SIZE } from '../../../plugins/scm-azure-devops/src/triage/paging';
 import type {
   AzureDevOpsHttpRequest,
   AzureDevOpsHttpResponse,
