@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, open, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -104,6 +104,44 @@ afterEach(async () => {
 });
 
 describe('bounded JSONL session scanner', () => {
+  it('distinguishes a bounded parsed page from an incomplete EOF without changing raw-line reads', async () => {
+    const scanner = await import('./index.js');
+    const root = await mkdtemp(join(tmpdir(), 'happier-file-store-incomplete-'));
+    tempDirs.add(root);
+    const filePath = join(root, 'transcript.jsonl');
+    const first = jsonlLine({ id: 1 });
+    const incomplete = '{"id":2';
+    await writeFile(filePath, first + incomplete);
+    const bounded = await scanner.readJsonlFileForward({ filePath, offsetBytes: 0, maxBytes: first.length, maxItems: 10 });
+    expect(bounded).toMatchObject({ nextOffsetBytes: first.length, hitPageLimit: true });
+    const pending = await scanner.readJsonlFileForward({ filePath, offsetBytes: bounded.nextOffsetBytes, maxBytes: 1024, maxItems: 10 });
+    expect(pending).toMatchObject({ items: [], nextOffsetBytes: first.length, reachedEnd: false, hitPageLimit: false });
+    const raw = await scanner.readJsonlFileForwardLines({ filePath, offsetBytes: first.length, maxBytes: 1024, maxItems: 10 });
+    expect(raw.items.map((line) => line.rawLine)).toEqual([incomplete]);
+    expect(raw.nextOffsetBytes).toBe(first.length + incomplete.length);
+    await appendFile(filePath, '}\ninvalid\nnull');
+    const completed = await scanner.readJsonlFileForward({ filePath, offsetBytes: pending.nextOffsetBytes, maxBytes: 1024, maxItems: 10 });
+    expect(completed.items.map((line) => line.value)).toEqual([{ id: 2 }]);
+    expect(completed).toMatchObject({ nextOffsetBytes: (await stat(filePath)).size, reachedEnd: true, hitPageLimit: false });
+  });
+
+  it('reports the consumed tail boundary without scanning beyond the existing oversize-line budget', async () => {
+    const scanner = await import('./index.js');
+    const root = await mkdtemp(join(tmpdir(), 'happier-file-store-tail-boundary-'));
+    tempDirs.add(root);
+    const filePath = join(root, 'transcript.jsonl');
+    const first = jsonlLine({ id: 1 });
+    await writeFile(filePath, first + '{"id":2');
+    expect(await scanner.readJsonlFileBackwardPage({ filePath, endOffsetBytes: null, maxBytes: 1024, maxItems: 10 }))
+      .toMatchObject({ tailOffsetBytes: first.length });
+    await appendFile(filePath, '}');
+    expect(await scanner.readJsonlFileBackwardPage({ filePath, endOffsetBytes: null, maxBytes: 1024, maxItems: 10 }))
+      .toMatchObject({ tailOffsetBytes: (await stat(filePath)).size });
+    await writeFile(filePath, first + '{"text":"' + 'x'.repeat(4096));
+    expect(await scanner.readJsonlFileBackwardPage({ filePath, endOffsetBytes: null, maxBytes: 1024, maxOversizeLineBytes: 1024, maxItems: 10 }))
+      .toMatchObject({ tailOffsetBytes: null });
+  });
+
   it('accepts a fixed-width mutable title slot before the session header', async () => {
     const scanner = await loadScanner();
     const root = await mkdtemp(join(tmpdir(), 'happier-file-store-title-slot-'));

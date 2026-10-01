@@ -418,6 +418,8 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
   diagnostics?: readonly JsonlSourceDiagnosticV1[];
   nextEndOffsetBytes: number;
   reachedStart: boolean;
+  /** Consumed end of this page; null when the terminal line boundary exceeds the read budget. */
+  tailOffsetBytes: number | null;
 }>> {
   const fileSystem = params.fileSystem ?? defaultFileSystem;
   const maxBytes = normalizePositiveInteger(params.maxBytes, DEFAULT_TAIL_BYTES);
@@ -432,7 +434,7 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
   try {
     fileSize = Math.max(0, Math.trunc((await fileSystem.stat(params.filePath)).size));
   } catch {
-    return { items: [], nextEndOffsetBytes: 0, reachedStart: true };
+    return { items: [], nextEndOffsetBytes: 0, reachedStart: true, tailOffsetBytes: 0 };
   }
 
   const initialEnd = (() => {
@@ -440,7 +442,7 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
     return Math.min(fileSize, Math.max(0, Math.trunc(params.endOffsetBytes)));
   })();
   if (initialEnd <= 0) {
-    return { items: [], nextEndOffsetBytes: 0, reachedStart: true };
+    return { items: [], nextEndOffsetBytes: 0, reachedStart: true, tailOffsetBytes: 0 };
   }
 
   const collectedNewestFirst: JsonlParsedLineV1[] = [];
@@ -449,6 +451,7 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
   let bytesReadTotal = 0;
   let end = initialEnd;
   let carry = Buffer.alloc(0);
+  let tailOffsetBytes: number | null = null;
 
   while (end > 0 && collectedNewestFirst.length < maxItems) {
     const remainingBytes = maxBytes - bytesReadTotal;
@@ -489,6 +492,12 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
           ? combinedStartOffset + segmentEndIndexExclusive
           : carryStartOffset + (segmentEndIndexExclusive - chunk.length);
       const decoded = decodeSourceLine(segment);
+      const parsed = decoded.ok ? parseJsonLine(decoded.value) : null;
+      if (tailOffsetBytes === null) {
+        tailOffsetBytes = segment.length === 0 || parsed !== null || (decoded.ok && decoded.value.trim() === 'null')
+          ? initialEnd
+          : startOffsetAbs;
+      }
       if (!decoded.ok) {
         malformedCount += 1;
         if (malformedPositions.length < MAX_SOURCE_DIAGNOSTIC_POSITIONS) {
@@ -496,7 +505,6 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
         }
         continue;
       }
-      const parsed = parseJsonLine(decoded.value);
       if (parsed === null) continue;
       collectedNewestFirst.push({ value: parsed, startOffsetBytes: startOffsetAbs, endOffsetBytes: endOffsetAbs });
     }
@@ -514,6 +522,9 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
         carry = Buffer.alloc(0);
       } else {
         const parsed = parseJsonLine(decoded.value);
+        if (tailOffsetBytes === null) {
+          tailOffsetBytes = parsed !== null || decoded.value.trim() === 'null' ? initialEnd : 0;
+        }
         if (parsed !== null) {
           collectedNewestFirst.push({ value: parsed, startOffsetBytes: 0, endOffsetBytes: carry.length });
           carry = Buffer.alloc(0);
@@ -532,6 +543,7 @@ export async function readJsonlFileBackwardPage(params: Readonly<{
     ...(diagnostics === undefined ? {} : { diagnostics }),
     nextEndOffsetBytes,
     reachedStart: nextEndOffsetBytes <= 0,
+    tailOffsetBytes,
   };
 }
 
@@ -549,6 +561,7 @@ export async function readJsonlFileForwardLines(params: Readonly<{
   nextOffsetBytes: number;
   truncated: boolean;
   reachedEnd: boolean;
+  hitPageLimit: boolean;
 }>> {
   const fileSystem = params.fileSystem ?? defaultFileSystem;
   const maxBytes = normalizePositiveInteger(params.maxBytes, DEFAULT_TAIL_BYTES);
@@ -563,12 +576,12 @@ export async function readJsonlFileForwardLines(params: Readonly<{
   try {
     fileSize = Math.max(0, Math.trunc((await fileSystem.stat(params.filePath)).size));
   } catch {
-    return { items: [], nextOffsetBytes: 0, truncated: true, reachedEnd: true };
+    return { items: [], nextOffsetBytes: 0, truncated: true, reachedEnd: true, hitPageLimit: false };
   }
 
   const offsetBytes = Math.max(0, Math.trunc(params.offsetBytes));
   if (offsetBytes > fileSize) {
-    return { items: [], nextOffsetBytes: 0, truncated: true, reachedEnd: true };
+    return { items: [], nextOffsetBytes: 0, truncated: true, reachedEnd: true, hitPageLimit: false };
   }
 
   const items: JsonlForwardLineV1[] = [];
@@ -661,6 +674,7 @@ export async function readJsonlFileForwardLines(params: Readonly<{
     nextOffsetBytes: carryStartOffset,
     truncated: false,
     reachedEnd,
+    hitPageLimit: !reachedEnd && (items.length >= maxItems || nextReadOffset < fileSize),
   };
 }
 
@@ -678,8 +692,15 @@ export async function readJsonlFileForward(params: Readonly<{
   nextOffsetBytes: number;
   truncated: boolean;
   reachedEnd: boolean;
+  hitPageLimit: boolean;
 }>> {
   const page = await readJsonlFileForwardLines(params);
+  const lastLine = page.items.at(-1);
+  // Raw consumers still receive incomplete text. Parsed consumers must retry
+  // an unterminated invalid line when its writer completes it on a later read.
+  const incompleteTail = lastLine?.value === null
+    && lastLine.rawLine !== 'null'
+    && lastLine.endOffsetBytes === page.nextOffsetBytes;
   return {
     items: page.items.flatMap((line) =>
       line.value === null
@@ -691,8 +712,9 @@ export async function readJsonlFileForward(params: Readonly<{
         }],
     ),
     ...(page.diagnostics === undefined ? {} : { diagnostics: page.diagnostics }),
-    nextOffsetBytes: page.nextOffsetBytes,
+    nextOffsetBytes: incompleteTail ? lastLine.startOffsetBytes : page.nextOffsetBytes,
     truncated: page.truncated,
-    reachedEnd: page.reachedEnd,
+    reachedEnd: !incompleteTail && page.reachedEnd,
+    hitPageLimit: page.hitPageLimit,
   };
 }
