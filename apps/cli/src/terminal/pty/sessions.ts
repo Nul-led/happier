@@ -9,6 +9,7 @@ import {
 } from '@happier-dev/protocol';
 import type {
   DaemonTerminalErrorCode,
+  DaemonTerminalListEntryV1,
   DaemonTerminalStreamEvent,
   TerminalStreamFrame,
   TerminalStreamReadRequest,
@@ -95,6 +96,7 @@ export type TerminalByteStreamAckRequest = Readonly<{
 export type TerminalByteStreamAckResponse = Readonly<{ ok: true }> | Readonly<{ ok: false; code: string; message: string }>;
 
 export type TerminalPtySessionManager = Readonly<{
+  list: () => DaemonTerminalListEntryV1[];
   ensure: (input: Readonly<{ terminalKey: string; cwd: string; cols?: number; rows?: number; initialCommand?: string; launchProcess?: TerminalLaunchProcess; sessionId?: string }>) => EnsureOk | ErrorResult;
   read: (input: Readonly<{ terminalId: string; cursor: number; maxBytes: number; maxEvents: number }>) => ReadOk | ErrorResult;
   readBytes: (input: Readonly<{ terminalId: string; byteOffset: number; maxBytes: number; maxChunks: number }>) => TerminalByteReadResult;
@@ -921,6 +923,15 @@ export function createTerminalPtySessionManager(params: Readonly<{
   };
 
   return {
+    // A read-only projection: listing neither reaps nor renews a terminal's activity.
+    list: () => Array.from(sessionsById.values(), (session) => ({
+      terminalId: session.terminalId,
+      terminalKey: session.terminalKey,
+      cwd: session.cwd,
+      ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+      ended: session.ended,
+      exit: session.exit ? { ...session.exit } : null,
+    })),
     ensure,
     restart,
     read,

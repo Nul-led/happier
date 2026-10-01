@@ -2,6 +2,8 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   DaemonTerminalCloseRequestSchema,
   DaemonTerminalEnsureRequestSchema,
+  DaemonTerminalListRequestV1Schema,
+  DaemonTerminalListResponseV1Schema,
   DaemonTerminalInputRequestSchema,
   DaemonTerminalResizeRequestSchema,
   DaemonTerminalRestartRequestSchema,
@@ -135,6 +137,18 @@ export function registerMachineTerminalRpcHandlers(params: Readonly<{
     }
     return { ok: true, cwd: validation.resolvedPath ?? expanded };
   };
+
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_TERMINAL_LIST, async (raw: unknown) => {
+    if (!config.enabled) return err('terminal_disabled');
+    if (!DaemonTerminalListRequestV1Schema.safeParse(raw).success) return err('terminal_invalid_request');
+    const terminals = sessionManager?.list() ?? [];
+    return DaemonTerminalListResponseV1Schema.parse({
+      ok: true,
+      terminals: params.deps?.requiredSessionId
+        ? terminals.filter((terminal) => terminal.sessionId === params.deps?.requiredSessionId)
+        : terminals,
+    });
+  });
 
   rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_TERMINAL_ENSURE, async (raw: unknown) => {
     if (!config.enabled) return err('terminal_disabled');

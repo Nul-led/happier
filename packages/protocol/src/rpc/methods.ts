@@ -15,6 +15,7 @@ export const RPC_METHODS = {
   DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE: 'daemon.executionRuns.brokerAuthority.resolve.v1',
   DAEMON_EXECUTION_RUN_PERMISSION_RESPOND: 'daemon.executionRuns.permission.respond.v1',
   DAEMON_TERMINAL_ENSURE: 'daemon.terminal.ensure',
+  DAEMON_TERMINAL_LIST: 'daemon.terminal.list',
   DAEMON_TERMINAL_STREAM_READ: 'daemon.terminal.stream.read',
   DAEMON_TERMINAL_STREAM_READ_BYTES: 'daemon.terminal.stream.readBytes',
   DAEMON_TERMINAL_STREAM_ACK: 'daemon.terminal.stream.ack',

@@ -90,6 +90,37 @@ class FakeInteractivePtyProvider implements PtyProvider {
 }
 
 describe('registerMachineTerminalRpcHandlers', () => {
+  it('lists existing terminals through the owner, rejects unknown input, and narrows restricted sessions', async () => {
+    const provider = new FakePtyProvider();
+    const sessionManager = createTerminalPtySessionManager({ ptyProvider: provider, env: { SHELL: '/bin/bash' },
+      config: { maxSessions: 10, idleTimeoutMs: 0, bufferMaxBytes: 1000, bufferMaxEvents: 10,
+        bufferRetentionMs: 60_000, urlParseBufferLimit: 1000, maxWriteChunkBytes: 1000, defaultCols: 80, defaultRows: 24 } });
+    sessionManager.ensure({ terminalKey: 'one', cwd: '/one', sessionId: 'session-one' });
+    sessionManager.ensure({ terminalKey: 'two', cwd: '/two', sessionId: 'session-two' });
+    const register = (requiredSessionId?: string) => {
+      const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+      registerMachineTerminalRpcHandlers({ rpcHandlerManager: {
+        registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => registered.set(method, handler),
+      } as unknown as RpcHandlerManager, deps: { env: {}, sessionManager, requiredSessionId } });
+      return registered.get('daemon.terminal.list');
+    };
+    try {
+      const list = register();
+      expect(list).toBeDefined();
+      await expect(list!({})).resolves.toEqual({ ok: true, terminals: sessionManager.list() });
+      await expect(list!({ sessionId: 'session-two' })).resolves.toMatchObject({ ok: false, errorCode: 'terminal_invalid_request' });
+      await expect(register('session-one')!({})).resolves.toEqual({ ok: true, terminals: sessionManager.list().filter((terminal) => terminal.sessionId === 'session-one') });
+      expect(provider.spawned).toHaveLength(2);
+    } finally { sessionManager.dispose(); }
+  });
+
+  it('returns an empty list before the PTY owner has been created', async () => {
+    const registered = new Map<string, (params: unknown) => Promise<unknown>>();
+    registerMachineTerminalRpcHandlers({ rpcHandlerManager: {
+      registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => registered.set(method, handler),
+    } as unknown as RpcHandlerManager, deps: { env: {} } });
+    await expect(registered.get('daemon.terminal.list')!({})).resolves.toEqual({ ok: true, terminals: [] });
+  });
   it('fails closed when explicitly disabled', async () => {
     const registered = new Map<string, (params: any) => Promise<any>>();
     const rpcHandlerManager = {
@@ -108,6 +139,11 @@ describe('registerMachineTerminalRpcHandlers', () => {
     expect(ensure).toBeDefined();
 
     await expect(ensure!({ terminalKey: 'k', cols: 80, rows: 24 })).resolves.toEqual({
+      ok: false,
+      errorCode: 'terminal_disabled',
+      error: 'terminal_disabled',
+    });
+    await expect(registered.get(RPC_METHODS.DAEMON_TERMINAL_LIST)!({})).resolves.toEqual({
       ok: false,
       errorCode: 'terminal_disabled',
       error: 'terminal_disabled',

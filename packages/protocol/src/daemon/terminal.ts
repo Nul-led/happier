@@ -18,6 +18,28 @@ export const DaemonTerminalErrorSchema = z.object({
 }).passthrough();
 export type DaemonTerminalError = z.infer<typeof DaemonTerminalErrorSchema>;
 
+export const DaemonTerminalListRequestV1Schema = z.object({}).strict();
+export type DaemonTerminalListRequestV1 = z.infer<typeof DaemonTerminalListRequestV1Schema>;
+
+export const DaemonTerminalListEntryV1Schema = z.object({
+  terminalId: z.string().min(1),
+  terminalKey: z.string().min(1).max(2000),
+  cwd: z.string().min(1).max(10_000),
+  sessionId: z.string().min(1).max(256).optional(),
+  ended: z.boolean(),
+  exit: z.object({
+    exitCode: z.number().int().nullable(),
+    signal: z.number().int().nullable(),
+  }).strict().nullable(),
+}).strict();
+export type DaemonTerminalListEntryV1 = z.infer<typeof DaemonTerminalListEntryV1Schema>;
+
+export const DaemonTerminalListResponseV1Schema = z.union([
+  z.object({ ok: z.literal(true), terminals: z.array(DaemonTerminalListEntryV1Schema) }).strict(),
+  DaemonTerminalErrorSchema.strict(),
+]);
+export type DaemonTerminalListResponseV1 = z.infer<typeof DaemonTerminalListResponseV1Schema>;
+
 export const DaemonTerminalLaunchIntentSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('session_attach'),

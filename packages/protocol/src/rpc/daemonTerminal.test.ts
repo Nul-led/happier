@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { RPC_METHODS } from './index.js';
 
 describe('RPC_METHODS (daemon terminal)', () => {
+  it('includes the read-only daemon.terminal.list operation', () => {
+    expect(RPC_METHODS.DAEMON_TERMINAL_LIST).toBe('daemon.terminal.list');
+  });
   it('includes daemon.terminal.ensure', () => {
     expect(RPC_METHODS.DAEMON_TERMINAL_ENSURE).toBe('daemon.terminal.ensure');
   });

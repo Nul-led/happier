@@ -5781,6 +5781,12 @@ export {
 
 export {
   DaemonTerminalErrorCodeSchema,
+  DaemonTerminalListRequestV1Schema,
+  DaemonTerminalListEntryV1Schema,
+  DaemonTerminalListResponseV1Schema,
+  type DaemonTerminalListRequestV1,
+  type DaemonTerminalListEntryV1,
+  type DaemonTerminalListResponseV1,
   DaemonTerminalErrorSchema,
   DaemonTerminalLaunchIntentSchema,
   DaemonTerminalEnsureRequestSchema,

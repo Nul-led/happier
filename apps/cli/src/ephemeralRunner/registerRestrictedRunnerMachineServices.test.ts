@@ -175,6 +175,7 @@ describe('restricted Runner ordinary Machine services', () => {
         done: false,
       })),
       acknowledgeByteStream: vi.fn(() => ({ ok: true as const })),
+      list: () => [],
       inputEvent: vi.fn(() => ({ ok: true as const })),
       input: vi.fn(() => ({ ok: true as const })),
       resize: vi.fn(() => ({ ok: true as const })),
