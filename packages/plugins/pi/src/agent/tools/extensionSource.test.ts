@@ -49,6 +49,31 @@ describe('Pi Happier tools extension', () => {
         result = await handler({ systemPrompt: 'PI_SYSTEM' });
       }
       expect(result).toEqual({ systemPrompt: 'PI_SYSTEM\n\nHAPPIER_SYSTEM' });
+      // A native resume starts a new extension instance with the host's new config.
+      // The previous instance retains its own plan; neither instance edits the Pi base.
+      const revisedConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+      revisedConfig.systemPrompt = 'REVISED_ROLE_AND_WORKER';
+      writeFileSync(configPath, JSON.stringify(revisedConfig));
+      const resumedHandlers = new Map<string, Array<(event: unknown) => unknown>>();
+      module.default({
+        registerFlag() {},
+        getFlag: () => configPath,
+        registerTool() {},
+        on(name: string, handler: (event: unknown) => unknown) {
+          resumedHandlers.set(name, [...(resumedHandlers.get(name) ?? []), handler]);
+        },
+      });
+      for (const handler of resumedHandlers.get('session_start') ?? []) await handler({});
+      for (const handler of resumedHandlers.get('before_agent_start') ?? []) {
+        expect(await handler({ systemPrompt: 'PI_SYSTEM' })).toEqual({
+          systemPrompt: 'PI_SYSTEM\n\nREVISED_ROLE_AND_WORKER',
+        });
+      }
+      for (const handler of handlers.get('before_agent_start') ?? []) {
+        expect(await handler({ systemPrompt: 'PI_SYSTEM' })).toEqual({
+          systemPrompt: 'PI_SYSTEM\n\nHAPPIER_SYSTEM',
+        });
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

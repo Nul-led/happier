@@ -9,6 +9,7 @@ import {
   createExecutionRunHostBackendFromConversationRuntime,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { resolveHomeDirFromEnvironment } from '@happier-dev/plugin-sdk/fs';
+import { PluginError } from '@happier-dev/plugin-sdk';
 import { join } from 'node:path';
 
 import {
@@ -62,6 +63,12 @@ async function openPiSession(
 ): Promise<AgentSessionRuntime> {
   if (request.kind === 'fork') {
     throw new Error('Pi does not support native session fork');
+  }
+  if (request.startupInstructions && !context.session.services.happierTools) {
+    throw new PluginError({
+      code: 'agent_session_startup_instructions_unsupported',
+      retryable: false,
+    });
   }
   const lifecycle = createPiSessionOpenLifecycle({
     signal: context.signal,
