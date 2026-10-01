@@ -7,6 +7,7 @@ import {
     createCodexInjectedMcpServerKey,
     isFirstPartyHappierMcpBridgeServerName,
 } from '../../../mcp/serverKeys.js';
+import { readCodexAppServerStartupRpcTimeoutMs } from '../client/timeout.js';
 
 export type CodexAppServerMcpServerConfig = Readonly<{
     command: string;
@@ -101,6 +102,15 @@ export function buildCodexAppServerConfigOverrides(
     const injectedKeys = assignInjectedServerKeys(serverNames);
     const overrides: string[] = [];
 
+    const hasFirstPartyHappierMcpServer = serverNames.some(isFirstPartyHappierMcpBridgeServerName);
+    const happierMcpStartupTimeoutMs = readCodexAppServerStartupRpcTimeoutMs(options.processEnv ?? {});
+    if (hasFirstPartyHappierMcpServer) {
+        // Recent Codex versions otherwise give optional MCP servers only a short shared grace
+        // while building the first turn's tool catalog. Keep Happier optional, but let its tools
+        // use the same bounded startup budget as the app-server connection itself.
+        overrides.push(`mcp_optional_startup_grace_ms=${happierMcpStartupTimeoutMs}`);
+    }
+
     for (const serverName of [...serverNames].sort((left, right) => left.localeCompare(right))) {
         const config = mcpServers[serverName];
         const injectedKey = injectedKeys.get(serverName);
@@ -115,6 +125,7 @@ export function buildCodexAppServerConfigOverrides(
         }
         overrides.push(`mcp_servers.${injectedKey}.enabled=true`);
         if (isFirstPartyHappierMcpBridgeServerName(serverName)) {
+            overrides.push(`mcp_servers.${injectedKey}.startup_timeout_sec=${happierMcpStartupTimeoutMs / 1_000}`);
             const timeoutMs = readCodexHappierMcpToolCallTimeoutMs(options.processEnv);
             overrides.push(`mcp_servers.${injectedKey}.tool_timeout_sec=${timeoutMs / 1_000}`);
             appendHappierMcpStaticApprovalOverrides(overrides, injectedKey);

@@ -12,6 +12,7 @@ import {
   probeCodexRealtimeConversationFeature,
   type DisposableCodexAppServerClient,
 } from './client.js';
+import { readCodexAppServerStartupRpcTimeoutMs } from './client/timeout.js';
 
 type CodexAppServerEnv = Readonly<Record<string, string | undefined>>;
 const SHARED_CONTROL_MIN_MINOR_UNIX = 131;
@@ -19,7 +20,7 @@ const SHARED_CONTROL_MIN_MINOR_UNIX = 131;
 type Dependencies = Readonly<{
   readCodexVersion: (exec: ExecService, env: CodexAppServerEnv, signal?: AbortSignal) => Promise<string>;
   createRuntimeDirectory: () => Promise<string>;
-  waitForSocket: (socketPath: string, process: PluginProcessHandle) => Promise<void>;
+  waitForSocket: (socketPath: string, process: PluginProcessHandle, timeoutMs: number) => Promise<void>;
   removeRuntimeDirectory: (directory: string) => Promise<void>;
   createClient: typeof createCodexNativeAppServerClient;
   probeRealtime: typeof probeCodexRealtimeConversationFeature;
@@ -42,7 +43,7 @@ async function readCodexVersion(
     env: buildCodexAppServerEnv(env),
     maxStdoutBytes: 4_096,
     maxStderrBytes: 4_096,
-    timeoutMs: 5_000,
+    timeoutMs: readCodexAppServerStartupRpcTimeoutMs(env),
   }, signal ? { signal } : undefined);
   return new TextDecoder().decode(result.stdout);
 }
@@ -56,10 +57,14 @@ function supportsSharedControl(versionOutput: string, platform: NodeJS.Platform)
   return Boolean(version && (version.major > 0 || version.minor >= SHARED_CONTROL_MIN_MINOR_UNIX));
 }
 
-async function waitForSocket(socketPath: string, process: PluginProcessHandle): Promise<void> {
+async function waitForSocket(
+  socketPath: string,
+  process: PluginProcessHandle,
+  timeoutMs: number,
+): Promise<void> {
   let terminated = false;
   void process.wait().then(() => { terminated = true; }, () => { terminated = true; });
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (terminated) throw new Error('Codex shared app-server exited before its socket was ready.');
     try {
@@ -148,7 +153,11 @@ export async function createCodexSharedAppServer(params: Readonly<{
         maxStdoutBytes: 4_096,
         maxStderrBytes: 16_384,
       }, params.signal ? { signal: params.signal } : undefined);
-      await dependencies.waitForSocket(socketPath, serverProcess);
+      await dependencies.waitForSocket(
+        socketPath,
+        serverProcess,
+        readCodexAppServerStartupRpcTimeoutMs(request.processEnv),
+      );
     })();
     try {
       await startPromise;
