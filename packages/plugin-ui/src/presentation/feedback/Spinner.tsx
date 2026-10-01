@@ -11,6 +11,7 @@ import { HAPPIER_TONE_COLOR_TOKEN } from '../semantics.js';
 import { DotSpinnerNative } from './DotSpinnerNative.js';
 import { DotSpinnerWeb } from './DotSpinnerWeb.js';
 import type { DotSpinnerInk } from './dotSpinnerFrames.js';
+import { HAPPIER_SPINNER_SPIN_ANIMATION, useHappierSpinnerKeyframes } from './spinnerKeyframes.js';
 import { normalizeHappierSpinnerStyleId, type DotSpinnerStyleId } from './spinnerStyles.js';
 
 /**
@@ -34,7 +35,7 @@ const DEFAULT_LARGE_SPINNER_SIZE = 36;
 const DEFAULT_NUMERIC_SPINNER_SIZE = 20;
 const STEPPED_WEB_SPINNER_MAX_SIZE = DEFAULT_SMALL_SPINNER_SIZE;
 const STEPPED_WEB_SPINNER_TIMING_FUNCTION = 'steps(6, end)';
-const SPINNER_ANIMATION_NAME = 'happierActivitySpinnerSpin';
+const SPINNER_ANIMATION_NAME = HAPPIER_SPINNER_SPIN_ANIMATION;
 
 export type HappierWebSpinnerStyle = Readonly<{
   alignSelf: 'center';
@@ -278,6 +279,7 @@ export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerMode
 }
 
 export function HappierSpinner(props: HappierSpinnerProps) {
+  useHappierSpinnerKeyframes();
   const theme = useOptionalHappierUiTheme();
   const environmentAccessibility = useOptionalHappierUiAccessibility();
   const {

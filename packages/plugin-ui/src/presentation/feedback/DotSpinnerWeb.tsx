@@ -6,11 +6,11 @@ import {
   getDotSpinnerFrames,
   type DotSpinnerInk,
 } from './dotSpinnerFrames.js';
+import { HAPPIER_SPINNER_BREATH_ANIMATION, HAPPIER_SPINNER_FILMSTRIP_ANIMATION } from './spinnerKeyframes.js';
 import type { DotSpinnerStyleId } from './spinnerStyles.js';
 
-/** Keyframes live in the host's global stylesheet (`apps/ui/sources/theme.css`) with the ring's. */
-const FILMSTRIP_ANIMATION_NAME = 'happierActivitySpinnerFilmstrip';
-const BREATH_ANIMATION_NAME = 'happierActivitySpinnerBreath';
+const FILMSTRIP_ANIMATION_NAME = HAPPIER_SPINNER_FILMSTRIP_ANIMATION;
+const BREATH_ANIMATION_NAME = HAPPIER_SPINNER_BREATH_ANIMATION;
 const FRAME_SHEET_ATTRIBUTE = 'data-happier-activity-spinner';
 
 const useInsertionEffectSafe: typeof React.useEffect =

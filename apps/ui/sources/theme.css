@@ -81,32 +81,6 @@ html[data-happier-input-modality="pointer"] :focus {
     }
 }
 
-@keyframes happierActivitySpinnerSpin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-/* Dot spinner: steps a strip of pre-drawn frames across its clip (plugin-ui DotSpinnerWeb). */
-@keyframes happierActivitySpinnerFilmstrip {
-    to {
-        transform: translateX(-100%);
-    }
-}
-
-/* Dot spinner under reduced motion: the still H fades gently instead of moving. */
-@keyframes happierActivitySpinnerBreath {
-    from {
-        opacity: 1;
-    }
-    to {
-        opacity: 0.45;
-    }
-}
-
 /* Webkit Scrollbars (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
     width: 12px;

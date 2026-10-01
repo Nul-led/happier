@@ -1606,6 +1606,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `useHappierMenuInteraction` from `dist/presentation/index.d.ts`
 - value `useHappierPageChrome` from `dist/presentation/index.d.ts`
 - value `useHappierPageSection` from `dist/presentation/index.d.ts`
+- value `useHappierSpinnerKeyframes` from `dist/presentation/index.d.ts`
 - value `useHappierTabPanelActivity` from `dist/presentation/index.d.ts`
 - value `useHappierTextPresentation` from `dist/presentation/index.d.ts`
 - value `withHappierPageSectionDividers` from `dist/presentation/index.d.ts`

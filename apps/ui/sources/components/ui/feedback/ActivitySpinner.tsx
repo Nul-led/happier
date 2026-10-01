@@ -2,6 +2,7 @@ import {
     HappierDotSpinner,
     iconMatchedSpinnerSize,
     resolveHappierSpinnerPresentation,
+    useHappierSpinnerKeyframes,
     type HappierSpinnerStyleId,
 } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
@@ -48,6 +49,7 @@ export type ActivitySpinnerProps = RNActivityIndicatorProps & Readonly<{
  * native clock and drops the web animation exactly as any other pause does.
  */
 export function ActivitySpinner(props: ActivitySpinnerProps) {
+    useHappierSpinnerKeyframes();
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
     const reducedMotion = useReducedMotionPreference();

@@ -108,7 +108,14 @@ describe('HappierSpinner on web (dot styles)', () => {
     mount?.unmount();
     mount = null;
     for (const node of document.head.querySelectorAll('style[id^="happier-activity-spinner-"]')) node.remove();
+    document.getElementById('happier-spinner-keyframes')?.remove();
   });
+
+  /** Every `@keyframes` name the page defines, from whatever stylesheets are in the document head. */
+  function definedKeyframes(): string[] {
+    const css = [...document.head.querySelectorAll('style')].map((style) => style.textContent ?? '').join('\n');
+    return [...css.matchAll(/@keyframes\s+([\w-]+)/g)].map((match) => match[1]!);
+  }
 
   function strip(): HTMLElement {
     const node = mount!.container.querySelector<HTMLElement>('[data-happier-activity-spinner]');
@@ -141,6 +148,22 @@ describe('HappierSpinner on web (dot styles)', () => {
     expect(strips[0]!.style.animationTimingFunction).toBe('steps(39, end)');
     expect(strips[0]!.style.width).toBe('3900%');
     expect(frameSheetFor(strips[0]!)).toContain('fill="red"');
+  });
+
+  it('defines the keyframes it animates with, so a standalone mount without the host stylesheet still moves', async () => {
+    mount = await mountThroughReactNativeWebAsync(
+      <>
+        <HappierSpinner size={12} color="red" />
+        <HappierSpinner size={12} color="red" reducedMotion />
+      </>,
+    );
+
+    expect(definedKeyframes()).toEqual(expect.arrayContaining([
+      'happierActivitySpinnerFilmstrip',
+      'happierActivitySpinnerBreath',
+      'happierActivitySpinnerSpin',
+    ]));
+    expect(document.querySelectorAll('#happier-spinner-keyframes')).toHaveLength(1);
   });
 
   it('holds the still H without scheduling any animation when ambient motion is paused', async () => {

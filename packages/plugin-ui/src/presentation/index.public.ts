@@ -215,6 +215,7 @@ export {
   type HappierWebSpinnerStyle,
   type HappierSpinnerProps,
 } from './feedback/Spinner.js';
+export { useHappierSpinnerKeyframes } from './feedback/spinnerKeyframes.js';
 export {
   DEFAULT_HAPPIER_SPINNER_STYLE_ID,
   HAPPIER_SPINNER_STYLE_IDS,
