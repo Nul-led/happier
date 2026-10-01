@@ -31,17 +31,15 @@ export type PeerDirectRoutePolicyDecision =
  * Grant revocation is withdrawn — direct route grants are TTL-only (S-4, 2026-08-23). `'revoked'`
  * was removed with its deny reason: no server registry, no wire route, and the only production
  * site that supplies a status (`rpc/directRoutePreflight.ts`) hard-codes `'valid'`, so the value
- * could never arrive. Containment is single-use consumption + TTL + binding + nonce proof.
+ * could never arrive. Containment is single-use consumption + TTL + binding + signed proof.
  */
 export type PeerDirectRouteGrantStatus = 'missing' | 'valid' | 'expired' | 'scope_mismatch';
 
 /**
- * Topology is **not** an input. Route viability is owned upstream — by
- * `resolvePeerLoopbackRouteAvailability` behind `createPeerRouteViabilityCache`, consulted at
- * `rpc/productionRoute.ts` and at `flows/stream/route.ts` — and every caller has already acted on
- * that record before reaching this resolver, so a `topologyAvailable: false` producer cannot exist
- * (CONFLICT-F6, 2026-08-23). The removed `topology_unavailable` deny reason was a second door onto
- * a decision already made; it survives as a caller-facing code in
+ * Topology is **not** an input. Callers validate endpoint candidates and observe transport
+ * viability; this owner combines admission preferences and grant status, not reachability.
+ * The removed `topology_unavailable` deny reason duplicated a caller-owned decision;
+ * it survives as a caller-facing code in
  * `MachineLiveStreamDisabledReasonCode` and in the `PeerMachineRpcDirectFallbackReasonCodeV1` wire
  * enum, both of which keep live producers. Grant status, by contrast, is inspected nowhere else on
  * either path, so this resolver remains its sole admission-side mapper.
