@@ -20,6 +20,18 @@ const steerable = {
 } as any;
 
 describe('decideSessionMessageDelivery row actions', () => {
+    it('treats an active online runtime with unchanged empty AgentState as ready for ordinary input', () => {
+        expect(decideSessionMessageDelivery({
+            configuredMode: 'agent_queue',
+            session: { ...idle, agentStateVersion: 0, agentState: {} },
+            nowMs: now,
+        })).toMatchObject({
+            mode: 'server_pending',
+            reason: 'configured_pending',
+            requestedAction: { v: 1, kind: 'enqueue' },
+        });
+    });
+
     it('keeps ordinary idle input durable with the enqueue action', () => {
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: idle, nowMs: now })).toMatchObject({
             mode: 'server_pending',

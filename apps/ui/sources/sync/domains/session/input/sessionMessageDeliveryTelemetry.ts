@@ -73,7 +73,7 @@ export function recordSessionMessageDeliveryDecision(params: Readonly<{
         active: session?.active === true,
         presence: String(session?.presence ?? 'unknown'),
         busy: runtimeStatus.working === true,
-        agentReady: Boolean(session && session.agentStateVersion > 0),
+        agentReady: session?.active === true && session.presence === 'online',
         controlledByUser: session?.agentState?.controlledByUser === true,
         inFlightSteerSupported: (capabilities?.inFlightSteerSupported ?? capabilities?.inFlightSteer) === true,
         inFlightSteerAvailable: (capabilities?.inFlightSteerAvailable ?? capabilities?.inFlightSteer) === true,

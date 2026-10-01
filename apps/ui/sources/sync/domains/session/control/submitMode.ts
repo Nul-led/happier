@@ -63,7 +63,6 @@ type SessionSubmitRuntimeState = Readonly<{
     isBusy: boolean;
     inputReadinessDisposition: 'accepts_next_turn' | 'steer_available' | 'blocked' | 'offline';
     isOnline: boolean;
-    agentReady: boolean;
 }>;
 
 function getProviderInFlightSteerSupported(session: Session | null): boolean {
@@ -102,7 +101,6 @@ function deriveSubmitRuntimeState(session: Session | null, nowMs: number): Sessi
         isBusy: inputReadiness.isInputBusy,
         inputReadinessDisposition: inputReadiness.disposition,
         isOnline: session?.presence === 'online',
-        agentReady: Boolean(session && session.agentStateVersion > 0),
     };
 }
 
@@ -407,9 +405,7 @@ export function decideSessionMessageDelivery(opts: {
             ? 'local_control_pending'
             : runtimeState.isBusy
                 ? 'busy_policy_pending'
-                : !runtimeState.agentReady
-                    ? 'agent_not_ready_pending'
-                    : 'configured_pending',
+                : 'configured_pending',
         pendingSupportState,
         requestedAction: { v: 1, kind: 'enqueue' },
         ...(typeof unavailableReason === 'string' && unavailableReason.trim().length > 0
