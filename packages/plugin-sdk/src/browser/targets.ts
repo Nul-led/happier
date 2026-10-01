@@ -4,6 +4,7 @@ import {
 import type { BrowserAvailabilityDescriptor } from './actions.js';
 import type { JsonValue } from '../identity.js';
 import type { PluginLocalizedStringV2 } from '../manifest.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 
 export type BrowserTargetContributionInput = Readonly<{
     id: string;
@@ -27,5 +28,5 @@ export type BrowserTargetContribution = Omit<
 export function defineBrowserTarget<const TContribution extends BrowserTargetContributionInput>(
     contribution: TContribution,
 ): BrowserTargetContribution {
-    return PluginBrowserTargetContributionV1Schema.parse(contribution);
+    return projectProtocolValue<BrowserTargetContribution>(PluginBrowserTargetContributionV1Schema.parse(contribution));
 }

@@ -86,39 +86,36 @@ describe('single-declaration Action contracts', () => {
         expect(true).toBe(true);
     });
 
-    it('requires one closed author execution target with a relative client module path', () => {
+    it('requires one closed author execution target with an artifact and named export', () => {
         if (false) {
             const daemonExecution: PluginActionExecutionV2 = { target: 'daemon' };
             const clientExecution: PluginActionExecutionV2 = {
                 target: 'client',
                 client: {
                     artifactId: 'action-client',
-                    modulePath: './runAction',
                     exportName: 'runAction',
                 },
                 platforms: ['web'],
             };
-            const nonRelativeClientExecution: PluginActionExecutionV2 = {
+            const missingArtifactClientExecution: PluginActionExecutionV2 = {
                 target: 'client',
+                // @ts-expect-error Client Action execution requires an Artifact id.
                 client: {
-                    artifactId: 'action-client',
-                    // @ts-expect-error Client Action modules are package-relative.
-                    modulePath: 'runAction',
                     exportName: 'runAction',
                 },
                 platforms: ['web'],
             };
             void daemonExecution;
             void clientExecution;
-            void nonRelativeClientExecution;
+            void missingArtifactClientExecution;
 
+            // A root handler selects the daemon target; `execution` may be omitted.
             definePlugin({
-                id: 'acme.action-target-required',
+                id: 'acme.action-target-inferred',
                 version: '1.0.0',
                 actions: {
-                    // @ts-expect-error Authored Actions cannot infer a daemon execution target.
-                    missingTarget: {
-                        title: 'Missing target',
+                    inferredTarget: {
+                        title: 'Inferred target',
                         run: async () => null,
                     },
                 },
@@ -131,7 +128,6 @@ describe('single-declaration Action contracts', () => {
                     target: 'client';
                     client: {
                         artifactId: 'action-client';
-                        modulePath: './runAction';
                         exportName: 'activate';
                     };
                     platforms: readonly ['web'];
@@ -143,7 +139,6 @@ describe('single-declaration Action contracts', () => {
                     target: 'client',
                     client: {
                         artifactId: 'action-client',
-                        modulePath: './runAction',
                         exportName: 'activate',
                     },
                     platforms: ['web'],

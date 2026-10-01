@@ -1,6 +1,7 @@
 import {
     PLUGIN_UI_ICON_TOKENS_V1 as canonicalPluginUiIconTokensV1,
 } from '@happier-dev/protocol/plugins/contributions/ui/tokens';
+import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 import type {
     PluginSessionHeaderActionDescriptor,
     PluginUiDeclarativeNodeV2,
@@ -16,6 +17,9 @@ import type {
 } from './ui/publicContract.js';
 
 export type {
+    PluginUiAppPageColumnV1,
+    PluginUiDestinationPlacementV1,
+    PluginUiDestinationContainerV1,
     PluginUiViewDestinationBindingInputV2,
     PluginUiViewInlineBindingInputV2,
     PluginUiViewV2,
@@ -34,7 +38,7 @@ export type {
 } from './ui/publicContract.js';
 
 /** Canonical Protocol-owned vocabulary projected without a Protocol type edge. */
-export const PLUGIN_UI_ICON_TOKENS_V1: readonly PluginUiIconTokenV1[] = canonicalPluginUiIconTokensV1;
+export const PLUGIN_UI_ICON_TOKENS_V1: readonly PluginUiIconTokenV1[] = projectProtocolValue(canonicalPluginUiIconTokensV1);
 
 export type {
     OpenableContentBody,

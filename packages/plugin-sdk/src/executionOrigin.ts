@@ -4,6 +4,7 @@ import {
     arePluginMachineExecutionOriginsEqual as canonicalArePluginMachineExecutionOriginsEqual,
 } from '@happier-dev/protocol/machines/administration/pluginMachineExecutionOriginV1';
 import type { PluginMachineExecutionOriginV1 } from './actions/executionOrigin.js';
+import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 
 /** Portable, host-stamped identity of one installed plugin materialization. */
 export type PluginMachineMaterializationRefV1 = {
@@ -28,4 +29,4 @@ export const arePluginMachineMaterializationRefsEqual: (
 export const arePluginMachineExecutionOriginsEqual: (
     left: PluginMachineExecutionOriginV1,
     right: PluginMachineExecutionOriginV1,
-) => boolean = canonicalArePluginMachineExecutionOriginsEqual;
+) => boolean = projectProtocolValue(canonicalArePluginMachineExecutionOriginsEqual);

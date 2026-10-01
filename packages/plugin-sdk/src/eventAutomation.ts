@@ -6,6 +6,7 @@ import {
 import type { PluginActionInputById, PluginActionResultById } from './actions/index.js';
 import type { JsonValue, PluginContributionRef } from './identity.js';
 import type { PluginInvocationContext } from './invocation.js';
+import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 
 /**
  * Protocol's one source-catalog page-progress decision, re-exported beside the
@@ -111,14 +112,15 @@ async function readCurrentSourceDefinitions(
         ) {
             return null;
         }
-        revision ??= canonicalResult.data.revision;
-        definitions.push(...canonicalResult.data.definitions);
-        if (canonicalResult.data.nextCursor === null) {
-            return { revision: canonicalResult.data.revision, definitions };
+        const page = projectProtocolValue<Extract<SourcesListResult, { kind: 'page' }>>(canonicalResult.data);
+        revision ??= page.revision;
+        definitions.push(...page.definitions);
+        if (page.nextCursor === null) {
+            return { revision: page.revision, definitions };
         }
-        if (seenCursors.has(canonicalResult.data.nextCursor)) return null;
-        seenCursors.add(canonicalResult.data.nextCursor);
-        cursor = canonicalResult.data.nextCursor;
+        if (seenCursors.has(page.nextCursor)) return null;
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
     }
 }
 
@@ -324,7 +326,7 @@ async function admitPluginEventObservationUnderScopeV1(
         );
         context.signal.throwIfAborted();
         const parsed = AutomationEventAdmitResultV1Schema.safeParse(result);
-        if (parsed.success) admitted = parsed.data;
+        if (parsed.success) admitted = projectProtocolValue<PluginActionResultById['automation.event.admit']>(parsed.data);
     } catch (error) {
         if (context.signal.aborted) throw error;
     }

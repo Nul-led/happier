@@ -3,6 +3,7 @@ import {
 } from '@happier-dev/protocol/plugins/contributions/browser';
 import type { JsonValue } from '../identity.js';
 import type { PluginLocalizedStringV2 } from '../manifest.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 
 export type BrowserAvailabilityDescriptor = unknown;
 export type BrowserContributionReference =
@@ -32,5 +33,5 @@ export type BrowserActionContribution = Omit<
 export function defineBrowserAction<const TContribution extends BrowserActionContributionInput>(
     contribution: TContribution,
 ): BrowserActionContribution {
-    return PluginBrowserActionContributionV1Schema.parse(contribution);
+    return projectProtocolValue<BrowserActionContribution>(PluginBrowserActionContributionV1Schema.parse(contribution));
 }

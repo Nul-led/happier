@@ -1,3 +1,4 @@
+import type { PluginUiToneV1 as DtoPluginUiToneV1, PluginUiAttachmentToneV1 as DtoPluginUiAttachmentToneV1, PluginUiIconTokenV1 as DtoPluginUiIconTokenV1 } from '../actions/dtos/actionDeclarativeNodeDto.generated.js';
 import type { QualifiedConnectedAccountRef } from '../connectedAccounts.js';
 import type { ProjectKeyV1, SessionServerStartSpawnDraftV1 } from '../services/sessions.js';
 import type { JsonValue } from '../identity.js';
@@ -38,13 +39,22 @@ import type {
     PluginUiTargetedContributionV1 as ProtocolPluginUiTargetedContributionV1,
     PluginUiTargetedContributionsV1 as ProtocolPluginUiTargetedContributionsV1,
     PluginUiHostMethodV1 as ProtocolPluginUiHostMethodV1,
+    PluginUiSessionStateV1 as ProtocolPluginUiSessionStateV1,
+    PluginUiSessionPendingPermissionV1 as ProtocolPluginUiSessionPendingPermissionV1,
+    PluginUiSessionPermissionAnswerV1 as ProtocolPluginUiSessionPermissionAnswerV1,
+    PluginUiRespondToSessionPermissionRequestV1 as ProtocolPluginUiRespondToSessionPermissionRequestV1,
+    PluginUiRespondToSessionPermissionResultV1 as ProtocolPluginUiRespondToSessionPermissionResultV1,
     PluginUiPreparedReviewWorkspaceResultV1 as ProtocolPluginUiPreparedReviewWorkspaceResultV1,
     PluginHostedWebAccountDataBridgeOperationV1 as ProtocolPluginHostedWebAccountDataBridgeOperationV1,
     PluginHostedWebAccountDataBridgeResponseV1 as ProtocolPluginHostedWebAccountDataBridgeResponseV1,
     PluginHostedWebAccountDataBridgeChangeV1 as ProtocolPluginHostedWebAccountDataBridgeChangeV1,
 } from '@happier-dev/protocol/plugins/ui/client';
 import type {
+    PluginUiAppPageColumnV1 as ProtocolPluginUiAppPageColumnV1,
+    PluginUiDestinationPlacementV1 as ProtocolPluginUiDestinationPlacementV1,
     PluginUiViewInlineBindingInputV2 as ProtocolPluginUiViewInlineBindingInputV2,
+    PluginUiContainerV1 as ProtocolPluginUiContainerV1,
+    PluginUiDestinationContainerV1 as ProtocolPluginUiDestinationContainerV1,
 } from '@happier-dev/protocol/plugins/contributions/ui';
 
 /** Type-only public projection; Host API payloads remain ordinary JSON values. */
@@ -102,40 +112,12 @@ export type PluginUiChannel = 'development' | 'desktop' | 'internal' | 'store';
  * are written here so an author's `.d.ts` stays portable; `uiPublicContract.test.ts`
  * asserts both against Protocol's owner so neither can drift again.
  */
-export type PluginUiToneV1 =
-    | 'neutral'
-    | 'info'
-    | 'success'
-    | 'warning'
-    | 'danger'
-    | 'accent';
+export type PluginUiToneV1 = DtoPluginUiToneV1;
 
 /** The one canonical narrowing: Composer attachment presentation excludes `accent`. */
-export type PluginUiAttachmentToneV1 = Exclude<PluginUiToneV1, 'accent'>;
+export type PluginUiAttachmentToneV1 = DtoPluginUiAttachmentToneV1;
 
-export type PluginUiIconTokenV1 =
-    | 'action'
-    | 'browser'
-    | 'copy'
-    | 'file'
-    | 'globe'
-    | 'info'
-    | 'preview'
-    | 'refresh'
-    | 'settings'
-    | 'terminal'
-    | 'warning'
-    | 'add'
-    | 'back'
-    | 'check'
-    | 'close'
-    | 'error'
-    | 'external'
-    | 'forward'
-    | 'more'
-    | 'search'
-    | 'change-open'
-    | 'change-complete';
+export type PluginUiIconTokenV1 = DtoPluginUiIconTokenV1;
 
 /** Protocol's sole producer-backed Host API vocabulary; never copied here. */
 export type PluginUiHostMethodV1 = ProtocolPluginUiHostMethodV1;
@@ -162,32 +144,14 @@ export type PluginUiSemanticOpenSurfaceCommandV1 = Extract<
     { kind: 'openSurface' }
 >;
 
-export type PluginUiContainerV1 =
-    | 'appPage'
-    | 'settingsPage'
-    | 'rightSidebarTab'
-    | 'rightPane'
-    | 'detailsTab'
-    | 'detailsPane'
-    | 'bottomPane'
-    | 'browserPanel'
-    | 'servicesPanel'
-    | 'sessionSubagentLaunch'
-    | 'sessionSubagentDetails'
-    | 'sessionInfoSection'
-    | 'sessionWidget';
+export type PluginUiContainerV1 = ProtocolPluginUiContainerV1;
+export type PluginUiDestinationContainerV1 = ProtocolPluginUiDestinationContainerV1;
 
 export type PluginUiMountContextV1 =
     | Readonly<{
         kind: 'destination';
         destination: PluginUiContributionIdentityV1;
-        container: Exclude<
-            PluginUiContainerV1,
-            | 'sessionSubagentLaunch'
-            | 'sessionSubagentDetails'
-            | 'sessionInfoSection'
-            | 'sessionWidget'
-        >;
+        container: PluginUiDestinationContainerV1;
     }>
     | Readonly<{
         kind: 'embedded';
@@ -279,6 +243,8 @@ export type PluginUiTargetedContributionSelectorV1 = ProtocolPluginUiTargetedCon
 export type PluginUiHostApiSurfaceContextV1 = {
     mount: PluginUiMountContextV1;
     target: PluginUiHostApiSurfaceTargetV1;
+    /** Host page chrome for app pages; absent on other surface placements. */
+    page?: { columnVisible: boolean };
     accountEncryptionMode: 'plain' | 'e2ee';
     platform: PluginUiPlatform;
     locale: string;
@@ -529,6 +495,17 @@ export type ComposerUnavailableReasonV1 = Extract<
     { status: 'unavailable' }
 >['reason'];
 
+/**
+ * Linked-Session state for plugin UI (r0.42). Protocol owns the closed grammar;
+ * lifecycle, runtime and operational state are the canonical Session awareness
+ * projection's own vocabulary.
+ */
+export type SessionStateV1 = ProtocolPluginUiSessionStateV1;
+export type SessionPendingPermissionV1 = ProtocolPluginUiSessionPendingPermissionV1;
+export type SessionPermissionAnswerV1 = ProtocolPluginUiSessionPermissionAnswerV1;
+export type SessionPermissionResponseRequestV1 = ProtocolPluginUiRespondToSessionPermissionRequestV1;
+export type SessionPermissionResponseV1 = ProtocolPluginUiRespondToSessionPermissionResultV1;
+
 export type PluginUiHostApiWireIdentityV1 = {
     instanceId: string;
     mountNonce: string;
@@ -673,6 +650,9 @@ export type PluginUiViewTargetV2 =
     }
     | { kind: 'services'; sessionIdPath?: string; serverIdPath?: string; machineIdPath?: string };
 
+export type PluginUiDestinationPlacementV1 = ProtocolPluginUiDestinationPlacementV1;
+export type PluginUiAppPageColumnV1 = ProtocolPluginUiAppPageColumnV1;
+
 /**
  * The representable destination grammar, correlated exactly as the canonical
  * Registry correlates it. Container, target, instance policy and page header
@@ -687,10 +667,19 @@ export type PluginUiViewDestinationBindingInputV2 =
         target: { kind: 'app' };
         instancePolicy?: 'singleton';
         headerActions?: PluginUiPageHeaderActionV1[];
+        placement?: PluginUiDestinationPlacementV1;
+        column?: PluginUiAppPageColumnV1;
     }
     | {
         container: 'rightSidebarTab';
-        target: { kind: 'app' } | { kind: 'session'; sessionIdPath?: string } | PluginUiViewTargetV2 & { kind: 'project' };
+        target: { kind: 'app' };
+        instancePolicy?: 'singleton';
+        headerActions?: [];
+        placement?: PluginUiDestinationPlacementV1;
+    }
+    | {
+        container: 'rightSidebarTab';
+        target: { kind: 'session'; sessionIdPath?: string } | PluginUiViewTargetV2 & { kind: 'project' };
         instancePolicy?: 'singleton';
         headerActions?: [];
     }
@@ -735,7 +724,6 @@ export type PluginUiViewV2Input = {
 } & (
     | (PluginUiViewDestinationBindingInputV2 & {
         badge?: { label: PluginLocalizedStringV2; tone?: PluginUiToneV1 };
-        groupHint?: 'navigation' | 'sessions';
         rankHint?: number;
     })
     | PluginUiViewInlineBindingInputV2
@@ -774,44 +762,6 @@ export type PluginUiArtifactFileV1 = {
     byteSize: number;
 };
 
-export type PluginUiArtifactsManifestEntryV1 = {
-    contributionId: string;
-    tier: 'hostedWeb' | 'reactNative';
-    platform?: PluginUiPlatform;
-    entry: string;
-    files: PluginUiArtifactFileV1[];
-    digest: `sha256:${string}`;
-    builtWith: { bundler: 'vite' | 'repack'; version: string };
-    repack?: { containerName: string; modulePath: string; exportName: string };
-    /** Signed host-private candidate Collection migration module identity. */
-    collectionMigrations?:
-        | { containerName: string; modulePath: string; exportName: string }
-        | { exportName: string };
-    hostUiApiVersion: string;
-    compat: {
-        react?: string;
-        reactNative?: string;
-        expoRuntime?: string;
-        hermes?: string;
-    };
-};
-
-export type PluginUiHostNativeRuntimeExternalSpecifierV1 =
-    | 'react'
-    | 'react/jsx-runtime'
-    | 'react/jsx-dev-runtime'
-    | 'react-native'
-    | 'react-native-reanimated'
-    | '@react-navigation/native'
-    | '@react-navigation/native-stack';
-
-export type PluginUiHostRuntimeExternalSpecifierV1 =
-    | 'react'
-    | 'react/jsx-runtime'
-    | 'react/jsx-dev-runtime'
-    | 'react-native-web'
-    | '@happier-dev/plugin-sdk/ui/client';
-
 export type PublicToolchainAuthoringDependencyV1 = {
     packageName: string;
     dependencySpec: string;
@@ -828,8 +778,6 @@ export type PublicToolchainCompatibilityV1 = {
         react: string;
         reactNative: string;
         reactNativeWeb: string;
-        vite: string;
-        repack: string;
         expo: string;
         runtime: string;
     };
@@ -838,17 +786,7 @@ export type PublicToolchainCompatibilityV1 = {
         nodeTypes: PublicToolchainAuthoringDependencyV1;
         reactDom: PublicToolchainAuthoringDependencyV1;
         reactTypes: PublicToolchainAuthoringDependencyV1;
-        reactNativeCommunityCli: PublicToolchainAuthoringDependencyV1;
-        rspack: PublicToolchainAuthoringDependencyV1;
-        swcHelpers: PublicToolchainAuthoringDependencyV1;
         typescript: PublicToolchainAuthoringDependencyV1;
         typescriptNative: PublicToolchainAuthoringDependencyV1;
-        viteReactPlugin: PublicToolchainAuthoringDependencyV1;
     };
-    buildTools: Array<{
-        packageName: string;
-        packageVersion: string;
-        executable: string;
-        executableVersion: string;
-    }>;
 };

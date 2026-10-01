@@ -21,6 +21,7 @@ import {
   PluginSearchResultV1Schema as canonicalPluginSearchResultV1Schema,
 } from '@happier-dev/protocol/plugins/contributions/search-providers';
 import type { ProtocolComposableSchema } from './protocol/protocolFacade.js';
+import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 import type {
   PluginUiIconTokenV1,
   PluginUiSemanticCommandV1,
@@ -72,9 +73,9 @@ export const PluginSearchQueryV1Schema: ProtocolComposableSchema<
 export const PluginSearchItemV1Schema: ProtocolComposableSchema<
   PluginSearchItemV1,
   PluginSearchItemV1
-> = canonicalPluginSearchItemV1Schema;
+> = projectProtocolValue(canonicalPluginSearchItemV1Schema);
 
 export const PluginSearchResultV1Schema: ProtocolComposableSchema<
   PluginSearchResultV1,
   PluginSearchResultV1
-> = canonicalPluginSearchResultV1Schema;
+> = projectProtocolValue(canonicalPluginSearchResultV1Schema);

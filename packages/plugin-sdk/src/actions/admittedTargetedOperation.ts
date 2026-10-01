@@ -1,5 +1,6 @@
 /** @moduleRealm any */
 import type { JsonValue } from '../identity.js';
+import type { PluginTargetedContributionSourceCustodyV1 } from '../targetedContributionAuthoring.js';
 
 /**
  * The descriptive, non-executable identity of one target-owned admitted
@@ -20,14 +21,15 @@ export type AdmittedTargetedOperationIdentity<TRole extends string = string> = R
   contributor: Readonly<{
     pluginId: string;
     contributionId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: PluginTargetedContributionSourceCustodyV1;
   }>;
   role: TRole;
 }>;
 
 /**
- * An exact-generation execution capability projected from an admitted
- * target-owned operation. Its identity may be copied for display or
+ * An exact-occurrence execution capability with durable source custody,
+ * projected from an admitted target-owned operation. Its identity may be copied for display or
  * comparison, but only the original host-created handle can execute. The
  * required declaration-only projection retains exact input/result types while
  * remaining structurally compatible across independently installed SDK copies.

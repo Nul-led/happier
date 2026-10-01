@@ -26,6 +26,7 @@ import type {
     PluginActionResultById,
 } from '../actions/actionTypeMap.generated.js';
 import type { ProtocolComposableSchema } from '../protocol/protocolFacade.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 import type { ExternalSessionsService } from './externalSessions.js';
 import {
     AgentPermissionIntentV1Schema as protocolAgentPermissionIntentV1Schema,
@@ -82,7 +83,7 @@ export const ProjectKeyV1Schema: SessionSchema<ProjectKeyV1> = protocolProjectKe
 
 export type SessionSpawnNewInputV2 = PluginActionInputById['session.spawn_new'];
 /** Browser-safe Session-create input projected at the SDK author boundary. */
-export const SessionSpawnNewInputV2Schema: SessionSchema<SessionSpawnNewInputV2> = protocolSessionSpawnNewInputV2Schema;
+export const SessionSpawnNewInputV2Schema: SessionSchema<SessionSpawnNewInputV2> = projectProtocolValue(protocolSessionSpawnNewInputV2Schema);
 
 /**
  * SDK-local author declaration for the one Protocol-owned worktree draft.
@@ -103,7 +104,7 @@ export type SessionServerStartSpawnDraftV1 = Omit<
     'creationKey' | 'initialInput'
 >;
 /** Browser-safe server-start draft projected at the SDK author boundary. */
-export const SessionServerStartSpawnDraftV1Schema: SessionSchema<SessionServerStartSpawnDraftV1> = protocolSessionServerStartSpawnDraftV1Schema;
+export const SessionServerStartSpawnDraftV1Schema: SessionSchema<SessionServerStartSpawnDraftV1> = projectProtocolValue(protocolSessionServerStartSpawnDraftV1Schema);
 
 /**
  * Declaration-neutral projection of the Protocol provenance union. The
@@ -124,6 +125,7 @@ export type SessionMessageProvenanceV1 =
         kind: 'happierSession';
         sourceSessionId: string;
         via: 'action' | 'mcp';
+        callerDepth?: number;
     }
     | {
         v: 1;
@@ -430,6 +432,11 @@ export type SessionSendAttachment = NonNullable<
         Readonly<{ kind: 'sessionSubagentLaunch' }>
     >['attachments']
 >[number];
+/**
+ * Sends Session input through the host. A plugin can set `toolAnswerDelivery`
+ * when its provider requires a user message to carry an answer already recorded
+ * on an interactive question tool; Happier keeps that delivery out of chat.
+ */
 export type SessionSendRequest =
   | Readonly<Omit<Extract<
       PluginActionInputById['session.message.send'],

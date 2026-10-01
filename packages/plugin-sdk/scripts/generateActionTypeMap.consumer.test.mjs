@@ -1,0 +1,246 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
+import test from 'node:test';
+import ts from 'typescript';
+
+import * as generator from './generateActionTypeMap.mjs';
+import { resolveTypeScriptCliInvocation } from '../../../scripts/workspaces/resolveTypeScriptCliInvocation.mjs';
+
+test('Action DTO declaration consumers retain literal keys and result fields without a validator dependency', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'happier-action-dto-consumer-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (path, text) => {
+    const fullPath = resolve(root, path);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, text);
+  };
+  put('packages/protocol/src/actions/actionIds.ts', `
+    export const ACTION_ID_FAMILIES_V1 = Object.freeze({ inventory: ['inventory.list'] } as const);
+  `);
+  put('packages/protocol/src/actions/pluginActionSurface.ts', `
+    export const PLUGIN_SURFACE_EXCLUSION_REASONS = Object.freeze({} as const);
+  `);
+  put('packages/protocol/src/actions/pluginActionDtos.ts', `
+    import type { InventoryActionInputById, InventoryActionResultById } from './inventoryActionDtos.js';
+    export type PluginActionInputById = InventoryActionInputById;
+    export type PluginActionResultById = InventoryActionResultById;
+    export type PluginInvocableActionId = keyof PluginActionInputById;
+  `);
+  put('packages/protocol/src/actions/inventoryActionDtos.ts', `
+    export type InventoryActionInputById = { readonly 'inventory.list': { query?: string } };
+    export type InventoryActionResultById = { readonly 'inventory.list': { count: number } };
+  `);
+  assert.equal(typeof generator.projectActionDtoDeclarations, 'function',
+    'the declaration consumer must receive the named Protocol DTO closure');
+  const project = () => generator.projectActionDtoDeclarations({ repoRoot: root });
+  const publish = () => {
+    const projection = project();
+    for (const [path, output] of projection.outputs) put(path, output);
+    return projection;
+  };
+  const projection = publish();
+  assert.deepEqual(projection.inputKeys, ['inventory.list']);
+  assert.deepEqual(projection.resultKeys, ['inventory.list']);
+  for (const [, output] of projection.outputs) {
+    assert.doesNotMatch(output, /\bzod\b|@happier-dev\/protocol|\bz\./u);
+  }
+  const invocation = resolveTypeScriptCliInvocation({ repoRoot: process.cwd(), workspaceDir: process.cwd() });
+  const compile = (args) => spawnSync(invocation.command, [...invocation.argsPrefix,
+    '--ignoreConfig', '--strict', '--skipLibCheck', '--target', 'ES2022',
+    '--module', 'NodeNext', '--moduleResolution', 'NodeNext', ...args,
+  ], { cwd: root, encoding: 'utf8' });
+  const emitted = compile(['--declaration', '--emitDeclarationOnly', '--outDir', 'declarations',
+    'packages/plugin-sdk/src/actions/actionTypeMap.generated.ts']);
+  assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
+  put('consumer.ts', `
+    import type { PluginActionInputById, PluginActionResultById } from './declarations/actionTypeMap.generated.js';
+    const input: PluginActionInputById['inventory.list'] = { query: 'open' };
+    declare const result: PluginActionResultById['inventory.list'];
+    const count: number = result.count;
+    // @ts-expect-error only canonical literal Action keys are admitted
+    type UnknownAction = PluginActionInputById['inventory.missing'];
+  `);
+  const consumer = compile(['--noEmit', 'consumer.ts']);
+  assert.equal(consumer.status, 0, consumer.stdout + consumer.stderr);
+  // A changed canonical result must fail against the stale emitted declaration,
+  // then reach the real consumer after explicit projection. Unknown/any or a
+  // string-indexed map would conceal this RED.
+  put('packages/protocol/src/actions/inventoryActionDtos.ts', readFileSync(
+    resolve(root, 'packages/protocol/src/actions/inventoryActionDtos.ts'), 'utf8',
+  ).replace('count: number', 'count: string'));
+  put('consumer.ts', readFileSync(resolve(root, 'consumer.ts'), 'utf8')
+    .replace('const count: number', 'const count: string'));
+  const drift = compile(['--noEmit', 'consumer.ts']);
+  assert.notEqual(drift.status, 0);
+  assert.match(drift.stdout, /TS2322/u);
+  t.diagnostic(`stale declaration-consumer RED: ${drift.stdout.trim()}`);
+  publish();
+  const changed = compile(['--declaration', '--emitDeclarationOnly', '--outDir', 'declarations',
+    'packages/plugin-sdk/src/actions/actionTypeMap.generated.ts']);
+  assert.equal(changed.status, 0, changed.stdout + changed.stderr);
+  const refreshed = compile(['--noEmit', 'consumer.ts']);
+  assert.equal(refreshed.status, 0, refreshed.stdout + refreshed.stderr);
+  t.diagnostic('refreshed declaration-consumer GREEN');
+  put('packages/protocol/src/actions/actionIds.ts', `
+    export const ACTION_ID_FAMILIES_V1 = Object.freeze({ inventory: ['inventory.renamed'] } as const);
+  `);
+  assert.throws(project, /key mismatch/u);
+});
+
+test('syntax projection retains concrete family rows beyond the retired compiler print boundary', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'happier-large-action-dto-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const actions = resolve(root, 'packages/protocol/src/actions');
+  mkdirSync(actions, { recursive: true });
+  const keys = Array.from({ length: 512 }, (_, i) => `inventory.large.${i}`);
+  const payload = 'x'.repeat(2100);
+  writeFileSync(resolve(actions, 'actionIds.ts'), `export const ACTION_ID_FAMILIES_V1 = { inventory: ${JSON.stringify(keys)} } as const;`);
+  writeFileSync(resolve(actions, 'pluginActionSurface.ts'), 'export const PLUGIN_SURFACE_EXCLUSION_REASONS = {} as const;');
+  writeFileSync(resolve(actions, 'pluginActionDtos.ts'), `
+    import type { Inputs, Results } from './family.js';
+    export type PluginActionInputById = Inputs;
+    export type PluginActionResultById = Results;
+    export type PluginInvocableActionId = keyof Inputs;
+  `);
+  writeFileSync(resolve(actions, 'family.ts'), `export type Inputs = { ${keys.map(key=>`${JSON.stringify(key)}: Record<string, never>;`).join('\n')} };\nexport type Results = { ${keys.map(key=>`${JSON.stringify(key)}: { payload: ${JSON.stringify(payload)} };`).join('\n')} };`);
+  const projection = generator.projectActionDtoDeclarations({ repoRoot: root });
+  assert.deepEqual(projection.inputKeys, [...keys].sort());
+  assert.deepEqual(projection.resultKeys, [...keys].sort());
+  const text = projection.outputs.get('packages/plugin-sdk/src/actions/dtos/family.generated.ts');
+  assert.ok(Buffer.byteLength(text) > 1_000_000, 'exercise the previous aggregate print truncation region');
+  const file = ts.createSourceFile('family.ts', text, ts.ScriptTarget.ES2022, true);
+  const result = file.statements.find(node=>ts.isTypeAliasDeclaration(node)&&node.name.text === 'Results');
+  assert.deepEqual(result.type.members.map(node=>node.name.text), keys);
+  for (const member of result.type.members) assert.equal(member.type.members[0].type.literal.text, payload);
+});
+
+test('current published Action DTO closure emits portable declarations and recursive author contracts', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'happier-current-action-dto-consumer-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const projection = generator.projectActionDtoDeclarations();
+  const actionsRoot = 'packages/plugin-sdk/src/actions/';
+  for (const [path, text] of projection.outputs) {
+    assert.equal(readFileSync(resolve(path), 'utf8'), text, `published DTO module is current: ${path}`);
+    const target = resolve(root, path.slice(actionsRoot.length));
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, text);
+    assert.doesNotMatch(text, /\bzod\b|@happier-dev\/protocol|\bz\./u);
+  }
+  const comparison = `
+    import type * as Dto from './actionTypeMap.generated.js';
+    // @ts-expect-error the public map has no arbitrary string index
+    type MissingAction = Dto.PluginActionInputById['not.a.canonical.action'];
+    export type Result = Dto.PluginActionResultById['teams.credentials.list'];
+    export type Input = Dto.PluginActionInputById['workflow.run.start'];
+    // UI aliases no longer happen to be reached through the Action map's
+    // support imports. Exercise their real public declaration root explicitly.
+    export type UiNode = import('./dtos/actionDeclarativeNodeDto.generated.js').PluginDeclarativeNodeV2;
+    export type LinkArray = Dto.PluginAgentExternalSessionLinkDataArray;
+    export type LinkObject = Dto.PluginAgentExternalSessionLinkDataObject;
+    export type LinkValue = Dto.PluginAgentExternalSessionLinkDataValue;
+    export type SchemaJson = Dto.JSONType;
+  `;
+  writeFileSync(resolve(root, 'compare.ts'), comparison);
+  const invocation = resolveTypeScriptCliInvocation({ repoRoot: process.cwd(), workspaceDir: process.cwd() });
+  const compile = (args) => spawnSync(invocation.command, [...invocation.argsPrefix,
+    '--ignoreConfig', '--strict', '--skipLibCheck', '--target', 'ES2022',
+    '--module', 'NodeNext', '--moduleResolution', 'NodeNext', ...args,
+  ], { cwd: root, encoding: 'utf8' });
+  const emitted = compile(['--declaration', '--emitDeclarationOnly', '--outDir', 'declarations', 'compare.ts']);
+  assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
+  const inspectDeclarations = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = resolve(path, entry.name);
+      if (entry.isDirectory()) inspectDeclarations(child);
+      else if (entry.name.endsWith('.d.ts')) assert.doesNotMatch(readFileSync(child, 'utf8'),
+        /\bzod\b|@happier-dev\/protocol|\bz\./u);
+    }
+  };
+  inspectDeclarations(resolve(root, 'declarations'));
+  writeFileSync(resolve(root, 'consumer.ts'), `
+    import type { Input, Result } from './declarations/compare.js';
+    import type { PluginActionWorkflowIngressBlockV1, PluginActionWorkflowBlockV1, PluginActionResultById } from './declarations/actionTypeMap.generated.js';
+    import type { PluginDeclarativeNodeV2 } from './declarations/dtos/actionDeclarativeNodeDto.generated.js';
+    declare const input: Input;
+    declare const result: Result;
+    export const authored = input;
+    export const received = result;
+    export const unavailable: PluginActionResultById['browser.goBack'] = {
+      v: 1, commandId: 'back', status: 'failed',
+      error: { code: 'sandbox_unavailable', message: 'Sandbox unavailable' },
+    };
+    export const stack: PluginDeclarativeNodeV2 = {
+      kind: 'stack', children: [{ kind: 'action', label: 'Apply', effect: {
+        kind: 'composerApply', expectedRevision: 1,
+        operations: [{ kind: 'text.set', text: 'hello' }] as const,
+      } }],
+    };
+    export const ingress: PluginActionWorkflowIngressBlockV1[] = [
+      'root shorthand',
+      { kind: 'parallel', id: 'p1', branches: [{ id: 'b1', blocks: ['nested shorthand'] }], failurePolicy: 'fail_stop' },
+      { kind: 'loop', id: 'l1', body: ['loop shorthand'], repetition: { kind: 'count', count: { kind: 'literal', value: 2 } } },
+    ];
+    // @ts-expect-error executable blocks do not admit authored prompt shorthand
+    export const executable: PluginActionWorkflowBlockV1 = 'not executable';
+    // @ts-expect-error nested authored blocks do not admit numbers
+    export const invalid: PluginActionWorkflowIngressBlockV1 = { kind: 'parallel', id: 'p2', branches: [{ id: 'b2', blocks: [123] }], failurePolicy: 'fail_stop' };
+  `);
+  const consumer = compile(['--declaration', '--emitDeclarationOnly', '--outDir', 'consumer-declarations', 'consumer.ts']);
+  assert.equal(consumer.status, 0, consumer.stdout + consumer.stderr);
+  assert.equal(projection.inputKeys.length, projection.resultKeys.length);
+});
+
+test('SDK declarative aliases and neutral DTOs remain equivalent in a declaration consumer', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'happier-action-ui-dto-consumer-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const [path, text] of generator.projectActionDtoDeclarations().outputs) {
+    const target = resolve(root, path.replace('packages/plugin-sdk/src/actions/', ''));
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  }
+  const file = ts.createSourceFile('manifest.ts', readFileSync(new URL('../src/manifest.ts', import.meta.url), 'utf8'), ts.ScriptTarget.ES2022, true);
+  const aliases = new Map(file.statements.filter(ts.isTypeAliasDeclaration).map(node => [node.name.text, node]));
+  const selected = new Set();
+  const projectedImports = new Map();
+  const builtins = new Set(['Readonly', 'Record', 'Exclude']);
+  const externals = new Set(['JsonValue', 'PluginJsonValueV2', 'PluginUiIconTokenV1', 'PluginUiAttachmentToneV1', 'ComposerContentMediaKindV1', 'ComposerContentMimeTypeV1']);
+  const select = name => {
+    if (builtins.has(name) || externals.has(name) || selected.has(name)) return;
+    const node = aliases.get(name);
+    if (!node) {
+      const owner = file.statements.find(node => ts.isImportDeclaration(node)
+        && node.moduleSpecifier.text === './actions/dtos/actionDeclarativeNodeDto.generated.js'
+        && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
+        && node.importClause.namedBindings.elements.some(item => item.name.text === name));
+      assert.ok(owner, `existing SDK grammar dependency: ${name}`);
+      const binding = owner.importClause.namedBindings.elements.find(item=>item.name.text === name);
+      projectedImports.set(name, (binding.propertyName ?? binding.name).text);
+      return;
+    }
+    selected.add(name);
+    const visit = child => { if (ts.isTypeReferenceNode(child) && ts.isIdentifier(child.typeName)) select(child.typeName.text); ts.forEachChild(child, visit); };
+    visit(node);
+  };
+  select('PluginDeclarativeNodeV2');
+  for (const [name, node] of aliases) {
+    if (ts.isTypeReferenceNode(node.type) && ts.isIdentifier(node.type.typeName)
+      && node.type.typeName.text.startsWith('DtoPlugin')) select(name);
+  }
+  const printer = ts.createPrinter();
+  const original = `import type { JsonValue } from './dtos/strictJsonValue.generated.js';\nimport type { PluginJsonValueV2 } from './dtos/jsonSchema.generated.js';\nimport type { PluginInvocableActionId } from './actionTypeMap.generated.js';\nimport type { PluginUiIconTokenV1, PluginUiAttachmentToneV1, ComposerContentMediaKindV1, ComposerContentMimeTypeV1 } from './dtos/actionDeclarativeNodeDto.generated.js';\n`
+    + ([...projectedImports].length ? `import type { ${[...projectedImports].map(([local,name])=>`${name} as ${local}`).join(', ')} } from './dtos/actionDeclarativeNodeDto.generated.js';\n` : '')
+    + [...selected].map(name => printer.printNode(ts.EmitHint.Unspecified, aliases.get(name), file)).join('\n');
+  writeFileSync(resolve(root, 'originalUi.ts'), original.replaceAll("import('./actions/actionTypeMap.generated.js').PluginInvocableActionId", 'PluginInvocableActionId'));
+  writeFileSync(resolve(root, 'uiComparison.ts'), `
+    import type * as Original from './originalUi.js';
+    import type * as Neutral from './dtos/actionDeclarativeNodeDto.generated.js';
+    type Equal<A,B> = [A] extends [B] ? [B] extends [A] ? true : false : false;
+    type Assert<T extends true> = T;
+    ${[...selected].map(name=>`type Preserve${name} = Assert<Equal<Original.${name}, Neutral.${name}>>;`).join('\n')}
+  `);
+  const invocation = resolveTypeScriptCliInvocation({ repoRoot: process.cwd(), workspaceDir: process.cwd() });
+  const result = spawnSync(invocation.command, [...invocation.argsPrefix, '--ignoreConfig', '--strict', '--skipLibCheck', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--noEmit', 'uiComparison.ts'], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});

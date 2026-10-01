@@ -7,6 +7,7 @@ import type {
     PluginDeclarativeDocumentContentTypeV1,
     PluginDeclarativeDocumentV1,
 } from './publicContract.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 
 export type {
     PluginDeclarativeDocumentContentTypeV1,
@@ -35,5 +36,5 @@ export function definePluginDeclarativeDocumentV1(
     }
     const parsed = canonicalDocumentSchema.safeParse(preflight.document);
     if (!parsed.success) throw parsed.error;
-    return parsed.data;
+    return projectProtocolValue<PluginDeclarativeDocumentV1>(parsed.data);
 }

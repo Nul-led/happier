@@ -15,6 +15,7 @@ import type {
   EffectiveActionInputField,
 } from './actionTypeMap.generated.js';
 import type { ActionSpec } from './service.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 
 export type {
   ActionInputFieldHint,
@@ -45,22 +46,22 @@ export type ActionFormHints = Omit<ActionInputHints, 'fields'> & Readonly<{
 export const resolveEffectiveActionInputFields: (
   spec: Pick<ActionSpec, 'inputHints'>,
   input: unknown,
-) => readonly EffectiveActionInputField[] = canonicalResolveEffectiveActionInputFields;
+) => readonly EffectiveActionInputField[] = projectProtocolValue(canonicalResolveEffectiveActionInputFields);
 /** Normalizes schema-admitted Action input through the Protocol-owned form owner. */
 export const normalizeActionInputByFieldHints: (
   spec: Pick<ActionSpec, 'inputHints'>,
   input: Record<string, unknown>,
-) => Record<string, unknown> = canonicalNormalizeActionInputByFieldHints;
+) => Record<string, unknown> = projectProtocolValue(canonicalNormalizeActionInputByFieldHints);
 /** Stable semantic identity for Action-form option values. */
 export const actionInputOptionValueKey: (
   value: ActionInputOptionValue,
-) => string = canonicalActionInputOptionValueKey;
+) => string = projectProtocolValue(canonicalActionInputOptionValueKey);
 /** Compares structured option values by their exact canonical ref, never object identity. */
 export const isSameActionInputOptionValue: (
   left: ActionInputOptionValue,
   right: ActionInputOptionValue,
-) => boolean = canonicalIsSameActionInputOptionValue;
+) => boolean = projectProtocolValue(canonicalIsSameActionInputOptionValue);
 /** Reads a draft/control option value through the Protocol's canonical strict schema. */
 export const readActionInputOptionValue: (
   value: unknown,
-) => ActionInputOptionValue | undefined = canonicalReadActionInputOptionValue;
+) => ActionInputOptionValue | undefined = projectProtocolValue(canonicalReadActionInputOptionValue);

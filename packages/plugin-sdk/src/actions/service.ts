@@ -33,6 +33,7 @@ import type {
   PluginToolContributionV2,
 } from './actionTypeMap.generated.js';
 import type { ActionContract, ActionHandler } from './contracts.js';
+import { projectProtocolValue } from '../protocol/projectProtocolValue.js';
 import type {
   AdmittedTargetedOperationExecutionHandle,
   AdmittedTargetedOperationIdentity,
@@ -91,9 +92,9 @@ export type {
 export type ActionId = ActionSpec['id'];
 
 /** Looks up one canonical host ActionSpec without changing its runtime identity. */
-export const getActionSpec = canonicalGetActionSpec as unknown as (
+export const getActionSpec: (
   id: ActionId,
-) => ActionSpec;
+) => ActionSpec = projectProtocolValue(canonicalGetActionSpec);
 export {
   actionInputOptionValueKey,
   isSameActionInputOptionValue,

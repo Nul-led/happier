@@ -1,3 +1,5 @@
+// Portable declarative grammar is projected by the single Action DTO producer.
+import type { PluginDeclarativeNodeV2 as DtoPluginDeclarativeNodeV2, PluginLocalizedStringV2 as DtoPluginLocalizedStringV2, PluginDeclarativeToneV2 as DtoPluginDeclarativeToneV2, PluginDeclarativeControlV2 as DtoPluginDeclarativeControlV2, PluginDeclarativeActionNodeV2 as DtoPluginDeclarativeActionNodeV2, PluginContributionReference as DtoPluginContributionReference, PluginDeclarativeComposerApplyEffectV1 as DtoPluginDeclarativeComposerApplyEffectV1, PluginDeclarativeActionVariantV2 as DtoPluginDeclarativeActionVariantV2, PluginDeclarativeListNodeV2 as DtoPluginDeclarativeListNodeV2, PluginDeclarativeSectionNodeV2 as DtoPluginDeclarativeSectionNodeV2, PluginDeclarativeRowNodeV2 as DtoPluginDeclarativeRowNodeV2, PluginDeclarativeItemNodeV2 as DtoPluginDeclarativeItemNodeV2, PluginDeclarativeStateNodeV2 as DtoPluginDeclarativeStateNodeV2, PluginDeclarativeStateV2 as DtoPluginDeclarativeStateV2, PluginDeclarativeTargetedSurfaceNodeV2 as DtoPluginDeclarativeTargetedSurfaceNodeV2, PluginDeclarativeTargetedSurfaceReferenceV1 as DtoPluginDeclarativeTargetedSurfaceReferenceV1, PluginDeclarativeMetadataNodeV2 as DtoPluginDeclarativeMetadataNodeV2, PluginDeclarativeMetadataEntryV2 as DtoPluginDeclarativeMetadataEntryV2, PluginDeclarativeActionPanelNodeV2 as DtoPluginDeclarativeActionPanelNodeV2, PluginDeclarativeCollectionListNodeV2 as DtoPluginDeclarativeCollectionListNodeV2, PluginCollectionProjectedScalarFieldRefV1 as DtoPluginCollectionProjectedScalarFieldRefV1, PluginCollectionRowCommandV1 as DtoPluginCollectionRowCommandV1 } from './actions/dtos/actionDeclarativeNodeDto.generated.js';
 import {
   compilePluginJsonSchema as canonicalCompilePluginJsonSchema,
   createPluginContributionIdentity as canonicalCreatePluginContributionIdentity,
@@ -15,6 +17,7 @@ import type {
 } from './composer.js';
 import type { JsonValue, PluginJsonSchema, PluginJsonValueV2 } from './identity.js';
 import type { ProtocolComposableSchema } from './protocol/protocolFacade.js';
+import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 import type {
   PluginUiAttachmentToneV1,
   PluginUiIconTokenV1,
@@ -401,14 +404,10 @@ export const PluginIdSchema: ProtocolComposableSchema<string> = canonicalPluginI
 // declarative grammar below stays structurally identical to Protocol's, which
 // `uiPublicContract.test.ts` enforces. `readonly` property modifiers do not
 // affect assignability, so no author or host call site changes meaning.
-export type PluginLocalizedStringV2 =
-  | string
-  | { key: string; fallback: string };
+export type PluginLocalizedStringV2 = DtoPluginLocalizedStringV2;
 
 export type PluginAvailabilityDescriptor = unknown;
-export type PluginContributionReference =
-  | string
-  | { pluginId: string; localId: string };
+export type PluginContributionReference = DtoPluginContributionReference;
 export type PluginHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 
 export type PluginBrowserContributionDisplay = Readonly<{
@@ -466,7 +465,7 @@ export interface PluginManifest {
   readonly engines?: Readonly<{ happier?: string }>;
   readonly runtime: Readonly<{ apiVersion: 1 }>;
   readonly entrypoints?: Readonly<{ daemon?: string; development?: string }>;
-  readonly brand?: Readonly<{ iconResourceId: string }>;
+  readonly brand?: Readonly<{ iconResourceId: string; monochrome?: boolean }>;
   readonly activation?: Readonly<{ events?: readonly Readonly<{ kind: 'startup' }>[] }>;
   readonly hostAccess?: Readonly<{
     required?: readonly Readonly<{
@@ -792,7 +791,7 @@ export function parsePluginManifest(input: unknown): PluginManifestParseResult {
   // The Protocol parser retains the broad internal HostAccess union. The
   // policy check above proves no deferred public capability remains, which is
   // the invariant represented by the SDK's narrower declaration projection.
-  const publicManifest = parsed.manifest as unknown as ParsedPluginManifest;
+  const publicManifest = projectProtocolValue<ParsedPluginManifest>(parsed.manifest);
   return {
     ok: true,
     manifest: publicManifest,
@@ -821,22 +820,13 @@ export function parsePluginManifest(input: unknown): PluginManifestParseResult {
  * (its `PluginJsonValueV2`, its icon tokens) reintroduces the same break one
  * level down.
  */
-export type PluginDeclarativeActionVariantV2 = 'primary' | 'secondary' | 'destructive';
-export type PluginDeclarativeStateV2 = 'empty' | 'loading' | 'error';
-export type PluginDeclarativeMetadataEntryV2 = {
-  label: PluginLocalizedStringV2;
-  value: PluginLocalizedStringV2;
-  tone?: PluginDeclarativeToneV2;
-};
-export type PluginCollectionProjectedScalarFieldRefV1 = {
-  field: string;
-  kind: 'boolean' | 'finiteNumber' | 'instant' | 'string';
-};
-export type PluginCollectionRowCommandV1 =
-  | { kind: 'action'; action: PluginContributionReference }
-  | { kind: 'openSurface'; destination: PluginContributionReference };
+export type PluginDeclarativeActionVariantV2 = DtoPluginDeclarativeActionVariantV2;
+export type PluginDeclarativeStateV2 = DtoPluginDeclarativeStateV2;
+export type PluginDeclarativeMetadataEntryV2 = DtoPluginDeclarativeMetadataEntryV2;
+export type PluginCollectionProjectedScalarFieldRefV1 = DtoPluginCollectionProjectedScalarFieldRefV1;
+export type PluginCollectionRowCommandV1 = DtoPluginCollectionRowCommandV1;
 
-export type PluginDeclarativeToneV2 = 'default' | 'muted' | 'success' | 'warning' | 'danger';
+export type PluginDeclarativeToneV2 = DtoPluginDeclarativeToneV2;
 
 /**
  * Protocol's declarative schema admits ordinary mutable JSON. The public Host
@@ -844,189 +834,30 @@ export type PluginDeclarativeToneV2 = 'default' | 'muted' | 'success' | 'warning
  * structural grammar rather than a named mutable helper that would leak into
  * an author's declaration.
  */
-export type PluginDeclarativeComposerApplyEffectV1 = {
-  expectedRevision: number;
-  operations: (
-    | { kind: 'text.set'; text: string }
-    | { kind: 'text.insert'; position: { offset: number }; text: string }
-    | { kind: 'text.replaceRange'; range: { start: number; end: number }; text: string }
-    | { kind: 'text.clear' }
-    | {
-      kind: 'reference.insert';
-      reference: {
-        kind: string;
-        ref: string;
-        token: string;
-        start: number;
-        end: number;
-        label?: string;
-        composerReference?: { pluginId: string; localId: string };
-      };
-    }
-    | {
-      kind: 'reference.remove';
-      reference: { ref: string; start: number; end: number };
-    }
-    | {
-      kind: 'attachment.add';
-      attachmentLocalId: string;
-      value: {
-        key: string;
-        value: PluginJsonValueV2;
-        presentation: {
-          label: string;
-          description?: string;
-          icon?: PluginUiIconTokenV1;
-          tone?: PluginUiAttachmentToneV1;
-        };
-      };
-      content?: {
-        kind: 'stagedMedia';
-        handle: {
-          v: 1;
-          id: string;
-          executionTarget: { serverId: string; machineId: string };
-          owner: { pluginId: string; localId: string };
-          mediaKind: ComposerContentMediaKindV1;
-          mimeType: ComposerContentMimeTypeV1;
-          name: string;
-          sizeBytes: number;
-          sha256: string;
-        };
-      };
-    }
-    | {
-      kind: 'attachment.update';
-      instanceId: string;
-      update: {
-        value: PluginJsonValueV2;
-        presentation?: {
-          label: string;
-          description?: string;
-          icon?: PluginUiIconTokenV1;
-          tone?: PluginUiAttachmentToneV1;
-        };
-      };
-    }
-    | { kind: 'attachment.remove'; instanceId: string }
-  )[];
-  kind: 'composerApply';
-};
+export type PluginDeclarativeComposerApplyEffectV1 = DtoPluginDeclarativeComposerApplyEffectV1;
 
-export type PluginDeclarativeControlV2 =
-  | { kind: 'text'; settingId: string }
-  | { kind: 'number'; settingId: string }
-  | { kind: 'toggle'; settingId: string }
-  | {
-    kind: 'select';
-    settingId: string;
-    options: { value: PluginJsonValueV2; label: PluginLocalizedStringV2 }[];
-  }
-  | { kind: 'secret'; settingId: string };
+export type PluginDeclarativeControlV2 = DtoPluginDeclarativeControlV2;
 
-export type PluginDeclarativeActionNodeV2 = {
-  kind: 'action';
-  action?: PluginContributionReference;
-  /** A request only: the mounted source adapter supplies current caller and Action policy. */
-  hostAction?: import('./actions/actionTypeMap.generated.js').PluginInvocableActionId;
-  effect?: PluginDeclarativeComposerApplyEffectV1;
-  label: PluginLocalizedStringV2;
-  variant?: PluginDeclarativeActionVariantV2;
-  input?: PluginJsonValueV2;
-};
+export type PluginDeclarativeActionNodeV2 = DtoPluginDeclarativeActionNodeV2;
 
-export type PluginDeclarativeItemNodeV2 = {
-  kind: 'item';
-  title: PluginLocalizedStringV2;
-  subtitle?: PluginLocalizedStringV2;
-  detail?: PluginLocalizedStringV2;
-  icon?: PluginUiIconTokenV1;
-  tone?: PluginDeclarativeToneV2;
-  action?: PluginContributionReference;
-  input?: PluginJsonValueV2;
-};
+export type PluginDeclarativeItemNodeV2 = DtoPluginDeclarativeItemNodeV2;
 
-export type PluginDeclarativeStateNodeV2 = {
-  kind: 'state';
-  state: PluginDeclarativeStateV2;
-  title: PluginLocalizedStringV2;
-  description?: PluginLocalizedStringV2;
-  icon?: PluginUiIconTokenV1;
-};
+export type PluginDeclarativeStateNodeV2 = DtoPluginDeclarativeStateNodeV2;
 
-export type PluginDeclarativeRowNodeV2 = PluginDeclarativeItemNodeV2 | PluginDeclarativeStateNodeV2;
+export type PluginDeclarativeRowNodeV2 = DtoPluginDeclarativeRowNodeV2;
 
-export type PluginDeclarativeSectionNodeV2 = {
-  kind: 'section';
-  title?: PluginLocalizedStringV2;
-  footer?: PluginLocalizedStringV2;
-  children: PluginDeclarativeRowNodeV2[];
-};
+export type PluginDeclarativeSectionNodeV2 = DtoPluginDeclarativeSectionNodeV2;
 
-export type PluginDeclarativeListNodeV2 = {
-  kind: 'list';
-  label?: PluginLocalizedStringV2;
-  children: (PluginDeclarativeSectionNodeV2 | PluginDeclarativeRowNodeV2)[];
-};
+export type PluginDeclarativeListNodeV2 = DtoPluginDeclarativeListNodeV2;
 
-export type PluginDeclarativeActionPanelNodeV2 = {
-  kind: 'actionPanel';
-  title?: PluginLocalizedStringV2;
-  children: PluginDeclarativeActionNodeV2[];
-};
+export type PluginDeclarativeActionPanelNodeV2 = DtoPluginDeclarativeActionPanelNodeV2;
 
-export type PluginDeclarativeMetadataNodeV2 = {
-  kind: 'metadata';
-  title?: PluginLocalizedStringV2;
-  entries: PluginDeclarativeMetadataEntryV2[];
-};
+export type PluginDeclarativeMetadataNodeV2 = DtoPluginDeclarativeMetadataNodeV2;
 
-export type PluginDeclarativeTargetedSurfaceReferenceV1 = {
-  point: { pointId: string; protocol: { id: string; version: number } };
-  contributor: { pluginId: string; contributionId: string };
-  role: string;
-};
+export type PluginDeclarativeTargetedSurfaceReferenceV1 = DtoPluginDeclarativeTargetedSurfaceReferenceV1;
 
-export type PluginDeclarativeTargetedSurfaceNodeV2 = {
-  kind: 'targetedSurface';
-  surface: PluginDeclarativeTargetedSurfaceReferenceV1;
-  input: JsonValue;
-  instanceKey: string;
-  fallback?: PluginDeclarativeStateNodeV2;
-};
+export type PluginDeclarativeTargetedSurfaceNodeV2 = DtoPluginDeclarativeTargetedSurfaceNodeV2;
 
-export type PluginDeclarativeCollectionListNodeV2 = {
-  kind: 'collectionList';
-  label?: PluginLocalizedStringV2;
-  source: {
-    collectionId: string;
-    uiQueryId: string;
-    parameters?: Record<string, string | number | boolean>;
-  };
-  projection: {
-    titleField: PluginCollectionProjectedScalarFieldRefV1;
-    subtitleField?: PluginCollectionProjectedScalarFieldRefV1;
-    detailField?: PluginCollectionProjectedScalarFieldRefV1;
-    badgeField?: PluginCollectionProjectedScalarFieldRefV1;
-    statusField?: PluginCollectionProjectedScalarFieldRefV1;
-  };
-  primaryCommand?: PluginCollectionRowCommandV1;
-  secondaryCommands?: PluginCollectionRowCommandV1[];
-};
+export type PluginDeclarativeCollectionListNodeV2 = DtoPluginDeclarativeCollectionListNodeV2;
 
-export type PluginDeclarativeNodeV2 =
-  | Readonly<{ kind: 'text'; text: PluginLocalizedStringV2; tone?: PluginDeclarativeToneV2 }>
-  | Readonly<{ kind: 'markdown'; text: PluginLocalizedStringV2 }>
-  | Readonly<{ kind: 'stack'; direction?: 'vertical' | 'horizontal'; gap?: 'small' | 'medium' | 'large'; children: readonly PluginDeclarativeNodeV2[] }>
-  | Readonly<{ kind: 'group'; title?: PluginLocalizedStringV2; description?: PluginLocalizedStringV2; children: readonly PluginDeclarativeNodeV2[] }>
-  | Readonly<{ kind: 'field'; label: PluginLocalizedStringV2; description?: PluginLocalizedStringV2; control: PluginDeclarativeControlV2 }>
-  | Readonly<{ kind: 'status'; label: PluginLocalizedStringV2; value: PluginLocalizedStringV2; tone?: PluginDeclarativeToneV2 }>
-  | PluginDeclarativeActionNodeV2
-  | PluginDeclarativeListNodeV2
-  | PluginDeclarativeSectionNodeV2
-  | PluginDeclarativeItemNodeV2
-  | PluginDeclarativeStateNodeV2
-  | PluginDeclarativeTargetedSurfaceNodeV2
-  | PluginDeclarativeMetadataNodeV2
-  | PluginDeclarativeActionPanelNodeV2
-  | PluginDeclarativeCollectionListNodeV2;
+export type PluginDeclarativeNodeV2 = DtoPluginDeclarativeNodeV2;
