@@ -241,14 +241,20 @@ installer_step_elapsed() {
   printf '  %s%s.%ss%s' "${COLOR_DIM}" "$((tenths / 10))" "$((tenths % 10))" "${COLOR_RESET}"
 }
 
+# Every step runs as a background job, and background jobs in a non-interactive shell ignore SIGINT:
+# Ctrl-C reaches only the installer, so it stops the running step itself. Callers clear the trap
+# (trap - INT) once the step has finished.
+installer_stop_step_on_interrupt() {
+  trap "kill $1 2>/dev/null || true; printf '\\n' >&2; exit 130" INT
+}
+
 # Animates a background step until it exits, then prints its outcome row and returns its status.
 installer_animate_step() {
   local label="$1"
   local step_pid="$2"
   local started="$3"
   local frame_index=0
-  # Ctrl-C reaches only the installer (background jobs ignore SIGINT), so stop the step with it.
-  trap 'kill "${step_pid}" 2>/dev/null || true; printf "\n" >&2; exit 130' INT
+  installer_stop_step_on_interrupt "${step_pid}"
   while kill -0 "${step_pid}" 2>/dev/null; do
     local frame="${INSTALLER_SPINNER_FRAMES[$((frame_index % ${#INSTALLER_SPINNER_FRAMES[@]}))]}"
     printf '\r\033[2K%s %s' "${COLOR_GOLD}${frame}${COLOR_RESET}" "${label}" >&2
@@ -289,7 +295,10 @@ run_installer_step() {
     # A job, not "$@" || …: errexit is ignored inside a command tested by ||/if, so a failing
     # command in the step (a rejected signature) would not fail it. The animated path does the same.
     "$@" >"${tmp_output}" 2>&1 &
-    wait "$!" || status=$?
+    local step_pid=$!
+    installer_stop_step_on_interrupt "${step_pid}"
+    wait "${step_pid}" || status=$?
+    trap - INT
     if [[ "${status}" -eq 0 ]]; then
       say "- [$(installer_step_success_symbol)] ${label}"
     else
@@ -335,7 +344,10 @@ capture_installer_step_output() {
   else
     say "- [$(installer_step_pending_symbol)] ${label}"
     "$@" >"${tmp_output}" 2>"${tmp_error}" &
-    wait "$!" || status=$?
+    local step_pid=$!
+    installer_stop_step_on_interrupt "${step_pid}"
+    wait "${step_pid}" || status=$?
+    trap - INT
     if [[ "${status}" -eq 0 ]]; then
       say "- [$(installer_step_success_symbol)] ${label}"
     else
